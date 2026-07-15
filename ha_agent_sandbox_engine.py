@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """ """
 
-import asyncio
-import sqlite3
-import sys
-import time
 import hashlib
-from typing import Dict, Any, Optional
-import asyncssh
-import ollama
+import sqlite3
+import time
+import uuid
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from config import (
@@ -18,6 +15,34 @@ from config import (
     CONFIG_REMOTE_PATH,
     OLLAMA_MODEL,
     DB_PATH,
+    SSH_RETRY_ATTEMPTS,
+    SSH_RETRY_BASE_DELAY,
+    MAX_PROMPT_TOKENS,
+    NOTIFIER,
+    NOTIFY_URL,
+    NOTIFY_WATCH_DIR,
+)
+from interfaces import LLMClientProtocol, SSHClientProtocol
+from utils.context import estimate_tokens, truncate_to_budget
+from utils.logging import (
+    get_logger,
+    get_correlation_id,
+    setup_logging,
+    set_correlation_id,
+)
+from utils.ollama_client import OllamaClient
+from utils.prompts import load_prompt
+from utils.retry import async_retry
+from utils.ssh_client import AsyncSSHClient
+from utils.notify import NotifierProtocol, get_notifier
+from utils.yaml_validator import validate_proposed_fix
+
+log = get_logger("ha_agent_sandbox_engine")
+
+_SSH_RETRY: dict[str, Any] = dict(
+    max_attempts=SSH_RETRY_ATTEMPTS,
+    base_delay=SSH_RETRY_BASE_DELAY,
+    exceptions=(OSError,),
 )
 
 # Sandbox paths derived from CONFIG_REMOTE_PATH
@@ -49,34 +74,82 @@ class DiagnosticsReport(BaseModel):
 # ==========================================
 # LOCAL MEMORY LAYER (SQLite)
 # ==========================================
-def init_local_database():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS state_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, config_hash TEXT,
-                is_valid INTEGER, issues_found TEXT, action_taken TEXT
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS backup_registry (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, backup_slug TEXT, status TEXT
-            )
-        """)
-        conn.commit()
+def _migrate_v1(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS state_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER,
+            config_hash TEXT,
+            is_valid INTEGER,
+            issues_found TEXT,
+            action_taken TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backup_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER,
+            backup_slug TEXT,
+            status TEXT
+        )
+    """)
 
 
-def record_state_memory(config_hash: str, is_valid: bool, issues: list, action: str):
+def _migrate_v2(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "ALTER TABLE state_history ADD COLUMN correlation_id TEXT DEFAULT ''"
+    )
+
+
+_MIGRATIONS: list[tuple[int, object]] = [
+    (1, _migrate_v1),
+    (2, _migrate_v2),
+]
+
+
+def init_local_database() -> None:
+    """Run any pending schema migrations against the local SQLite database."""
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO state_history (timestamp, config_hash, is_valid, issues_found, action_taken) VALUES (?, ?, ?, ?, ?)",
-            (int(time.time()), config_hash, int(is_valid), ", ".join(issues), action),
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        row = cursor.execute("SELECT version FROM schema_version").fetchone()
+        current: int = row[0] if row else 0
+        for version, migration in _MIGRATIONS:  # type: ignore[assignment]
+            if version > current:
+                migration(cursor)  # type: ignore[operator]
+                if current == 0:
+                    cursor.execute("INSERT INTO schema_version VALUES (?)", (version,))
+                else:
+                    cursor.execute("UPDATE schema_version SET version = ?", (version,))
+                current = version
+        conn.commit()
+
+
+def record_state_memory(
+    config_hash: str, is_valid: bool, issues: list, action: str
+) -> None:
+    cid = get_correlation_id()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO state_history"
+            " (timestamp, config_hash, is_valid, issues_found, action_taken, correlation_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                int(time.time()),
+                config_hash,
+                int(is_valid),
+                ", ".join(issues),
+                action,
+                cid,
+            ),
         )
         conn.commit()
 
 
-def record_backup_slug(slug: str):
+def record_backup_slug(slug: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -89,20 +162,18 @@ def record_backup_slug(slug: str):
 # ==========================================
 # REMOTE INFRASTRUCTURE & BACKUP TOOLS
 # ==========================================
-async def fetch_remote_config() -> tuple[str, str]:
+@async_retry(**_SSH_RETRY)
+async def fetch_remote_config(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> tuple[str, str]:
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
-        async with asyncssh.connect(
-            HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
-        ) as conn:
-            async with conn.start_sftp_client() as sftp:
-                async with sftp.open(CONFIG_REMOTE_PATH, "r") as file:
-                    content = await file.read()
-                    config_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                    return content, config_hash
+        content = await client.read_file(CONFIG_REMOTE_PATH)
+        config_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        log.info("config_fetched", host=HA_HOST, hash_prefix=config_hash[:12])
+        return content, config_hash
     except Exception as e:
-        print(
-            f"❌ [Transport Error] Failed config fetch over SSH: {e}", file=sys.stderr
-        )
+        log.error("ssh_fetch_failed", host=HA_HOST, error=str(e))
         raise
 
 
@@ -113,113 +184,117 @@ def _extract_backup_slug(output: str) -> str:
     return "unknown_slug"
 
 
-async def execute_remote_backup() -> str:
-    print("💾 Triggering native Home Assistant hardware snapshot backup...")
+@async_retry(**_SSH_RETRY)
+async def execute_remote_backup(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> str:
+    log.info("backup_trigger_start")
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
-        async with asyncssh.connect(
-            HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
-        ) as conn:
-            result = await conn.run(
-                'ha backup new --name "Agent_PreFix_Snapshot"', check=True
-            )
-            stdout = result.stdout if isinstance(result.stdout, str) else ""
-            slug = _extract_backup_slug(stdout.strip())
-            print(f"✅ Secure Backup created successfully. Remote identifier: {slug}")
-            return slug
-    except Exception as e:
-        print(
-            f"🛑 [CRITICAL FAILURE] Remote backup routine failed: {e}", file=sys.stderr
+        exit_code, stdout, stderr = await client.run(
+            'ha backup new --name "Agent_PreFix_Snapshot"', check=True
         )
+        slug = _extract_backup_slug(stdout.strip())
+        log.info("backup_created", slug=slug)
+        return slug
+    except Exception as e:
+        log.critical("backup_failed", error=str(e))
         raise
 
 
-async def execute_remote_preflight_check() -> tuple[int, str, str]:
-    async with asyncssh.connect(
-        HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
-    ) as conn:
-        result = await conn.run("ha core check", check=False)
-        exit_code = result.exit_status if result.exit_status is not None else 1
-        stdout = result.stdout if isinstance(result.stdout, str) else ""
-        stderr = result.stderr if isinstance(result.stderr, str) else ""
-        return exit_code, stdout, stderr
+@async_retry(**_SSH_RETRY)
+async def execute_remote_preflight_check(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> tuple[int, str, str]:
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    return await client.run("ha core check", check=False)
 
 
 # ==========================================
 # SANDBOX EXECUTION & ATOMIC SWAP ENGINE
 # ==========================================
-async def deploy_and_test_in_sandbox(fixed_yaml: str) -> bool:
+async def deploy_and_test_in_sandbox(
+    fixed_yaml: str,
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> bool:
     """Deploys code change to an isolated remote sandbox file and tests it via the HA compiler."""
-    print("🧪 Preparing remote isolated testing sandbox...")
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    log.info("sandbox_deploy_start")
     try:
-        async with asyncssh.connect(
-            HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
-        ) as conn:
-            # 1. Ensure sandbox directory exists
-            await conn.run(f"mkdir -p {SANDBOX_REMOTE_DIR}", check=True)
+        await client.run(f"mkdir -p {SANDBOX_REMOTE_DIR}", check=True)
+        await client.write_file(SANDBOX_REMOTE_FILE, fixed_yaml)
 
-            # 2. Write the AI's proposed configuration payload to the sandbox file
-            async with conn.start_sftp_client() as sftp:
-                async with sftp.open(SANDBOX_REMOTE_FILE, "w") as file:
-                    await file.write(fixed_yaml)
+        log.info("sandbox_preflight_start")
+        await client.run(
+            f"mv {CONFIG_REMOTE_PATH} {CONFIG_REMOTE_PATH}.bak", check=True
+        )
+        await client.run(f"cp {SANDBOX_REMOTE_FILE} {CONFIG_REMOTE_PATH}", check=True)
 
-            # 3. Swap sandbox into the compilation path *temporarily* to verify code structure
-            print("⚙️ Executing remote pre-flight testing compilation block...")
-            await conn.run(
-                f"mv {CONFIG_REMOTE_PATH} {CONFIG_REMOTE_PATH}.bak", check=True
-            )
-            await conn.run(f"cp {SANDBOX_REMOTE_FILE} {CONFIG_REMOTE_PATH}", check=True)
+        exit_code, stdout, stderr = await execute_remote_preflight_check(
+            ssh_client=client
+        )
 
-            # 4. Trigger Home Assistant's internal compiler validator
-            exit_code, stdout, stderr = await execute_remote_preflight_check()
+        await client.run(
+            f"mv {CONFIG_REMOTE_PATH}.bak {CONFIG_REMOTE_PATH}", check=True
+        )
 
-            # 5. Instantly revert to protect the running system while evaluating the result
-            await conn.run(
-                f"mv {CONFIG_REMOTE_PATH}.bak {CONFIG_REMOTE_PATH}", check=True
-            )
-
-            if exit_code == 0:
-                print("🏁 Sandbox Test Result: 100% VALID. Code patch is safe.")
-                return True
-            else:
-                print(
-                    f"❌ Sandbox Test Result: REJECTED by HA Compiler.\nError Log:\n{stderr or stdout}"
-                )
-                return False
+        if exit_code == 0:
+            log.info("sandbox_test_passed")
+            return True
+        else:
+            log.error("sandbox_test_failed", output=stderr or stdout)
+            return False
 
     except Exception as e:
-        print(
-            f"🛑 [Sandbox Error] Safety engine failed execution: {e}", file=sys.stderr
-        )
+        log.error("sandbox_engine_failed", error=str(e))
         return False
 
 
-async def commit_atomic_swap(fixed_yaml: str):
+async def commit_atomic_swap(
+    fixed_yaml: str,
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
     """Executes a permanent, clean, atomic swap of the validated sandbox code into production."""
-    print("🚀 Committing atomic swap to production target...")
-    async with asyncssh.connect(
-        HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
-    ) as conn:
-        async with conn.start_sftp_client() as sftp:
-            async with sftp.open(CONFIG_REMOTE_PATH, "w") as file:
-                await file.write(fixed_yaml)
-        # Force a hot reload of the configuration variables in the core engine
-        await conn.run("ha core reload", check=False)
-    print("🎉 Production successfully updated and hot-reloaded.")
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    log.info("atomic_swap_start")
+    await client.write_file(CONFIG_REMOTE_PATH, fixed_yaml)
+    await client.run("ha core reload", check=False)
+    log.info("atomic_swap_complete")
 
 
 # ==========================================
 # OLLAMA INFERENCE LAYER
 # ==========================================
-async def analyze_config_locally(yaml_content: str) -> DiagnosticsReport:
-    system_prompt = (
-        "You are an expert Home Assistant core systems engineering agent. "
-        "Analyze the provided configuration.yaml content for errors. If errors exist, set is_valid to false, "
-        "and provide the complete, functional configuration.yaml content inside recommended_fix_yaml with the error corrected."
-    )
-    user_prompt = f"Analyze this configuration data:\n\n```yaml\n{yaml_content}\n```"
+@async_retry(
+    max_attempts=SSH_RETRY_ATTEMPTS,
+    base_delay=SSH_RETRY_BASE_DELAY,
+    exceptions=(ConnectionRefusedError,),
+)
+async def analyze_config_locally(
+    yaml_content: str,
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> DiagnosticsReport:
+    client = llm_client or OllamaClient()
 
-    response = await asyncio.to_thread(
-        ollama.chat,
+    system_prompt = load_prompt("diagnose_config_repair")
+    user_prefix = "Analyze this configuration data:\n\n```yaml\n"
+    user_suffix = "\n```"
+    overhead = estimate_tokens(system_prompt) + estimate_tokens(
+        user_prefix + user_suffix
+    )
+    content_budget = MAX_PROMPT_TOKENS - overhead
+    original_tokens = estimate_tokens(yaml_content)
+    if original_tokens > content_budget:
+        yaml_content = truncate_to_budget(yaml_content, content_budget, "smart")
+        log.warning(
+            "content_truncated",
+            original_tokens=original_tokens,
+            truncated_tokens=estimate_tokens(yaml_content),
+        )
+    user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
+
+    log.info("ollama_analyze_start", model=OLLAMA_MODEL)
+    response = await client.chat(
         model=OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -232,26 +307,100 @@ async def analyze_config_locally(yaml_content: str) -> DiagnosticsReport:
 
 
 # ==========================================
+# HITL GATE
+# ==========================================
+def requires_hitl(report: DiagnosticsReport) -> bool:
+    """Returns True when the repair is high-risk enough to require human approval.
+
+    Triggers on CRITICAL severity or when the issue description mentions
+    HACS or database changes — operations that can't be easily rolled back.
+    """
+    if report.severity == "CRITICAL":
+        return True
+    joined = " ".join(report.identified_issues).lower()
+    return any(kw in joined for kw in ("hacs", "database"))
+
+
+# ==========================================
 # ORCHESTRATION PIPELINE
 # ==========================================
-async def main():
+async def main(
+    ssh_client: Optional[SSHClientProtocol] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
+    notifier: Optional[NotifierProtocol] = None,
+) -> None:
+    setup_logging()
+    if not get_correlation_id():
+        set_correlation_id(str(uuid.uuid4()))
     init_local_database()
-    yaml_content, config_hash = await fetch_remote_config()
-    report = await analyze_config_locally(yaml_content)
+
+    _notifier: NotifierProtocol = notifier or get_notifier(
+        NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
+    )
+
+    yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
+    report = await analyze_config_locally(yaml_content, llm_client=llm_client)
 
     if not report.is_valid and report.recommended_fix_yaml:
-        print(f"⚠️ Local Agent flagged an issue. Severity: {report.severity}")
+        log.warning("issue_flagged", severity=report.severity)
+
+        # 0. Validate YAML content before touching the remote system
+        validation = validate_proposed_fix(yaml_content, report.recommended_fix_yaml)
+        if not validation.is_safe:
+            log.error(
+                "proposed_fix_rejected",
+                reasons=validation.reasons,
+            )
+            record_state_memory(
+                config_hash,
+                False,
+                report.identified_issues,
+                f"Fix rejected by content validator: {'; '.join(validation.reasons)}",
+            )
+            return
+
+        # 0b. HITL gate — pause for human approval on high-risk repairs
+        if requires_hitl(report):
+            nid = get_correlation_id() or str(uuid.uuid4())
+            log.warning(
+                "hitl_required",
+                severity=report.severity,
+                notification_id=nid,
+            )
+            await _notifier.send(
+                subject=f"Pueo HITL: {report.severity} repair requires approval",
+                body="\n".join(report.identified_issues),
+                payload={
+                    "notification_id": nid,
+                    "severity": report.severity,
+                    "issues": report.identified_issues,
+                    "correlation_id": get_correlation_id(),
+                },
+            )
+            approved = await _notifier.wait_for_approval(nid)
+            if not approved:
+                log.warning("hitl_rejected", notification_id=nid)
+                record_state_memory(
+                    config_hash,
+                    False,
+                    report.identified_issues,
+                    "Repair rejected by human via HITL gate.",
+                )
+                return
+            log.info("hitl_approved", notification_id=nid)
 
         # 1. Enforce strict backup baseline
-        backup_slug = await execute_remote_backup()
+        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
         record_backup_slug(backup_slug)
 
         # 2. Deploy fix into sandbox and execute runtime checks
-        passed_sandbox = await deploy_and_test_in_sandbox(report.recommended_fix_yaml)
+        passed_sandbox = await deploy_and_test_in_sandbox(
+            report.recommended_fix_yaml, ssh_client=ssh_client
+        )
 
         if passed_sandbox:
             # 3. Commit only if sandbox testing completes with absolute success
-            await commit_atomic_swap(report.recommended_fix_yaml)
+            await commit_atomic_swap(report.recommended_fix_yaml, ssh_client=ssh_client)
             record_state_memory(
                 config_hash,
                 False,
@@ -259,9 +408,7 @@ async def main():
                 f"Patched via Sandbox; Backup: {backup_slug}",
             )
         else:
-            print(
-                "🛑 Atomic Swap aborted. The code patch generated by the AI failed safety validation."
-            )
+            log.warning("atomic_swap_aborted")
             record_state_memory(
                 config_hash,
                 False,
@@ -269,9 +416,11 @@ async def main():
                 "Patch aborted; Sandbox test failed.",
             )
     else:
-        print("🛡️ System configuration is valid. No remediation required.")
+        log.info("config_valid")
         record_state_memory(config_hash, True, ["None"], "No Action Taken.")
 
 
 if __name__ == "__main__":
+    import asyncio
+
     asyncio.run(main())

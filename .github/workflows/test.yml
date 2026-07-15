@@ -62,7 +62,7 @@ jobs:
         # Mock environments can be declared here if needed
         HA_TEST_URL: "http://localhost:8123"
       run: |
-        pytest --cov=./ --cov-report=xml --cov-fail-under=65
+        pytest --cov=./ --cov-report=xml --cov-fail-under=90
 
     # 9. Optional: Upload coverage reports to GitHub Actions artifacts
     - name: Upload Coverage to Actions

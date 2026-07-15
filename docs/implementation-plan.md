@@ -7,7 +7,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ## Phase 1 — Quick Wins (1 session each)
 
-### 1. Prompt Management ✅ TODO
+### 1. Prompt Management ✅ Done (2026-07-15)
 **Problem:** System prompts are string literals scattered across four agent scripts. Changing a prompt requires finding and editing Python code.
 
 **Build:**
@@ -23,7 +23,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 2. Retry with Exponential Backoff ✅ TODO
+### 2. Retry with Exponential Backoff ✅ Done (2026-07-15)
 **Problem:** SSH failures cause the log monitor to die with a flat 5-second retry. Transient Ollama timeouts raise immediately with no retry. Neither is production-safe.
 
 **Build:** `utils/retry.py` — an `async_retry(max_attempts, base_delay, max_delay, exceptions)` decorator. Uses exponential backoff with ±25% jitter. Non-retryable exceptions (e.g., `ValidationError`, `PermissionError`) pass through immediately.
@@ -39,7 +39,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 3. Rate Limiting and Debounce ✅ TODO
+### 3. Rate Limiting and Debounce ✅ Done (2026-07-15)
 **Problem:** A burst of HA errors triggers sequential repair attempts with no cooldown, potentially flooding HA with config writes and `ha core reload` calls.
 
 **Build:** `utils/rate_limiter.py` — two primitives:
@@ -57,7 +57,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 4. SQLite Migration Strategy ✅ TODO
+### 4. SQLite Migration Strategy ✅ Done (2026-07-15)
 **Problem:** `state_history` and `backup_registry` schemas are created with `CREATE TABLE IF NOT EXISTS` but never versioned. Adding a column silently fails on existing databases.
 
 **Modify `ha_agent_advanced.py` and `ha_agent_sandbox_engine.py`:**
@@ -72,7 +72,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ## Phase 2 — Observability (1–2 sessions)
 
-### 5. Structured Logging + Correlation IDs ✅ TODO
+### 5. Structured Logging + Correlation IDs ✅ Done (2026-07-15)
 **Problem:** Agent decisions and outcomes are printed to stdout with no structure, no queryability, and no way to trace a complete repair event end-to-end.
 
 **Build:** `utils/logging.py` — configures Python's `logging` module with a JSON formatter. Each log record includes: `timestamp`, `level`, `event`, `correlation_id`, `module`, and any event-specific fields.
@@ -89,7 +89,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 6. Context Window / Token Management ✅ TODO
+### 6. Context Window / Token Management ✅ Done (2026-07-15)
 **Problem:** Large `configuration.yaml` files or long tracebacks are sent to a 7B model with no size check, risking context overflow and hallucination (violates the 8,000-token evaluation matrix constraint).
 
 **Build:** `utils/context.py`:
@@ -110,7 +110,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ## Phase 3 — Architecture (2–3 sessions)
 
-### 7. Agent Output Content Validation ✅ TODO
+### 7. Agent Output Content Validation ✅ Done (2026-07-15)
 **Problem:** Pydantic validates JSON structure but not YAML content. The agent could return a `recommended_fix_yaml` that is structurally valid JSON but deletes critical HA config blocks or introduces credentials.
 
 **Build:** `utils/yaml_validator.py`:
@@ -124,7 +124,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 8. Dependency Injection / Protocol Interfaces ✅ TODO
+### 8. Dependency Injection / Protocol Interfaces ✅ Done (2026-07-15)
 **Problem:** SSH and Ollama calls are hardwired into agent functions, making it impossible to test the repair pipeline without live infrastructure.
 
 **Build:**
@@ -140,7 +140,7 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-### 9. HITL Notification Infrastructure ✅ TODO
+### 9. HITL Notification Infrastructure ✅ Done (2026-07-15)
 **Problem:** The HITL gate (roadmap item) requires a notification channel to be usable. Without one, "pause for human approval" means "pause forever."
 
 **Build:** `utils/notify.py`:

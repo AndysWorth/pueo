@@ -18,3 +18,14 @@ agent:
   db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
   log_confidence_threshold: 0.7      # Minimum AI confidence score to trigger autonomous repair
   self_healing_enabled: true         # Set to false to run in diagnostic-only mode
+  ssh_retry_attempts: 3              # Max SSH connection retries before giving up (0 = infinite)
+  ssh_retry_base_delay: 2.0          # Base delay in seconds for SSH retry exponential backoff
+  debounce_window_seconds: 30        # Suppress repeated repair triggers within this window
+  repair_cooldown_seconds: 300       # Pause after a repair before re-arming the monitor
+  max_repairs_per_hour: 10           # Hard cap on autonomous repair attempts per hour
+  log_level: "INFO"                  # Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "pueo.log"               # Path to the structured JSON log file
+  max_prompt_tokens: 7000            # Maximum tokens sent to Ollama per request (8k context minus headroom)
+  notifier: "file"                   # HITL notifier backend: "file", "ntfy", or "webhook"
+  notify_url: ""                     # URL for ntfy topic or webhook endpoint (unused for "file" notifier)
+  notify_watch_dir: "hitl/"          # Directory watched by FileNotifier for .approved/.rejected signals
