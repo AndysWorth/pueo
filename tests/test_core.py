@@ -488,36 +488,38 @@ class TestBackupSlugExtraction:
 
 
 # ── main.py CLI ───────────────────────────────────────────────────────────────────
+# Tests call main.main() directly (not via subprocess) so coverage is tracked.
 
 
 class TestMain:
-    def test_missing_config_exits_1(self, tmp_path):
-        result = subprocess.run(
-            [sys.executable, "main.py", "--config", str(tmp_path / "nonexistent.yaml")],
-            capture_output=True,
-            text=True,
-            cwd=_REPO_ROOT,
-        )
-        assert result.returncode == 1
-        assert "not found" in result.stderr
+    def test_missing_config_exits_1(self, monkeypatch, tmp_path, capsys):
+        import main as main_module
 
-    def test_invalid_mode_exits_2(self, tmp_path):
+        monkeypatch.setattr(
+            sys, "argv", ["main.py", "--config", str(tmp_path / "nonexistent.yaml")]
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+        assert exc_info.value.code == 1
+        assert "not found" in capsys.readouterr().err
+
+    def test_invalid_mode_exits_2(self, monkeypatch, tmp_path):
+        import main as main_module
+
         config = tmp_path / "config.yaml"
         config.write_text("")
-        result = subprocess.run(
-            [sys.executable, "main.py", "--config", str(config), "--mode", "badmode"],
-            capture_output=True,
-            text=True,
-            cwd=_REPO_ROOT,
+        monkeypatch.setattr(
+            sys, "argv", ["main.py", "--config", str(config), "--mode", "badmode"]
         )
-        assert result.returncode == 2
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+        assert exc_info.value.code == 2
 
-    def test_help_exits_0(self):
-        result = subprocess.run(
-            [sys.executable, "main.py", "--help"],
-            capture_output=True,
-            text=True,
-            cwd=_REPO_ROOT,
-        )
-        assert result.returncode == 0
-        assert "monitor" in result.stdout
+    def test_help_exits_0(self, monkeypatch, capsys):
+        import main as main_module
+
+        monkeypatch.setattr(sys, "argv", ["main.py", "--help"])
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+        assert exc_info.value.code == 0
+        assert "monitor" in capsys.readouterr().out
