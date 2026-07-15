@@ -1,6 +1,6 @@
 import asyncio
 import functools
-import random
+import secrets
 
 
 def async_retry(
@@ -27,7 +27,7 @@ def async_retry(
                     if max_attempts and attempt >= max_attempts:
                         raise
                     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-                    jitter = delay * random.uniform(-0.25, 0.25)
+                    jitter = delay * (secrets.randbelow(51) / 100 - 0.25)
                     await asyncio.sleep(max(0.0, delay + jitter))
 
         return wrapper
