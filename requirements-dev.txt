@@ -1,0 +1,9 @@
+-r requirements.txt
+black
+bandit
+flake8
+mypy
+pre-commit
+pytest
+pytest-cov
+types-PyYAML

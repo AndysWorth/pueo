@@ -1,0 +1,85 @@
+# ==========================================
+# 🐳 Docker & Container Runtime Environment
+# ==========================================
+# Ignore local Docker compose overrides or local dev setups
+docker-compose.override.yml
+.docker/
+.devcontainer/
+
+# Ignore custom build contexts or target folders
+.dockerignore
+
+# ==========================================
+# 🐍 Python Runtime & Cache (Generated inside Container)
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# 🧪 Testing, Linting & Coverage Metrics
+# ==========================================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.bandit/
+htmlcov/
+.toc
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+nosetests.xml
+pylintrc
+.htmlcov/
+
+# ==========================================
+# 💻 IDEs & Environment Secrets (Host or Container mount)
+# ==========================================
+# Local config (from previous step)
+config.yaml
+secrets.yaml
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# JetBrains / VS Code
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Obsidian workspace metadata
+.obsidian/
+
+# Claude Code user-specific local settings (project settings.json is committed)
+.claude/settings.local.json
+
+# Agent runtime state
+ha_agent_state.db

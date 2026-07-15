@@ -1,0 +1,74 @@
+name: Bug Report
+description: Something is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before filing:** check `pueo.log` and the HA backup registry (`ha_agent_state.db`) to confirm
+        the issue is in Pueo, not in Home Assistant itself.
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Affected layer
+      description: Which agent script is involved?
+      options:
+        - "Layer 1 — ha_agent_core.py (read-only sensing)"
+        - "Layer 2 — ha_agent_advanced.py (SQLite memory / backup)"
+        - "Layer 3 — ha_agent_sandbox_engine.py (sandbox + atomic swap)"
+        - "Layer 4 — ha_log_monitor.py (continuous monitoring)"
+        - "config.py / setup.sh"
+        - "Unknown"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior. Include any error messages or tracebacks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety impact
+      description: Check any that apply.
+      options:
+        - label: A write to HA config occurred without a confirmed backup slug
+        - label: The sandbox revert step was skipped or failed silently
+        - label: A repair was triggered without passing the sandbox check
+        - label: No safety impact observed
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `python ha_log_monitor.py`
+        2. Inject a log line matching CRITICAL_LOG_PATTERN
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, macOS version, Ollama model, HA version.
+      placeholder: |
+        Python: 3.14.x
+        macOS: 15.x
+        Ollama model: qwen2.5-coder:7b
+        Home Assistant: 2025.x.x
+    validations:
+      required: true

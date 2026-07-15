@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "homeassistant": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-homeassistant"],
+      "env": {
+        "HA_URL": "http://homeassistant.local:8123",
+        "HA_TOKEN": "${HA_TOKEN}"
+      }
+    }
+  }
+}

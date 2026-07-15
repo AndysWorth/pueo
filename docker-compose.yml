@@ -1,0 +1,12 @@
+services:
+  pueo:
+    build: .
+    container_name: pueo-agent
+    restart: unless-stopped
+    network_mode: "host" # Required if Pueo needs direct raw socket/ARP access like NetAlertX
+    volumes:
+      # Mount config locally so edits don't require rebuilding the container
+      - ./config.yaml:/app/config.yaml:ro
+      - ./secrets.yaml:/app/secrets.yaml:ro
+    environment:
+      - TZ=America/New_York

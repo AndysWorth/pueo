@@ -1,0 +1,20 @@
+# config.yaml.default — reference template for Pueo configuration
+# Run setup.sh to generate config.yaml interactively, or copy this file:
+#   cp config.yaml.default config.yaml
+# config.yaml is gitignored and never committed.
+
+home_assistant:
+  host: "homeassistant.local"        # IP address or mDNS hostname of your HA server
+  user: "root"                        # SSH username (root for the Advanced SSH add-on)
+  ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
+  config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
+  log_path: "/config/home-assistant.log"     # Path to home-assistant.log on the HA host
+
+ollama:
+  model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair
+  endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
+
+agent:
+  db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
+  log_confidence_threshold: 0.7      # Minimum AI confidence score to trigger autonomous repair
+  self_healing_enabled: true         # Set to false to run in diagnostic-only mode

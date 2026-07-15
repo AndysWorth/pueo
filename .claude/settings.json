@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest*)",
+      "Bash(python -m pytest*)",
+      "Bash(black*)",
+      "Bash(flake8*)",
+      "Bash(mypy*)",
+      "Bash(bandit*)",
+      "Bash(pip install*)",
+      "Bash(pip show*)",
+      "Bash(ollama*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -d .venv ]; then .venv/bin/black --check . --quiet 2>&1 | head -20; .venv/bin/flake8 . --count --select=E9,F63,F7,F82 2>&1 | head -20; fi; exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

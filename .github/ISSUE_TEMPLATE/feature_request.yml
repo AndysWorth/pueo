@@ -1,0 +1,61 @@
+name: Feature Request
+description: Propose a new capability or improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check `docs/implementation-plan.md` and `docs/roadmap.md` first — your idea may already
+        be on the backlog. If it is, link to the relevant item below.
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Implementation-plan phase (if applicable)
+      options:
+        - "Phase 1 — Quick Wins"
+        - "Phase 2 — Observability"
+        - "Phase 3 — Architecture"
+        - "Phase 4 — Agent Quality"
+        - "Milestone 2 — Local RAG"
+        - "Milestone 4 — HITL Gate"
+        - "New / not on roadmap"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap. Link to a specific roadmap or implementation-plan item if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you implement it? Note any new config keys, new modules, or changes to existing agent layers.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Evaluation matrix — does this proposal satisfy all constraints?
+      description: Every feature must pass all four constraints from the roadmap.
+      options:
+        - label: "Inference latency < 4 seconds per agent step"
+          required: true
+        - label: "Zero config hallucination on inputs up to 8,000 tokens"
+          required: true
+        - label: "Zero un-backed writes (no production write without a confirmed backup slug)"
+          required: true
+        - label: "Zero WAN packets during fix cycles (all inference local)"
+          required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you rule out and why?

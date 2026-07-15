@@ -1,0 +1,54 @@
+version: 2
+
+updates:
+  # Python runtime and dev dependencies
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: develop
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # Group minor/patch runtime dep updates into one PR
+      runtime-deps:
+        patterns:
+          - "asyncssh"
+          - "ollama"
+          - "pydantic"
+          - "pyyaml"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group dev tooling updates into one PR
+      dev-deps:
+        patterns:
+          - "black"
+          - "bandit"
+          - "flake8"
+          - "mypy"
+          - "pre-commit"
+          - "pytest"
+          - "pytest-cov"
+          - "types-PyYAML"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions workflow dependencies
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: develop
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"
