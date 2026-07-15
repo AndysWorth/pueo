@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-"""
+""" """
 
 import asyncio
 import sys
@@ -11,14 +10,24 @@ from pydantic import BaseModel, Field
 
 from config import HA_HOST, HA_USER, SSH_KEY_PATH, CONFIG_REMOTE_PATH, OLLAMA_MODEL
 
+
 # ==========================================
 # DATA SHAPE DEFINITIONS (Pydantic validation)
 # ==========================================
 class DiagnosticsReport(BaseModel):
-    is_valid: bool = Field(description="True if the YAML config has no structural or deprecated flaws.")
-    severity: str = Field(description="Severity classification: 'NONE', 'LOW', 'MEDIUM', 'CRITICAL'")
-    identified_issues: list[str] = Field(description="List of specific flaws, deprecated formats, or risks found.")
-    recommended_fix_yaml: Optional[str] = Field(None, description="Corrected YAML block snippet if applicable.")
+    is_valid: bool = Field(
+        description="True if the YAML config has no structural or deprecated flaws."
+    )
+    severity: str = Field(
+        description="Severity classification: 'NONE', 'LOW', 'MEDIUM', 'CRITICAL'"
+    )
+    identified_issues: list[str] = Field(
+        description="List of specific flaws, deprecated formats, or risks found."
+    )
+    recommended_fix_yaml: Optional[str] = Field(
+        None, description="Corrected YAML block snippet if applicable."
+    )
+
 
 # ==========================================
 # LOCAL AGENTIC TOOL LAYER
@@ -30,21 +39,28 @@ async def fetch_remote_config() -> str:
             HA_HOST,
             username=HA_USER,
             client_keys=[SSH_KEY_PATH],
-            known_hosts=None # In production, map this to your known_hosts file
+            known_hosts=None,  # In production, map this to your known_hosts file
         ) as conn:
             async with conn.start_sftp_client() as sftp:
-                async with sftp.open(CONFIG_REMOTE_PATH, 'r') as file:
+                async with sftp.open(CONFIG_REMOTE_PATH, "r") as file:
                     content = await file.read()
                     return content
     except Exception as e:
-        print(f"❌ [Transport Error] Failed to fetch remote config over SSH: {e}", file=sys.stderr)
+        print(
+            f"❌ [Transport Error] Failed to fetch remote config over SSH: {e}",
+            file=sys.stderr,
+        )
         raise
+
 
 async def execute_remote_preflight_check() -> tuple[int, str, str]:
     """Executes Home Assistant's native verification engine via CLI over SSH."""
-    async with asyncssh.connect(HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None) as conn:
-        result = await conn.run('ha core check', check=False)
+    async with asyncssh.connect(
+        HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
+    ) as conn:
+        result = await conn.run("ha core check", check=False)
         return result.exit_status, result.stdout, result.stderr
+
 
 # ==========================================
 # OLLAMA INFERENCE LAYER
@@ -67,19 +83,20 @@ async def analyze_config_locally(yaml_content: str) -> DiagnosticsReport:
             model=OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            options={"temperature": 0.0}, # Keep reasoning deterministic
-            format=DiagnosticsReport.model_json_schema() # Force structured JSON output
+            options={"temperature": 0.0},  # Keep reasoning deterministic
+            format=DiagnosticsReport.model_json_schema(),  # Force structured JSON output
         )
 
-        raw_output = response['message']['content']
+        raw_output = response["message"]["content"]
         # Parse and return structured Pydantic data
         return DiagnosticsReport.model_validate_json(raw_output)
 
     except Exception as e:
         print(f"❌ [Inference Error] Local Ollama parsing failed: {e}", file=sys.stderr)
         raise
+
 
 # ==========================================
 # ORCHESTRATION PIPELINE
@@ -108,6 +125,7 @@ async def main():
         print("✅ Remote HA core engine reports: Configuration is valid.")
     else:
         print(f"❌ Remote HA core engine reports FAILURE:\n{stderr or stdout}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

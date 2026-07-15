@@ -12,7 +12,9 @@ from pathlib import Path
 
 import yaml
 
-_config_path = Path(os.environ.get("PUEO_CONFIG", Path(__file__).parent / "config.yaml"))
+_config_path = Path(
+    os.environ.get("PUEO_CONFIG", Path(__file__).parent / "config.yaml")
+)
 
 _cfg: dict = {}
 if _config_path.exists():
