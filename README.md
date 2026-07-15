@@ -24,24 +24,24 @@ In alignment with the spirit of open-source and out of respect for Native Hawaii
 
 ## 🚀 Core Features
 
-*   **Vigilant Monitoring:** Continuously parses Home Assistant event buses, Docker container logs, and MQTT streams.
-*   **Automated Diagnostics:** Triages device dropouts, configuration syntax errors, and network anomalies.
-*   **Self-Healing Actions:** Automatically triggers integration reloads, rolls back broken HACS updates, or reboots frozen hardware bridges.
-*   **Security Integration:** Pairs natively with tool protocols like NetAlertX MCP to isolate unverified network intruders.
+*   **Vigilant Monitoring:** Continuously tails `home-assistant.log` over SSH and triages entries with a local AI model.
+*   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
+*   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
+*   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
 
 ---
 
 ## 🛠️ Quick Start
 
 ### 1. Prerequisites
-*   Home Assistant Core / OS with **Advanced Mode** enabled.
-*   An active LLM backend (Local Ollama instance, OpenAI API, or Anthropic API).
-*   A Home Assistant Long-Lived Access Token.
+*   Home Assistant Core / OS with **Advanced Mode** enabled and the SSH add-on installed.
+*   [Ollama](https://ollama.com) installed and running locally (macOS Apple Silicon recommended).
+*   [pyenv](https://github.com/pyenv/pyenv) installed (`brew install pyenv` on macOS).
 
 ### 2. Installation & Configuration
 Clone the repository and run the setup script:
 ```bash
-git clone https://github.com
+git clone https://github.com/AndysWorth/pueo
 cd pueo
 ./setup.sh
 ```
@@ -58,8 +58,14 @@ A reference template for `config.yaml` is available in `config.yaml.default`.
 
 ### 3. Running the Agent
 ```bash
-python main.py --config config.yaml
+source .venv/bin/activate
+
+python main.py --mode monitor   # live log daemon (default) — runs continuously
+python main.py --mode diagnose  # one-shot config fetch and analysis
+python main.py --mode repair    # full sandbox-test-then-atomic-swap repair cycle
 ```
+
+Pass `--config /path/to/config.yaml` if your config file is not in the project directory.
 
 ---
 
