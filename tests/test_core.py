@@ -837,10 +837,10 @@ class TestAsyncRetry:
         assert delays[2] > delays[1]
 
     def test_jitter_keeps_delay_within_25_percent(self, monkeypatch):
-        from utils.retry import async_retry
-        import random
+        import utils.retry as retry_mod
 
-        monkeypatch.setattr(random, "uniform", lambda a, b: 0.25)
+        # randbelow(51) returning 50 → 50/100 - 0.25 = +0.25 → delay * 1.25
+        monkeypatch.setattr(retry_mod.secrets, "randbelow", lambda n: 50)
         captured = []
 
         async def fake_sleep(secs):
@@ -848,7 +848,7 @@ class TestAsyncRetry:
 
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
-        @async_retry(max_attempts=2, base_delay=4.0, exceptions=(OSError,))
+        @retry_mod.async_retry(max_attempts=2, base_delay=4.0, exceptions=(OSError,))
         async def fail_once():
             if not captured:
                 raise OSError("x")
