@@ -198,7 +198,7 @@ echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
 echo
 echo "  Activate environment : source .venv/bin/activate"
-echo "  Live log monitor     : python ha_log_monitor.py"
-echo "  One-shot diagnostics : python ha_agent_core.py"
-echo "  Full repair pipeline : python ha_agent_sandbox_engine.py"
+echo "  Live log monitor     : python main.py --mode monitor"
+echo "  One-shot diagnostics : python main.py --mode diagnose"
+echo "  Full repair pipeline : python main.py --mode repair"
 echo
