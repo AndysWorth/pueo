@@ -59,7 +59,10 @@ async def execute_remote_preflight_check() -> tuple[int, str, str]:
         HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
     ) as conn:
         result = await conn.run("ha core check", check=False)
-        return result.exit_status, result.stdout, result.stderr
+        exit_code = result.exit_status if result.exit_status is not None else 1
+        stdout = result.stdout if isinstance(result.stdout, str) else ""
+        stderr = result.stderr if isinstance(result.stderr, str) else ""
+        return exit_code, stdout, stderr
 
 
 # ==========================================

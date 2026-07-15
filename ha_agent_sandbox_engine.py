@@ -122,7 +122,8 @@ async def execute_remote_backup() -> str:
             result = await conn.run(
                 'ha backup new --name "Agent_PreFix_Snapshot"', check=True
             )
-            slug = _extract_backup_slug(result.stdout.strip())
+            stdout = result.stdout if isinstance(result.stdout, str) else ""
+            slug = _extract_backup_slug(stdout.strip())
             print(f"✅ Secure Backup created successfully. Remote identifier: {slug}")
             return slug
     except Exception as e:
@@ -137,7 +138,10 @@ async def execute_remote_preflight_check() -> tuple[int, str, str]:
         HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None
     ) as conn:
         result = await conn.run("ha core check", check=False)
-        return result.exit_status, result.stdout, result.stderr
+        exit_code = result.exit_status if result.exit_status is not None else 1
+        stdout = result.stdout if isinstance(result.stdout, str) else ""
+        stderr = result.stderr if isinstance(result.stderr, str) else ""
+        return exit_code, stdout, stderr
 
 
 # ==========================================
