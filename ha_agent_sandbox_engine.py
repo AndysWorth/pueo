@@ -78,16 +78,19 @@ async def fetch_remote_config() -> tuple[str, str]:
         print(f"❌ [Transport Error] Failed config fetch over SSH: {e}", file=sys.stderr)
         raise
 
+def _extract_backup_slug(output: str) -> str:
+    for line in output.split("\n"):
+        if "slug:" in line.lower():
+            return line.split(":")[-1].strip()
+    return "unknown_slug"
+
+
 async def execute_remote_backup() -> str:
     print("💾 Triggering native Home Assistant hardware snapshot backup...")
     try:
         async with asyncssh.connect(HA_HOST, username=HA_USER, client_keys=[SSH_KEY_PATH], known_hosts=None) as conn:
             result = await conn.run('ha backup new --name "Agent_PreFix_Snapshot"', check=True)
-            output = result.stdout.strip()
-            slug = "unknown_slug"
-            for line in output.split('\n'):
-                if "slug:" in line.lower():
-                    slug = line.split(":")[-1].strip()
+            slug = _extract_backup_slug(result.stdout.strip())
             print(f"✅ Secure Backup created successfully. Remote identifier: {slug}")
             return slug
     except Exception as e:

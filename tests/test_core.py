@@ -2,11 +2,16 @@
 """Pueo test suite — covers logic exercisable without external services."""
 
 import importlib
+import sqlite3
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
+
+_REPO_ROOT = Path(__file__).parent.parent
 
 
 # ── config.py ───────────────────────────────────────────────────────────────────
@@ -53,6 +58,29 @@ class TestConfigDefaults:
         import config
         assert not config.SSH_KEY_PATH.startswith("~")
         assert "id_rsa" in config.SSH_KEY_PATH
+
+    def test_config_remote_path_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+        assert config.CONFIG_REMOTE_PATH == "/config/configuration.yaml"
+
+    def test_log_remote_path_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+        assert config.LOG_REMOTE_PATH == "/config/home-assistant.log"
+
+    def test_db_path_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+        assert config.DB_PATH == "ha_agent_state.db"
+
+    def test_self_healing_disabled_via_config(self, isolated_config):
+        isolated_config.write_text(yaml.dump({
+            "agent": {"self_healing_enabled": False}
+        }))
+        importlib.reload(sys.modules["config"])
+        import config
+        assert config.SELF_HEALING_ENABLED is False
 
 
 # ── DiagnosticsReport schema ─────────────────────────────────────────────────────
@@ -163,6 +191,18 @@ class TestLogMonitor:
         from ha_log_monitor import CRITICAL_LOG_PATTERN
         assert not CRITICAL_LOG_PATTERN.search("DEBUG Loaded integration: light")
 
+    def test_pattern_matches_error_doing_job(self):
+        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        assert CRITICAL_LOG_PATTERN.search(
+            "ERROR Error doing job: handle_state_change"
+        )
+
+    def test_pattern_requires_trigger_keyword(self):
+        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        assert not CRITICAL_LOG_PATTERN.search(
+            "ERROR Something benign happened with no known trigger keyword"
+        )
+
     def test_log_evaluation_schema(self):
         from ha_log_monitor import LogEvaluation
         result = LogEvaluation(
@@ -185,3 +225,221 @@ class TestLogMonitor:
         import ha_log_monitor
         importlib.reload(ha_log_monitor)
         assert ha_log_monitor.CONFIDENCE_THRESHOLD == 0.85
+
+
+# ── LogEvaluation schema ──────────────────────────────────────────────────────────
+
+class TestLogEvaluation:
+    def test_missing_fields_raises(self):
+        from ha_log_monitor import LogEvaluation
+        with pytest.raises(ValidationError):
+            LogEvaluation(is_actionable=True)  # root_cause_summary and confidence_score missing
+
+    def test_json_round_trip(self):
+        from ha_log_monitor import LogEvaluation
+        original = LogEvaluation(
+            is_actionable=False,
+            root_cause_summary="Z-Wave adapter disconnected",
+            confidence_score=0.82,
+        )
+        restored = LogEvaluation.model_validate_json(original.model_dump_json())
+        assert restored == original
+
+
+# ── ha_agent_advanced SQLite layer ───────────────────────────────────────────────
+
+class TestAdvancedDB:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        return path
+
+    def test_init_creates_state_history_table(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+        assert "state_history" in tables
+
+    def test_init_creates_backup_registry_table(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+        assert "backup_registry" in tables
+
+    def test_init_is_idempotent(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.init_local_database()
+
+    def test_record_state_memory_inserts_row(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_state_memory("abc123", True, ["issue1"], "test action")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM state_history").fetchone()[0]
+        assert count == 1
+
+    def test_record_state_memory_fields(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_state_memory("deadbeef", False, ["err1", "err2"], "patched")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT config_hash, is_valid, issues_found, action_taken FROM state_history"
+            ).fetchone()
+        assert row[0] == "deadbeef"
+        assert row[1] == 0  # False stored as integer 0
+        assert row[2] == "err1, err2"
+        assert row[3] == "patched"
+
+    def test_record_backup_slug_inserts_row(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-abc")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
+        assert count == 1
+
+    def test_record_backup_slug_status_is_active(self, db_path):
+        import ha_agent_advanced
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-xyz")
+        with sqlite3.connect(db_path) as conn:
+            status = conn.execute("SELECT status FROM backup_registry").fetchone()[0]
+        assert status == "ACTIVE"
+
+
+# ── ha_agent_sandbox_engine SQLite layer ─────────────────────────────────────────
+
+class TestSandboxDB:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_sandbox_engine
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        return path
+
+    def test_init_creates_state_history_table(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+        assert "state_history" in tables
+
+    def test_init_creates_backup_registry_table(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+        assert "backup_registry" in tables
+
+    def test_init_is_idempotent(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        ha_agent_sandbox_engine.init_local_database()
+
+    def test_record_state_memory_inserts_row(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        ha_agent_sandbox_engine.record_state_memory("abc123", True, ["issue1"], "test action")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM state_history").fetchone()[0]
+        assert count == 1
+
+    def test_record_state_memory_fields(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        ha_agent_sandbox_engine.record_state_memory("deadbeef", False, ["err1", "err2"], "patched")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT config_hash, is_valid, issues_found, action_taken FROM state_history"
+            ).fetchone()
+        assert row[0] == "deadbeef"
+        assert row[1] == 0
+        assert row[2] == "err1, err2"
+        assert row[3] == "patched"
+
+    def test_record_backup_slug_inserts_row(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        ha_agent_sandbox_engine.record_backup_slug("slug-abc")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
+        assert count == 1
+
+    def test_record_backup_slug_status_is_active(self, db_path):
+        import ha_agent_sandbox_engine
+        ha_agent_sandbox_engine.init_local_database()
+        ha_agent_sandbox_engine.record_backup_slug("slug-xyz")
+        with sqlite3.connect(db_path) as conn:
+            status = conn.execute("SELECT status FROM backup_registry").fetchone()[0]
+        assert status == "ACTIVE"
+
+
+# ── Backup slug extraction ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("module_name", ["ha_agent_advanced", "ha_agent_sandbox_engine"])
+class TestBackupSlugExtraction:
+    def test_extract_standard_slug_line(self, module_name):
+        mod = importlib.import_module(module_name)
+        assert mod._extract_backup_slug("Slug: abc123") == "abc123"
+
+    def test_extract_slug_case_insensitive(self, module_name):
+        mod = importlib.import_module(module_name)
+        assert mod._extract_backup_slug("SLUG: XYZ789") == "XYZ789"
+
+    def test_extract_multiline_output(self, module_name):
+        mod = importlib.import_module(module_name)
+        output = "Creating backup...\nSlug: myslug42\nDone."
+        assert mod._extract_backup_slug(output) == "myslug42"
+
+    def test_extract_falls_back_to_unknown_slug(self, module_name):
+        mod = importlib.import_module(module_name)
+        assert mod._extract_backup_slug("No slug info here") == "unknown_slug"
+
+
+# ── main.py CLI ───────────────────────────────────────────────────────────────────
+
+class TestMain:
+    def test_missing_config_exits_1(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, "main.py", "--config", str(tmp_path / "nonexistent.yaml")],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert result.returncode == 1
+        assert "not found" in result.stderr
+
+    def test_invalid_mode_exits_2(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+        result = subprocess.run(
+            [sys.executable, "main.py", "--config", str(config), "--mode", "badmode"],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert result.returncode == 2
+
+    def test_help_exits_0(self):
+        result = subprocess.run(
+            [sys.executable, "main.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        assert result.returncode == 0
+        assert "monitor" in result.stdout

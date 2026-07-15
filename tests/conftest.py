@@ -2,9 +2,14 @@
 
 import importlib
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
+
+# Ensure the project root (pueo/) is on sys.path so agent modules are importable
+# when pytest is invoked from any working directory.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @pytest.fixture
@@ -23,6 +28,10 @@ def isolated_config(monkeypatch, tmp_path):
     """
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setenv("PUEO_CONFIG", str(cfg_path))
+    # Ensure config is in sys.modules so tests can safely call
+    # importlib.reload(sys.modules["config"]) without a KeyError.
+    if "config" not in sys.modules:
+        import config  # noqa: F401
     yield cfg_path
     _reload_all_modules()
 
