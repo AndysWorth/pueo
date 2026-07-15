@@ -200,5 +200,6 @@ echo
 echo "  Activate environment : source .venv/bin/activate"
 echo "  Live log monitor     : python main.py --mode monitor"
 echo "  One-shot diagnostics : python main.py --mode diagnose"
+echo "  With memory layer    : python main.py --mode advanced"
 echo "  Full repair pipeline : python main.py --mode repair"
 echo

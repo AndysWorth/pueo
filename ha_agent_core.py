@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" """
+"""Layer 1 — read-only SSH fetch and local Ollama config diagnostics."""
 
 import uuid
 from typing import Any, Optional

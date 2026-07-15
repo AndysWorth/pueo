@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" """
+"""Layer 3 — full repair pipeline: content validation, HITL gate, backup, sandbox test, atomic swap."""
 
 import hashlib
 import sqlite3
@@ -228,15 +228,19 @@ async def deploy_and_test_in_sandbox(
         await client.run(
             f"mv {CONFIG_REMOTE_PATH} {CONFIG_REMOTE_PATH}.bak", check=True
         )
-        await client.run(f"cp {SANDBOX_REMOTE_FILE} {CONFIG_REMOTE_PATH}", check=True)
-
-        exit_code, stdout, stderr = await execute_remote_preflight_check(
-            ssh_client=client
-        )
-
-        await client.run(
-            f"mv {CONFIG_REMOTE_PATH}.bak {CONFIG_REMOTE_PATH}", check=True
-        )
+        # Restore the original config unconditionally — whether the check
+        # passes, fails, or the SSH connection drops mid-call.
+        try:
+            await client.run(
+                f"cp {SANDBOX_REMOTE_FILE} {CONFIG_REMOTE_PATH}", check=True
+            )
+            exit_code, stdout, stderr = await execute_remote_preflight_check(
+                ssh_client=client
+            )
+        finally:
+            await client.run(
+                f"mv {CONFIG_REMOTE_PATH}.bak {CONFIG_REMOTE_PATH}", check=True
+            )
 
         if exit_code == 0:
             log.info("sandbox_test_passed")
