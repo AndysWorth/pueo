@@ -9,6 +9,8 @@ Tests verify logic that can be exercised without external services. SSH connecti
 - Sandbox path derivation: `SANDBOX_REMOTE_DIR` and `SANDBOX_REMOTE_FILE` stay in sync with `CONFIG_REMOTE_PATH`
 - Log pattern matching: `CRITICAL_LOG_PATTERN` regex hits/misses against known HA log formats
 - `CONFIDENCE_THRESHOLD` propagation from config into the monitor module
+- Full repair pipeline via `FakeSSHClient` and `FakeLLMClient` (see `TestSandboxPipeline`)
+- HITL gate via `FakeNotifier` (see `TestHitlPipelineGate`)
 
 ## Config isolation
 `config.py` loads at import time using the `PUEO_CONFIG` env var. Tests that exercise config loading use the `isolated_config` fixture from `conftest.py`, which:
@@ -16,7 +18,6 @@ Tests verify logic that can be exercised without external services. SSH connecti
 2. Calls `importlib.reload()` so the module re-reads the env var
 3. Reloads all dependent agent modules after the test to prevent state leakage
 
-## What is not tested here (yet)
-- SSH transport layer (`asyncssh` calls) — needs mock or integration test harness
-- Ollama inference — needs mock or integration test against local Ollama
-- The full repair pipeline end-to-end — milestone 4 work
+## What is not tested here
+- SSH transport layer (`asyncssh` calls) — needs integration test against real HA
+- Live Ollama inference — needs integration test against local Ollama

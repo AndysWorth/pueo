@@ -7,7 +7,7 @@
 | 1. Read-only ingestion & diagnostics | ✅ Complete | `ha_agent_core.py` |
 | 2. Local RAG & knowledge ingestion | ❌ Not started | — |
 | 3. Safe execution / shadow mode | ✅ Complete | `ha_agent_sandbox_engine.py` |
-| 4. Closed-loop autonomous healing | ✅ Complete (HITL gate pending) | `ha_agent_sandbox_engine.py` |
+| 4. Closed-loop autonomous healing | ✅ Complete | `ha_agent_sandbox_engine.py` |
 
 ---
 
@@ -27,16 +27,6 @@
 - Respect the 8,000 token context limit — retrieved chunks must be ranked and truncated
 
 **Validation gate:** Query the agent on a specific breaking change from a recent HA release. It must accurately cite the change and identify affected YAML keys purely from the local vector DB, with zero live web calls.
-
----
-
-### Milestone 4 (remaining) — Human-in-the-Loop Gate
-
-**Objective:** Prevent fully autonomous action on changes that are high-risk or irreversible at the HA architecture level.
-
-**Scope:** HACS updates, database schema migrations, breaking integration replacements. Minor config syntax fixes do not require HITL.
-
-**Implementation note:** The gate belongs *before* `execute_remote_backup()` — not between backup and write. Triggering a backup before pausing for human approval wastes a backup slot and misleads the backup registry. The decision of what constitutes "critical" needs to be defined (likely a second Ollama classification step with a `requires_hitl` boolean in the schema).
 
 ---
 

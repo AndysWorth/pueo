@@ -32,6 +32,7 @@ CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
 LOG_REMOTE_PATH: str = _ha.get("log_path", "/config/home-assistant.log")
 
 OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
+OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")
 
 DB_PATH: str = _agent.get("db_path", "ha_agent_state.db")
 CONFIDENCE_THRESHOLD: float = float(_agent.get("log_confidence_threshold", 0.7))

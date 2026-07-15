@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" """
+"""Layer 2 — diagnose + SQLite state memory + pre-repair backup triggering."""
 
 import hashlib
 import sqlite3

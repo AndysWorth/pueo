@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" """
+"""Layer 4 — continuous SSH log tail with two-layer AI triage and repair triggering."""
 
 import asyncio
 import collections
@@ -15,6 +15,7 @@ from config import (
     LOG_REMOTE_PATH,
     OLLAMA_MODEL,
     CONFIDENCE_THRESHOLD,
+    SELF_HEALING_ENABLED,
     SSH_RETRY_BASE_DELAY,
     DEBOUNCE_WINDOW_SECONDS,
     REPAIR_COOLDOWN_SECONDS,
@@ -98,7 +99,7 @@ async def analyze_log_line_with_ai(
 # ==========================================
 # STREAMING SSH CONNECTION LAYER
 # ==========================================
-@async_retry(max_attempts=0, base_delay=SSH_RETRY_BASE_DELAY, exceptions=(Exception,))
+@async_retry(max_attempts=0, base_delay=SSH_RETRY_BASE_DELAY, exceptions=(OSError,))
 async def tail_remote_log_stream(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
@@ -131,6 +132,12 @@ async def tail_remote_log_stream(
                     evaluation.is_actionable
                     and evaluation.confidence_score > CONFIDENCE_THRESHOLD
                 ):
+                    if not SELF_HEALING_ENABLED:
+                        log.info(
+                            "self_healing_disabled",
+                            cause=evaluation.root_cause_summary,
+                        )
+                        continue
                     if not _debouncer.record():
                         log.info("debounce_suppressed")
                         continue

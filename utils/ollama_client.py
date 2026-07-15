@@ -7,9 +7,14 @@ from typing import Any
 
 import ollama
 
+from config import OLLAMA_ENDPOINT
+
 
 class OllamaClient:
     """Wraps ollama.chat behind the LLMClientProtocol interface."""
+
+    def __init__(self) -> None:
+        self._client = ollama.Client(host=OLLAMA_ENDPOINT)
 
     async def chat(
         self,
@@ -19,7 +24,7 @@ class OllamaClient:
         format: dict,
     ) -> Any:
         return await asyncio.to_thread(
-            lambda: ollama.chat(
+            lambda: self._client.chat(
                 model=model,
                 messages=messages,
                 options=options,

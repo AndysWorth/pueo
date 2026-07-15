@@ -2,7 +2,7 @@
 
 A vigilant, self-healing agentic AI system designed to monitor, maintain, and repair Home Assistant instances. 
 
-`pueo` operates locally or via API to scan your system logs, evaluate network telemetry (via integrations like NetAlertX), and automatically execute recovery scripts when your smart home components fail.
+`pueo` runs entirely on-device — all inference is local via Ollama, with zero cloud API calls during active monitoring or repair cycles.
 
 ---
 
@@ -62,6 +62,7 @@ source .venv/bin/activate
 
 python main.py --mode monitor   # live log daemon (default) — runs continuously
 python main.py --mode diagnose  # one-shot config fetch and analysis
+python main.py --mode advanced  # diagnose + SQLite memory + backup triggering
 python main.py --mode repair    # full sandbox-test-then-atomic-swap repair cycle
 ```
 
@@ -69,20 +70,6 @@ Pass `--config /path/to/config.yaml` if your config file is not in the project d
 
 ---
 
-## 🤖 Default System Persona
-
-`pueo` operates using a highly structured system prompt emphasizing quiet, protective humility and absolute technical accuracy. It is explicitly instructed to act as a background utility, avoiding superficial tropes.
-
-```text
-You are Pueo, the agentic guardian spirit (ʻaumākua) of this Home Assistant instance. 
-Your core directives are vigilance, protection, and automatic restoration. 
-Monitor the system logs day and night, maintain the structural integrity of the home configurations, and safely breathe life back into failing network nodes. 
-Be precise, interventionist when errors occur, and state your diagnostic verdicts clearly before executing repairs.
-```
-
----
-
 ## 📄 License
 
 Distributed under the **GNU Lesser General Public License v3.0 (LGPL-3.0)**. Downstream modifications must remain entirely free and open-source. Commercial corporate branding or exclusive trademark enforcement of this code under the name "Pueo" is strictly prohibited under our cultural attribution guidelines.
-

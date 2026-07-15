@@ -44,10 +44,12 @@ Extends core with a local SQLite database (`ha_agent_state.db`) persisting `stat
 
 ### Layer 3 — Reasoning + Acting: `ha_agent_sandbox_engine.py`
 Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
-1. Trigger HA backup (mandatory)
-2. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
-3. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert
-4. Only if the sandbox check passes: atomically write to production and call `ha core reload`
+1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
+2. Run `requires_hitl()` — if CRITICAL severity or hacs/database keywords, notify and wait for human approval
+3. Trigger HA backup (mandatory)
+4. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
+5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
+6. Only if the sandbox check passes: atomically write to production and call `ha core reload`
 
 ### Layer 4 — Continuous Monitoring: `ha_log_monitor.py`
 Runs `tail -F` on `/config/home-assistant.log` via a persistent SSH process stream. Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger `ha_agent_sandbox_engine.main()`. Reconnects automatically on stream failure.

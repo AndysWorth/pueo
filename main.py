@@ -18,6 +18,7 @@ def main() -> None:
             "modes:\n"
             "  monitor   live SSH log tail with AI triage (default, daemon mode)\n"
             "  diagnose  one-shot config fetch and analysis\n"
+            "  advanced  diagnose + SQLite memory + backup triggering\n"
             "  repair    full sandbox-test-then-atomic-swap repair cycle\n"
         ),
     )
@@ -29,7 +30,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["monitor", "diagnose", "repair"],
+        choices=["monitor", "diagnose", "advanced", "repair"],
         default="monitor",
         help="agent mode (default: monitor)",
     )
@@ -37,8 +38,8 @@ def main() -> None:
 
     config_path = Path(args.config).resolve()
     if not config_path.exists():
-        print(f"✘  Config file not found: {args.config}", file=sys.stderr)
-        print("   Run ./setup.sh to create one.", file=sys.stderr)
+        sys.stderr.write(f"✘  Config file not found: {args.config}\n")
+        sys.stderr.write("   Run ./setup.sh to create one.\n")
         sys.exit(1)
 
     # Must be set before importing agent modules so config.py picks up the right path
@@ -52,6 +53,10 @@ def main() -> None:
         import ha_agent_core
 
         asyncio.run(ha_agent_core.main())
+    elif args.mode == "advanced":
+        import ha_agent_advanced
+
+        asyncio.run(ha_agent_advanced.main())
     elif args.mode == "repair":
         import ha_agent_sandbox_engine
 
