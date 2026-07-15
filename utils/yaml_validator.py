@@ -65,6 +65,7 @@ def validate_proposed_fix(original_yaml: str, proposed_yaml: str) -> ValidationR
     if early_reasons:
         return ValidationResult(is_safe=False, reasons=early_reasons)
 
-    assert proposed is not None
+    if proposed is None:
+        return ValidationResult(is_safe=False, reasons=["YAML parsed to None"])
     reasons = _check_content(original_yaml, proposed, proposed_yaml)
     return ValidationResult(is_safe=len(reasons) == 0, reasons=reasons)

@@ -9,7 +9,7 @@ updates:
       day: monday
       time: "06:00"
       timezone: "America/New_York"
-    target-branch: develop
+    target-branch: main
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
@@ -47,7 +47,7 @@ updates:
       day: monday
       time: "06:00"
       timezone: "America/New_York"
-    target-branch: develop
+    target-branch: main
     open-pull-requests-limit: 3
     labels:
       - "dependencies"
