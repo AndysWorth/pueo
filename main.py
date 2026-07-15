@@ -21,10 +21,18 @@ def main() -> None:
             "  repair    full sandbox-test-then-atomic-swap repair cycle\n"
         ),
     )
-    parser.add_argument("--config", default="config.yaml", metavar="FILE",
-                        help="path to config.yaml (default: config.yaml)")
-    parser.add_argument("--mode", choices=["monitor", "diagnose", "repair"],
-                        default="monitor", help="agent mode (default: monitor)")
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        metavar="FILE",
+        help="path to config.yaml (default: config.yaml)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["monitor", "diagnose", "repair"],
+        default="monitor",
+        help="agent mode (default: monitor)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -38,12 +46,15 @@ def main() -> None:
 
     if args.mode == "monitor":
         import ha_log_monitor
+
         asyncio.run(ha_log_monitor.main())
     elif args.mode == "diagnose":
         import ha_agent_core
+
         asyncio.run(ha_agent_core.main())
     elif args.mode == "repair":
         import ha_agent_sandbox_engine
+
         asyncio.run(ha_agent_sandbox_engine.main())
 
 
