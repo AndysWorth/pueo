@@ -18,7 +18,7 @@ jobs:
     steps:
     # 1. Check out the repository code
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     # 2. Set up the specific Python environment matrix
     - name: Set up Python ${{ matrix.python-version }}
