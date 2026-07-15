@@ -66,7 +66,7 @@ jobs:
 
     # 9. Optional: Upload coverage reports to GitHub Actions artifacts
     - name: Upload Coverage to Actions
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: coverage-report-${{ matrix.python-version }}
         path: coverage.xml
