@@ -1,5 +1,8 @@
 # 🦉 pueo
 
+[![CI](https://github.com/AndysWorth/pueo/actions/workflows/test.yml/badge.svg)](https://github.com/AndysWorth/pueo/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/AndysWorth/pueo/graph/badge.svg)](https://codecov.io/gh/AndysWorth/pueo)
+
 A vigilant, self-healing agentic AI system designed to monitor, maintain, and repair Home Assistant instances. 
 
 `pueo` runs entirely on-device — all inference is local via Ollama, with zero cloud API calls during active monitoring or repair cycles.

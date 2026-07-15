@@ -64,10 +64,11 @@ jobs:
       run: |
         pytest --cov=./ --cov-report=xml --cov-fail-under=90
 
-    # 9. Optional: Upload coverage reports to GitHub Actions artifacts
-    - name: Upload Coverage to Actions
-      uses: actions/upload-artifact@v7
+    # 9. Upload coverage to Codecov (aggregates across all Python versions)
+    - name: Upload Coverage to Codecov
+      uses: codecov/codecov-action@v5
       with:
-        name: coverage-report-${{ matrix.python-version }}
-        path: coverage.xml
+        files: coverage.xml
+        flags: python-${{ matrix.python-version }}
+        fail_ci_if_error: false
 
