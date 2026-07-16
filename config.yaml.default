@@ -29,3 +29,4 @@ agent:
   notifier: "file"                   # HITL notifier backend: "file", "ntfy", or "webhook"
   notify_url: ""                     # URL for ntfy topic or webhook endpoint (unused for "file" notifier)
   notify_watch_dir: "hitl/"          # Directory watched by FileNotifier for .approved/.rejected signals
+  hitl_always: false                 # Set to true to require human approval before every repair, not just CRITICAL

@@ -21,6 +21,7 @@ from config import (
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
+    HITL_ALWAYS,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -313,12 +314,10 @@ async def analyze_config_locally(
 # ==========================================
 # HITL GATE
 # ==========================================
-def requires_hitl(report: DiagnosticsReport) -> bool:
-    """Returns True when the repair is high-risk enough to require human approval.
-
-    Triggers on CRITICAL severity or when the issue description mentions
-    HACS or database changes — operations that can't be easily rolled back.
-    """
+def requires_hitl(report: DiagnosticsReport, hitl_always: bool = False) -> bool:
+    """Returns True when the repair requires human approval before proceeding."""
+    if hitl_always:
+        return True
     if report.severity == "CRITICAL":
         return True
     joined = " ".join(report.identified_issues).lower()
@@ -364,7 +363,7 @@ async def main(
             return
 
         # 0b. HITL gate — pause for human approval on high-risk repairs
-        if requires_hitl(report):
+        if requires_hitl(report, hitl_always=HITL_ALWAYS):
             nid = get_correlation_id() or str(uuid.uuid4())
             log.warning(
                 "hitl_required",
