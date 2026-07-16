@@ -14,6 +14,7 @@ from config import (
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
     MAX_PROMPT_TOKENS,
+    HA_KNOWN_VERSION,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -77,6 +78,31 @@ async def execute_remote_preflight_check(
     return await client.run("ha core check", check=False)
 
 
+async def check_ha_version(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """Fetches the live HA version and warns if it differs from the version recorded at setup."""
+    if not HA_KNOWN_VERSION:
+        return
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    try:
+        _, stdout, _ = await client.run("ha core info")
+        for line in stdout.splitlines():
+            if line.startswith("version:"):
+                live_version = line.split(":", 1)[1].strip()
+                if live_version != HA_KNOWN_VERSION:
+                    log.warning(
+                        "ha_version_changed",
+                        known_version=HA_KNOWN_VERSION,
+                        live_version=live_version,
+                    )
+                else:
+                    log.info("ha_version_ok", version=live_version)
+                return
+    except Exception as e:
+        log.warning("ha_version_check_failed", error=str(e))
+
+
 # ==========================================
 # OLLAMA INFERENCE LAYER
 # ==========================================
@@ -138,6 +164,7 @@ async def main(
     set_correlation_id(str(uuid.uuid4()))
 
     log.info("ssh_connect_start", host=HA_HOST)
+    await check_ha_version(ssh_client=ssh_client)
     yaml_content = await fetch_remote_config(ssh_client=ssh_client)
 
     report = await analyze_config_locally(yaml_content, llm_client=llm_client)

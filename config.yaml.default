@@ -4,11 +4,12 @@
 # config.yaml is gitignored and never committed.
 
 home_assistant:
+  known_version: ""              # Populated by setup.sh; Pueo warns at startup if HA has updated
   host: "homeassistant.local"        # IP address or mDNS hostname of your HA server
-  user: "root"                        # SSH username (root for the Advanced SSH add-on)
+  user: "root"                        # SSH username (root for the Terminal & SSH App)
   ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
   config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
-  log_path: "/config/home-assistant.log"     # Path to home-assistant.log on the HA host
+  log_path: "/config/home-assistant.log"     # Legacy: no longer used by the monitor (which now uses 'ha core logs --follow')
 
 ollama:
   model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair

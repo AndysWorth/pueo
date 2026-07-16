@@ -96,6 +96,21 @@ class TestConfigDefaults:
 
         assert config.SELF_HEALING_ENABLED is False
 
+    def test_ha_known_version_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_KNOWN_VERSION == ""
+
+    def test_ha_known_version_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"home_assistant": {"known_version": "2026.7.2"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_KNOWN_VERSION == "2026.7.2"
+
 
 # ── DiagnosticsReport schema ─────────────────────────────────────────────────────
 
@@ -679,6 +694,65 @@ class TestMain:
             main_module.main()
         assert exc_info.value.code == 0
         assert "monitor" in capsys.readouterr().out
+
+
+# ── check_ha_version ─────────────────────────────────────────────────────────────
+
+
+class TestCheckHaVersion:
+    def _ssh(self, stdout: str):
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(command_results={"ha core info": (0, stdout, "")})
+
+    def test_versions_match_logs_info(self, isolated_config, caplog):
+        isolated_config.write_text(
+            yaml.dump({"home_assistant": {"known_version": "2026.7.2"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import ha_agent_core
+
+        importlib.reload(ha_agent_core)
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(
+                ha_agent_core.check_ha_version(
+                    ssh_client=self._ssh(
+                        "version: 2026.7.2\nversion_latest: 2026.7.2\n"
+                    )
+                )
+            )
+        assert any("ha_version_ok" in r.message for r in caplog.records)
+
+    def test_version_changed_logs_warning(self, isolated_config, caplog):
+        isolated_config.write_text(
+            yaml.dump({"home_assistant": {"known_version": "2026.6.0"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import ha_agent_core
+
+        importlib.reload(ha_agent_core)
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(
+                ha_agent_core.check_ha_version(
+                    ssh_client=self._ssh(
+                        "version: 2026.7.2\nversion_latest: 2026.7.2\n"
+                    )
+                )
+            )
+        assert any("ha_version_changed" in r.message for r in caplog.records)
+
+    def test_no_known_version_skips_check(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import ha_agent_core
+
+        importlib.reload(ha_agent_core)
+        ssh = self._ssh("")
+        asyncio.run(ha_agent_core.check_ha_version(ssh_client=ssh))
+        assert ssh.commands_run == []
 
 
 # ── utils/prompts.py ─────────────────────────────────────────────────────────────

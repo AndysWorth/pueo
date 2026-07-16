@@ -21,6 +21,28 @@ ask()  {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# ── --help / --clean flags ───────────────────────────────────────────────────────
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo -e "\nUsage: ./setup.sh [--clean]"
+    echo
+    echo "  (no flags)   Interactive setup: install dependencies, create .venv,"
+    echo "               and write config.yaml. Safe to re-run at any time."
+    echo
+    echo "  --clean      Remove .venv, config.yaml, ha_agent_state.db, and hitl/"
+    echo "               before running setup. Use this to start from scratch."
+    echo
+    echo "  -h, --help   Show this help message."
+    exit 0
+fi
+
+if [[ "${1:-}" == "--clean" ]]; then
+    echo -e "\n${YELLOW}⚠  Clean mode — removing generated files before setup${NC}"
+    rm -rf .venv
+    rm -f config.yaml ha_agent_state.db
+    rm -rf hitl/
+    ok "Removed .venv, config.yaml, ha_agent_state.db, hitl/"
+fi
+
 echo -e "\n🦉  ${BOLD}Pueo Setup${NC}"
 echo "════════════════════════════════════════"
 
@@ -29,22 +51,28 @@ hdr "1. Python"
 
 REQUIRED_PYTHON="3.14"
 
-if ! command -v pyenv &>/dev/null; then
-    fail "pyenv not found. Install it from https://github.com/pyenv/pyenv then re-run."
-    exit 1
+if command -v pyenv &>/dev/null; then
+    ok "pyenv $(pyenv --version | awk '{print $2}')"
+else
+    warn "pyenv not found — will use system Python if available"
 fi
-ok "pyenv $(pyenv --version | awk '{print $2}')"
 
-# Install Python 3.14 if no 3.14.x is present
-INSTALLED_VERSION=$(pyenv versions --bare | grep "^${REQUIRED_PYTHON}\." | sort -V | tail -1 || true)
-if [[ -z "$INSTALLED_VERSION" ]]; then
-    info "Python ${REQUIRED_PYTHON} not found — installing via pyenv (this may take a few minutes)..."
-    pyenv install "${REQUIRED_PYTHON}"
-    INSTALLED_VERSION=$(pyenv versions --bare | grep "^${REQUIRED_PYTHON}\." | sort -V | tail -1)
+# Prefer a system python3.14 (e.g. Homebrew) before touching pyenv
+if command -v python3.14 &>/dev/null; then
+    PYTHON_BIN="$(command -v python3.14)"
+    INSTALLED_VERSION="$(python3.14 --version 2>&1 | awk '{print $2}')"
+    ok "Python ${INSTALLED_VERSION} (system)"
+else
+    # Fall back to pyenv — install if needed
+    INSTALLED_VERSION=$(pyenv versions --bare | grep "^${REQUIRED_PYTHON}\." | sort -V | tail -1 || true)
+    if [[ -z "$INSTALLED_VERSION" ]]; then
+        info "Python ${REQUIRED_PYTHON} not found — installing via pyenv (this may take a few minutes)..."
+        pyenv install "${REQUIRED_PYTHON}"
+        INSTALLED_VERSION=$(pyenv versions --bare | grep "^${REQUIRED_PYTHON}\." | sort -V | tail -1)
+    fi
+    ok "Python ${INSTALLED_VERSION} (pyenv)"
+    PYTHON_BIN="$(pyenv prefix "$INSTALLED_VERSION")/bin/python"
 fi
-ok "Python ${INSTALLED_VERSION}"
-
-PYTHON_BIN="$(pyenv prefix "$INSTALLED_VERSION")/bin/python"
 
 # Create or verify .venv
 if [[ -d ".venv" ]]; then
@@ -127,12 +155,33 @@ else
         echo "  ── Add this public key to Home Assistant ──────────────────────"
         cat "${DEFAULT_SSH_KEY}.pub"
         echo "  ───────────────────────────────────────────────────────────────"
-        echo "  In HA: Settings → Add-ons → SSH & Web Terminal"
-        echo "         → Configuration → Authorized Keys"
+        echo "  In HA: Settings → Apps → Terminal & SSH"
+        echo "         → Configuration → authorized_keys"
+        echo "         Paste the public key above, set port: 22, then Start."
         echo
         read -rp "  Press Enter once the key is added to HA to continue..."
     else
         warn "Skipping key generation — SSH features will not work without a key."
+    fi
+fi
+
+# ── SSH agent ────────────────────────────────────────────────────────────────────
+echo
+info "Checking SSH agent..."
+if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+    warn "SSH_AUTH_SOCK is not set — the SSH agent may not be running."
+    warn "Pueo uses asyncssh, which cannot prompt for a key passphrase."
+    warn "If your key has a passphrase, add it to the macOS keychain:"
+    warn "  ssh-add --apple-use-keychain ${DEFAULT_SSH_KEY}"
+    warn "Then re-run this script, or run Pueo from a shell where the agent is active."
+else
+    # Check whether the key is actually loaded
+    if ssh-add -l 2>/dev/null | grep -q "${DEFAULT_SSH_KEY}"; then
+        ok "SSH agent running and key is loaded"
+    else
+        warn "SSH agent is running but ${DEFAULT_SSH_KEY} is not loaded."
+        warn "If the key has a passphrase, add it with:"
+        warn "  ssh-add --apple-use-keychain ${DEFAULT_SSH_KEY}"
     fi
 fi
 
@@ -199,6 +248,35 @@ if $WRITE_CONFIG; then
         NOTIFIER_TYPE="file"
     fi
 
+    # ── SSH connectivity, HA version, and log file check ─────────────────────────
+    echo
+    info "Testing SSH connection to ${HA_HOST}..."
+    HA_KNOWN_VERSION=""
+    _SSH="ssh -i ${HA_SSH_KEY} -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no ${HA_USER}@${HA_HOST}"
+    if $_SSH "echo ok" &>/dev/null; then
+        ok "SSH connection to ${HA_HOST} successful"
+
+        # Fetch HA version
+        HA_KNOWN_VERSION=$($_SSH "ha core info 2>/dev/null | grep '^version:' | awk '{print \$2}'" 2>/dev/null || echo "")
+        if [[ -n "$HA_KNOWN_VERSION" ]]; then
+            ok "HA version: ${HA_KNOWN_VERSION}"
+        else
+            warn "Could not determine HA version — known_version will be empty in config.yaml"
+        fi
+
+        # Log file check — informational only; monitor uses 'ha core logs --follow'
+        LOG_EXISTS=$($_SSH "test -f '${HA_LOG_PATH}' && echo yes || echo no" 2>/dev/null || echo no)
+        if [[ "$LOG_EXISTS" == "yes" ]]; then
+            ok "Log file found: ${HA_LOG_PATH} (informational — monitor uses 'ha core logs --follow')"
+        else
+            info "Log file not found at ${HA_LOG_PATH} — this is normal on modern HA."
+            info "The live monitor reads from 'ha core logs --follow' instead of the file."
+        fi
+    else
+        warn "SSH connection failed — check that ${HA_HOST} is reachable and the key is authorized."
+        warn "Test manually: ssh -i ${HA_SSH_KEY} ${HA_USER}@${HA_HOST}"
+    fi
+
     cat > config.yaml <<EOF
 home_assistant:
   host: "${HA_HOST}"
@@ -206,6 +284,7 @@ home_assistant:
   ssh_key_path: "${HA_SSH_KEY}"
   config_path: "${HA_CONFIG_PATH}"
   log_path: "${HA_LOG_PATH}"
+  known_version: "${HA_KNOWN_VERSION}"
 
 ollama:
   model: "${OLLAMA_MODEL}"
@@ -221,17 +300,6 @@ agent:
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"
 EOF
     ok "config.yaml written"
-
-    # Verify SSH connectivity
-    echo
-    info "Testing SSH connection to ${HA_HOST}..."
-    if ssh -i "${HA_SSH_KEY}" -o ConnectTimeout=5 -o BatchMode=yes \
-           -o StrictHostKeyChecking=no "${HA_USER}@${HA_HOST}" "echo ok" &>/dev/null; then
-        ok "SSH connection to ${HA_HOST} successful"
-    else
-        warn "SSH connection failed — check that ${HA_HOST} is reachable and the key is authorized."
-        warn "Test manually: ssh -i ${HA_SSH_KEY} ${HA_USER}@${HA_HOST}"
-    fi
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────────
