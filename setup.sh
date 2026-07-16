@@ -174,6 +174,7 @@ if $WRITE_CONFIG; then
     echo "              instance; you approve by touching the approval file via SSH"
     echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
     echo
+    ask "Require human approval before every repair? (true/false)"  "false"  HITL_ALWAYS
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
@@ -184,7 +185,7 @@ if $WRITE_CONFIG; then
         echo "  ntfy topic URL format: https://ntfy.sh/<your-topic>"
         echo "  Pick a unique topic name — anyone who knows it can see your alerts."
         echo "  For self-hosted ntfy use: https://ntfy.example.com/<topic>"
-        ask "ntfy topic URL"  "https://ntfy.sh/pueo-$(whoami)"  NOTIFY_URL
+        ask "ntfy topic URL"  "https://ntfy.sh/pueo-$(openssl rand -hex 8)"  NOTIFY_URL
         ask "Approval watch directory"  "hitl/"  NOTIFY_WATCH_DIR
         echo
         echo "  To approve a pending repair (from this machine or via SSH):"
@@ -214,6 +215,7 @@ agent:
   db_path: "${DB_PATH}"
   log_confidence_threshold: ${LOG_THRESHOLD}
   self_healing_enabled: ${SELF_HEALING}
+  hitl_always: ${HITL_ALWAYS}
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"

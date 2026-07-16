@@ -2036,7 +2036,9 @@ class TestGetNotifier:
     def test_ntfy_returns_ntfy_notifier(self, tmp_path):
         from utils.notify import NtfyNotifier, get_notifier
 
-        n = get_notifier("ntfy", notify_url="https://ntfy.sh/topic", notify_watch_dir=str(tmp_path))
+        n = get_notifier(
+            "ntfy", notify_url="https://ntfy.sh/topic", notify_watch_dir=str(tmp_path)
+        )
         assert isinstance(n, NtfyNotifier)
 
     def test_ntfy_wait_for_approval_delegates_to_file(self, tmp_path):
@@ -2130,6 +2132,24 @@ class TestRequiresHitl:
         report = self._make_report("NONE", [])
         assert requires_hitl(report) is False
 
+    def test_hitl_always_true_triggers_for_low_severity(self):
+        from ha_agent_sandbox_engine import requires_hitl
+
+        report = self._make_report("LOW", ["minor formatting issue"])
+        assert requires_hitl(report, hitl_always=True) is True
+
+    def test_hitl_always_true_triggers_for_none_severity(self):
+        from ha_agent_sandbox_engine import requires_hitl
+
+        report = self._make_report("NONE", [])
+        assert requires_hitl(report, hitl_always=True) is True
+
+    def test_hitl_always_false_preserves_normal_logic(self):
+        from ha_agent_sandbox_engine import requires_hitl
+
+        report = self._make_report("LOW", ["minor formatting issue"])
+        assert requires_hitl(report, hitl_always=False) is False
+
 
 # ── HITL config keys ─────────────────────────────────────────────────────────────
 
@@ -2177,6 +2197,19 @@ class TestHitlConfigKeys:
         import config
 
         assert config.NOTIFY_WATCH_DIR == "/var/pueo/hitl/"
+
+    def test_hitl_always_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HITL_ALWAYS is False
+
+    def test_hitl_always_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"hitl_always": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HITL_ALWAYS is True
 
 
 # ── HITL pipeline gate ────────────────────────────────────────────────────────────

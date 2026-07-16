@@ -68,6 +68,7 @@ def isolated_config(monkeypatch, tmp_path):
     if "config" not in sys.modules:
         import config  # noqa: F401
     yield cfg_path
+    cfg_path.write_text("")  # reset to empty so reloaded modules get defaults
     _reload_all_modules()
 
 
