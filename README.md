@@ -37,9 +37,16 @@ In alignment with the spirit of open-source and out of respect for Native Hawaii
 ## 🛠️ Quick Start
 
 ### 1. Prerequisites
-*   Home Assistant Core / OS with **Advanced Mode** enabled and the SSH add-on installed.
+*   Home Assistant OS with the **Terminal & SSH** App installed (`Settings → Apps → Terminal & SSH`).
+    Set `port: 22`, add your public key under `authorized_keys`, and start the App.
 *   [Ollama](https://ollama.com) installed and running locally (macOS Apple Silicon recommended).
-*   [pyenv](https://github.com/pyenv/pyenv) installed (`brew install pyenv` on macOS).
+*   Python 3.14 available — either via [Homebrew](https://brew.sh) (`brew install python@3.14`) or [pyenv](https://github.com/pyenv/pyenv).
+
+> **Passphrase-protected SSH keys:** Pueo uses `asyncssh` and cannot prompt for a passphrase interactively. Add your key to the macOS keychain once before running Pueo:
+> ```bash
+> ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+> ```
+> `setup.sh` will remind you if the agent is not active or the key is not loaded.
 
 ### 2. Installation & Configuration
 Clone the repository and run the setup script:
@@ -50,12 +57,13 @@ cd pueo
 ```
 
 `setup.sh` is idempotent — safe to re-run at any time. It will:
-- Install Python 3.14 via pyenv if needed (a `.python-version` file pins the version)
-- Create a `.venv` and install dependencies, or recreate it if the Python version is wrong
+- Locate Python 3.14 (Homebrew or pyenv) and create a `.venv`
 - Check that Ollama is installed and running, and pull `qwen2.5-coder:7b` if missing
-- Generate an SSH key if none exists and show instructions for adding it to Home Assistant
+- Generate an SSH key if none exists and show instructions for adding it to the Terminal & SSH App
+- Check that the SSH agent is running and the key is loaded
 - Prompt for your HA hostname, SSH settings, and agent preferences, then write `config.yaml`
-- Test the SSH connection to your HA host
+- Connect to HA over SSH, detect the HA version, and warn if the log file is missing
+- Run `./setup.sh --clean` to wipe all generated files and start from scratch
 
 A reference template for `config.yaml` is available in `config.yaml.default`.
 

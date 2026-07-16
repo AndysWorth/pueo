@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Layer 4 — continuous SSH log tail with two-layer AI triage and repair triggering."""
+"""Layer 4 — continuous log streaming via 'ha core logs --follow' with two-layer AI triage and repair triggering."""
 
 import asyncio
 import collections
@@ -12,7 +12,6 @@ from config import (
     HA_HOST,
     HA_USER,
     SSH_KEY_PATH,
-    LOG_REMOTE_PATH,
     OLLAMA_MODEL,
     CONFIDENCE_THRESHOLD,
     SELF_HEALING_ENABLED,
@@ -104,11 +103,11 @@ async def tail_remote_log_stream(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> None:
-    """Establishes an unblocked SSH pipeline streaming live Home Assistant logs."""
+    """Streams live HA logs via 'ha core logs --follow' over SSH."""
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     log.info("log_stream_start", host=HA_HOST)
 
-    tail_command = f"tail -F -n 10 {LOG_REMOTE_PATH}"
+    tail_command = "ha core logs --follow"
 
     try:
         async for line in client.stream_lines(tail_command):

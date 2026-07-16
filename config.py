@@ -26,6 +26,7 @@ _ollama = _cfg.get("ollama", {})
 _agent = _cfg.get("agent", {})
 
 HA_HOST: str = _ha.get("host", "homeassistant.local")
+HA_KNOWN_VERSION: str = _ha.get("known_version", "")
 HA_USER: str = _ha.get("user", "root")
 SSH_KEY_PATH: str = os.path.expanduser(_ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
 CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")

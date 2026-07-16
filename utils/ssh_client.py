@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import AsyncIterator
 
 import asyncssh
@@ -23,11 +24,14 @@ class AsyncSSHClient:
         self._key_path = key_path
 
     def _kw(self) -> dict:
-        return {
-            "username": self._user,
-            "client_keys": [self._key_path],
-            "known_hosts": None,
-        }
+        kw: dict = {"username": self._user, "known_hosts": None}
+        agent_sock = os.environ.get("SSH_AUTH_SOCK")
+        if agent_sock:
+            # Use the SSH agent (handles passphrase-protected keys transparently)
+            kw["agent_path"] = agent_sock
+        else:
+            kw["client_keys"] = [self._key_path]
+        return kw
 
     async def read_file(self, path: str) -> str:
         async with asyncssh.connect(self._host, **self._kw()) as conn:
