@@ -8,6 +8,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Source code lives in `pueo/`.
 
+## Project Type: Solo
+
+This is a solo project. The following procedure variations from `~/.claude/CLAUDE.md` are active:
+
+- **Code review:** Self-merge after CI passes; no required approvals.
+- **Branch lifespan:** Keep branches short; avoid branches older than 2–3 days.
+- **Branch strategy:** All work branches off `main`; no release branches or hotfix branches.
+- **Merge strategy:** Squash merge to keep `main` history clean.
+- **Migrations:** Test against a real local copy of the SQLite database before merging; no staging environment.
+- **Rollback:** Rollback = revert the commit; document this in the PR description for any migration or config change.
+- **Breaking changes:** Note in PR description; no deprecation cycle required.
+- **Dependency changes:** Flag changes to `requirements*.txt` in the related-files report; no additional sign-off needed.
+
+To convert this project to Team/Library: change this section header to `## Project Type: Team/Library`, remove the solo variations above, and ask Claude to apply the team/library variations from `~/.claude/CLAUDE.md`.
+
 ## Commands
 
 Run from the `pueo/` directory:
@@ -112,14 +127,16 @@ Every code change follows this procedure in order. Never commit directly to `mai
    - Config key added → `config.py`, `config.yaml.default`, and `setup.sh`
    - Architecture change → add/update a decision record in `docs/decisions/`
    - Public interface changed → update this file if the pattern is documented here
-8. **Security review** — invoke `/security-review` when the change meaningfully touches SSH transport, external HTTP calls, credential handling, or production file writes.
+   - Dependency added/changed → update `requirements.txt` or `requirements-dev.txt`
+8. **Migrations and schema changes** — flag separately from code changes. Test against a real local copy of `ha_agent_state.db`. Document the rollback path (which migration version to revert to) before proceeding.
+9. **Security review** — invoke `/security-review` when the change meaningfully touches SSH transport, external HTTP calls, credential handling, or production file writes.
 
 ### Before committing
-9. `git diff --staged` — self-review the diff; catch noise, debug artifacts, unintended changes
-10. Commit atomically — one logical concern per commit; message explains *why*, not *what*
+10. `git diff --staged` — self-review the diff; catch noise, debug artifacts, unintended changes
+11. Commit atomically — one logical concern per commit; message explains *why*, not *what*
 
 ### Before opening a PR
-11. Run the full CI gate locally — all must pass:
+12. Run the full CI gate locally — all must pass:
     ```bash
     black --check .
     flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -127,11 +144,12 @@ Every code change follows this procedure in order. Never commit directly to `mai
     bandit -r . -x ./tests
     pytest --cov
     ```
-12. If implementing a named plan item: CI passing = done, open the PR. If ad-hoc: confirm with the user that the change is complete before opening the PR.
-13. `gh pr create` — description focuses on *why*, not *what*
+13. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
+14. If implementing a named plan item: CI passing = done, open the PR. If ad-hoc: confirm with the user that the change is complete before opening the PR.
+15. `gh pr create` — description focuses on *why*, not *what*; include rollback note if step 13 applies.
 
 ### After merge
-14. Repeat steps 1–3 to clean up.
+16. Repeat steps 1–3 to clean up.
 
 ## Roadmap
 
