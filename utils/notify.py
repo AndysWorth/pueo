@@ -58,10 +58,18 @@ class FileNotifier:
 
 
 class NtfyNotifier:
-    """HTTP POST to ntfy.sh (or a self-hosted ntfy server)."""
+    """HTTP POST to ntfy.sh (or a self-hosted ntfy server).
 
-    def __init__(self, url: str) -> None:
+    Approval is file-based: after the push notification is sent the caller
+    writes a ``<notification_id>.approved`` or ``<notification_id>.rejected``
+    file to ``watch_dir`` and this notifier polls for it — the same mechanism
+    used by FileNotifier.  ntfy.sh is one-way push and cannot relay a reply
+    back to the agent directly.
+    """
+
+    def __init__(self, url: str, watch_dir: str = "hitl/") -> None:
         self._url = url
+        self._file_notifier = FileNotifier(watch_dir=watch_dir)
 
     async def send(self, subject: str, body: str, payload: dict) -> None:
         import urllib.request
@@ -76,10 +84,7 @@ class NtfyNotifier:
         await asyncio.to_thread(urllib.request.urlopen, req)
 
     async def wait_for_approval(self, notification_id: str) -> bool:
-        raise NotImplementedError(
-            "NtfyNotifier requires an out-of-band approval mechanism "
-            "(e.g., pair with FileNotifier for polling)"
-        )
+        return await self._file_notifier.wait_for_approval(notification_id)
 
 
 class WebhookNotifier:
@@ -127,7 +132,7 @@ def get_notifier(
     notify_watch_dir: str = "hitl/",
 ) -> "NotifierProtocol":
     if notifier_type == "ntfy":
-        return NtfyNotifier(url=notify_url)
+        return NtfyNotifier(url=notify_url, watch_dir=notify_watch_dir)
     if notifier_type == "webhook":
         return WebhookNotifier(url=notify_url)
     return FileNotifier(watch_dir=notify_watch_dir)

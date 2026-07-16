@@ -162,6 +162,42 @@ if $WRITE_CONFIG; then
     ask "Log confidence threshold (0–1)"    "0.7"                           LOG_THRESHOLD
     ask "Self-healing enabled"              "true"                          SELF_HEALING
 
+    echo
+    echo "  ── HITL (human-in-the-loop) notifications ──"
+    echo "  When Pueo encounters a CRITICAL issue it pauses and waits for your"
+    echo "  approval before writing to Home Assistant. Choose how it notifies you."
+    echo
+    echo "  Options:"
+    echo "    file    — writes a JSON file to a local directory; you approve by"
+    echo "              touching <id>.approved in that directory (good for testing)"
+    echo "    ntfy    — sends a push notification to ntfy.sh or a self-hosted"
+    echo "              instance; you approve by touching the approval file via SSH"
+    echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
+    echo
+    ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
+
+    NOTIFY_URL=""
+    NOTIFY_WATCH_DIR="hitl/"
+
+    if [[ "$NOTIFIER_TYPE" == "ntfy" ]]; then
+        echo
+        echo "  ntfy topic URL format: https://ntfy.sh/<your-topic>"
+        echo "  Pick a unique topic name — anyone who knows it can see your alerts."
+        echo "  For self-hosted ntfy use: https://ntfy.example.com/<topic>"
+        ask "ntfy topic URL"  "https://ntfy.sh/pueo-$(whoami)"  NOTIFY_URL
+        ask "Approval watch directory"  "hitl/"  NOTIFY_WATCH_DIR
+        echo
+        echo "  To approve a pending repair (from this machine or via SSH):"
+        echo "    touch hitl/<notification-id>.approved"
+        echo "  To reject:"
+        echo "    touch hitl/<notification-id>.rejected"
+    elif [[ "$NOTIFIER_TYPE" == "webhook" ]]; then
+        ask "Webhook URL"  ""  NOTIFY_URL
+    else
+        ask "Approval watch directory"  "hitl/"  NOTIFY_WATCH_DIR
+        NOTIFIER_TYPE="file"
+    fi
+
     cat > config.yaml <<EOF
 home_assistant:
   host: "${HA_HOST}"
@@ -178,6 +214,9 @@ agent:
   db_path: "${DB_PATH}"
   log_confidence_threshold: ${LOG_THRESHOLD}
   self_healing_enabled: ${SELF_HEALING}
+  notifier: "${NOTIFIER_TYPE}"
+  notify_url: "${NOTIFY_URL}"
+  notify_watch_dir: "${NOTIFY_WATCH_DIR}"
 EOF
     ok "config.yaml written"
 

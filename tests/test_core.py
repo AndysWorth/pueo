@@ -2033,11 +2033,27 @@ class TestGetNotifier:
         n = get_notifier("file", notify_watch_dir=str(tmp_path))
         assert isinstance(n, FileNotifier)
 
-    def test_ntfy_returns_ntfy_notifier(self):
+    def test_ntfy_returns_ntfy_notifier(self, tmp_path):
         from utils.notify import NtfyNotifier, get_notifier
 
-        n = get_notifier("ntfy", notify_url="http://ntfy.sh/topic")
+        n = get_notifier("ntfy", notify_url="https://ntfy.sh/topic", notify_watch_dir=str(tmp_path))
         assert isinstance(n, NtfyNotifier)
+
+    def test_ntfy_wait_for_approval_delegates_to_file(self, tmp_path):
+        from utils.notify import NtfyNotifier
+
+        n = NtfyNotifier(url="https://ntfy.sh/topic", watch_dir=str(tmp_path))
+        nid = "test-ntfy-approval"
+        (tmp_path / f"{nid}.approved").write_text("")
+        assert asyncio.run(n.wait_for_approval(nid)) is True
+
+    def test_ntfy_wait_for_rejection_delegates_to_file(self, tmp_path):
+        from utils.notify import NtfyNotifier
+
+        n = NtfyNotifier(url="https://ntfy.sh/topic", watch_dir=str(tmp_path))
+        nid = "test-ntfy-rejection"
+        (tmp_path / f"{nid}.rejected").write_text("")
+        assert asyncio.run(n.wait_for_approval(nid)) is False
 
     def test_webhook_returns_webhook_notifier(self):
         from utils.notify import WebhookNotifier, get_notifier
