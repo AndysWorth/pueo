@@ -29,7 +29,7 @@ pytest tests/test_core.py::TestConfigDefaults::test_loads_values_from_yaml  # si
 black --check .
 flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 mypy --ignore-missing-imports .
-bandit -r . -x ./tests
+bandit -r . -x ./tests,./.venv
 ```
 
 ## Architecture

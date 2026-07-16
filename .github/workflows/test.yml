@@ -54,7 +54,7 @@ jobs:
     # 7. Scan codebase for security vulnerabilities (e.g., hardcoded tokens)
     - name: Security Scan (Bandit)
       run: |
-        bandit -r . -x ./tests
+        bandit -r . -x ./tests,./.venv
 
     # 8. Run unit test suite with coverage reporting
     - name: Run Tests with Pytest
