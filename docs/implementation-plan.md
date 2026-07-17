@@ -157,9 +157,97 @@ Pick up any incomplete item at the start of a new session by reading this file.
 
 ---
 
-## Phase 4 — Agent Quality (3–4 sessions)
+## Phase 4 — NetAlertX Integration (5–7 sessions)
 
-### 10. Evals with Synthetic HA Scenarios ✅ TODO
+> **Version targets** (re-verify at session start — both release monthly):
+> - NetAlertX **v26.7.1** (2026-07-01)
+> - Home Assistant **2026.7.2** (2026-07-10)
+>
+> **Version-specific constraints:**
+> - Use only current REST API endpoints — `/API_OLD` is being removed in the next NetAlertX release
+> - Log path is `app.log` — `stdout.log` was removed in v26.7.1
+> - Webhook payload fields are camelCase (`eveMac`, `eveIp`, `eveDateTime`, `eveEventType`, `devVendor`, `devComments`) — canonical since v26.4.6
+> - Docker volume path is `/data` (not `/app`) — baseline since v25.11.29
+> - HA MQTT integration must be UI-based only — `mqtt:` in `configuration.yaml` blocks auto-discovery on current HA
+
+### 10. NetAlertX Foundation ✅ TODO
+**Problem:** Pueo has no awareness of NetAlertX. Before monitoring or healing can happen, Pueo needs to detect how NetAlertX is deployed and establish an authenticated API connection.
+
+**Build:**
+- `netalertx/__init__.py` — package init
+- `netalertx/detector.py` — probe HA Supervisor add-on API and Docker CLI over SSH; return `DeploymentInfo(mode, container_name, api_base_url, log_path, version)`; version parsed from `/about` endpoint
+- `netalertx/api_client.py` — async HTTP client via `httpx`; Bearer token auth; methods: `get_devices()`, `get_events()`, `get_metrics()`, `get_settings()`, `trigger_scan()`, `get_about()`
+
+**Config keys to add:** `netalertx.enabled` (default false), `netalertx.mode` (`diagnose|auto_fix|autonomous`, default `diagnose`), `netalertx.deployment` (`auto|addon|docker`, default `auto`), `netalertx.host` (default: same as HA host), `netalertx.api_port` (default 20212), `netalertx.api_token`, `netalertx.ssh_host`, `netalertx.ssh_user`, `netalertx.ssh_key_path`
+
+**Modify `main.py`:** Add `--mode netalertx` dispatch to `netalertx_monitor.py`
+
+**New dependencies:** `httpx` → `requirements.txt`
+
+**Done when:** `python main.py --mode netalertx` connects to a running NetAlertX instance, auto-detects add-on vs. Docker deployment, fetches device list via API, and logs a structured health summary; `TestNetAlertXDetector` and `TestNetAlertXAPIClient` pass using `httpx.MockTransport`.
+
+---
+
+### 11. NetAlertX Monitoring ✅ TODO
+**Problem:** With API access established, Pueo needs continuous visibility into scan health, device presence, and log errors — not just on-demand polling.
+
+**Build:**
+- `netalertx/log_monitor.py` — SSH tail of `app.log` (path from `DeploymentInfo`); same `CRITICAL_LOG_PATTERN` + Ollama `LogEvaluation` triage loop as `ha_log_monitor.py`; reconnects automatically on stream failure via `@async_retry`
+- `netalertx/mqtt_subscriber.py` — `aiomqtt` async subscriber on `system-sensors/binary_sensor/+/state` and `system-sensors/sensor/+/state`; feeds device presence events into `HealthReport`; graceful reconnect
+- `netalertx/health.py` — polls API every N minutes and consumes MQTT events; produces `HealthReport(last_scan_age_minutes, device_counts, mqtt_active, anomalies, netalertx_version)`
+
+**Config keys to add:** `netalertx.max_scan_age_minutes` (default 20), `netalertx.mqtt_subscribe` (default true), `netalertx.log_container_name` (default `netalertx`)
+
+**New dependencies:** `aiomqtt` → `requirements.txt`
+
+**Done when:** `HealthReport` is produced on a regular poll cycle; a scan older than `max_scan_age_minutes` appears as an anomaly; MQTT presence events update device state in real time; tests use `FakeSSHClient`, `FakeLLMClient`, and a mock MQTT broker fixture.
+
+---
+
+### 12. NetAlertX AI Diagnosis ✅ TODO
+**Problem:** Raw anomalies from the health monitor need to be triaged — not every issue warrants action, and the right fix depends on root cause (networking, MQTT, version change, HA config conflict, etc.).
+
+**Build:**
+- `prompts/diagnose_netalertx.md` — system prompt encoding v26.7.1 knowledge: API shape, known failure modes (ARP/host networking, MQTT `configuration.yaml` conflict, VLAN interface spec, iOS false-positives, `devFlapping`/`devIsSleeping` semantics, `app.log` path)
+- `prompts/triage_netalertx_log.md` — log-line triage prompt
+- `NetAlertXDiagnostic` Pydantic schema — fields: `issue`, `severity`, `category` (`networking|mqtt|database|version|ha_integration`), `recommended_fix`, `affected_netalertx_version`
+- `netalertx/config_validator.py` — validate `app.conf` required keys; check `LOADED_PLUGINS` contains `MQTT` and `ARPSCAN`; scan HA `configuration.yaml` for `mqtt:` key conflict; validate webhook automation YAML field names are camelCase (required since v26.4.6)
+
+**Done when:** A simulated "zero devices discovered" anomaly produces a `NetAlertXDiagnostic` with `category=networking` and a recommended fix referencing `--network=host`; an `mqtt:` key in HA `configuration.yaml` is flagged by `config_validator`; all tests use `FakeLLMClient`.
+
+---
+
+### 13. NetAlertX Mode-Gated Healing ✅ TODO
+**Problem:** Diagnosis alone doesn't fix anything. Pueo needs to act on findings, with the level of autonomy controlled by `netalertx.mode`.
+
+**Build:**
+- `netalertx/healer.py` — three modes:
+  - `diagnose`: log structured finding + send HITL notification via existing `NtfyNotifier`/`FileNotifier`
+  - `auto_fix`: SFTP rewrite of `app.conf` (sandbox→verify→swap pattern matching `ha_agent_sandbox_engine.py`); fix HA automation YAML webhook field names to camelCase; remove `mqtt:` YAML conflict from `configuration.yaml` (triggers existing HA sandbox engine)
+  - `autonomous`: all of `auto_fix`, plus `docker restart <container>` or add-on restart via HA Supervisor REST API; API-triggered rescan after restart
+- Version change detection — persist last seen NetAlertX version in Pueo's SQLite via a new `_migrate_vN()` migration adding a `netalertx_state` table; on version bump, run breaking-change check and send HITL notification before any automated action
+
+**Done when:** In `diagnose` mode a config problem produces a HITL notification and no file changes; in `auto_fix` mode `app.conf` is rewritten and verified before applying; in `autonomous` mode a repeated scan failure triggers a container restart followed by a rescan; all three modes are tested with `FakeSSHClient` and `FakeNotifier`.
+
+---
+
+### 14. NetAlertX HA Integration Maintenance ✅ TODO
+**Problem:** The link between NetAlertX and HA can silently degrade — webhook automations drift from the current payload schema, MQTT entities stop registering, or DB tables grow until queries slow to a crawl.
+
+**Build (extend `netalertx/config_validator.py` and `netalertx/healer.py`):**
+- Scan all HA automation YAML files for NetAlertX webhook automations; validate payload field names match detected NetAlertX version schema (camelCase for v26.4.6+); report and fix mismatches in `auto_fix`/`autonomous` modes
+- Cross-reference NetAlertX API device list vs. MQTT entities visible in HA; alert on divergence (devices in API not registered as MQTT entities)
+- Poll API metrics for `Plugins_History` and `Events` row counts; alert when above `netalertx.max_db_history_rows`; in `autonomous` mode trigger `DBCLNP` cleanup plugin via API
+
+**Config keys to add:** `netalertx.max_db_history_rows` (default 100000)
+
+**Done when:** A webhook automation using old snake_case field names is detected and flagged; a device present in the API but absent from HA MQTT entities produces an anomaly; a table exceeding `max_db_history_rows` triggers a cleanup action in `autonomous` mode.
+
+---
+
+## Phase 5 — Agent Quality (3–4 sessions)
+
+### 15. Evals with Synthetic HA Scenarios ✅ TODO
 **Problem:** There is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code; evals verify agent intelligence.
 
 **Build:**
