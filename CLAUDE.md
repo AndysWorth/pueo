@@ -161,7 +161,7 @@ Every code change follows this procedure in order. Never commit directly to `mai
 
 ## Implementation Plan
 
-Ordered backlog of agentic engineering practices to implement. Pick up the next incomplete item at the start of a new session.
+Ordered backlog of agentic engineering practices to implement. The index below loads automatically; full item specs live in `docs/plan/` and should be read before starting any item.
 
 @docs/implementation-plan.md
 
