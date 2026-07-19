@@ -224,6 +224,8 @@ if $WRITE_CONFIG; then
     echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
     echo
     ask "Require human approval before every repair? (true/false)"  "false"  HITL_ALWAYS
+    ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
+    ask "HITL approval timeout in minutes"  "60"  HITL_TIMEOUT_MINUTES
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
@@ -295,6 +297,8 @@ agent:
   log_confidence_threshold: ${LOG_THRESHOLD}
   self_healing_enabled: ${SELF_HEALING}
   hitl_always: ${HITL_ALWAYS}
+  autonomy_level: ${AUTONOMY_LEVEL}
+  hitl_timeout_minutes: ${HITL_TIMEOUT_MINUTES}
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"

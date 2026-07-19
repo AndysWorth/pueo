@@ -20,12 +20,19 @@ from config import (
     REPAIR_COOLDOWN_SECONDS,
     MAX_REPAIRS_PER_HOUR,
     MAX_PROMPT_TOKENS,
+    NOTIFIER,
+    NOTIFY_URL,
+    NOTIFY_WATCH_DIR,
+    AUTONOMY_LEVEL,
+    HITL_TIMEOUT_MINUTES,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, sliding_window_lines
 from utils.logging import get_logger, setup_logging, set_correlation_id
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
+from utils.autonomy import AutonomyGate, RiskLevel
+from utils.notify import NotifierProtocol, get_notifier
 from utils.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
@@ -102,9 +109,13 @@ async def analyze_log_line_with_ai(
 async def tail_remote_log_stream(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
+    gate: Optional[AutonomyGate] = None,
+    notifier: Optional[NotifierProtocol] = None,
 ) -> None:
     """Streams live HA logs via 'ha core logs --follow' over SSH."""
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    _gate = gate or AutonomyGate(AUTONOMY_LEVEL, HITL_TIMEOUT_MINUTES)
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     log.info("log_stream_start", host=HA_HOST)
 
     tail_command = "ha core logs --follow"
@@ -145,6 +156,20 @@ async def tail_remote_log_stream(
                     except RateLimitExceeded:
                         log.warning("rate_limit_exceeded")
                         continue
+                    if not _gate.should_auto_execute(RiskLevel.HIGH):
+                        log.info(
+                            "autonomy_gate_blocked",
+                            cause=evaluation.root_cause_summary,
+                        )
+                        await _notifier.send(
+                            subject="Pueo: Actionable log event — approval required",
+                            body=evaluation.root_cause_summary,
+                            payload={
+                                "cause": evaluation.root_cause_summary,
+                                "confidence": evaluation.confidence_score,
+                            },
+                        )
+                        continue
                     log.warning("repair_triggered")
                     await trigger_remediation_pipeline()
                     log.info(
@@ -179,9 +204,16 @@ async def trigger_remediation_pipeline() -> None:
 async def main(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
+    gate: Optional[AutonomyGate] = None,
+    notifier: Optional[NotifierProtocol] = None,
 ) -> None:
     setup_logging()
-    await tail_remote_log_stream(ssh_client=ssh_client, llm_client=llm_client)
+    await tail_remote_log_stream(
+        ssh_client=ssh_client,
+        llm_client=llm_client,
+        gate=gate,
+        notifier=notifier,
+    )
 
 
 if __name__ == "__main__":

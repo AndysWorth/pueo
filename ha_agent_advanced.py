@@ -63,7 +63,8 @@ class DiagnosticsReport(BaseModel):
 # LOCAL MEMORY LAYER (SQLite)
 # ==========================================
 def _migrate_v1(cursor: sqlite3.Cursor) -> None:
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS state_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER,
@@ -72,15 +73,18 @@ def _migrate_v1(cursor: sqlite3.Cursor) -> None:
             issues_found TEXT,
             action_taken TEXT
         )
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS backup_registry (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER,
             backup_slug TEXT,
             status TEXT
         )
-    """)
+    """
+    )
 
 
 def _migrate_v2(cursor: sqlite3.Cursor) -> None:

@@ -423,19 +423,23 @@ class TestAdvancedDB:
 
         # Simulate a database that existed before migration versioning was added
         with sqlite3.connect(db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """)
+            """
+            )
             conn.commit()
 
         ha_agent_advanced.init_local_database()
@@ -590,19 +594,23 @@ class TestSandboxDB:
         import ha_agent_sandbox_engine
 
         with sqlite3.connect(db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """)
+            """
+            )
             conn.commit()
 
         ha_agent_sandbox_engine.init_local_database()
@@ -1836,6 +1844,12 @@ class TestSandboxPipeline:
         )
         return FakeLLMClient(r.model_dump_json())
 
+    @pytest.fixture
+    def gate_auto(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
     def test_valid_config_no_backup_taken(self, ssh_ok, llm_valid, db_path):
         import ha_agent_sandbox_engine
 
@@ -1856,22 +1870,28 @@ class TestSandboxPipeline:
             count = conn.execute("SELECT COUNT(*) FROM state_history").fetchone()[0]
         assert count == 1
 
-    def test_repair_path_writes_config(self, ssh_ok, llm_with_fix, db_path):
+    def test_repair_path_writes_config(self, ssh_ok, llm_with_fix, db_path, gate_auto):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_with_fix)
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
+            )
         )
         assert "/config/configuration.yaml" in ssh_ok.written_files
         assert ssh_ok.written_files["/config/configuration.yaml"] == _FIXED_CONFIG
 
-    def test_repair_path_backup_recorded(self, ssh_ok, llm_with_fix, db_path):
+    def test_repair_path_backup_recorded(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_with_fix)
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
+            )
         )
         with sqlite3.connect(db_path) as conn:
             slug = conn.execute("SELECT backup_slug FROM backup_registry").fetchone()
@@ -1879,14 +1899,14 @@ class TestSandboxPipeline:
         assert slug[0] == "sbx-slug-1"
 
     def test_sandbox_fail_aborts_atomic_swap(
-        self, ssh_sandbox_fail, llm_with_fix, db_path
+        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto
     ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix
+                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix, gate=gate_auto
             )
         )
         assert "/config/configuration.yaml" not in ssh_sandbox_fail.written_files
@@ -1912,13 +1932,15 @@ class TestSandboxPipeline:
         assert action is not None
         assert "rejected" in action[0].lower()
 
-    def test_sandbox_fail_records_state(self, ssh_sandbox_fail, llm_with_fix, db_path):
+    def test_sandbox_fail_records_state(
+        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix
+                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix, gate=gate_auto
             )
         )
         with sqlite3.connect(db_path) as conn:
@@ -1926,12 +1948,16 @@ class TestSandboxPipeline:
         assert action is not None
         assert "aborted" in action[0].lower()
 
-    def test_repair_path_llm_called_once(self, ssh_ok, llm_with_fix, db_path):
+    def test_repair_path_llm_called_once(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_with_fix)
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
+            )
         )
         assert len(llm_with_fix.calls) == 1
 
@@ -2342,14 +2368,16 @@ class TestHitlPipelineGate:
 
     def test_critical_issue_sends_notification(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
         assert len(notifier.sent) == 1
@@ -2358,57 +2386,65 @@ class TestHitlPipelineGate:
         self, ssh_ok, llm_critical, db_path
     ):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
         assert "CRITICAL" in notifier.sent[0]["subject"]
 
     def test_approval_proceeds_to_backup(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
         assert any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
     def test_rejection_aborts_backup(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=False)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
         assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
     def test_rejection_records_state(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
         import sqlite3 as sqlite3_mod
 
         notifier = FakeNotifier(approve=False)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
         with sqlite3_mod.connect(db_path) as conn:
@@ -2418,14 +2454,16 @@ class TestHitlPipelineGate:
 
     def test_low_severity_no_notification_sent(self, ssh_ok, llm_low_fix, db_path):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=True)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_low_fix, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_low_fix, notifier=notifier, gate=gate
             )
         )
         assert len(notifier.sent) == 0
@@ -2434,14 +2472,422 @@ class TestHitlPipelineGate:
         self, ssh_ok, llm_low_fix, db_path
     ):
         from utils.notify import FakeNotifier
+        from utils.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=True)
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_low_fix, notifier=notifier
+                ssh_client=ssh_ok, llm_client=llm_low_fix, notifier=notifier, gate=gate
             )
         )
         assert any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
+
+
+# ── AutonomyGate config keys ──────────────────────────────────────────────────────
+
+
+class TestAutonomyConfigKeys:
+    def test_autonomy_level_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 2
+
+    def test_autonomy_level_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"autonomy_level": 4}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 4
+
+    def test_hitl_timeout_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HITL_TIMEOUT_MINUTES == 60
+
+    def test_hitl_timeout_minutes_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"hitl_timeout_minutes": 30}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HITL_TIMEOUT_MINUTES == 30
+
+    def test_netalertx_mode_diagnose_maps_to_level1(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"netalertx": {"mode": "diagnose"}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 1
+
+    def test_netalertx_mode_auto_fix_maps_to_level3(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"netalertx": {"mode": "auto_fix"}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 3
+
+    def test_netalertx_mode_autonomous_maps_to_level4(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"netalertx": {"mode": "autonomous"}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 4
+
+    def test_agent_autonomy_level_takes_precedence_over_netalertx_mode(
+        self, isolated_config
+    ):
+        isolated_config.write_text(
+            yaml.dump(
+                {"agent": {"autonomy_level": 3}, "netalertx": {"mode": "diagnose"}}
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTONOMY_LEVEL == 3
+
+
+# ── AutonomyGate ──────────────────────────────────────────────────────────────────
+
+
+class TestAutonomyGate:
+    # ── should_auto_execute: 4 levels × 4 risks ──────────────────────────────────
+
+    def test_level1_never_auto_executes(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=1)
+        for risk in RiskLevel:
+            assert gate.should_auto_execute(risk) is False
+
+    def test_level2_never_auto_executes(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=2)
+        for risk in RiskLevel:
+            assert gate.should_auto_execute(risk) is False
+
+    def test_level3_auto_executes_low_only(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=3)
+        assert gate.should_auto_execute(RiskLevel.LOW) is True
+        assert gate.should_auto_execute(RiskLevel.MEDIUM) is False
+        assert gate.should_auto_execute(RiskLevel.HIGH) is False
+        assert gate.should_auto_execute(RiskLevel.CRITICAL) is False
+
+    def test_level4_auto_executes_except_critical(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=4)
+        assert gate.should_auto_execute(RiskLevel.LOW) is True
+        assert gate.should_auto_execute(RiskLevel.MEDIUM) is True
+        assert gate.should_auto_execute(RiskLevel.HIGH) is True
+        assert gate.should_auto_execute(RiskLevel.CRITICAL) is False
+
+    # ── should_ask_preference ────────────────────────────────────────────────────
+
+    def test_levels_1_2_3_ask_preference(self):
+        from utils.autonomy import AutonomyGate
+
+        for level in [1, 2, 3]:
+            assert AutonomyGate(level=level).should_ask_preference("context") is True
+
+    def test_level4_does_not_ask_preference(self):
+        from utils.autonomy import AutonomyGate
+
+        assert AutonomyGate(level=4).should_ask_preference("context") is False
+
+    # ── require_approval short-circuits ─────────────────────────────────────────
+
+    def test_level1_rejects_without_notifying_for_all_risks(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=1)
+        for risk in RiskLevel:
+            notifier = FakeNotifier(approve=True)
+            result = asyncio.run(
+                gate.require_approval(
+                    "s", "b", {"notification_id": "x"}, notifier, risk
+                )
+            )
+            assert result is False
+            assert len(notifier.sent) == 0
+
+    def test_level4_approves_low_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.LOW
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level4_approves_medium_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.MEDIUM
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level4_approves_high_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.HIGH
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level4_notifies_for_critical_and_approves(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=True)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "test-id"}, notifier, RiskLevel.CRITICAL
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 1
+
+    def test_level4_notifies_for_critical_and_rejects(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "test-id"}, notifier, RiskLevel.CRITICAL
+            )
+        )
+        assert result is False
+        assert len(notifier.sent) == 1
+
+    def test_level3_approves_low_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.LOW
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level3_notifies_for_medium(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.MEDIUM
+            )
+        )
+        assert len(notifier.sent) == 1
+
+    def test_level3_notifies_for_high(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.HIGH
+            )
+        )
+        assert len(notifier.sent) == 1
+
+    def test_level3_notifies_for_critical(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.CRITICAL
+            )
+        )
+        assert len(notifier.sent) == 1
+
+    def test_level2_notifies_for_all_risks(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=2)
+        for risk in RiskLevel:
+            notifier = FakeNotifier(approve=True)
+            asyncio.run(
+                gate.require_approval(
+                    "s", "b", {"notification_id": "x"}, notifier, risk
+                )
+            )
+            assert len(notifier.sent) == 1, f"level 2 should notify for {risk.name}"
+
+    def test_require_approval_timeout_returns_false(self, monkeypatch):
+        import asyncio as asyncio_mod
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        async def immediate_timeout(coro, timeout):
+            coro.close()
+            raise asyncio_mod.TimeoutError()
+
+        monkeypatch.setattr(asyncio_mod, "wait_for", immediate_timeout)
+        gate = AutonomyGate(level=2, timeout_minutes=60)
+        notifier = FakeNotifier(approve=True)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.HIGH
+            )
+        )
+        assert result is False
+
+    # ── done criteria — level 1: no SSH writes ───────────────────────────────────
+
+    def test_level1_sandbox_pipeline_produces_no_ssh_writes(self):
+        from utils.autonomy import AutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from ha_agent_sandbox_engine import DiagnosticsReport
+        import ha_agent_sandbox_engine
+
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
+            command_results={
+                "ha backup new": (0, "Slug: s1\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                "mkdir": (0, "", ""),
+                "mv": (0, "", ""),
+                "cp": (0, "", ""),
+            },
+        )
+        llm = FakeLLMClient(
+            DiagnosticsReport(
+                is_valid=False,
+                severity="WARNING",
+                identified_issues=["deprecated key"],
+                recommended_fix_yaml=_FIXED_CONFIG,
+            ).model_dump_json()
+        )
+        gate = AutonomyGate(level=1)
+        notifier = FakeNotifier(approve=True)
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+        assert ssh.written_files == {}
+
+    # ── done criteria — level 4: full pipeline for WARNING, pauses for CRITICAL ──
+
+    def test_level4_warning_severity_runs_without_hitl(self):
+        from utils.autonomy import AutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from ha_agent_sandbox_engine import DiagnosticsReport
+        import ha_agent_sandbox_engine
+
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
+            command_results={
+                "ha backup new": (0, "Slug: s1\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                "mkdir": (0, "", ""),
+                "mv": (0, "", ""),
+                "cp": (0, "", ""),
+            },
+        )
+        llm = FakeLLMClient(
+            DiagnosticsReport(
+                is_valid=False,
+                severity="WARNING",
+                identified_issues=["deprecated key"],
+                recommended_fix_yaml=_FIXED_CONFIG,
+            ).model_dump_json()
+        )
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=True)
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+        assert len(notifier.sent) == 0
+        assert any("ha backup new" in cmd for cmd in ssh.commands_run)
+
+    def test_level4_critical_severity_pauses_for_approval(self):
+        from utils.autonomy import AutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from ha_agent_sandbox_engine import DiagnosticsReport
+        import ha_agent_sandbox_engine
+
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
+            command_results={
+                "ha backup new": (0, "Slug: s1\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                "mkdir": (0, "", ""),
+                "mv": (0, "", ""),
+                "cp": (0, "", ""),
+            },
+        )
+        llm = FakeLLMClient(
+            DiagnosticsReport(
+                is_valid=False,
+                severity="CRITICAL",
+                identified_issues=["critical error"],
+                recommended_fix_yaml=_FIXED_CONFIG,
+            ).model_dump_json()
+        )
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=True)
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+        assert len(notifier.sent) == 1

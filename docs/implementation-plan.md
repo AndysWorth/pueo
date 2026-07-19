@@ -8,29 +8,29 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 
 ## Status
 
-| # | Item | Status |
-|---|------|--------|
-| 1 | Prompt Management | ✅ Done (2026-07-15) |
-| 2 | Retry with Exponential Backoff | ✅ Done (2026-07-15) |
-| 3 | Rate Limiting and Debounce | ✅ Done (2026-07-15) |
-| 4 | SQLite Migration Strategy | ✅ Done (2026-07-15) |
-| 5 | Structured Logging + Correlation IDs | ✅ Done (2026-07-15) |
-| 6 | Context Window / Token Management | ✅ Done (2026-07-15) |
-| 7 | Agent Output Content Validation | ✅ Done (2026-07-15) |
-| 8 | Dependency Injection / Protocol Interfaces | ✅ Done (2026-07-15) |
-| 9 | HITL Notification Infrastructure | ✅ Done (2026-07-15) |
-| 9.5 | Unified Autonomy Level | ✅ TODO |
-| 10 | NetAlertX Foundation — Package, Config, and API Client | ✅ TODO |
-| 11 | NetAlertX Installer — Steps 1–4 | ✅ TODO |
-| 12 | NetAlertX Installer — Steps 5–8 | ✅ TODO |
-| 13 | NetAlertX Device Name Sync — HA Name Reading and Safe Writes | ✅ TODO |
-| 14 | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ TODO |
-| 15 | NetAlertX Log Monitoring | ✅ TODO |
-| 16 | NetAlertX Health Polling and MQTT | ✅ TODO |
-| 17 | NetAlertX AI Diagnosis | ✅ TODO |
-| 18 | NetAlertX Autonomy-Gated Healing | ✅ TODO |
-| 19 | NetAlertX HA Integration Maintenance | ✅ TODO |
-| 20 | Evals with Synthetic HA Scenarios | ✅ TODO |
+| #   | Item                                                                 | Status              |
+| --- | -------------------------------------------------------------------- | ------------------- |
+| 1   | Prompt Management                                                    | ✅ Done (2026-07-15) |
+| 2   | Retry with Exponential Backoff                                       | ✅ Done (2026-07-15) |
+| 3   | Rate Limiting and Debounce                                           | ✅ Done (2026-07-15) |
+| 4   | SQLite Migration Strategy                                            | ✅ Done (2026-07-15) |
+| 5   | Structured Logging + Correlation IDs                                 | ✅ Done (2026-07-15) |
+| 6   | Context Window / Token Management                                    | ✅ Done (2026-07-15) |
+| 7   | Agent Output Content Validation                                      | ✅ Done (2026-07-15) |
+| 8   | Dependency Injection / Protocol Interfaces                           | ✅ Done (2026-07-15) |
+| 9   | HITL Notification Infrastructure                                     | ✅ Done (2026-07-15) |
+| 9.5 | Unified Autonomy Level                                               | ✅ Done (2026-07-19) |
+| 10  | NetAlertX Foundation — Package, Config, and API Client               | ✅ TODO              |
+| 11  | NetAlertX Installer — Steps 1–4                                      | ✅ TODO              |
+| 12  | NetAlertX Installer — Steps 5–8                                      | ✅ TODO              |
+| 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ TODO              |
+| 14  | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ TODO              |
+| 15  | NetAlertX Log Monitoring                                             | ✅ TODO              |
+| 16  | NetAlertX Health Polling and MQTT                                    | ✅ TODO              |
+| 17  | NetAlertX AI Diagnosis                                               | ✅ TODO              |
+| 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ TODO              |
+| 19  | NetAlertX HA Integration Maintenance                                 | ✅ TODO              |
+| 20  | Evals with Synthetic HA Scenarios                                    | ✅ TODO              |
 
 ---
 
