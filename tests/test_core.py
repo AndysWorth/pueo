@@ -3335,3 +3335,503 @@ class TestNetAlertXMigration:
         with sqlite3.connect(db) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         assert version == 3
+
+
+# ── netalertx/installer.py (steps 1–4) ───────────────────────────────────────
+
+
+def _make_installer_db(tmp_path, monkeypatch):
+    """Create and migrate a test SQLite DB, patch DB_PATH in installer module."""
+    import ha_agent_advanced
+    import netalertx.installer as inst
+
+    db = tmp_path / "installer_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    monkeypatch.setattr(inst, "DB_PATH", str(db))
+    return str(db)
+
+
+class TestNetAlertXInstallerSteps1to4:
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _make_supervisor_ssh(self):
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "supervisor_info: ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (
+                    0,
+                    "default via 192.168.1.1 dev eth0 proto dhcp",
+                    "",
+                ),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/jokob-sk/NetAlertX",
+                    "",
+                ),
+                "ha store addons": (
+                    0,
+                    "slug: jokob-sk_NetAlertX\nrepository: jokob-sk/NetAlertX",
+                    "",
+                ),
+            }
+        )
+
+    def _make_docker_ssh(self):
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            command_results={
+                "ha supervisor info": (1, "", "not found"),
+                "docker info": (0, "docker info ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (
+                    0,
+                    "default via 10.0.0.1 dev wlan0 proto dhcp",
+                    "",
+                ),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/jokob-sk/NetAlertX",
+                    "",
+                ),
+                "ha store addons": (0, "", ""),
+            }
+        )
+
+    def _notifier(self, approve: bool = True):
+        from utils.notify import FakeNotifier
+
+        return FakeNotifier(approve=approve)
+
+    def _gate_auto(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
+    def _gate_ask(self):
+        """Gate that always requests HITL approval (outcome determined by notifier)."""
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=False)
+
+    # ── step 1: detect deployment ─────────────────────────────────────────────
+
+    def test_step1_supervisor_sets_mode_addon(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        state = asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(),
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+            )
+        )
+        assert state == "ADDON_REPO_ADDED"
+        _, details = _read_install_state(db)
+        assert details["mode"] == "addon"
+
+    def test_step1_docker_fallback_requires_approval(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "wlan0")
+
+        gate = self._gate_ask()
+        state = asyncio.run(
+            run_steps_1_to_4(
+                self._make_docker_ssh(), gate, self._notifier(approve=True), db_path=db
+            )
+        )
+        assert state == "ADDON_REPO_ADDED"
+        _, details = _read_install_state(db)
+        assert details["mode"] == "docker"
+        assert any(
+            c["subject"] == "NetAlertX installer: Docker fallback"
+            for c in gate.require_approval_calls
+        )
+
+    def test_step1_docker_fallback_rejection_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        state = asyncio.run(
+            run_steps_1_to_4(
+                self._make_docker_ssh(),
+                self._gate_ask(),
+                self._notifier(approve=False),
+                db_path=db,
+            )
+        )
+        assert state == "NOT_INSTALLED"
+
+    def test_step1_no_target_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (1, "", ""),
+                "docker info": (1, "", ""),
+            }
+        )
+        gate = self._gate_auto()
+        state = asyncio.run(run_steps_1_to_4(ssh, gate, self._notifier(), db_path=db))
+        assert state == "NOT_INSTALLED"
+        # CRITICAL approval requested even though auto_execute_result=True
+        # (level 4 still notifies on CRITICAL, but gate returns True — state won't advance
+        #  because no mode was set and step returns False)
+        assert any(
+            "no deployment target" in c["subject"] for c in gate.require_approval_calls
+        )
+
+    # ── step 2: mosquitto ─────────────────────────────────────────────────────
+
+    def test_step2_mosquitto_already_running_skips_install(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        gate = self._gate_auto()
+        asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(), gate, self._notifier(), db_path=db
+            )
+        )
+        # No Mosquitto install approval should have been requested
+        assert not any(
+            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
+        )
+
+    def test_step2_mosquitto_not_installed_requires_approval(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        call_counts: dict[str, int] = {}
+
+        class TrackingSSHClient(FakeSSHClient):
+            async def run(self, command, check=False):  # type: ignore[override]
+                call_counts[command] = call_counts.get(command, 0) + 1
+                # After install+start, polling returns running
+                if (
+                    "ha addons info core_mosquitto" in command
+                    and call_counts.get(command, 0) > 1
+                ):
+                    return 0, "state: running", ""
+                return await super().run(command, check=check)
+
+        ssh = TrackingSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "not found", ""),
+                "ha addons install core_mosquitto": (0, "", ""),
+                "ha addons start core_mosquitto": (0, "", ""),
+                "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/jokob-sk/NetAlertX",
+                    "",
+                ),
+                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+            }
+        )
+        gate = self._gate_ask()
+        asyncio.run(
+            run_steps_1_to_4(ssh, gate, self._notifier(approve=True), db_path=db)
+        )
+        assert any(
+            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
+        )
+
+    def test_step2_mosquitto_install_rejection_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "not found", ""),
+            }
+        )
+        state = asyncio.run(
+            run_steps_1_to_4(
+                ssh, self._gate_ask(), self._notifier(approve=False), db_path=db
+            )
+        )
+        # State advanced to MQTT_INSTALLED (step 1 done) but not MQTT_RUNNING
+        assert state == "MQTT_INSTALLED"
+
+    # ── step 3: interface detection ───────────────────────────────────────────
+
+    def test_step3_single_interface_auto_detected(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "")
+
+        asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(),
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+            )
+        )
+        _, details = _read_install_state(db)
+        assert details["scan_interface"] == "eth0"
+
+    def test_step3_config_interface_overrides_detection(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "br0")
+
+        asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(),
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+            )
+        )
+        _, details = _read_install_state(db)
+        assert details["scan_interface"] == "br0"
+
+    def test_step3_multiple_interfaces_requires_approval(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "")
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (
+                    0,
+                    "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
+                    "",
+                ),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/jokob-sk/NetAlertX",
+                    "",
+                ),
+                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+            }
+        )
+        gate = self._gate_ask()
+        state = asyncio.run(
+            run_steps_1_to_4(ssh, gate, self._notifier(approve=True), db_path=db)
+        )
+        assert state == "ADDON_REPO_ADDED"
+        _, details = _read_install_state(db)
+        assert details["scan_interface"] == "eth0"
+        assert any(
+            "confirm scan interface" in c["subject"]
+            for c in gate.require_approval_calls
+        )
+
+    def test_step3_multiple_interfaces_rejection_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "")
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (
+                    0,
+                    "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
+                    "",
+                ),
+            }
+        )
+        state = asyncio.run(
+            run_steps_1_to_4(
+                ssh, self._gate_ask(), self._notifier(approve=False), db_path=db
+            )
+        )
+        assert state == "MQTT_RUNNING"
+
+    def test_step3_no_interface_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "")
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (0, "no route found", ""),
+            }
+        )
+        state = asyncio.run(
+            run_steps_1_to_4(ssh, self._gate_auto(), self._notifier(), db_path=db)
+        )
+        assert state == "MQTT_RUNNING"
+
+    # ── step 4: add repo + slug ────────────────────────────────────────────────
+
+    def test_step4_repo_already_present_skips_add(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        ssh = self._make_supervisor_ssh()
+        asyncio.run(
+            run_steps_1_to_4(ssh, self._gate_auto(), self._notifier(), db_path=db)
+        )
+
+        add_calls = [c for c in ssh.commands_run if "repositories add" in c]
+        assert len(add_calls) == 0
+
+    def test_step4_repo_add_aborts_if_verify_fails(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_REPOSITORY_URL",
+            "https://github.com/jokob-sk/NetAlertX",
+        )
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
+                # List returns empty both times → add appears to fail
+                "ha store repositories list": (0, "", ""),
+                "ha store repositories add": (0, "", ""),
+                "ha store addons": (0, "", ""),
+            }
+        )
+        gate = self._gate_auto()
+        state = asyncio.run(
+            run_steps_1_to_4(ssh, gate, self._notifier(approve=True), db_path=db)
+        )
+        assert state == "MQTT_RUNNING"
+        assert any(
+            "repository add failed" in c["subject"] for c in gate.require_approval_calls
+        )
+
+    def test_step4_slug_resolved_from_store(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(),
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+            )
+        )
+        _, details = _read_install_state(db)
+        assert details.get("addon_slug") == "jokob-sk_NetAlertX"
+
+    def test_step4_slug_from_config_takes_precedence(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "my_custom_slug"
+        )
+
+        asyncio.run(
+            run_steps_1_to_4(
+                self._make_supervisor_ssh(),
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+            )
+        )
+        _, details = _read_install_state(db)
+        assert details["addon_slug"] == "my_custom_slug"
+
+    # ── idempotency ────────────────────────────────────────────────────────────
+
+    def test_second_run_is_noop_at_addon_repo_added(self, tmp_path, monkeypatch):
+        import asyncio
+        from netalertx.installer import run_steps_1_to_4
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        ssh = self._make_supervisor_ssh()
+        asyncio.run(
+            run_steps_1_to_4(ssh, self._gate_auto(), self._notifier(), db_path=db)
+        )
+
+        # Second run with a fresh SSH client tracking commands
+        ssh2 = self._make_supervisor_ssh()
+        asyncio.run(
+            run_steps_1_to_4(ssh2, self._gate_auto(), self._notifier(), db_path=db)
+        )
+
+        # On second run no commands should have been executed (all steps skipped)
+        assert len(ssh2.commands_run) == 0
+
+    def test_parse_slug_from_store_finds_slug(self):
+        from netalertx.installer import _parse_slug_from_store
+
+        output = (
+            "- name: NetAlertX\n"
+            "  slug: jokob-sk_NetAlertX\n"
+            "  repository: https://github.com/jokob-sk/NetAlertX\n"
+        )
+        slug = _parse_slug_from_store(output, "https://github.com/jokob-sk/NetAlertX")
+        assert slug == "jokob-sk_NetAlertX"
+
+    def test_parse_slug_from_store_returns_empty_when_not_found(self):
+        from netalertx.installer import _parse_slug_from_store
+
+        slug = _parse_slug_from_store(
+            "no relevant content here", "https://github.com/jokob-sk/NetAlertX"
+        )
+        assert slug == ""

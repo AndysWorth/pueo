@@ -61,7 +61,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 4 · 11–
 
 ---
 
-### 11. NetAlertX Installer — Steps 1–4 ✅ TODO
+### 11. NetAlertX Installer — Steps 1–4 ✅ Done (2026-07-19) — PR #19
 **Depends on:** Items 9.5 (AutonomyGate, FakeAutonomyGate), 10 (config keys, SQLite migration, detector)
 
 **Problem:** Before NetAlertX can be monitored or healed, it must be installed. This item creates the installer state machine scaffold and implements the first four steps: discovering the deployment target, installing the Mosquitto broker, detecting the scan network interface, and adding the add-on repository.
