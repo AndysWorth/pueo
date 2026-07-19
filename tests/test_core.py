@@ -423,19 +423,23 @@ class TestAdvancedDB:
 
         # Simulate a database that existed before migration versioning was added
         with sqlite3.connect(db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """)
+            """
+            )
             conn.commit()
 
         ha_agent_advanced.init_local_database()
@@ -590,19 +594,23 @@ class TestSandboxDB:
         import ha_agent_sandbox_engine
 
         with sqlite3.connect(db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """)
+            """
+            )
             conn.commit()
 
         ha_agent_sandbox_engine.init_local_database()
