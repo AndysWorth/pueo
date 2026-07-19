@@ -8,6 +8,7 @@ home_assistant:
   host: "homeassistant.local"        # IP address or mDNS hostname of your HA server
   user: "root"                        # SSH username (root for the Terminal & SSH App)
   ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
+  api_token: ""                        # HA long-lived access token (required for NetAlertX steps 6–7)
   config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
   log_path: "/config/home-assistant.log"     # Legacy: no longer used by the monitor (which now uses 'ha core logs --follow')
 

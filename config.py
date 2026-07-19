@@ -29,6 +29,7 @@ HA_HOST: str = _ha.get("host", "homeassistant.local")
 HA_KNOWN_VERSION: str = _ha.get("known_version", "")
 HA_USER: str = _ha.get("user", "root")
 SSH_KEY_PATH: str = os.path.expanduser(_ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
+HA_API_TOKEN: str = _ha.get("api_token", "")
 CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
 LOG_REMOTE_PATH: str = _ha.get("log_path", "/config/home-assistant.log")
 
