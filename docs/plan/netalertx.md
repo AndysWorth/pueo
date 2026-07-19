@@ -113,7 +113,7 @@ NOT_INSTALLED → MQTT_INSTALLED → MQTT_RUNNING → ADDON_REPO_ADDED
 
 ---
 
-### 12. NetAlertX Installer — Steps 5–8 ✅ TODO
+### 12. NetAlertX Installer — Steps 5–8 ✅ Done (2026-07-19) — PR #20
 **Depends on:** Item 11 (installer scaffold + steps 1–4, state at `ADDON_REPO_ADDED`)
 
 **Problem:** The add-on repository is registered but NetAlertX is not yet installed, configured, or linked to HA. This item completes the installer, ending with a fully configured and verified system.
