@@ -111,6 +111,21 @@ class TestConfigDefaults:
 
         assert config.HA_KNOWN_VERSION == "2026.7.2"
 
+    def test_ha_api_token_default_empty(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_API_TOKEN == ""
+
+    def test_ha_api_token_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"home_assistant": {"api_token": "my-secret-token"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_API_TOKEN == "my-secret-token"
+
 
 # ── DiagnosticsReport schema ─────────────────────────────────────────────────────
 
@@ -3835,3 +3850,903 @@ class TestNetAlertXInstallerSteps1to4:
             "no relevant content here", "https://github.com/jokob-sk/NetAlertX"
         )
         assert slug == ""
+
+
+# ── installer DB helper (shared by Steps1to4 and Steps5to8 tests) ─────────────
+
+
+def _make_installer_db_at_state(tmp_path, monkeypatch, state: str, details=None):
+    """Create and migrate a test DB pre-seeded at *state*, patch DB_PATH."""
+    import ha_agent_advanced
+    import netalertx.installer as inst
+
+    db = tmp_path / "installer_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    monkeypatch.setattr(inst, "DB_PATH", str(db))
+
+    from netalertx.installer import _write_install_state
+
+    _write_install_state(str(db), state, details or {}, "test-cid")
+    return str(db)
+
+
+# ── Steps 5–8 helper function unit tests ─────────────────────────────────────
+
+
+class TestInstallerHelpers5to8:
+    def test_merge_app_conf_updates_existing_key(self):
+        from netalertx.installer import _merge_app_conf
+
+        original = "MQTT_BROKER = 'old'\nMQTT_PORT = 1234\n"
+        merged, diff = _merge_app_conf(original, {"MQTT_BROKER": "'new'"})
+        assert "MQTT_BROKER = 'new'" in merged
+        assert "MQTT_PORT = 1234" in merged
+        assert "MQTT_BROKER" in diff
+
+    def test_merge_app_conf_appends_missing_key(self):
+        from netalertx.installer import _merge_app_conf
+
+        original = "MQTT_PORT = 1883\n"
+        merged, diff = _merge_app_conf(original, {"HA_URL": "'http://ha.local:8123'"})
+        assert "HA_URL = 'http://ha.local:8123'" in merged
+        assert "HA_URL" in diff
+
+    def test_merge_app_conf_preserves_unchanged_key(self):
+        from netalertx.installer import _merge_app_conf
+
+        original = "MQTT_BROKER = 'same'\n"
+        merged, diff = _merge_app_conf(original, {"MQTT_BROKER": "'same'"})
+        assert "MQTT_BROKER = 'same'" in merged
+        assert "MQTT_BROKER" not in diff  # no change → not in diff
+
+    def test_merge_plugins_adds_missing_plugins(self):
+        from netalertx.installer import _merge_plugins
+
+        result = _merge_plugins("['ARPSCAN']", ["MQTT", "ARPSCAN"])
+        import ast
+
+        lst = ast.literal_eval(result)
+        assert "MQTT" in lst
+        assert "ARPSCAN" in lst
+
+    def test_merge_plugins_preserves_existing_plugins(self):
+        from netalertx.installer import _merge_plugins
+
+        result = _merge_plugins("['ARPSCAN', 'NMAP', 'MQTT']", ["MQTT", "ARPSCAN"])
+        import ast
+
+        lst = ast.literal_eval(result)
+        assert "NMAP" in lst
+        assert lst.count("MQTT") == 1  # no duplicates
+
+    def test_merge_plugins_handles_empty_original(self):
+        from netalertx.installer import _merge_plugins
+
+        result = _merge_plugins("", ["MQTT", "ARPSCAN"])
+        import ast
+
+        lst = ast.literal_eval(result)
+        assert set(lst) == {"MQTT", "ARPSCAN"}
+
+    def test_parse_data_path_returns_path(self):
+        from netalertx.installer import _parse_data_path
+
+        info = "name: NetAlertX\ndata: /data/netalertx\nstate: running\n"
+        assert _parse_data_path(info) == "/data/netalertx"
+
+    def test_parse_data_path_returns_empty_when_absent(self):
+        from netalertx.installer import _parse_data_path
+
+        assert _parse_data_path("name: NetAlertX\nstate: running\n") == ""
+
+    def test_check_automation_exists_true(self):
+        from netalertx.installer import _check_automation_exists
+
+        content = "- id: netalertx_event_handler\n  trigger:\n    - platform: webhook\n"
+        assert _check_automation_exists(content) is True
+
+    def test_check_automation_exists_false(self):
+        from netalertx.installer import _check_automation_exists
+
+        content = "- id: other_automation\n  trigger:\n    - platform: state\n"
+        assert _check_automation_exists(content) is False
+
+
+# ── TestNetAlertXInstallerSteps5to8 ──────────────────────────────────────────
+
+_SLUG = "jokob-sk_NetAlertX"
+_DATA_PATH = "/data/netalertx"
+_CONF_PATH = f"{_DATA_PATH}/app.conf"
+_ORIG_APP_CONF = "MQTT_BROKER = 'localhost'\nLOADED_PLUGINS = ['ARPSCAN']\n"
+_HA_CONF = "homeassistant:\n  time_zone: America/New_York\n"
+_AUTOMATIONS_PATH = "/config/automations.yaml"
+
+
+def _make_mock_http(routes):
+    """Build an httpx.AsyncClient backed by an in-memory transport.
+
+    routes: list of (method, url_fragment, status_code, response_body)
+    """
+    import json
+
+    import httpx
+
+    class _T(httpx.AsyncBaseTransport):
+        def __init__(self, rs):
+            self._rs = rs
+
+        async def handle_async_request(self, request):
+            for method, frag, status, body in self._rs:
+                if request.method == method and frag in str(request.url):
+                    if isinstance(body, str):
+                        content, ct = body.encode(), "text/plain"
+                    else:
+                        content, ct = json.dumps(body).encode(), "application/json"
+                    return httpx.Response(
+                        status, content=content, headers={"Content-Type": ct}
+                    )
+            return httpx.Response(
+                404,
+                content=b"not found",
+                headers={"Content-Type": "text/plain"},
+            )
+
+    return httpx.AsyncClient(transport=_T(routes))
+
+
+class TestNetAlertXInstallerSteps5to8:
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _notifier(self, approve: bool = True):
+        from utils.notify import FakeNotifier
+
+        return FakeNotifier(approve=approve)
+
+    def _gate_auto(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
+    def _gate_ask(self, approval: bool = True):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=False, approval_result=approval)
+
+    def _make_full_ssh(self, app_conf=_ORIG_APP_CONF, automations=""):
+        """SSH client configured for a typical steps-5-8 run (all pass)."""
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            file_contents={
+                _CONF_PATH: app_conf,
+                "/config/configuration.yaml": _HA_CONF,
+                _AUTOMATIONS_PATH: automations,
+            },
+            command_results={
+                f"ha addons info {_SLUG}": (
+                    0,
+                    f"state: running\ndata: {_DATA_PATH}\n",
+                    "",
+                ),
+                f"ha addons install {_SLUG}": (0, "", ""),
+                f"ha addons start {_SLUG}": (0, "", ""),
+                f"ha addons restart {_SLUG}": (0, "", ""),
+                "ha backup new": (0, "Slug: test-backup-slug\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                f"ip addr show": (
+                    0,
+                    "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
+                    "",
+                ),
+            },
+        )
+
+    def _http_with_mqtt(self):
+        return _make_mock_http(
+            [
+                ("GET", "/api/config/config_entries", 200, [{"domain": "mqtt"}]),
+                ("GET", "/health", 200, {"status": "ok"}),
+            ]
+        )
+
+    def _http_no_mqtt(self):
+        return _make_mock_http(
+            [
+                ("GET", "/api/config/config_entries", 200, [{"domain": "other"}]),
+                ("GET", "/health", 200, {"status": "ok"}),
+            ]
+        )
+
+    # ── step 5: install addon ─────────────────────────────────────────────────
+
+    def test_step5_fresh_install_happy_path(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import _read_install_state, run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_not_state", poll_true)
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                _CONF_PATH: _ORIG_APP_CONF,
+                "/config/configuration.yaml": _HA_CONF,
+                _AUTOMATIONS_PATH: "",
+            },
+            command_results={
+                f"ha addons info {_SLUG}": (
+                    0,
+                    f"state: unknown\ndata: {_DATA_PATH}\n",
+                    "",
+                ),
+                f"ha addons install {_SLUG}": (0, "", ""),
+                f"ha addons start {_SLUG}": (0, "", ""),
+                f"ha addons restart {_SLUG}": (0, "", ""),
+                "ha backup new": (0, "Slug: fresh-slug\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                "ip addr show": (
+                    0,
+                    "inet 192.168.1.5/24 scope global eth0\n",
+                    "",
+                ),
+            },
+        )
+
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_REPO_ADDED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert any("ha addons install" in c for c in ssh.commands_run)
+        assert any("ha addons start" in c for c in ssh.commands_run)
+
+    def test_step5_already_running_skips_install_and_start(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import _read_install_state, run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_REPO_ADDED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        # No install or start commands issued since addon reported running
+        assert not any("ha addons install" in c for c in ssh.commands_run)
+        assert not any("ha addons start" in c for c in ssh.commands_run)
+
+    def test_step5_install_timeout_triggers_critical_gate(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_false(*a, **k):
+            return False
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_not_state", poll_false)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
+                f"ha addons install {_SLUG}": (0, "", ""),
+            }
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_REPO_ADDED",
+            {"addon_slug": _SLUG},
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "ADDON_REPO_ADDED"
+        assert any(
+            c.get("risk").name == "CRITICAL" for c in gate.require_approval_calls
+        )
+
+    def test_step5_start_timeout_triggers_critical_gate(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_not_state_true(*a, **k):
+            return True
+
+        async def poll_state_false(*a, **k):
+            return False
+
+        monkeypatch.setattr(
+            "netalertx.installer._poll_addon_not_state", poll_not_state_true
+        )
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_state_false)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
+                f"ha addons install {_SLUG}": (0, "", ""),
+                f"ha addons start {_SLUG}": (0, "", ""),
+            }
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_REPO_ADDED",
+            {"addon_slug": _SLUG},
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "ADDON_INSTALLED"
+        assert any(
+            c.get("risk").name == "CRITICAL" for c in gate.require_approval_calls
+        )
+
+    def test_step5_no_slug_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        db = _make_installer_db_at_state(
+            tmp_path, monkeypatch, "ADDON_REPO_ADDED", {}  # no addon_slug in details
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "ADDON_REPO_ADDED"
+        assert any(
+            c.get("risk").name == "CRITICAL" for c in gate.require_approval_calls
+        )
+
+    def test_step5_idempotent_from_addon_running(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        # Step 5 is entirely skipped — no install or start commands
+        assert not any("ha addons install" in c for c in ssh.commands_run)
+        assert not any("ha addons start" in c for c in ssh.commands_run)
+
+    # ── step 6: configure app.conf ────────────────────────────────────────────
+
+    def test_step6_writes_app_conf_and_merges_plugins(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+
+        written = ssh.written_files.get(_CONF_PATH, "")
+        assert "MQTT" in written
+        assert "ARPSCAN" in written
+        assert "MQTT_BROKER" in written
+
+    def test_step6_backup_failure_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                _CONF_PATH: _ORIG_APP_CONF,
+                "/config/configuration.yaml": _HA_CONF,
+            },
+            command_results={
+                f"ha addons info {_SLUG}": (
+                    0,
+                    f"state: running\ndata: {_DATA_PATH}\n",
+                    "",
+                ),
+                "ha backup new": (1, "", "backup failed"),  # backup fails
+                "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
+            },
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "ADDON_RUNNING"
+        assert _CONF_PATH not in ssh.written_files
+
+    def test_step6_idempotent_from_configured(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        # Step 6 was skipped — no app.conf write
+        assert _CONF_PATH not in ssh.written_files
+
+    # ── step 7: verify MQTT integration ──────────────────────────────────────
+
+    def test_step7_mqtt_found_advances(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import _read_install_state, run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+
+    def test_step7_mqtt_not_found_approval_advances(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        # Gate asks and approves — MQTT still not visible in API but user confirmed
+        gate = self._gate_ask(approval=True)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(approve=True),
+                db_path=db,
+                http_client=self._http_no_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert gate.require_approval_calls  # HITL notification was sent
+
+    def test_step7_mqtt_not_found_rejection_aborts(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(approve=False),
+                db_path=db,
+                http_client=self._http_no_mqtt(),
+            )
+        )
+        assert state == "NETALERTX_CONFIGURED"
+
+    def test_step7_idempotent_from_mqtt_verified(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        gate = self._gate_ask(approval=False)  # no gate calls expected
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert not gate.require_approval_calls  # step 7 was skipped
+
+    # ── step 8: create webhook automation ────────────────────────────────────
+
+    def test_step8_creates_automation_and_reaches_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = self._make_full_ssh(automations="")  # empty automations file
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        written = ssh.written_files.get(_AUTOMATIONS_PATH, "")
+        assert "netalertx_event_handler" in written
+        assert "platform: webhook" in written
+        assert "eveMac" in written  # camelCase field
+
+    def test_step8_automation_exists_skips_write(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        existing = (
+            "- id: netalertx_event_handler\n"
+            "  trigger:\n    - platform: webhook\n      webhook_id: netalertx_event\n"
+        )
+        ssh = self._make_full_ssh(automations=existing)
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert _AUTOMATIONS_PATH not in ssh.written_files  # no write — already present
+
+    def test_step8_ha_check_fails_restores_original(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        original_automations = "- id: existing_automation\n  trigger: []\n"
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                _AUTOMATIONS_PATH: original_automations,
+                "/config/configuration.yaml": _HA_CONF,
+                _CONF_PATH: _ORIG_APP_CONF,
+            },
+            command_results={
+                "ha backup new": (0, "Slug: step8-slug\n", ""),
+                "ha core check": (1, "", "automation error"),  # check fails
+            },
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        gate = self._gate_ask(approval=False)
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "HA_MQTT_INTEGRATION_VERIFIED"
+        # Original was restored
+        assert ssh.written_files.get(_AUTOMATIONS_PATH) == original_automations
+        assert any(c.get("risk").name == "HIGH" for c in gate.require_approval_calls)
+
+    def test_step8_idempotent_from_fully_operational(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "FULLY_OPERATIONAL",
+            {"addon_slug": _SLUG},
+        )
+
+        ssh2 = self._make_full_ssh()
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh2,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert len(ssh2.commands_run) == 0  # complete no-op
+
+    # ── full run tests ────────────────────────────────────────────────────────
+
+    def test_full_run_from_addon_repo_added_reaches_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer._poll_addon_not_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                _CONF_PATH: _ORIG_APP_CONF,
+                "/config/configuration.yaml": _HA_CONF,
+                _AUTOMATIONS_PATH: "",
+            },
+            command_results={
+                f"ha addons info {_SLUG}": (
+                    0,
+                    f"state: unknown\ndata: {_DATA_PATH}\n",
+                    "",
+                ),
+                f"ha addons install {_SLUG}": (0, "", ""),
+                f"ha addons start {_SLUG}": (0, "", ""),
+                f"ha addons restart {_SLUG}": (0, "", ""),
+                "ha backup new": (0, "Slug: full-run-slug\n", ""),
+                "ha core check": (0, "", ""),
+                "ha core reload": (0, "", ""),
+                "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
+            },
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_REPO_ADDED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+
+    def test_full_run_second_call_is_noop(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "FULLY_OPERATIONAL",
+            {"addon_slug": _SLUG},
+        )
+
+        ssh2 = self._make_full_ssh()
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh2,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert len(ssh2.commands_run) == 0

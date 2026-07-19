@@ -203,7 +203,8 @@ if $WRITE_CONFIG; then
 
     ask "Home Assistant hostname or IP"    "homeassistant.local"          HA_HOST
     ask "SSH username"                      "root"                          HA_USER
-    ask "SSH private key path"              "$DEFAULT_SSH_KEY"              HA_SSH_KEY
+    ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
+    ask "HA long-lived access token"        ""                              HA_API_TOKEN
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
     ask "home-assistant.log path on HA"    "/config/home-assistant.log"    HA_LOG_PATH
     ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
@@ -296,6 +297,7 @@ home_assistant:
   host: "${HA_HOST}"
   user: "${HA_USER}"
   ssh_key_path: "${HA_SSH_KEY}"
+  api_token: "${HA_API_TOKEN}"
   config_path: "${HA_CONFIG_PATH}"
   log_path: "${HA_LOG_PATH}"
   known_version: "${HA_KNOWN_VERSION}"
