@@ -22,6 +22,8 @@ from config import (
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
     HITL_ALWAYS,
+    AUTONOMY_LEVEL,
+    HITL_TIMEOUT_MINUTES,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -35,6 +37,7 @@ from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
+from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix
 
@@ -76,7 +79,8 @@ class DiagnosticsReport(BaseModel):
 # LOCAL MEMORY LAYER (SQLite)
 # ==========================================
 def _migrate_v1(cursor: sqlite3.Cursor) -> None:
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS state_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER,
@@ -85,15 +89,18 @@ def _migrate_v1(cursor: sqlite3.Cursor) -> None:
             issues_found TEXT,
             action_taken TEXT
         )
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS backup_registry (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER,
             backup_slug TEXT,
             status TEXT
         )
-    """)
+    """
+    )
 
 
 def _migrate_v2(cursor: sqlite3.Cursor) -> None:
@@ -331,6 +338,7 @@ async def main(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
+    gate: Optional[AutonomyGate] = None,
 ) -> None:
     setup_logging()
     if not get_correlation_id():
@@ -340,6 +348,7 @@ async def main(
     _notifier: NotifierProtocol = notifier or get_notifier(
         NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
     )
+    _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL, HITL_TIMEOUT_MINUTES)
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
     report = await analyze_config_locally(yaml_content, llm_client=llm_client)
@@ -362,35 +371,32 @@ async def main(
             )
             return
 
-        # 0b. HITL gate — pause for human approval on high-risk repairs
-        if requires_hitl(report, hitl_always=HITL_ALWAYS):
-            nid = get_correlation_id() or str(uuid.uuid4())
-            log.warning(
-                "hitl_required",
-                severity=report.severity,
-                notification_id=nid,
+        # 0b. Autonomy gate — request approval before any production config write
+        risk = RiskLevel.CRITICAL if report.severity == "CRITICAL" else RiskLevel.HIGH
+        nid = get_correlation_id() or str(uuid.uuid4())
+        log.info("autonomy_gate_check", severity=report.severity, risk=risk.name)
+        approved = await _gate.require_approval(
+            subject=f"Pueo HITL: {report.severity} repair requires approval",
+            body="\n".join(report.identified_issues),
+            payload={
+                "notification_id": nid,
+                "severity": report.severity,
+                "issues": report.identified_issues,
+                "correlation_id": get_correlation_id(),
+            },
+            notifier=_notifier,
+            risk=risk,
+        )
+        if not approved:
+            log.warning("autonomy_gate_rejected", notification_id=nid)
+            record_state_memory(
+                config_hash,
+                False,
+                report.identified_issues,
+                "Repair rejected via autonomy gate.",
             )
-            await _notifier.send(
-                subject=f"Pueo HITL: {report.severity} repair requires approval",
-                body="\n".join(report.identified_issues),
-                payload={
-                    "notification_id": nid,
-                    "severity": report.severity,
-                    "issues": report.identified_issues,
-                    "correlation_id": get_correlation_id(),
-                },
-            )
-            approved = await _notifier.wait_for_approval(nid)
-            if not approved:
-                log.warning("hitl_rejected", notification_id=nid)
-                record_state_memory(
-                    config_hash,
-                    False,
-                    report.identified_issues,
-                    "Repair rejected by human via HITL gate.",
-                )
-                return
-            log.info("hitl_approved", notification_id=nid)
+            return
+        log.info("autonomy_gate_approved", notification_id=nid)
 
         # 1. Enforce strict backup baseline
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)

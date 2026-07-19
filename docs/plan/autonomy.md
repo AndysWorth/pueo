@@ -6,7 +6,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 3.5 · 1 s
 
 ---
 
-### 9.5. Unified Autonomy Level ✅ TODO
+### 9.5. Unified Autonomy Level ✅ Done (2026-07-19) — PR #17
 **Problem:** Pueo's action gating is inconsistent and scattered. The HA sandbox engine has a hardcoded `requires_hitl()` check (CRITICAL severity or hacs/database keywords). Every NetAlertX item (10–19) would need its own ask/skip logic without a shared primitive. There is no single user-facing knob that uniformly controls how autonomous Pueo is across all subsystems.
 
 #### Autonomy levels

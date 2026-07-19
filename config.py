@@ -50,3 +50,17 @@ NOTIFIER: str = _agent.get("notifier", "file")
 NOTIFY_URL: str = _agent.get("notify_url", "")
 NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", "hitl/")
 HITL_ALWAYS: bool = bool(_agent.get("hitl_always", False))
+
+# Autonomy control
+_netalertx_mode = _cfg.get("netalertx", {}).get("mode", "")
+_NETALERTX_MODE_MAP: dict[str, int] = {"diagnose": 1, "auto_fix": 3, "autonomous": 4}
+_autonomy_raw = _agent.get("autonomy_level", None)
+if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
+    import logging as _logging
+
+    _logging.warning(
+        "config: netalertx.mode is deprecated; migrate to agent.autonomy_level"
+    )
+    _autonomy_raw = _NETALERTX_MODE_MAP[_netalertx_mode]
+AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 2)
+HITL_TIMEOUT_MINUTES: int = int(_agent.get("hitl_timeout_minutes", 60))
