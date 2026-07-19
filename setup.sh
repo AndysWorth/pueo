@@ -279,6 +279,18 @@ if $WRITE_CONFIG; then
         warn "Test manually: ssh -i ${HA_SSH_KEY} ${HA_USER}@${HA_HOST}"
     fi
 
+    echo
+    echo "  ── NetAlertX integration (optional) ──────────────────────────"
+    echo "  Set enabled=true and provide an API token to activate network"
+    echo "  monitoring. All other values default to your HA SSH settings."
+    echo
+    ask "Enable NetAlertX integration? (true/false)"  "false"  NAX_ENABLED
+
+    NAX_API_TOKEN=""
+    if [[ "$NAX_ENABLED" == "true" ]]; then
+        ask "NetAlertX API token"  ""  NAX_API_TOKEN
+    fi
+
     cat > config.yaml <<EOF
 home_assistant:
   host: "${HA_HOST}"
@@ -291,6 +303,10 @@ home_assistant:
 ollama:
   model: "${OLLAMA_MODEL}"
   endpoint: "http://localhost:11434"
+
+netalertx:
+  enabled: ${NAX_ENABLED}
+  api_token: "${NAX_API_TOKEN}"
 
 agent:
   db_path: "${DB_PATH}"

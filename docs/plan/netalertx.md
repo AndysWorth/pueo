@@ -17,7 +17,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 4 · 11–
 
 ---
 
-### 10. NetAlertX Foundation — Package, Config, and API Client ✅ TODO
+### 10. NetAlertX Foundation — Package, Config, and API Client ✅ Done (2026-07-19) — PR #18
 **Depends on:** Item 9.5 (AutonomyGate, FakeAutonomyGate, hitl_timeout_minutes config key)
 
 **Problem:** Before any NetAlertX installer or monitoring logic can be written, Pueo needs the package skeleton, all NetAlertX configuration keys registered in the triple (config.py / config.yaml.default / setup.sh), the database migration for install state, and a working API client. Every later NetAlertX item depends on these.

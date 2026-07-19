@@ -93,9 +93,24 @@ def _migrate_v2(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v3(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS netalertx_install_state (
+            id INTEGER PRIMARY KEY,
+            state TEXT,
+            correlation_id TEXT,
+            timestamp TEXT,
+            details_json TEXT
+        )
+    """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
 ]
 
 

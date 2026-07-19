@@ -51,8 +51,35 @@ NOTIFY_URL: str = _agent.get("notify_url", "")
 NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", "hitl/")
 HITL_ALWAYS: bool = bool(_agent.get("hitl_always", False))
 
+# NetAlertX integration
+_nax = _cfg.get("netalertx", {})
+
+NETALERTX_ENABLED: bool = bool(_nax.get("enabled", False))
+NETALERTX_DEPLOYMENT: str = _nax.get("deployment", "auto")
+NETALERTX_HOST: str = _nax.get("host", _ha.get("host", "homeassistant.local"))
+NETALERTX_API_PORT: int = int(_nax.get("api_port", 20212))
+NETALERTX_API_TOKEN: str = _nax.get("api_token", "")
+NETALERTX_SSH_HOST: str = _nax.get("ssh_host", _ha.get("host", "homeassistant.local"))
+NETALERTX_SSH_USER: str = _nax.get("ssh_user", _ha.get("user", "root"))
+NETALERTX_SSH_KEY_PATH: str = os.path.expanduser(
+    _nax.get("ssh_key_path", _ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
+)
+NETALERTX_ADDON_REPOSITORY_URL: str = _nax.get(
+    "addon_repository_url", "https://github.com/jokob-sk/NetAlertX"
+)
+NETALERTX_ADDON_SLUG: str = _nax.get("addon_slug", "")
+NETALERTX_SCAN_INTERFACE: str = _nax.get("scan_interface", "")
+NETALERTX_AUTO_GENERATED_NAME_PATTERNS: list[str] = _nax.get(
+    "auto_generated_name_patterns",
+    ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"],
+)
+NETALERTX_MAX_SCAN_AGE_MINUTES: int = int(_nax.get("max_scan_age_minutes", 20))
+NETALERTX_MQTT_SUBSCRIBE: bool = bool(_nax.get("mqtt_subscribe", True))
+NETALERTX_LOG_CONTAINER_NAME: str = _nax.get("log_container_name", "netalertx")
+NETALERTX_MAX_DB_HISTORY_ROWS: int = int(_nax.get("max_db_history_rows", 100000))
+
 # Autonomy control
-_netalertx_mode = _cfg.get("netalertx", {}).get("mode", "")
+_netalertx_mode = _nax.get("mode", "")
 _NETALERTX_MODE_MAP: dict[str, int] = {"diagnose": 1, "auto_fix": 3, "autonomous": 4}
 _autonomy_raw = _agent.get("autonomy_level", None)
 if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
