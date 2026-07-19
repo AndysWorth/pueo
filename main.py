@@ -30,7 +30,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["monitor", "diagnose", "advanced", "repair"],
+        choices=[
+            "monitor",
+            "diagnose",
+            "advanced",
+            "repair",
+            "netalertx-setup",
+            "netalertx",
+        ],
         default="monitor",
         help="agent mode (default: monitor)",
     )
@@ -61,6 +68,14 @@ def main() -> None:
         import ha_agent_sandbox_engine
 
         asyncio.run(ha_agent_sandbox_engine.main())
+    elif args.mode == "netalertx-setup":
+        import netalertx.installer
+
+        asyncio.run(netalertx.installer.main())
+    elif args.mode == "netalertx":
+        import netalertx.log_monitor
+
+        asyncio.run(netalertx.log_monitor.main())
 
 
 if __name__ == "__main__":

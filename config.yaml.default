@@ -15,6 +15,26 @@ ollama:
   model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
 
+netalertx:
+  enabled: false                              # Set to true to activate all NetAlertX features
+  deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
+  host: ""                                    # NetAlertX host (default: same as home_assistant.host)
+  api_port: 20212                             # NetAlertX REST API port
+  api_token: ""                               # Required when netalertx.enabled = true
+  ssh_host: ""                                # SSH host for NetAlertX (default: same as home_assistant.host)
+  ssh_user: ""                                # SSH user for NetAlertX (default: same as home_assistant.user)
+  ssh_key_path: ""                            # SSH key for NetAlertX (default: same as home_assistant.ssh_key_path)
+  addon_repository_url: "https://github.com/jokob-sk/NetAlertX"  # HA add-on repository URL
+  addon_slug: ""                              # Leave blank to auto-resolve from Supervisor store
+  scan_interface: ""                          # Network interface for scanning (blank = auto-detect)
+  auto_generated_name_patterns:               # Regex patterns identifying auto-generated device names
+    - "^unknown-"
+    - "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+  max_scan_age_minutes: 20                    # Alert if no scan completed within this window
+  mqtt_subscribe: true                        # Subscribe to NetAlertX MQTT device presence events
+  log_container_name: "netalertx"            # Docker container name (Docker deployments only)
+  max_db_history_rows: 100000                 # Trigger DB cleanup above this row count
+
 agent:
   db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
   log_confidence_threshold: 0.7      # Minimum AI confidence score to trigger autonomous repair

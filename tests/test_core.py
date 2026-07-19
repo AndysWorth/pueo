@@ -400,13 +400,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_2_after_init(self, db_path):
+    def test_schema_version_is_3_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 3
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -416,36 +416,32 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 2
+        assert rows[0][0] == 3
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
 
         # Simulate a database that existed before migration versioning was added
         with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """
-            )
-            conn.execute(
-                """
+            """)
+            conn.execute("""
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """
-            )
+            """)
             conn.commit()
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 3
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -594,23 +590,19 @@ class TestSandboxDB:
         import ha_agent_sandbox_engine
 
         with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE state_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, config_hash TEXT,
                     is_valid INTEGER, issues_found TEXT, action_taken TEXT
                 )
-            """
-            )
-            conn.execute(
-                """
+            """)
+            conn.execute("""
                 CREATE TABLE backup_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp INTEGER, backup_slug TEXT, status TEXT
                 )
-            """
-            )
+            """)
             conn.commit()
 
         ha_agent_sandbox_engine.init_local_database()
@@ -2891,3 +2883,447 @@ class TestAutonomyGate:
             )
         )
         assert len(notifier.sent) == 1
+
+
+# ── netalertx.* config keys ─────────────────────────────────────────────────────
+
+
+class TestNetAlertXConfigKeys:
+    def test_netalertx_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ENABLED is False
+
+    def test_netalertx_deployment_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_DEPLOYMENT == "auto"
+
+    def test_netalertx_host_defaults_to_ha_host(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"home_assistant": {"host": "myha.local"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_HOST == "myha.local"
+
+    def test_netalertx_host_override(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"host": "myha.local"},
+                    "netalertx": {"host": "nax.local"},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_HOST == "nax.local"
+
+    def test_netalertx_api_port_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_API_PORT == 20212
+
+    def test_netalertx_api_token_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_API_TOKEN == ""
+
+    def test_netalertx_ssh_defaults_match_ha(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {
+                        "host": "ha.local",
+                        "user": "admin",
+                        "ssh_key_path": "~/.ssh/id_rsa",
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SSH_HOST == "ha.local"
+        assert config.NETALERTX_SSH_USER == "admin"
+        assert "id_rsa" in config.NETALERTX_SSH_KEY_PATH
+        assert not config.NETALERTX_SSH_KEY_PATH.startswith("~")
+
+    def test_netalertx_addon_repository_url_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert "jokob-sk/NetAlertX" in config.NETALERTX_ADDON_REPOSITORY_URL
+
+    def test_netalertx_addon_slug_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ADDON_SLUG == ""
+
+    def test_netalertx_scan_interface_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SCAN_INTERFACE == ""
+
+    def test_netalertx_auto_generated_name_patterns_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        patterns = config.NETALERTX_AUTO_GENERATED_NAME_PATTERNS
+        assert isinstance(patterns, list)
+        assert len(patterns) == 2
+        assert any("unknown" in p for p in patterns)
+
+    def test_netalertx_max_scan_age_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 20
+
+    def test_netalertx_mqtt_subscribe_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_MQTT_SUBSCRIBE is True
+
+    def test_netalertx_log_container_name_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_LOG_CONTAINER_NAME == "netalertx"
+
+    def test_netalertx_max_db_history_rows_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 100000
+
+    def test_netalertx_config_overrides(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "netalertx": {
+                        "enabled": True,
+                        "api_port": 9999,
+                        "api_token": "tok123",
+                        "max_scan_age_minutes": 5,
+                        "mqtt_subscribe": False,
+                        "max_db_history_rows": 50000,
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ENABLED is True
+        assert config.NETALERTX_API_PORT == 9999
+        assert config.NETALERTX_API_TOKEN == "tok123"
+        assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 5
+        assert config.NETALERTX_MQTT_SUBSCRIBE is False
+        assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 50000
+
+
+# ── netalertx/detector.py ───────────────────────────────────────────────────────
+
+
+class TestNetAlertXDetector:
+    def _make_http_client(self, version: str):
+        import httpx
+        import json
+
+        class _VersionTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                body = json.dumps({"success": True, "value": version}).encode()
+                return httpx.Response(
+                    200,
+                    content=body,
+                    headers={"Content-Type": "application/json"},
+                )
+
+        return httpx.AsyncClient(transport=_VersionTransport())
+
+    def test_supervisor_path_returns_addon_mode(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+
+        ssh = FakeSSHClient(
+            command_results={"ha supervisor info": (0, "supervisor: ok\n", "")}
+        )
+        http = self._make_http_client("v26.7.1")
+        result = asyncio.run(
+            detect_deployment(ssh, "ha.local", 20212, "netalertx", http_client=http)
+        )
+        assert result.mode == "addon"
+        assert result.api_base_url == "http://ha.local:20212"
+        assert result.version == "v26.7.1"
+        assert result.log_path == "/data/app.log"
+        assert result.container_name == "netalertx"
+
+    def test_docker_fallback_when_supervisor_fails(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (1, "", "command not found"),
+                "docker info": (0, "Server Version: 24.0\n", ""),
+            }
+        )
+        http = self._make_http_client("v26.7.1")
+        result = asyncio.run(
+            detect_deployment(ssh, "ha.local", 20212, "netalertx", http_client=http)
+        )
+        assert result.mode == "docker"
+
+    def test_raises_when_neither_supervisor_nor_docker(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (1, "", "not found"),
+                "docker info": (1, "", "not found"),
+            }
+        )
+        http = self._make_http_client("")
+        with pytest.raises(RuntimeError, match="deployment detection failed"):
+            asyncio.run(
+                detect_deployment(ssh, "ha.local", 20212, "netalertx", http_client=http)
+            )
+
+    def test_version_empty_when_api_unreachable(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+        import httpx
+
+        class _ErrorTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                raise httpx.ConnectError("refused")
+
+        ssh = FakeSSHClient(command_results={"ha supervisor info": (0, "ok", "")})
+        http = httpx.AsyncClient(transport=_ErrorTransport())
+        result = asyncio.run(
+            detect_deployment(ssh, "ha.local", 20212, "netalertx", http_client=http)
+        )
+        assert result.version == ""
+
+    def test_supervisor_command_is_tried_first(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "docker info": (0, "ok", ""),
+            }
+        )
+        http = self._make_http_client("")
+        asyncio.run(
+            detect_deployment(ssh, "ha.local", 20212, "netalertx", http_client=http)
+        )
+        assert "ha supervisor info" in ssh.commands_run
+        # Docker should not be probed when supervisor succeeds
+        assert "docker info" not in ssh.commands_run
+
+
+# ── netalertx/api_client.py ─────────────────────────────────────────────────────
+
+
+class TestNetAlertXAPIClient:
+    def _mock_client(self, routes: list):
+        """Build an httpx.AsyncClient backed by a simple in-memory transport.
+
+        routes: list of (method, url_fragment, status_code, json_body)
+        """
+        import httpx
+        import json
+
+        class _MockTransport(httpx.AsyncBaseTransport):
+            def __init__(self, routes):
+                self._routes = routes
+
+            async def handle_async_request(self, request):
+                for method, fragment, status, body in self._routes:
+                    if request.method == method and fragment in str(request.url):
+                        if isinstance(body, str):
+                            content = body.encode()
+                            ct = "text/plain"
+                        else:
+                            content = json.dumps(body).encode()
+                            ct = "application/json"
+                        return httpx.Response(
+                            status,
+                            content=content,
+                            headers={"Content-Type": ct},
+                        )
+                return httpx.Response(
+                    404,
+                    content=b'{"error":"not found"}',
+                    headers={"Content-Type": "application/json"},
+                )
+
+        return httpx.AsyncClient(transport=_MockTransport(routes))
+
+    def _client(self, routes):
+        from netalertx.api_client import NetAlertXAPIClient
+
+        return NetAlertXAPIClient(
+            base_url="http://nax.local:20212",
+            api_token="testtoken",
+            http_client=self._mock_client(routes),
+        )
+
+    def test_get_devices_returns_list(self):
+        devices = [
+            {"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "laptop"},
+            {"devMAC": "11:22:33:44:55:66", "devName": "phone"},
+        ]
+        c = self._client(
+            [("GET", "/devices", 200, {"success": True, "devices": devices})]
+        )
+        result = asyncio.run(c.get_devices())
+        assert len(result) == 2
+        assert result[0]["devMAC"] == "AA:BB:CC:DD:EE:FF"
+
+    def test_get_events_returns_list(self):
+        events = [
+            {
+                "eveMac": "AA:BB:CC:DD:EE:FF",
+                "eveIp": "192.168.1.10",
+                "eveEventType": "New Device",
+            }
+        ]
+        c = self._client([("GET", "/events", 200, {"success": True, "events": events})])
+        result = asyncio.run(c.get_events())
+        assert len(result) == 1
+        assert result[0]["eveEventType"] == "New Device"
+
+    def test_get_metrics_parses_prometheus_text(self):
+        prometheus_text = (
+            "# HELP netalertx_connected_devices\n"
+            "# TYPE netalertx_connected_devices gauge\n"
+            "netalertx_connected_devices 31\n"
+            "netalertx_offline_devices 54\n"
+            "netalertx_down_devices 0\n"
+            'netalertx_device_status{device="laptop",mac="AA:BB"} 1\n'
+        )
+        c = self._client([("GET", "/metrics", 200, prometheus_text)])
+        result = asyncio.run(c.get_metrics())
+        assert result["connected_devices"] == 31.0
+        assert result["offline_devices"] == 54.0
+        assert result["down_devices"] == 0.0
+        assert "device_status" not in result  # labeled metric skipped
+
+    def test_get_settings_via_graphql(self):
+        gql_response = {
+            "data": {
+                "settings": {
+                    "settings": [
+                        {"setKey": "LOADED_PLUGINS", "setValue": "ARPSCAN,MQTT"},
+                        {"setKey": "MQTT_BROKER", "setValue": "192.168.1.1"},
+                    ],
+                    "count": 2,
+                }
+            }
+        }
+        c = self._client([("POST", "/graphql", 200, gql_response)])
+        result = asyncio.run(c.get_settings())
+        assert result["LOADED_PLUGINS"] == "ARPSCAN,MQTT"
+        assert result["MQTT_BROKER"] == "192.168.1.1"
+
+    def test_trigger_scan_posts_to_correct_endpoint(self):
+        c = self._client(
+            [
+                (
+                    "POST",
+                    "/nettools/trigger-scan",
+                    200,
+                    {"success": True, "message": "queued"},
+                )
+            ]
+        )
+        # Should not raise
+        asyncio.run(c.trigger_scan())
+
+    def test_trigger_scan_raises_on_error(self):
+        c = self._client(
+            [
+                (
+                    "POST",
+                    "/nettools/trigger-scan",
+                    500,
+                    {"success": False, "error": "fail"},
+                )
+            ]
+        )
+        with pytest.raises(Exception):
+            asyncio.run(c.trigger_scan())
+
+    def test_get_about_returns_health_dict(self):
+        health = {"success": True, "db_size_mb": 12.4, "mem_usage_pct": 45}
+        c = self._client([("GET", "/health", 200, health)])
+        result = asyncio.run(c.get_about())
+        assert result["success"] is True
+        assert result["db_size_mb"] == 12.4
+
+    def test_get_devices_empty_list_when_no_devices(self):
+        c = self._client([("GET", "/devices", 200, {"success": True, "devices": []})])
+        result = asyncio.run(c.get_devices())
+        assert result == []
+
+
+# ── netalertx SQLite migration ──────────────────────────────────────────────────
+
+
+class TestNetAlertXMigration:
+    def test_migration_creates_install_state_table(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+
+        with sqlite3.connect(db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "netalertx_install_state" in tables
+
+    def test_install_state_table_has_correct_columns(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+
+        with sqlite3.connect(db) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(netalertx_install_state)")
+            }
+        assert {"id", "state", "correlation_id", "timestamp", "details_json"} == cols
+
+    def test_migration_is_idempotent(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.init_local_database()  # second run must not raise
+
+        with sqlite3.connect(db) as conn:
+            version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == 3

@@ -1,4 +1,5 @@
 asyncssh
+httpx
 ollama
 pydantic
 pyyaml
