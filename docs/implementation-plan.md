@@ -21,7 +21,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 9   | HITL Notification Infrastructure                                     | ✅ Done (2026-07-15) |
 | 9.5 | Unified Autonomy Level                                               | ✅ Done (2026-07-19) |
 | 10  | NetAlertX Foundation — Package, Config, and API Client               | ✅ Done (2026-07-19) |
-| 11  | NetAlertX Installer — Steps 1–4                                      | ✅ TODO              |
+| 11  | NetAlertX Installer — Steps 1–4                                      | ✅ Done (2026-07-19) |
 | 12  | NetAlertX Installer — Steps 5–8                                      | ✅ TODO              |
 | 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ TODO              |
 | 14  | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ TODO              |
