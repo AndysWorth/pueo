@@ -110,4 +110,9 @@ def run_dashboard() -> None:
     import uvicorn
 
     print(f"Pueo HITL Dashboard → http://localhost:{DASHBOARD_PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=DASHBOARD_PORT, log_level="warning")  # nosec B104 — local dashboard
+    uvicorn.run(
+        app,
+        host="0.0.0.0",  # nosec B104 — local dashboard, binding all interfaces is intentional
+        port=DASHBOARD_PORT,
+        log_level="warning",
+    )
