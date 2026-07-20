@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -5686,6 +5687,548 @@ class TestRunInstaller:
             )
         )
         assert state == "NOT_INSTALLED"
+
+
+# ── netalertx/ha_name_sync.py ────────────────────────────────────────────────
+
+
+class _FakeNAXClient:
+    """Minimal NetAlertXAPIClient double that records write calls."""
+
+    def __init__(self, devices: list[dict]) -> None:
+        self._devices = devices
+        self.updates: list[tuple[str, str, str]] = []  # (mac, col, val)
+        self.locks: list[tuple[str, str, bool]] = []  # (mac, field, lock)
+
+    async def get_devices(self) -> list[dict]:
+        return self._devices
+
+    async def update_device_column(
+        self, mac: str, column_name: str, column_value: str
+    ) -> None:
+        self.updates.append((mac, column_name, column_value))
+
+    async def lock_device_field(
+        self, mac: str, field_name: str, lock: bool = True
+    ) -> None:
+        self.locks.append((mac, field_name, lock))
+
+
+def _ha_states_transport(states: list[dict]):
+    """Return an httpx.AsyncClient whose /api/states response is ``states``."""
+    import json as _json
+
+    class _T(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, content=_json.dumps(states).encode())
+
+    return httpx.AsyncClient(transport=_T())
+
+
+def _make_syncer(
+    ssh,
+    nax_client,
+    ha_http_client,
+    patterns=None,
+    gate=None,
+    notifier=None,
+):
+    from netalertx.ha_name_sync import HaNameSync
+    from utils.autonomy import FakeAutonomyGate
+    from utils.notify import FakeNotifier
+
+    return HaNameSync(
+        ssh_client=ssh,
+        api_client=nax_client,
+        gate=gate or FakeAutonomyGate(auto_execute_result=True),
+        notifier=notifier or FakeNotifier(approve=True),
+        ha_host="ha.local",
+        ha_api_token="test-tok",
+        auto_patterns=patterns or ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"],
+        http_client=ha_http_client,
+    )
+
+
+class TestHaNameSyncReadSources:
+    def test_source3_only_returns_device_tracker_names(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        states = [
+            {
+                "entity_id": "device_tracker.phone",
+                "attributes": {
+                    "mac_address": "aa:bb:cc:dd:ee:ff",
+                    "friendly_name": "Andy's Phone",
+                },
+            }
+        ]
+        ssh = FakeSSHClient()  # no files → Source 1 and 2 raise/skip
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert names["AA:BB:CC:DD:EE:FF"] == "Andy's Phone"
+
+    def test_source2_fills_gaps_not_covered_by_source3(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        # Source 3 has phone; Source 2 has a tablet not in Source 3
+        states = [
+            {
+                "entity_id": "device_tracker.phone",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:01",
+                    "friendly_name": "Phone",
+                },
+            }
+        ]
+        known_devices_yaml = "tablet:\n" "  mac: AA:BB:CC:DD:EE:02\n" "  name: Tablet\n"
+        ssh = FakeSSHClient(
+            file_contents={"/config/known_devices.yaml": known_devices_yaml}
+        )
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert names["AA:BB:CC:DD:EE:01"] == "Phone"
+        assert names["AA:BB:CC:DD:EE:02"] == "Tablet"
+
+    def test_source1_wins_over_source3_for_same_mac(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        states = [
+            {
+                "entity_id": "device_tracker.x",
+                "attributes": {"mac_address": mac, "friendly_name": "Old Name"},
+            }
+        ]
+        registry_json = {
+            "data": {
+                "devices": [
+                    {
+                        "name": "Authoritative Name",
+                        "name_by_user": None,
+                        "connections": [["mac", mac]],
+                    }
+                ]
+            }
+        }
+        import json as _json
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/.storage/core.device_registry": _json.dumps(registry_json)
+            }
+        )
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert names[mac] == "Authoritative Name"
+
+    def test_source1_prefers_name_by_user_over_name(self):
+        import asyncio
+        import json as _json
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "11:22:33:44:55:66"
+        registry_json = {
+            "data": {
+                "devices": [
+                    {
+                        "name": "Auto Name",
+                        "name_by_user": "Custom Name",
+                        "connections": [["mac", mac]],
+                    }
+                ]
+            }
+        }
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/.storage/core.device_registry": _json.dumps(registry_json)
+            }
+        )
+        ha_http = _ha_states_transport([])
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert names[mac] == "Custom Name"
+
+    def test_source2_filenotfounderror_silently_skipped(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        states = [
+            {
+                "entity_id": "device_tracker.x",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:01",
+                    "friendly_name": "X",
+                },
+            }
+        ]
+        # No known_devices.yaml → FakeSSHClient raises FileNotFoundError
+        ssh = FakeSSHClient()
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert "AA:BB:CC:DD:EE:01" in names  # Source 3 still works
+
+    def test_mac_normalization_various_formats(self):
+        import asyncio
+        import json as _json
+
+        from utils.ssh_client import FakeSSHClient
+
+        registry_json = {
+            "data": {
+                "devices": [
+                    {
+                        "name": "Dash Device",
+                        "name_by_user": None,
+                        "connections": [["mac", "aa-bb-cc-dd-ee-ff"]],
+                    },
+                ]
+            }
+        }
+        states = [
+            {
+                "entity_id": "device_tracker.nocolon",
+                "attributes": {
+                    "mac_address": "aabbccddeeff",
+                    "friendly_name": "No Colon",
+                },
+            }
+        ]
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/.storage/core.device_registry": _json.dumps(registry_json)
+            }
+        )
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        # dash-delimited MAC in Source 1 and no-delimiter MAC in Source 3
+        # both normalize to the same key → Source 1 wins
+        assert names.get("AA:BB:CC:DD:EE:FF") == "Dash Device"
+
+    def test_source1_failure_falls_back_to_lower_sources(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        states = [
+            {
+                "entity_id": "device_tracker.phone",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:01",
+                    "friendly_name": "Phone",
+                },
+            }
+        ]
+        # Bad JSON → Source 1 logs warning and skips
+        ssh = FakeSSHClient(
+            file_contents={"/config/.storage/core.device_registry": "not json {{{{"}
+        )
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(ssh, _FakeNAXClient([]), ha_http)
+        names = asyncio.run(syncer.read_ha_names())
+        assert names["AA:BB:CC:DD:EE:01"] == "Phone"
+
+
+class TestHaNameSyncCases1And2:
+    _PATTERNS = ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
+
+    def _simple_states(self, mac: str, name: str) -> list[dict]:
+        return [
+            {
+                "entity_id": "device_tracker.x",
+                "attributes": {"mac_address": mac, "friendly_name": name},
+            }
+        ]
+
+    def test_case1_blank_devname_writes_and_locks(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:01"
+        nax = _FakeNAXClient(
+            [{"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Living Room TV"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert mac in report.written
+        assert ("AA:BB:CC:DD:EE:01", "devName", "Living Room TV") in nax.updates
+        assert ("AA:BB:CC:DD:EE:01", "devName", True) in nax.locks
+        assert report.locked == []
+        assert report.conflicted == []
+        assert report.unnamed == []
+
+    def test_case1_mac_as_devname_triggers_write(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:02"
+        # devName is the MAC address itself → matches auto-generated pattern
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": mac,
+                    "devVendor": "Acme",
+                    "devLastIP": "10.0.0.2",
+                }
+            ]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Office Printer"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert mac in report.written
+        assert len(nax.updates) == 1
+        assert nax.updates[0][2] == "Office Printer"
+
+    def test_case1_unknown_prefix_triggers_write(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:03"
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": "unknown-abc123",
+                    "devVendor": "",
+                    "devLastIP": "",
+                }
+            ]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Thermostat"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert mac in report.written
+
+    def test_case2_matching_name_locks_only(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:04"
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": "Kitchen Hub",
+                    "devVendor": "",
+                    "devLastIP": "",
+                }
+            ]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Kitchen Hub"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert mac in report.locked
+        assert report.written == []
+        assert len(nax.updates) == 0
+        assert len(nax.locks) == 1
+
+    def test_case2_case_insensitive_match_locks_only(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:05"
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": "kitchen hub",
+                    "devVendor": "",
+                    "devLastIP": "",
+                }
+            ]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Kitchen Hub"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert mac in report.locked
+        assert report.written == []
+
+    def test_case3_conflict_collected_no_write(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:06"
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": "Bob's Laptop",
+                    "devVendor": "",
+                    "devLastIP": "",
+                }
+            ]
+        )
+        ha_http = _ha_states_transport(self._simple_states(mac, "Alice's Laptop"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert len(report.conflicted) == 1
+        assert report.conflicted[0].mac == mac
+        assert report.conflicted[0].ha_name == "Alice's Laptop"
+        assert report.conflicted[0].netalertx_name == "Bob's Laptop"
+        assert report.written == []
+        assert report.locked == []
+        assert len(nax.updates) == 0
+        assert len(nax.locks) == 0
+
+    def test_case4_no_ha_name_collected_as_unnamed(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:07"
+        nax = _FakeNAXClient(
+            [
+                {
+                    "devMAC": mac,
+                    "devName": "NAS",
+                    "devVendor": "Synology",
+                    "devLastIP": "10.0.0.100",
+                }
+            ]
+        )
+        # HA has no entry for this MAC
+        ha_http = _ha_states_transport([])
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert len(report.unnamed) == 1
+        assert report.unnamed[0].mac == mac
+        assert report.unnamed[0].vendor == "Synology"
+        assert report.unnamed[0].last_ip == "10.0.0.100"
+        assert report.written == []
+        assert report.locked == []
+        assert len(nax.updates) == 0
+        assert len(nax.locks) == 0
+
+    def test_zero_ha_names_triggers_low_hitl(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        nax = _FakeNAXClient([])
+        ha_http = _ha_states_transport([])  # empty → zero MAC entries
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier(approve=True)
+        syncer = _make_syncer(
+            FakeSSHClient(), nax, ha_http, gate=gate, notifier=notifier
+        )
+        asyncio.run(syncer.sync_names())
+
+        assert len(gate.require_approval_calls) == 1
+        from utils.autonomy import RiskLevel
+
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.LOW
+
+    def test_sync_report_json_round_trip(self):
+        from netalertx.ha_name_sync import ConflictEntry, SyncReport, UnnamedEntry
+
+        report = SyncReport(
+            written=["AA:BB:CC:DD:EE:01"],
+            locked=["AA:BB:CC:DD:EE:02"],
+            conflicted=[
+                ConflictEntry(mac="AA:BB:CC:DD:EE:03", ha_name="X", netalertx_name="Y")
+            ],
+            unnamed=[
+                UnnamedEntry(mac="AA:BB:CC:DD:EE:04", vendor="Acme", last_ip="10.0.0.4")
+            ],
+        )
+        restored = SyncReport.model_validate_json(report.model_dump_json())
+        assert restored.written == ["AA:BB:CC:DD:EE:01"]
+        assert restored.conflicted[0].ha_name == "X"
+        assert restored.unnamed[0].vendor == "Acme"
+
+    def test_multiple_devices_mixed_cases(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:01",
+                "devName": "",
+                "devVendor": "",
+                "devLastIP": "",
+            },
+            {
+                "devMAC": "AA:BB:CC:DD:EE:02",
+                "devName": "Hub",
+                "devVendor": "",
+                "devLastIP": "",
+            },
+            {
+                "devMAC": "AA:BB:CC:DD:EE:03",
+                "devName": "Old",
+                "devVendor": "",
+                "devLastIP": "",
+            },
+            {
+                "devMAC": "AA:BB:CC:DD:EE:04",
+                "devName": "Solo",
+                "devVendor": "X",
+                "devLastIP": "1",
+            },
+        ]
+        states = [
+            {
+                "entity_id": "device_tracker.a",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:01",
+                    "friendly_name": "Phone",
+                },
+            },
+            {
+                "entity_id": "device_tracker.b",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:02",
+                    "friendly_name": "Hub",
+                },
+            },
+            {
+                "entity_id": "device_tracker.c",
+                "attributes": {
+                    "mac_address": "AA:BB:CC:DD:EE:03",
+                    "friendly_name": "New",
+                },
+            },
+            # No entry for 04 → Case 4
+        ]
+        nax = _FakeNAXClient(devices)
+        ha_http = _ha_states_transport(states)
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        assert "AA:BB:CC:DD:EE:01" in report.written  # Case 1: blank
+        assert "AA:BB:CC:DD:EE:02" in report.locked  # Case 2: match
+        assert any(c.mac == "AA:BB:CC:DD:EE:03" for c in report.conflicted)  # Case 3
+        assert any(u.mac == "AA:BB:CC:DD:EE:04" for u in report.unnamed)  # Case 4
 
 
 # ── netalertx/log_monitor.py ──────────────────────────────────────────────────
