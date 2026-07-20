@@ -100,6 +100,26 @@ class NetAlertXAPIClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def update_device_column(
+        self, mac: str, column_name: str, column_value: str
+    ) -> None:
+        """Write one device column via POST /device/<mac>/update-column."""
+        resp = await self._post(
+            f"/device/{mac}/update-column",
+            json={"columnName": column_name, "columnValue": column_value},
+        )
+        resp.raise_for_status()
+
+    async def lock_device_field(
+        self, mac: str, field_name: str, lock: bool = True
+    ) -> None:
+        """Lock or unlock a device field via POST /device/<mac>/field/lock."""
+        resp = await self._post(
+            f"/device/{mac}/field/lock",
+            json={"fieldName": field_name, "lock": lock},
+        )
+        resp.raise_for_status()
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────────
 

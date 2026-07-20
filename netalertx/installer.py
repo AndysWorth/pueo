@@ -1153,3 +1153,27 @@ async def main(
             _ssh, _gate, _notifier, db_path=db_path, http_client=_http
         )
     log.info("netalertx_setup_done", state=final_state)
+
+    if final_state == "FULLY_OPERATIONAL":
+        from config import NETALERTX_API_TOKEN, NETALERTX_API_PORT, NETALERTX_HOST
+        from netalertx.api_client import NetAlertXAPIClient
+        from netalertx.ha_name_sync import HaNameSync
+
+        _api = NetAlertXAPIClient(
+            base_url=f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}",
+            api_token=NETALERTX_API_TOKEN,
+        )
+        _syncer = HaNameSync(
+            ssh_client=_ssh,
+            api_client=_api,
+            gate=_gate,
+            notifier=_notifier,
+        )
+        report = await _syncer.sync_names()
+        log.info(
+            "ha_name_sync_done",
+            written=len(report.written),
+            locked=len(report.locked),
+            conflicted=len(report.conflicted),
+            unnamed=len(report.unnamed),
+        )
