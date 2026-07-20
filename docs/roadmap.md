@@ -8,6 +8,7 @@
 | 2. Local RAG & knowledge ingestion | ❌ Not started | — |
 | 3. Safe execution / shadow mode | ✅ Complete | `ha_agent_sandbox_engine.py` |
 | 4. Closed-loop autonomous healing | ✅ Complete | `ha_agent_sandbox_engine.py` |
+| 5. Agent quality & evaluation | ❌ Not started | `evals/` |
 
 ---
 
@@ -27,6 +28,24 @@
 - Respect the 8,000 token context limit — retrieved chunks must be ranked and truncated
 
 **Validation gate:** Query the agent on a specific breaking change from a recent HA release. It must accurately cite the change and identify affected YAML keys purely from the local vector DB, with zero live web calls.
+
+---
+
+### Milestone 5 — Agent Quality & Evaluation
+
+**Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
+
+**Tasks:**
+- `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
+- Minimum 10 scenarios covering: malformed YAML, missing required key, deprecated integration format, valid config (true negative), CRITICAL traceback log line, INFO line (true negative), ambiguous WARNING
+- `evals/run_evals.py` — loads each scenario, runs it through the real Ollama inference pipeline, scores results, prints a summary table, saves scores to `evals/baseline.json` on first run, compares against baseline on subsequent runs
+- Scoring metrics: `is_valid` accuracy, severity accuracy, issue keyword recall, fix YAML parse success rate, mean inference latency
+- `/project:run-evals` slash command — runs `python evals/run_evals.py` and summarises results
+- Optional CI job — runs evals against Ollama if available, gated so it does not block PR merges
+
+**Validation gate:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
+
+Full spec: [plan/evals.md](plan/evals.md)
 
 ---
 
