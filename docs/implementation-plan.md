@@ -26,7 +26,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ Done (2026-07-20) |
 | 14  | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ Done (2026-07-20) |
 | 15  | NetAlertX Log Monitoring                                             | ✅ Done (2026-07-20) |
-| 16  | NetAlertX Health Polling and MQTT                                    | ✅ TODO              |
+| 16  | NetAlertX Health Polling and MQTT                                    | ✅ Done (2026-07-20) |
 | 17  | NetAlertX AI Diagnosis                                               | ✅ TODO              |
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ TODO              |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ TODO              |

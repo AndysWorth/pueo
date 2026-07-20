@@ -1,3 +1,4 @@
+aiomqtt
 asyncssh
 httpx
 ollama

@@ -6852,3 +6852,384 @@ class TestNetAlertXLogMonitor:
         )
 
         assert call_count[0] == 2
+
+
+# ── netalertx/health.py and netalertx/mqtt_subscriber.py ─────────────────────
+
+
+class TestNetAlertXHealthMonitor:
+    # ── DevicePresenceEvent schema ────────────────────────────────────────────
+
+    def test_device_presence_event_valid(self):
+        from netalertx.mqtt_subscriber import DevicePresenceEvent
+
+        ev = DevicePresenceEvent(
+            topic="system-sensors/binary_sensor/AA:BB:CC/state",
+            payload="home",
+        )
+        assert ev.topic == "system-sensors/binary_sensor/AA:BB:CC/state"
+        assert ev.payload == "home"
+
+    def test_device_presence_event_json_round_trip(self):
+        from netalertx.mqtt_subscriber import DevicePresenceEvent
+
+        ev = DevicePresenceEvent(
+            topic="system-sensors/sensor/11:22:33/state",
+            payload='{"state": true}',
+        )
+        assert DevicePresenceEvent.model_validate_json(ev.model_dump_json()) == ev
+
+    # ── HealthReport schema ───────────────────────────────────────────────────
+
+    def test_health_report_valid_construction(self):
+        from netalertx.health import HealthReport
+
+        r = HealthReport(
+            last_scan_age_minutes=5,
+            device_counts={"total": 10, "online": 8},
+            mqtt_active=True,
+            anomalies=[],
+            netalertx_version="v26.7.1",
+        )
+        assert r.last_scan_age_minutes == 5
+        assert r.mqtt_active is True
+
+    def test_health_report_missing_field_raises(self):
+        from pydantic import ValidationError
+
+        from netalertx.health import HealthReport
+
+        with pytest.raises(ValidationError):
+            HealthReport(  # type: ignore[call-arg]
+                last_scan_age_minutes=5,
+                device_counts={"total": 1},
+                mqtt_active=False,
+                # missing anomalies and netalertx_version
+            )
+
+    def test_health_report_json_round_trip(self):
+        from netalertx.health import HealthReport
+
+        r = HealthReport(
+            last_scan_age_minutes=12,
+            device_counts={"total": 3, "online": 1},
+            mqtt_active=False,
+            anomalies=["Last scan is 25 minutes old"],
+            netalertx_version="v26.7.1",
+        )
+        assert HealthReport.model_validate_json(r.model_dump_json()) == r
+
+    # ── _compute_scan_age ─────────────────────────────────────────────────────
+
+    def test_scan_age_empty_devices_returns_zero(self):
+        from netalertx.health import _compute_scan_age
+
+        assert _compute_scan_age([]) == 0
+
+    def test_scan_age_fresh_device(self):
+        from datetime import datetime, timezone
+
+        from netalertx.health import _compute_scan_age
+
+        now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        devices = [{"devLastSeen": "2026-07-20 11:58:00"}]
+        assert _compute_scan_age(devices, now=now) == 2
+
+    def test_scan_age_stale_scan_exceeds_threshold(self):
+        from datetime import datetime, timezone
+
+        from netalertx.health import _compute_scan_age
+
+        now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        devices = [{"devLastSeen": "2026-07-20 11:00:00"}]
+        assert _compute_scan_age(devices, now=now) == 60
+
+    def test_scan_age_no_timestamps_returns_zero(self):
+        from netalertx.health import _compute_scan_age
+
+        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF"}]
+        assert _compute_scan_age(devices) == 0
+
+    def test_scan_age_picks_most_recent(self):
+        from datetime import datetime, timezone
+
+        from netalertx.health import _compute_scan_age
+
+        now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        devices = [
+            {"devLastSeen": "2026-07-20 11:00:00"},  # 60 min ago
+            {"devLastSeen": "2026-07-20 11:55:00"},  # 5 min ago
+        ]
+        assert _compute_scan_age(devices, now=now) == 5
+
+    # ── FakeMQTTSubscriber ────────────────────────────────────────────────────
+
+    def test_fake_mqtt_puts_events_in_queue(self):
+        import asyncio
+
+        from netalertx.mqtt_subscriber import DevicePresenceEvent, FakeMQTTSubscriber
+
+        events = [
+            DevicePresenceEvent(topic="t/1/state", payload="home"),
+            DevicePresenceEvent(topic="t/2/state", payload="not_home"),
+        ]
+        sub = FakeMQTTSubscriber(events=events)
+        queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
+
+        asyncio.run(sub.subscribe(queue))
+
+        assert queue.qsize() == 2
+        assert sub.subscribe_calls == 1
+
+    def test_fake_mqtt_raises_error(self):
+        import asyncio
+
+        from netalertx.mqtt_subscriber import FakeMQTTSubscriber
+
+        sub = FakeMQTTSubscriber(error=RuntimeError("broker down"))
+        with pytest.raises(RuntimeError, match="broker down"):
+            asyncio.run(sub.subscribe(asyncio.Queue()))
+
+    # ── poll_once ─────────────────────────────────────────────────────────────
+
+    def _make_api_client(self, devices, version="v26.7.1"):
+        """Return a minimal fake API client for health tests."""
+        import json
+
+        import httpx
+
+        class _FakeTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                if "/devices" in str(request.url):
+                    body = json.dumps({"devices": devices}).encode()
+                elif "/health" in str(request.url):
+                    body = json.dumps({"version": version}).encode()
+                else:
+                    return httpx.Response(404, content=b"not found")
+                return httpx.Response(200, content=body)
+
+        from netalertx.api_client import NetAlertXAPIClient
+
+        return NetAlertXAPIClient(
+            base_url="http://fake-netalertx",
+            api_token="tok",
+            http_client=httpx.AsyncClient(transport=_FakeTransport()),
+        )
+
+    def test_poll_once_returns_health_report(self, monkeypatch):
+        import asyncio
+        from datetime import datetime, timezone
+
+        import netalertx.health as health_mod
+
+        fixed_now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        _orig = health_mod._compute_scan_age
+        monkeypatch.setattr(
+            health_mod,
+            "_compute_scan_age",
+            lambda devices, now=None: _orig(devices, now=fixed_now),
+        )
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:FF",
+                "devName": "router",
+                "devLastSeen": "2026-07-20 11:58:00",  # 2 min before fixed_now
+                "devStatus": "online",
+                "devIsNew": False,
+            }
+        ]
+        api = self._make_api_client(devices)
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
+        queue: asyncio.Queue = asyncio.Queue()
+        report = asyncio.run(monitor.poll_once(queue))
+
+        assert report.netalertx_version == "v26.7.1"
+        assert report.device_counts["total"] == 1
+        assert report.device_counts["online"] == 1
+        assert report.anomalies == []
+
+    def test_poll_stale_scan_adds_anomaly(self, monkeypatch):
+        import asyncio
+        from datetime import datetime, timezone
+
+        import netalertx.health as health_mod
+
+        fixed_now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
+        _orig = health_mod._compute_scan_age
+        monkeypatch.setattr(
+            health_mod,
+            "_compute_scan_age",
+            lambda devices, now=None: _orig(devices, now=fixed_now),
+        )
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:FF",
+                "devName": "router",
+                "devLastSeen": "2026-07-20 11:00:00",  # 60 min ago from fixed_now
+                "devStatus": "online",
+                "devIsNew": False,
+            }
+        ]
+        api = self._make_api_client(devices)
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
+        queue: asyncio.Queue = asyncio.Queue()
+        report = asyncio.run(monitor.poll_once(queue))
+
+        assert len(report.anomalies) == 1
+        assert "minutes old" in report.anomalies[0]
+
+    def test_poll_mqtt_active_when_events_in_queue(self):
+        import asyncio
+
+        devices: list[dict] = []
+        api = self._make_api_client(devices)
+        from netalertx.health import NetAlertXHealthMonitor
+        from netalertx.mqtt_subscriber import DevicePresenceEvent
+
+        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
+        queue: asyncio.Queue = asyncio.Queue()
+        queue.put_nowait(DevicePresenceEvent(topic="t/1/state", payload="home"))
+
+        report = asyncio.run(monitor.poll_once(queue))
+
+        assert report.mqtt_active is True
+        assert queue.empty()
+
+    def test_poll_no_events_mqtt_inactive(self):
+        import asyncio
+
+        devices: list[dict] = []
+        api = self._make_api_client(devices)
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
+        queue: asyncio.Queue = asyncio.Queue()
+        report = asyncio.run(monitor.poll_once(queue))
+
+        assert report.mqtt_active is False
+
+    def test_poll_new_device_triggers_sync(self):
+        import asyncio
+
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:11",
+                "devName": "",
+                "devLastSeen": "",
+                "devStatus": "online",
+                "devIsNew": True,
+            }
+        ]
+        api = self._make_api_client(devices)
+
+        class _FakeHaNameSync:
+            def __init__(self):
+                self.synced_macs: list[str] = []
+
+            async def sync_device(self, mac: str) -> None:
+                self.synced_macs.append(mac)
+
+        fake_sync = _FakeHaNameSync()
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(
+            api_client=api,
+            ha_name_sync=fake_sync,
+            max_scan_age_minutes=20,
+        )
+        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        assert "AA:BB:CC:DD:EE:11" in fake_sync.synced_macs
+
+    def test_poll_blank_name_triggers_sync(self):
+        import asyncio
+
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:22",
+                "devName": "",
+                "devLastSeen": "",
+                "devStatus": "online",
+                "devIsNew": False,
+            }
+        ]
+        api = self._make_api_client(devices)
+
+        class _FakeHaNameSync:
+            def __init__(self):
+                self.synced_macs: list[str] = []
+
+            async def sync_device(self, mac: str) -> None:
+                self.synced_macs.append(mac)
+
+        fake_sync = _FakeHaNameSync()
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(
+            api_client=api,
+            ha_name_sync=fake_sync,
+            max_scan_age_minutes=20,
+        )
+        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        assert "AA:BB:CC:DD:EE:22" in fake_sync.synced_macs
+
+    def test_poll_named_existing_device_no_sync(self):
+        import asyncio
+
+        devices = [
+            {
+                "devMAC": "AA:BB:CC:DD:EE:33",
+                "devName": "laptop",
+                "devLastSeen": "",
+                "devStatus": "online",
+                "devIsNew": False,
+            }
+        ]
+        api = self._make_api_client(devices)
+
+        class _FakeHaNameSync:
+            def __init__(self):
+                self.synced_macs: list[str] = []
+
+            async def sync_device(self, mac: str) -> None:
+                self.synced_macs.append(mac)
+
+        fake_sync = _FakeHaNameSync()
+        from netalertx.health import NetAlertXHealthMonitor
+
+        monitor = NetAlertXHealthMonitor(
+            api_client=api,
+            ha_name_sync=fake_sync,
+            max_scan_age_minutes=20,
+        )
+        asyncio.run(monitor.poll_once(asyncio.Queue()))
+        assert fake_sync.synced_macs == []
+
+    def test_poll_about_failure_returns_unknown_version(self):
+        import asyncio
+        import json
+
+        import httpx
+
+        class _PartialTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                if "/devices" in str(request.url):
+                    return httpx.Response(
+                        200, content=json.dumps({"devices": []}).encode()
+                    )
+                return httpx.Response(500, content=b"error")
+
+        from netalertx.api_client import NetAlertXAPIClient
+        from netalertx.health import NetAlertXHealthMonitor
+
+        api = NetAlertXAPIClient(
+            base_url="http://fake",
+            api_token="tok",
+            http_client=httpx.AsyncClient(transport=_PartialTransport()),
+        )
+        monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
+        report = asyncio.run(monitor.poll_once(asyncio.Queue()))
+        assert report.netalertx_version == "unknown"
