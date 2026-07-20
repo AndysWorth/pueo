@@ -1,10 +1,10 @@
-# Agent Quality — Item 20
+# Agent Quality & Evaluation
 
-Part of the [Implementation Plan](../implementation-plan.md) · Phase 5 · 1–2 sessions.
+Part of the [Roadmap](../roadmap.md) · Milestone 5.
 
 ---
 
-### 20. Evals with Synthetic HA Scenarios ✅ TODO
+### Evals with Synthetic HA Scenarios
 **Problem:** There is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code; evals verify agent intelligence.
 
 **Build:**
