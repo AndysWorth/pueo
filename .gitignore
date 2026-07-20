@@ -84,3 +84,4 @@ venv.bak/
 # Agent runtime state
 ha_agent_state.db
 *.log
+hitl/
