@@ -29,7 +29,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 16  | NetAlertX Health Polling and MQTT                                    | ✅ Done (2026-07-20) |
 | 17  | NetAlertX AI Diagnosis                                               | ✅ Done (2026-07-20) |
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
-| 19  | NetAlertX HA Integration Maintenance                                 | ✅ TODO              |
+| 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
 | 20  | Evals with Synthetic HA Scenarios                                    | ✅ TODO              |
 
 ---
