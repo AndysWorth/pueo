@@ -307,7 +307,7 @@ Extends `netalertx/ha_name_sync.py`:
 
 ---
 
-### 19. NetAlertX HA Integration Maintenance ✅ TODO
+### 19. NetAlertX HA Integration Maintenance ✅ Done (2026-07-20) — PR #31
 **Depends on:** Items 17 (`config_validator`, `ConfigIssue`), 18 (`healer`)
 
 **Problem:** The link between NetAlertX and HA silently degrades — webhook automations drift from the current payload schema, MQTT entities stop registering, or DB tables grow until queries slow.
