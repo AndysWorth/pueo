@@ -165,7 +165,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 
 ---
 
-### 13. NetAlertX Device Name Sync — Reading HA Names and Writing Safe Updates ✅ TODO
+### 13. NetAlertX Device Name Sync — Reading HA Names and Writing Safe Updates ✅ Done (2026-07-20) — PR #25
 **Depends on:** Items 9.5 (AutonomyGate), 10 (API client, `netalertx.auto_generated_name_patterns`), 12 (system at `FULLY_OPERATIONAL` before first sync)
 
 **Problem:** NetAlertX device names are MAC addresses and vendor strings. HA is the authoritative source of friendly names. This item reads all HA name sources, merges them by MAC, and applies unambiguous writes (blank names and already-matching names). Conflict and unknown-device cases are handled in item 14.

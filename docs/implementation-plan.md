@@ -23,7 +23,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 10  | NetAlertX Foundation — Package, Config, and API Client               | ✅ Done (2026-07-19) |
 | 11  | NetAlertX Installer — Steps 1–4                                      | ✅ Done (2026-07-19) |
 | 12  | NetAlertX Installer — Steps 5–8                                      | ✅ Done (2026-07-19) |
-| 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ TODO              |
+| 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ Done (2026-07-20) |
 | 14  | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ TODO              |
 | 15  | NetAlertX Log Monitoring                                             | ✅ TODO              |
 | 16  | NetAlertX Health Polling and MQTT                                    | ✅ TODO              |
