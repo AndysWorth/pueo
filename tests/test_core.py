@@ -7233,3 +7233,361 @@ class TestNetAlertXHealthMonitor:
         monitor = NetAlertXHealthMonitor(api_client=api, max_scan_age_minutes=20)
         report = asyncio.run(monitor.poll_once(asyncio.Queue()))
         assert report.netalertx_version == "unknown"
+
+
+class TestNetAlertXConfigIssue:
+    def test_valid_construction(self):
+        from netalertx.config_validator import ConfigIssue
+
+        issue = ConfigIssue(field="MQTT_BROKER", message="missing", severity="HIGH")
+        assert issue.field == "MQTT_BROKER"
+        assert issue.severity == "HIGH"
+
+    def test_missing_field_raises(self):
+        from pydantic import ValidationError
+
+        from netalertx.config_validator import ConfigIssue
+
+        with pytest.raises(ValidationError):
+            ConfigIssue(field="x", severity="HIGH")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        from netalertx.config_validator import ConfigIssue
+
+        issue = ConfigIssue(field="SCAN_SUBNETS", message="empty", severity="MEDIUM")
+        assert ConfigIssue.model_validate_json(issue.model_dump_json()) == issue
+
+
+class TestNetAlertXConfigValidator:
+    # ── validate_app_conf ─────────────────────────────────────────────────────
+
+    def test_valid_app_conf_returns_no_issues(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "MQTT_BROKER=192.168.1.1",
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=ARPSCAN,MQTT,NMAPDEV",
+            ]
+        )
+        assert validate_app_conf(conf) == []
+
+    def test_missing_required_key_returns_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=ARPSCAN,MQTT",
+            ]
+        )
+        issues = validate_app_conf(conf)
+        fields = [i.field for i in issues]
+        assert "MQTT_BROKER" in fields
+
+    def test_empty_required_value_returns_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "MQTT_BROKER=",
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=ARPSCAN,MQTT",
+            ]
+        )
+        issues = validate_app_conf(conf)
+        fields = [i.field for i in issues]
+        assert "MQTT_BROKER" in fields
+
+    def test_missing_mqtt_plugin_returns_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "MQTT_BROKER=192.168.1.1",
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=ARPSCAN,NMAPDEV",
+            ]
+        )
+        issues = validate_app_conf(conf)
+        assert any(i.field == "LOADED_PLUGINS" and "MQTT" in i.message for i in issues)
+
+    def test_missing_arpscan_plugin_returns_issue(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "MQTT_BROKER=192.168.1.1",
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=MQTT,NMAPDEV",
+            ]
+        )
+        issues = validate_app_conf(conf)
+        assert any(
+            i.field == "LOADED_PLUGINS" and "ARPSCAN" in i.message for i in issues
+        )
+
+    def test_comment_lines_ignored(self):
+        from netalertx.config_validator import validate_app_conf
+
+        conf = "\n".join(
+            [
+                "# This is a comment",
+                "MQTT_BROKER=192.168.1.1",
+                "MQTT_PORT=1883",
+                "HA_URL=http://homeassistant.local:8123",
+                "HA_BEARER_TOKEN=abc123",
+                "SCAN_SUBNETS=192.168.1.0/24--eth0",
+                "TIMEZONE=America/New_York",
+                "LOADED_PLUGINS=ARPSCAN,MQTT",
+            ]
+        )
+        assert validate_app_conf(conf) == []
+
+    # ── validate_ha_config ────────────────────────────────────────────────────
+
+    def test_mqtt_key_detected(self):
+        from netalertx.config_validator import validate_ha_config
+
+        config_yaml = "homeassistant:\n  name: Home\nmqtt:\n  broker: localhost\n"
+        issues = validate_ha_config(config_yaml)
+        assert len(issues) == 1
+        assert issues[0].field == "mqtt"
+        assert issues[0].severity == "HIGH"
+
+    def test_no_mqtt_key_returns_no_issues(self):
+        from netalertx.config_validator import validate_ha_config
+
+        config_yaml = "homeassistant:\n  name: Home\n  time_zone: UTC\n"
+        assert validate_ha_config(config_yaml) == []
+
+    def test_invalid_yaml_returns_issue(self):
+        from netalertx.config_validator import validate_ha_config
+
+        issues = validate_ha_config(":\tnot: valid: yaml\n\t\t")
+        assert len(issues) == 1
+        assert "parse" in issues[0].message.lower()
+
+    def test_empty_config_returns_no_issues(self):
+        from netalertx.config_validator import validate_ha_config
+
+        assert validate_ha_config("") == []
+
+    # ── validate_webhook_automation ───────────────────────────────────────────
+
+    def test_snake_case_field_detected(self):
+        from netalertx.config_validator import validate_webhook_automation
+
+        automation_yaml = (
+            "trigger:\n"
+            "  - platform: webhook\n"
+            "    webhook_id: netalertx_event\n"
+            "action:\n"
+            "  - data:\n"
+            "      mac: '{{ trigger.json.eve_mac }}'\n"
+        )
+        issues = validate_webhook_automation(automation_yaml)
+        assert any(i.field == "eve_mac" for i in issues)
+
+    def test_camelcase_fields_return_no_issues(self):
+        from netalertx.config_validator import validate_webhook_automation
+
+        automation_yaml = (
+            "trigger:\n"
+            "  - platform: webhook\n"
+            "    webhook_id: netalertx_event\n"
+            "action:\n"
+            "  - data:\n"
+            "      mac: '{{ trigger.json.eveMac }}'\n"
+            "      ip: '{{ trigger.json.eveIp }}'\n"
+        )
+        assert validate_webhook_automation(automation_yaml) == []
+
+    def test_multiple_snake_case_fields_all_detected(self):
+        from netalertx.config_validator import validate_webhook_automation
+
+        automation_yaml = "eve_mac: x\neve_ip: y\ndev_vendor: z\n"
+        issues = validate_webhook_automation(automation_yaml)
+        fields = [i.field for i in issues]
+        assert "eve_mac" in fields
+        assert "eve_ip" in fields
+        assert "dev_vendor" in fields
+
+
+class TestNetAlertXDiagnostic:
+    # ── NetAlertXDiagnostic schema ────────────────────────────────────────────
+
+    def test_valid_construction(self):
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        d = NetAlertXDiagnostic(
+            issue="No devices discovered",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Add --network=host to Docker run command.",
+            affected_netalertx_version="v26.7.1",
+        )
+        assert d.category == "networking"
+
+    def test_missing_field_raises(self):
+        from pydantic import ValidationError
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        with pytest.raises(ValidationError):
+            NetAlertXDiagnostic(issue="x", severity="LOW", category="networking")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        d = NetAlertXDiagnostic(
+            issue="MQTT broker down",
+            severity="MEDIUM",
+            category="mqtt",
+            recommended_fix="Restart Mosquitto add-on.",
+            affected_netalertx_version="v26.7.1",
+        )
+        assert NetAlertXDiagnostic.model_validate_json(d.model_dump_json()) == d
+
+    # ── diagnose_health_report ────────────────────────────────────────────────
+
+    def _zero_devices_report(self):
+        from netalertx.health import HealthReport
+
+        return HealthReport(
+            last_scan_age_minutes=25,
+            device_counts={"total": 0, "online": 0},
+            mqtt_active=False,
+            anomalies=[
+                "Last scan is 25 minutes old (threshold: 20)",
+                "No devices discovered",
+            ],
+            netalertx_version="v26.7.1",
+        )
+
+    def _make_fake_llm(self, category: str = "networking") -> "object":
+        from utils.ollama_client import FakeLLMClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        diag = NetAlertXDiagnostic(
+            issue="No devices discovered",
+            severity="HIGH",
+            category=category,
+            recommended_fix="Add --network=host to the Docker run command.",
+            affected_netalertx_version="v26.7.1",
+        )
+        return FakeLLMClient(diag.model_dump_json())
+
+    def test_zero_devices_anomaly_returns_networking_diagnostic(self):
+        import asyncio
+
+        from netalertx.diagnosis import diagnose_health_report
+
+        report = self._zero_devices_report()
+        llm = self._make_fake_llm("networking")
+        result = asyncio.run(diagnose_health_report(report, llm_client=llm))
+        assert result is not None
+        assert result.category == "networking"
+        assert "--network=host" in result.recommended_fix
+
+    def test_no_anomalies_returns_none(self):
+        import asyncio
+
+        from netalertx.health import HealthReport
+
+        from netalertx.diagnosis import diagnose_health_report
+
+        report = HealthReport(
+            last_scan_age_minutes=5,
+            device_counts={"total": 10, "online": 8},
+            mqtt_active=True,
+            anomalies=[],
+            netalertx_version="v26.7.1",
+        )
+        result = asyncio.run(diagnose_health_report(report, config_issues=[]))
+        assert result is None
+
+    def test_config_issues_trigger_diagnosis(self):
+        import asyncio
+
+        from netalertx.config_validator import ConfigIssue
+        from netalertx.health import HealthReport
+
+        from netalertx.diagnosis import diagnose_health_report
+
+        report = HealthReport(
+            last_scan_age_minutes=5,
+            device_counts={"total": 10, "online": 8},
+            mqtt_active=True,
+            anomalies=[],
+            netalertx_version="v26.7.1",
+        )
+        issue = ConfigIssue(
+            field="mqtt",
+            message="Top-level mqtt: key found",
+            severity="HIGH",
+        )
+        llm = self._make_fake_llm("mqtt")
+        result = asyncio.run(
+            diagnose_health_report(report, config_issues=[issue], llm_client=llm)
+        )
+        assert result is not None
+        assert result.category == "mqtt"
+
+    def test_llm_failure_returns_none(self):
+        import asyncio
+
+        from netalertx.diagnosis import diagnose_health_report
+
+        class _CrashingLLM:
+            async def chat(self, **_):
+                raise RuntimeError("Ollama unavailable")
+
+        result = asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(), llm_client=_CrashingLLM()
+            )
+        )
+        assert result is None
+
+    def test_llm_called_with_anomaly_context(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
+
+        diag = NetAlertXDiagnostic(
+            issue="test",
+            severity="LOW",
+            category="networking",
+            recommended_fix="none",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
+        assert len(llm.calls) == 1
+        user_msg = llm.calls[0]["messages"][1]["content"]
+        assert "No devices discovered" in user_msg
