@@ -6617,10 +6617,238 @@ class TestHaNameSyncCases3And4:
 
 
 class TestNetAlertXLogMonitor:
-    def test_main_raises_not_implemented(self):
+    # ── CRITICAL_LOG_PATTERN ──────────────────────────────────────────────────
+
+    def test_pattern_matches_scan_error(self):
+        from netalertx.log_monitor import CRITICAL_LOG_PATTERN
+
+        assert CRITICAL_LOG_PATTERN.search(
+            "ERROR: ArpScan failed — network unreachable"
+        )
+
+    def test_pattern_matches_mqtt_error(self):
+        from netalertx.log_monitor import CRITICAL_LOG_PATTERN
+
+        assert CRITICAL_LOG_PATTERN.search("ERROR MQTT broker connection refused")
+
+    def test_pattern_matches_plugin_exception(self):
+        from netalertx.log_monitor import CRITICAL_LOG_PATTERN
+
+        assert CRITICAL_LOG_PATTERN.search("Exception in plugin ARPSCAN execution")
+
+    def test_pattern_no_match_on_info_line(self):
+        from netalertx.log_monitor import CRITICAL_LOG_PATTERN
+
+        assert not CRITICAL_LOG_PATTERN.search("INFO scan completed successfully")
+
+    # ── LogEvaluation schema ──────────────────────────────────────────────────
+
+    def test_log_evaluation_valid_construction(self):
+        from netalertx.log_monitor import LogEvaluation
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed",
+            confidence_score=0.9,
+        )
+        assert ev.is_actionable is True
+        assert ev.confidence_score == 0.9
+
+    def test_log_evaluation_missing_field_raises(self):
+        from pydantic import ValidationError
+
+        from netalertx.log_monitor import LogEvaluation
+
+        with pytest.raises(ValidationError):
+            LogEvaluation(is_actionable=True)  # type: ignore[call-arg]
+
+    def test_log_evaluation_json_round_trip(self):
+        from netalertx.log_monitor import LogEvaluation
+
+        ev = LogEvaluation(
+            is_actionable=False,
+            root_cause_summary="Transient noise",
+            confidence_score=0.2,
+        )
+        assert LogEvaluation.model_validate_json(ev.model_dump_json()) == ev
+
+    # ── analyze_log_line_with_ai ──────────────────────────────────────────────
+
+    @pytest.fixture
+    def llm_actionable(self):
+        from utils.ollama_client import FakeLLMClient
+
+        from netalertx.log_monitor import LogEvaluation
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed: network unreachable",
+            confidence_score=0.95,
+        )
+        return FakeLLMClient(ev.model_dump_json())
+
+    @pytest.fixture
+    def llm_not_actionable(self):
+        from utils.ollama_client import FakeLLMClient
+
+        from netalertx.log_monitor import LogEvaluation
+
+        ev = LogEvaluation(
+            is_actionable=False,
+            root_cause_summary="Transient warning",
+            confidence_score=0.1,
+        )
+        return FakeLLMClient(ev.model_dump_json())
+
+    def test_analyze_returns_log_evaluation(self, llm_actionable):
         import asyncio
 
-        from netalertx.log_monitor import main
+        from netalertx.log_monitor import analyze_log_line_with_ai
 
-        with pytest.raises(NotImplementedError):
-            asyncio.run(main())
+        result = asyncio.run(
+            analyze_log_line_with_ai(["ERROR ArpScan failed"], llm_actionable)
+        )
+        assert result.is_actionable is True
+        assert result.confidence_score == 0.95
+
+    def test_analyze_calls_llm_once(self, llm_actionable):
+        import asyncio
+
+        from netalertx.log_monitor import analyze_log_line_with_ai
+
+        asyncio.run(analyze_log_line_with_ai(["ERROR scan error"], llm_actionable))
+        assert len(llm_actionable.calls) == 1
+
+    def test_analyze_returns_safe_default_on_llm_error(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+
+        from netalertx.log_monitor import analyze_log_line_with_ai
+
+        # Malformed JSON triggers the except branch
+        broken_llm = FakeLLMClient("{not valid json}")
+        result = asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
+        assert result.is_actionable is False
+        assert result.confidence_score == 0.0
+
+    # ── stream behaviour ──────────────────────────────────────────────────────
+
+    def test_stream_non_critical_lines_skip_triage(self, llm_not_actionable):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.log_monitor import tail_netalertx_log_stream
+
+        ssh = FakeSSHClient(stream_data=["INFO scan completed", "DEBUG heartbeat"])
+        asyncio.run(
+            tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
+        )
+        assert len(llm_not_actionable.calls) == 0
+
+    def test_stream_critical_line_invokes_triage(self, llm_not_actionable, monkeypatch):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        import netalertx.log_monitor as mod
+        from netalertx.log_monitor import tail_netalertx_log_stream
+
+        monkeypatch.setattr(mod._debouncer, "record", lambda: False)
+        ssh = FakeSSHClient(
+            stream_data=["ERROR ArpScan failed: network unreachable", "INFO ok"]
+        )
+        asyncio.run(
+            tail_netalertx_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
+        )
+        assert len(llm_not_actionable.calls) == 1
+
+    # ── autonomy gate: level 1 sends notifier, no healer ─────────────────────
+
+    def test_level_1_sends_notifier_no_healer(self, monkeypatch):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.log_monitor import LogEvaluation
+
+        import netalertx.log_monitor as mod
+
+        healer_calls: list = []
+
+        async def fake_healer(ev):
+            healer_calls.append(ev)
+
+        monkeypatch.setattr(mod, "_dispatch_to_healer", fake_healer)
+        monkeypatch.setattr(mod._debouncer, "record", lambda: True)
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed",
+            confidence_score=0.95,
+        )
+        llm = FakeLLMClient(ev.model_dump_json())
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = FakeNotifier()
+        ssh = FakeSSHClient(stream_data=["ERROR ArpScan failed: network unreachable"])
+
+        asyncio.run(
+            mod.tail_netalertx_log_stream(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+
+        assert len(notifier.sent) == 1
+        assert healer_calls == []
+
+    # ── reconnect on stream failure ───────────────────────────────────────────
+
+    def test_stream_reconnects_on_ose_error(self, monkeypatch):
+        import asyncio as asyncio_mod
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+
+        import netalertx.log_monitor as mod
+
+        async def no_sleep(_: float) -> None:
+            pass
+
+        monkeypatch.setattr(asyncio_mod, "sleep", no_sleep)
+
+        call_count = [0]
+
+        class FailOnceFakeSSH:
+            async def read_file(self, path: str) -> str:
+                raise FileNotFoundError(path)
+
+            async def write_file(self, path: str, content: str) -> None:
+                pass
+
+            async def run(self, command: str, check: bool = False):
+                return 0, "", ""
+
+            async def stream_lines(self, command: str):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError("connection lost")
+                return
+                yield  # makes this an async generator
+
+        ssh = FailOnceFakeSSH()
+        llm = FakeLLMClient("{}")
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        asyncio_mod.run(
+            mod.tail_netalertx_log_stream(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+
+        assert call_count[0] == 2
