@@ -189,6 +189,7 @@ fi
 hdr "4. Configuration"
 
 WRITE_CONFIG=false
+NAX_ENABLED=""
 if [[ -f "config.yaml" ]]; then
     ok "config.yaml already exists"
     read -rp "  Reconfigure? [y/N]: " reconf
