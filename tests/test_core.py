@@ -422,7 +422,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -432,7 +432,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 3
+        assert rows[0][0] == 4
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -461,7 +461,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -3408,7 +3408,7 @@ class TestNetAlertXMigration:
 
         with sqlite3.connect(db) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 3
+        assert version == 4
 
 
 # ── netalertx/installer.py (steps 1–4) ───────────────────────────────────────
@@ -7591,3 +7591,658 @@ class TestNetAlertXDiagnostic:
         assert len(llm.calls) == 1
         user_msg = llm.calls[0]["messages"][1]["content"]
         assert "No devices discovered" in user_msg
+
+
+# ===========================================================================
+# TestNetAlertXHealer  (item 18)
+# ===========================================================================
+class TestNetAlertXHealer:
+    """Tests for netalertx/healer.py — all four autonomy levels + version bump."""
+
+    # -----------------------------------------------------------------------
+    # helpers
+    # -----------------------------------------------------------------------
+
+    def _make_diag(
+        self,
+        category: str = "networking",
+        severity: str = "HIGH",
+        recommended_fix: str = "Restart the container.",
+    ):
+        from netalertx.diagnosis import NetAlertXDiagnostic
+
+        return NetAlertXDiagnostic(
+            issue="scan failure",
+            severity=severity,
+            category=category,
+            recommended_fix=recommended_fix,
+            affected_netalertx_version="v26.7.1",
+        )
+
+    def _make_healer(
+        self,
+        gate,
+        ssh_client=None,
+        ha_ssh_client=None,
+        api_client=None,
+        notifier=None,
+        db_path=":memory:",
+    ):
+        import sqlite3
+
+        from netalertx.healer import NetAlertXHealer
+        from utils.ssh_client import FakeSSHClient
+
+        if ssh_client is None:
+            ssh_client = FakeSSHClient()
+        if ha_ssh_client is None:
+            ha_ssh_client = FakeSSHClient()
+        if notifier is None:
+            from utils.notify import FakeNotifier
+
+            notifier = FakeNotifier(approve=True)
+        if api_client is None:
+            api_client = _FakeAPIClient()
+
+        # Ensure netalertx_state table exists in the in-memory DB
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS netalertx_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+        return NetAlertXHealer(
+            gate=gate,
+            ssh_client=ssh_client,
+            ha_ssh_client=ha_ssh_client,
+            api_client=api_client,
+            notifier=notifier,
+            db_path=db_path,
+        )
+
+    # -----------------------------------------------------------------------
+    # Level 1 — report only: notifier event sent, no SSH writes
+    # -----------------------------------------------------------------------
+
+    def test_level_1_notifier_event_no_writes(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
+        asyncio.run(healer.heal(self._make_diag("networking")))
+
+        # require_approval was called (gate was consulted)
+        assert len(gate.require_approval_calls) >= 1
+        # FakeAutonomyGate with approval_result=False calls notifier.send
+        assert len(notifier.sent) >= 1
+        # No SSH writes
+        assert ssh.written_files == {}
+
+    # -----------------------------------------------------------------------
+    # Level 2 — suggest: approval requested; on rejection nothing executes
+    # -----------------------------------------------------------------------
+
+    def test_level_2_rejection_no_writes(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
+        asyncio.run(healer.heal(self._make_diag("mqtt")))
+
+        assert len(gate.require_approval_calls) >= 1
+        assert ssh.written_files == {}
+        assert ssh.commands_run == []
+
+    def test_level_2_approval_executes_mqtt_fix(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=wronghost\n"})
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(
+            healer.heal(
+                self._make_diag(
+                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
+                )
+            )
+        )
+
+        # app.conf was written
+        assert "/data/app.conf" in ssh.written_files
+
+    # -----------------------------------------------------------------------
+    # Level 3 — guided: app.conf auto-proceeds (MEDIUM); HA config approval
+    # -----------------------------------------------------------------------
+
+    def test_level_3_app_conf_auto_proceeds(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        # auto_execute_result=True means should_auto_execute returns True → MEDIUM auto-proceeds
+        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=oldhost\n"})
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(
+            healer.heal(
+                self._make_diag(
+                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
+                )
+            )
+        )
+
+        # app.conf written without require_approval being called for MEDIUM
+        assert "/data/app.conf" in ssh.written_files
+        # should_auto_execute was checked
+        assert len(gate.should_auto_execute_calls) >= 1
+
+    def test_level_3_ha_config_requires_approval(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        # auto_execute_result=False means should_auto_execute returns False → HIGH needs approval
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient(
+            file_contents={
+                "/data/app.conf": "MQTT_BROKER=x\nLOADED_PLUGINS=MQTT ARPSCAN\n"
+            }
+        )
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "mqtt:\n  broker: homeassistant.local\nhomeassistant:\n  name: Home\n"
+            }
+        )
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(healer.heal(self._make_diag("mqtt")))
+
+        # require_approval was called (gate gated the HA config action)
+        ha_approval_calls = [
+            c for c in gate.require_approval_calls if "mqtt" in c["subject"].lower()
+        ]
+        assert len(ha_approval_calls) >= 1
+
+    # -----------------------------------------------------------------------
+    # Level 4 — autonomous: networking triggers restart + rescan without HITL
+    # -----------------------------------------------------------------------
+
+    def test_level_4_networking_restart_rescan(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = FakeSSHClient()
+        api = _FakeAPIClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, api_client=api)
+        asyncio.run(healer.heal(self._make_diag("networking")))
+
+        # Container restart command issued
+        assert any("docker restart" in cmd for cmd in ssh.commands_run)
+        # API rescan triggered
+        assert api.trigger_scan_calls == 1
+        # No HITL calls at level 4 for HIGH risk
+        assert len(gate.require_approval_calls) == 0
+
+    def test_level_4_no_hitl_for_high_risk(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = FakeSSHClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh)
+        asyncio.run(healer.heal(self._make_diag("networking")))
+
+        # should_auto_execute was called and returned True — no require_approval
+        assert len(gate.should_auto_execute_calls) >= 1
+        assert len(gate.require_approval_calls) == 0
+
+    # -----------------------------------------------------------------------
+    # Version bump detection
+    # -----------------------------------------------------------------------
+
+    def test_version_bump_triggers_hitl_at_level_3(self, tmp_path):
+        import asyncio
+        import sqlite3
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        db_path = str(tmp_path / "test.db")
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS netalertx_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.6.0')"
+            )
+            conn.commit()
+
+        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
+        approved = asyncio.run(healer.check_version_bump("v26.7.1"))
+
+        # HITL was requested for the version bump
+        assert len(gate.require_approval_calls) == 1
+        assert "v26.6.0" in gate.require_approval_calls[0]["body"]
+        assert "v26.7.1" in gate.require_approval_calls[0]["body"]
+        # With approval_result=True, healing is allowed to proceed
+        assert approved is True
+
+    def test_no_version_bump_returns_true_immediately(self, tmp_path):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        db_path = str(tmp_path / "test.db")
+        healer = self._make_healer(gate=gate, db_path=db_path)
+        # First call stores the version
+        asyncio.run(healer.check_version_bump("v26.7.1"))
+        # Second call with same version — no HITL
+        result = asyncio.run(healer.check_version_bump("v26.7.1"))
+
+        assert result is True
+        assert len(gate.require_approval_calls) == 0
+
+    def test_version_bump_blocked_returns_false(self, tmp_path):
+        import asyncio
+        import sqlite3
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        db_path = str(tmp_path / "test.db")
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS netalertx_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.5.0')"
+            )
+            conn.commit()
+
+        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
+        result = asyncio.run(healer.check_version_bump("v26.7.1"))
+
+        assert result is False
+
+    # -----------------------------------------------------------------------
+    # ha_integration category
+    # -----------------------------------------------------------------------
+
+    def test_ha_integration_requires_approval(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        ha_ssh = FakeSSHClient()
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(healer.heal(self._make_diag("ha_integration")))
+
+        assert len(gate.require_approval_calls) >= 1
+        assert ha_ssh.written_files == {}
+
+    # -----------------------------------------------------------------------
+    # Log monitor dispatch wiring
+    # -----------------------------------------------------------------------
+
+    def test_dispatch_to_healer_calls_heal(self):
+        import asyncio
+
+        from netalertx.log_monitor import LogEvaluation, _dispatch_to_healer
+
+        healer = _FakeHealer()
+        evaluation = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed: network unreachable",
+            confidence_score=0.95,
+        )
+        asyncio.run(_dispatch_to_healer(evaluation, healer=healer))
+        assert healer.heal_calls == 1
+        assert healer.last_diagnostic is not None
+        assert healer.last_diagnostic.category == "networking"
+
+    def test_dispatch_without_healer_logs_skip(self):
+        import asyncio
+
+        from netalertx.log_monitor import LogEvaluation, _dispatch_to_healer
+
+        evaluation = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="Something broke",
+            confidence_score=0.8,
+        )
+        # Should not raise even without a healer
+        asyncio.run(_dispatch_to_healer(evaluation, healer=None))
+
+    def test_evaluation_to_diagnostic_mqtt_category(self):
+        from netalertx.log_monitor import LogEvaluation, _evaluation_to_diagnostic
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="MQTT broker connection refused",
+            confidence_score=0.85,
+        )
+        diag = _evaluation_to_diagnostic(ev)
+        assert diag.category == "mqtt"
+        assert diag.severity == "MEDIUM"
+
+    def test_evaluation_to_diagnostic_networking_category(self):
+        from netalertx.log_monitor import LogEvaluation, _evaluation_to_diagnostic
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed: network unreachable",
+            confidence_score=0.95,
+        )
+        diag = _evaluation_to_diagnostic(ev)
+        assert diag.category == "networking"
+        assert diag.severity == "HIGH"
+
+    # -----------------------------------------------------------------------
+    # Additional edge-case coverage
+    # -----------------------------------------------------------------------
+
+    def test_merge_conf_appends_new_key(self):
+        from netalertx.healer import _merge_conf
+
+        current = "EXISTING_KEY=value\n"
+        result = _merge_conf(current, {"NEW_KEY": "newval"})
+        assert "NEW_KEY=newval" in result
+        assert "EXISTING_KEY=value" in result
+
+    def test_merge_conf_updates_existing_key(self):
+        from netalertx.healer import _merge_conf
+
+        current = "MQTT_BROKER=oldhost\nOTHER=x\n"
+        result = _merge_conf(current, {"MQTT_BROKER": "newhost"})
+        assert "MQTT_BROKER=newhost" in result
+        assert "MQTT_BROKER=oldhost" not in result
+
+    def test_merge_conf_preserves_comments(self):
+        from netalertx.healer import _merge_conf
+
+        current = "# comment\nKEY=val\n"
+        result = _merge_conf(current, {})
+        assert "# comment" in result
+
+    def test_extract_conf_overrides_parses_key_value(self):
+        from netalertx.healer import _extract_conf_overrides
+
+        text = "MQTT_BROKER=homeassistant.local\nMQTT_PORT=1883"
+        result = _extract_conf_overrides(text)
+        assert result.get("MQTT_BROKER") == "homeassistant.local"
+        assert result.get("MQTT_PORT") == "1883"
+
+    def test_extract_conf_overrides_ignores_lowercase(self):
+        from netalertx.healer import _extract_conf_overrides
+
+        result = _extract_conf_overrides("restart the container")
+        assert result == {}
+
+    def test_level_2_approval_triggers_networking_restart(self):
+        """require_approval returning True at level 2 should execute restart + rescan."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        ssh = FakeSSHClient()
+        api = _FakeAPIClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, api_client=api)
+        asyncio.run(healer.heal(self._make_diag("networking")))
+
+        assert any("docker restart" in cmd for cmd in ssh.commands_run)
+        assert api.trigger_scan_calls == 1
+
+    def test_version_bump_blocked_log_and_false(self, tmp_path):
+        """When version bump is blocked, returns False and logs the block."""
+        import asyncio
+        import sqlite3
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        db_path = str(tmp_path / "test.db")
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS netalertx_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO netalertx_state (key, value) VALUES ('netalertx_version', 'v26.6.0')"
+            )
+            conn.commit()
+
+        healer = self._make_healer(gate=gate, notifier=notifier, db_path=db_path)
+        result = asyncio.run(healer.check_version_bump("v26.7.1"))
+        assert result is False
+        assert len(gate.require_approval_calls) == 1
+
+    def test_ha_integration_approval_writes_automation(self):
+        """When approved, _fix_ha_automation_fields writes fixed content."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        old_yaml = "- trigger:\n    platform: webhook\n    eve_mac: '{{trigger.json.eve_mac}}'\n"
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient()
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/automations.yaml": old_yaml,
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n",
+            }
+        )
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(healer.heal(self._make_diag("ha_integration")))
+
+        assert "/config/automations.yaml" in ha_ssh.written_files
+        written = ha_ssh.written_files["/config/automations.yaml"]
+        assert "eveMac" in written
+        assert "eve_mac" not in written
+
+    def test_ha_automation_no_changes_does_not_write(self):
+        """If automation already uses camelCase, no write happens."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        camel_yaml = (
+            "- trigger:\n    platform: webhook\n    eveMac: '{{trigger.json.eveMac}}'\n"
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ha_ssh = FakeSSHClient(file_contents={"/config/automations.yaml": camel_yaml})
+        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
+        asyncio.run(healer.heal(self._make_diag("ha_integration")))
+
+        # Already correct — no write
+        assert "/config/automations.yaml" not in ha_ssh.written_files
+
+    def test_rewrite_app_conf_creates_file_if_missing(self):
+        """app.conf write proceeds even when file doesn't exist yet."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = FakeSSHClient()  # no file contents → FileNotFoundError on read
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        healer = self._make_healer(gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh)
+        asyncio.run(
+            healer.heal(
+                self._make_diag(
+                    "mqtt", recommended_fix="MQTT_BROKER=homeassistant.local"
+                )
+            )
+        )
+        assert "/data/app.conf" in ssh.written_files
+
+    def test_database_category_uses_require_approval(self):
+        """database/version categories send notification and don't write files."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
+        asyncio.run(healer.heal(self._make_diag("database")))
+
+        assert len(gate.require_approval_calls) >= 1
+        assert ssh.written_files == {}
+
+    def test_mqtt_ha_config_no_mqtt_key_skips_write(self):
+        """When HA configuration.yaml has no mqtt: key, _remove_ha_mqtt_key does nothing."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient(file_contents={"/data/app.conf": "MQTT_BROKER=x\n"})
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
+        )
+        asyncio.run(healer.heal(self._make_diag("mqtt")))
+
+        # HA config had no mqtt: key, so only app.conf was written
+        assert "/config/configuration.yaml" not in ha_ssh.written_files
+
+
+# ---------------------------------------------------------------------------
+# Test-only helpers (not part of production code)
+# ---------------------------------------------------------------------------
+
+
+class _FakeAPIClient:
+    """Minimal API client double for healer tests."""
+
+    def __init__(self) -> None:
+        self.trigger_scan_calls = 0
+
+    async def trigger_scan(self) -> None:
+        self.trigger_scan_calls += 1
+
+    async def get_devices(self):
+        return []
+
+    async def get_about(self):
+        return {"version": "v26.7.1"}
+
+
+class _FakeHealer:
+    """Minimal healer double for log_monitor dispatch tests."""
+
+    def __init__(self) -> None:
+        self.heal_calls = 0
+        self.last_diagnostic = None
+
+    async def heal(self, diagnostic) -> None:
+        self.heal_calls += 1
+        self.last_diagnostic = diagnostic
