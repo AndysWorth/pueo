@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,10 @@ from utils.prompts import load_prompt
 from utils.rate_limiter import Debouncer, RateLimitExceeded, RateLimiter
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
+
+if TYPE_CHECKING:
+    from netalertx.diagnosis import NetAlertXDiagnostic
+    from netalertx.healer import NetAlertXHealer
 
 log = get_logger("netalertx.log_monitor")
 
@@ -94,12 +98,48 @@ async def analyze_log_line_with_ai(
         )
 
 
-async def _dispatch_to_healer(evaluation: LogEvaluation) -> None:
-    """Placeholder for healer dispatch — wired in item 18."""
-    log.info(
-        "netalertx_healer_dispatch_pending",
-        cause=evaluation.root_cause_summary,
+def _evaluation_to_diagnostic(evaluation: LogEvaluation) -> "NetAlertXDiagnostic":
+    """Convert a LogEvaluation to a minimal NetAlertXDiagnostic for healer dispatch."""
+    from netalertx.diagnosis import NetAlertXDiagnostic
+
+    summary = evaluation.root_cause_summary.lower()
+    if any(kw in summary for kw in ("mqtt", "broker", "mosquitto")):
+        category = "mqtt"
+    elif any(kw in summary for kw in ("scan", "arp", "network", "unreachable")):
+        category = "networking"
+    elif any(kw in summary for kw in ("database", "db")):
+        category = "database"
+    else:
+        category = "networking"
+
+    severity = "HIGH" if evaluation.confidence_score > 0.9 else "MEDIUM"
+
+    return NetAlertXDiagnostic(
+        issue=evaluation.root_cause_summary,
+        severity=severity,
+        category=category,
+        recommended_fix="See log context for details.",
+        affected_netalertx_version="unknown",
     )
+
+
+async def _dispatch_to_healer(
+    evaluation: LogEvaluation,
+    healer: Optional["NetAlertXHealer"] = None,
+) -> None:
+    if healer is None:
+        log.info(
+            "netalertx_healer_dispatch_skipped",
+            cause=evaluation.root_cause_summary,
+        )
+        return
+    diagnostic = _evaluation_to_diagnostic(evaluation)
+    log.info(
+        "netalertx_healer_dispatch",
+        cause=evaluation.root_cause_summary,
+        category=diagnostic.category,
+    )
+    await healer.heal(diagnostic)
 
 
 @async_retry(max_attempts=0, base_delay=SSH_RETRY_BASE_DELAY, exceptions=(OSError,))
@@ -108,6 +148,7 @@ async def tail_netalertx_log_stream(
     llm_client: Optional[LLMClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
+    healer: Optional["NetAlertXHealer"] = None,
 ) -> None:
     """Streams NetAlertX app.log via SSH and applies two-layer triage on matching lines."""
     client = ssh_client or AsyncSSHClient(
@@ -170,7 +211,7 @@ async def tail_netalertx_log_stream(
                         continue
 
                     log.warning("netalertx_repair_triggered")
-                    await _dispatch_to_healer(evaluation)
+                    await _dispatch_to_healer(evaluation, healer=healer)
 
     except Exception as e:
         log.error("netalertx_log_stream_failed", error=str(e))
@@ -183,6 +224,7 @@ async def main(
     llm_client: Optional[LLMClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
+    healer: Optional["NetAlertXHealer"] = None,
 ) -> None:
     setup_logging()
     await tail_netalertx_log_stream(
@@ -190,6 +232,7 @@ async def main(
         llm_client=llm_client,
         gate=gate,
         notifier=notifier,
+        healer=healer,
     )
 
 
