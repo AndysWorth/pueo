@@ -2520,19 +2520,6 @@ class TestAutonomyConfigKeys:
 
         assert config.AUTONOMY_LEVEL == 4
 
-    def test_hitl_timeout_minutes_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_TIMEOUT_MINUTES == 60
-
-    def test_hitl_timeout_minutes_from_yaml(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"hitl_timeout_minutes": 30}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_TIMEOUT_MINUTES == 30
-
     def test_netalertx_mode_diagnose_maps_to_level1(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "diagnose"}}))
         importlib.reload(sys.modules["config"])
@@ -2566,6 +2553,24 @@ class TestAutonomyConfigKeys:
         import config
 
         assert config.AUTONOMY_LEVEL == 3
+
+
+# ── Dashboard config ──────────────────────────────────────────────────────────────
+
+
+class TestDashboardConfig:
+    def test_dashboard_port_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DASHBOARD_PORT == 8080
+
+    def test_dashboard_port_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"dashboard_port": 9090}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DASHBOARD_PORT == 9090
 
 
 # ── AutonomyGate ──────────────────────────────────────────────────────────────────
@@ -2773,24 +2778,33 @@ class TestAutonomyGate:
             )
             assert len(notifier.sent) == 1, f"level 2 should notify for {risk.name}"
 
-    def test_require_approval_timeout_returns_false(self, monkeypatch):
-        import asyncio as asyncio_mod
+    def test_require_approval_waits_until_approved(self):
         from utils.autonomy import AutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
-        async def immediate_timeout(coro, timeout):
-            coro.close()
-            raise asyncio_mod.TimeoutError()
-
-        monkeypatch.setattr(asyncio_mod, "wait_for", immediate_timeout)
-        gate = AutonomyGate(level=2, timeout_minutes=60)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
         result = asyncio.run(
             gate.require_approval(
                 "s", "b", {"notification_id": "x"}, notifier, RiskLevel.HIGH
             )
         )
+        assert result is True
+        assert len(notifier.sent) == 1
+
+    def test_require_approval_waits_until_rejected(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=2)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.HIGH
+            )
+        )
         assert result is False
+        assert len(notifier.sent) == 1
 
     # ── done criteria — level 1: no SSH writes ───────────────────────────────────
 
@@ -8631,3 +8645,155 @@ class TestNetAlertXMaintenanceHealer:
         assert ssh.written_files == {}
         assert api.trigger_scan_calls == 0
         assert len(notifier.sent) == 0
+
+
+# ── HITL Request model ────────────────────────────────────────────────────────────
+
+
+class TestHITLRequestModel:
+    def test_valid_construction(self):
+        from web.dashboard import HITLRequest
+
+        r = HITLRequest(
+            notification_id="abc",
+            subject="Test",
+            body="body text",
+            payload={"key": "value"},
+            sent_at=1000,
+            status="PENDING",
+            elapsed_seconds=42,
+        )
+        assert r.notification_id == "abc"
+        assert r.status == "PENDING"
+
+    def test_invalid_status_raises(self):
+        from pydantic import ValidationError
+        from web.dashboard import HITLRequest
+
+        with pytest.raises(ValidationError):
+            HITLRequest(
+                notification_id="x",
+                subject="s",
+                body="b",
+                payload={},
+                sent_at=0,
+                status="UNKNOWN",
+                elapsed_seconds=0,
+            )
+
+    def test_missing_required_field_raises(self):
+        from pydantic import ValidationError
+        from web.dashboard import HITLRequest
+
+        with pytest.raises(ValidationError):
+            HITLRequest(subject="s", body="b", payload={}, sent_at=0, status="PENDING", elapsed_seconds=0)  # type: ignore[call-arg]
+
+    def test_json_roundtrip(self):
+        from web.dashboard import HITLRequest
+
+        r = HITLRequest(
+            notification_id="id1",
+            subject="Test",
+            body="b",
+            payload={"a": 1},
+            sent_at=999,
+            status="APPROVED",
+            elapsed_seconds=10,
+        )
+        restored = HITLRequest.model_validate_json(r.model_dump_json())
+        assert restored.notification_id == "id1"
+        assert restored.status == "APPROVED"
+
+
+# ── _load_requests ────────────────────────────────────────────────────────────────
+
+
+class TestLoadHITLRequests:
+    def _write_request(self, tmp_path: Path, nid: str, subject: str = "s") -> None:
+        import json as _json
+        import time as _time
+
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": subject,
+                    "body": "body",
+                    "payload": {},
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+    def test_pending_request_has_status_pending(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "aaa")
+        results = _load_requests(tmp_path)
+        assert len(results) == 1
+        assert results[0].status == "PENDING"
+
+    def test_approved_signal_yields_approved_status(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "bbb")
+        (tmp_path / "bbb.approved").touch()
+        results = _load_requests(tmp_path)
+        assert results[0].status == "APPROVED"
+
+    def test_rejected_signal_yields_rejected_status(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "ccc")
+        (tmp_path / "ccc.rejected").touch()
+        results = _load_requests(tmp_path)
+        assert results[0].status == "REJECTED"
+
+    def test_empty_directory_returns_empty_list(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        assert _load_requests(tmp_path) == []
+
+    def test_orphan_signal_files_are_ignored(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        (tmp_path / "orphan.approved").touch()
+        (tmp_path / "orphan.rejected").touch()
+        assert _load_requests(tmp_path) == []
+
+    def test_malformed_json_is_skipped(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        (tmp_path / "bad.json").write_text("not json {{{")
+        self._write_request(tmp_path, "good")
+        results = _load_requests(tmp_path)
+        assert len(results) == 1
+        assert results[0].notification_id == "good"
+
+    def test_pending_sorted_before_resolved(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "p1")
+        self._write_request(tmp_path, "r1")
+        (tmp_path / "r1.approved").touch()
+        results = _load_requests(tmp_path)
+        statuses = [r.status for r in results]
+        assert statuses[0] == "PENDING"
+        assert statuses[1] == "APPROVED"
+
+
+# ── main.py dashboard mode ────────────────────────────────────────────────────────
+
+
+class TestMainDashboardMode:
+    def test_dashboard_mode_in_help_output(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "main.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        assert "dashboard" in result.stdout

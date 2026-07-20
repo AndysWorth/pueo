@@ -13,7 +13,6 @@ Risk taxonomy:
   CRITICAL — removing top-level config block, bulk irreversible ops, no backup slug
 """
 
-import asyncio
 import uuid
 from enum import IntEnum
 from typing import TYPE_CHECKING
@@ -39,9 +38,8 @@ class AutonomyLevel(IntEnum):
 class AutonomyGate:
     """Decision point imported by all Pueo modules to ask or skip an action."""
 
-    def __init__(self, level: int = 2, timeout_minutes: float = 60) -> None:
+    def __init__(self, level: int = 2) -> None:
         self._level = AutonomyLevel(level)
-        self._timeout_seconds = timeout_minutes * 60
 
     def should_auto_execute(self, risk: RiskLevel) -> bool:
         """True if the current level permits executing at ``risk`` without asking."""
@@ -79,16 +77,10 @@ class AutonomyGate:
             return True
         if self._level == AutonomyLevel.GUIDED and risk == RiskLevel.LOW:
             return True
-        # Send HITL notification and poll for response
+        # Send HITL notification and poll indefinitely for response
         nid = payload.get("notification_id", str(uuid.uuid4()))
         await notifier.send(subject, body, payload)
-        try:
-            return await asyncio.wait_for(
-                notifier.wait_for_approval(nid),
-                timeout=float(self._timeout_seconds),
-            )
-        except asyncio.TimeoutError:
-            return False
+        return await notifier.wait_for_approval(nid)
 
 
 class FakeAutonomyGate:

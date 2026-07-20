@@ -24,7 +24,6 @@ from config import (
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
     AUTONOMY_LEVEL,
-    HITL_TIMEOUT_MINUTES,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, sliding_window_lines
@@ -114,7 +113,7 @@ async def tail_remote_log_stream(
 ) -> None:
     """Streams live HA logs via 'ha core logs --follow' over SSH."""
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
-    _gate = gate or AutonomyGate(AUTONOMY_LEVEL, HITL_TIMEOUT_MINUTES)
+    _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     log.info("log_stream_start", host=HA_HOST)
 
@@ -171,7 +170,7 @@ async def tail_remote_log_stream(
                         )
                         continue
                     log.warning("repair_triggered")
-                    await trigger_remediation_pipeline()
+                    asyncio.create_task(trigger_remediation_pipeline())
                     log.info(
                         "repair_cooldown_start",
                         seconds=REPAIR_COOLDOWN_SECONDS,

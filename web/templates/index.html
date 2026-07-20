@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+{% if not requests %}
+  <p class="empty">No pending approvals. Pueo is watching.</p>
+{% else %}
+  {% for r in requests %}
+  <div class="card">
+    <div class="card-header">
+      <span class="badge badge-{{ r.status | lower }}">{{ r.status }}</span>
+      <span class="subject">{{ r.subject }}</span>
+      <span class="elapsed">{{ r.elapsed_seconds }}s ago</span>
+    </div>
+    <p class="body">{{ r.body }}</p>
+    {% if r.payload.get("severity") or r.payload.get("risk") or r.payload.get("step") %}
+    <p class="meta">
+      {% if r.payload.get("severity") %}Severity: <strong>{{ r.payload.severity }}</strong>{% endif %}
+      {% if r.payload.get("risk") %} &nbsp;·&nbsp; Risk: <strong>{{ r.payload.risk }}</strong>{% endif %}
+      {% if r.payload.get("step") %} &nbsp;·&nbsp; Step: <strong>{{ r.payload.step }}</strong>{% endif %}
+    </p>
+    {% endif %}
+    <details>
+      <summary>Full payload</summary>
+      <pre>{{ r.payload | tojson(indent=2) }}</pre>
+    </details>
+    {% if r.status == "PENDING" %}
+    <div class="actions">
+      <form method="POST" action="/approve/{{ r.notification_id }}">
+        <button class="btn btn-approve" type="submit">Approve</button>
+      </form>
+      <form method="POST" action="/reject/{{ r.notification_id }}">
+        <button class="btn btn-reject" type="submit">Reject</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% endif %}
+{% endblock %}

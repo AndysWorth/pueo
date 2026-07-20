@@ -1130,7 +1130,6 @@ async def main(
     """Entry point for `--mode netalertx-setup`."""
     from config import (
         AUTONOMY_LEVEL,
-        HITL_TIMEOUT_MINUTES,
         NOTIFIER,
         NOTIFY_URL,
         NOTIFY_WATCH_DIR,
@@ -1143,9 +1142,7 @@ async def main(
     _ssh = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH
     )
-    _gate = gate or AutonomyGate(
-        level=AUTONOMY_LEVEL, timeout_minutes=HITL_TIMEOUT_MINUTES
-    )
+    _gate = gate or AutonomyGate(level=AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
     async with httpx.AsyncClient() as _http:

@@ -51,6 +51,7 @@ NOTIFIER: str = _agent.get("notifier", "file")
 NOTIFY_URL: str = _agent.get("notify_url", "")
 NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", "hitl/")
 HITL_ALWAYS: bool = bool(_agent.get("hitl_always", False))
+DASHBOARD_PORT: int = int(_agent.get("dashboard_port", 8080))
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
@@ -91,4 +92,3 @@ if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
     )
     _autonomy_raw = _NETALERTX_MODE_MAP[_netalertx_mode]
 AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 2)
-HITL_TIMEOUT_MINUTES: int = int(_agent.get("hitl_timeout_minutes", 60))

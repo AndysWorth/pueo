@@ -13,7 +13,6 @@ from config import (
     AUTONOMY_LEVEL,
     CONFIDENCE_THRESHOLD,
     DEBOUNCE_WINDOW_SECONDS,
-    HITL_TIMEOUT_MINUTES,
     MAX_PROMPT_TOKENS,
     MAX_REPAIRS_PER_HOUR,
     NETALERTX_LOG_CONTAINER_NAME,
@@ -154,7 +153,7 @@ async def tail_netalertx_log_stream(
     client = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH
     )
-    _gate = gate or AutonomyGate(AUTONOMY_LEVEL, HITL_TIMEOUT_MINUTES)
+    _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
     log_path = "/data/app.log"
@@ -211,7 +210,7 @@ async def tail_netalertx_log_stream(
                         continue
 
                     log.warning("netalertx_repair_triggered")
-                    await _dispatch_to_healer(evaluation, healer=healer)
+                    asyncio.create_task(_dispatch_to_healer(evaluation, healer=healer))
 
     except Exception as e:
         log.error("netalertx_log_stream_failed", error=str(e))
