@@ -60,6 +60,24 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload)
 
 
+class _TextFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        extras = {
+            k: v
+            for k, v in record.__dict__.items()
+            if k not in _STANDARD_ATTRS
+            and not k.startswith("_")
+            and k != "correlation_id"
+        }
+        suffix = (
+            ("  " + "  ".join(f"{k}={v!r}" for k, v in extras.items()))
+            if extras
+            else ""
+        )
+        return f"{record.levelname:<8} {record.message}{suffix}"
+
+
 class StructuredLogger:
     """Logger wrapper that accepts keyword arguments as structured JSON fields."""
 
@@ -91,8 +109,12 @@ class StructuredLogger:
 _configured = False
 
 
-def setup_logging() -> None:
-    """Configure the pueo logger with JSON output to file and stderr. Idempotent."""
+def setup_logging(console_text: bool = False) -> None:
+    """Configure the pueo logger with JSON output to file and stderr. Idempotent.
+
+    When console_text=True the stderr handler uses a human-readable plain-text
+    format instead of JSON (file handler always stays JSON).
+    """
     global _configured
     if _configured:
         return
@@ -102,14 +124,14 @@ def setup_logging() -> None:
     logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
     logger.propagate = False
 
-    formatter = _JsonFormatter()
+    json_formatter = _JsonFormatter()
 
     file_handler = logging.FileHandler(LOG_FILE)
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(json_formatter)
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(formatter)
+    console_handler.setFormatter(_TextFormatter() if console_text else json_formatter)
     logger.addHandler(console_handler)
 
 

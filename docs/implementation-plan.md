@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md)
 
 ---
 
@@ -31,6 +31,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
 | 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
+| 20  | NetAlertX Setup Status Logging                                       | ⬜ TODO              |
 
 ---
 
@@ -72,6 +73,13 @@ Items 10–19. Full lifecycle for a new integration target: install from scratch
 Item 19.5. Eliminates the 60-minute blocking timeout from `AutonomyGate.require_approval()`, converts monitoring loops to fire healing as `asyncio.create_task()`, and adds a local FastAPI web dashboard (`python main.py --mode dashboard`) for approving or rejecting pending repair actions via browser. Adds `fastapi`, `jinja2`, and `uvicorn` dependencies.
 
 → [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
+
+---
+
+### Phase 5 — Observability UX (1 session)
+Item 20. Wires up `setup_logging()` centrally in `main.py` so all modes emit log output, and adds a human-readable plain-text console formatter used by `--mode netalertx-setup`. Currently the installer emits rich structured events at every step but they are silently dropped because no handlers are attached. The file handler always stays JSON; the stderr handler switches to plain text for the setup wizard.
+
+→ [plan/status-logging.md](plan/status-logging.md)
 
 ---
 

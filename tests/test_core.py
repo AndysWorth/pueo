@@ -1236,6 +1236,77 @@ class TestStructuredLogger:
         assert inner.log.call_args[0][0] == logging_mod.ERROR
 
 
+class TestTextFormatter:
+    def _make_record(self, msg: str, **extra):
+        import logging as logging_mod
+
+        record = logging_mod.LogRecord(
+            name="pueo.netalertx.installer",
+            level=logging_mod.INFO,
+            pathname="",
+            lineno=0,
+            msg=msg,
+            args=(),
+            exc_info=None,
+        )
+        for k, v in extra.items():
+            setattr(record, k, v)
+        return record
+
+    def test_basic_format(self):
+        from utils.logging import _TextFormatter
+
+        formatter = _TextFormatter()
+        record = self._make_record("step1_complete")
+        output = formatter.format(record)
+        assert output == "INFO     step1_complete"
+
+    def test_extras_rendered_as_key_value_pairs(self):
+        from utils.logging import _TextFormatter
+
+        formatter = _TextFormatter()
+        record = self._make_record("step1_complete")
+        record.mode = "addon"
+        record.step = "detect_deployment"
+        output = formatter.format(record)
+        assert "mode='addon'" in output
+        assert "step='detect_deployment'" in output
+
+    def test_correlation_id_excluded(self):
+        from utils.logging import _TextFormatter
+
+        formatter = _TextFormatter()
+        record = self._make_record("install_state_updated")
+        record.correlation_id = "some-uuid-value"
+        record.state = "MQTT_RUNNING"
+        output = formatter.format(record)
+        assert "correlation_id" not in output
+        assert "state='MQTT_RUNNING'" in output
+
+    def test_setup_logging_console_text_attaches_text_formatter(self, monkeypatch):
+        import logging as logging_mod
+        import utils.logging as logging_utils
+        from utils.logging import _TextFormatter
+
+        monkeypatch.setattr(logging_utils, "_configured", False)
+        pueo_logger = logging_mod.getLogger("pueo")
+        original_handlers = pueo_logger.handlers[:]
+        try:
+            logging_utils.setup_logging(console_text=True)
+            stream_handlers = [
+                h
+                for h in pueo_logger.handlers
+                if isinstance(h, logging_mod.StreamHandler)
+                and not isinstance(h, logging_mod.FileHandler)
+            ]
+            assert any(isinstance(h.formatter, _TextFormatter) for h in stream_handlers)
+        finally:
+            for h in pueo_logger.handlers[:]:
+                if h not in original_handlers:
+                    pueo_logger.removeHandler(h)
+                    h.close()
+
+
 class TestCorrelationId:
     def test_default_is_empty_string(self):
         from utils.logging import get_correlation_id, set_correlation_id
