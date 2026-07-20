@@ -8797,3 +8797,102 @@ class TestMainDashboardMode:
             cwd=str(Path(__file__).parent.parent),
         )
         assert "dashboard" in result.stdout
+
+
+# ── Dashboard HTTP routes ─────────────────────────────────────────────────────────
+
+
+class TestDashboardRoutes:
+    """Tests for the FastAPI route handlers using TestClient."""
+
+    def _write_request(self, watch_dir: Path, nid: str) -> None:
+        import json as _json
+        import time as _time
+
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Test subject",
+                    "body": "Test body",
+                    "payload": {"severity": "HIGH"},
+                    "sent_at": int(_time.time()) - 30,
+                }
+            )
+        )
+
+    def test_index_returns_200(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "Pueo" in response.text
+
+    def test_index_shows_pending_request(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "req1")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/")
+        assert "PENDING" in response.text
+        assert "Test subject" in response.text
+
+    def test_approve_creates_signal_file(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "req2")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/approve/req2", follow_redirects=False)
+        assert (tmp_path / "req2.approved").exists()
+
+    def test_reject_creates_signal_file(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "req3")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/reject/req3", follow_redirects=False)
+        assert (tmp_path / "req3.rejected").exists()
+
+    def test_approve_already_resolved_is_noop(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "req4")
+        (tmp_path / "req4.rejected").touch()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/approve/req4", follow_redirects=False)
+        assert not (tmp_path / "req4.approved").exists()
+
+    def test_approve_unknown_nid_is_noop(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/approve/no-such-id", follow_redirects=False)
+        assert response.status_code == 303
+
+    def test_run_dashboard_calls_uvicorn(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        calls: list[dict] = []
+
+        def fake_uvicorn_run(app, **kwargs):
+            calls.append(kwargs)
+
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", fake_uvicorn_run)
+        monkeypatch.setattr(dashboard, "DASHBOARD_PORT", 9999)
+        dashboard.run_dashboard()
+        assert calls[0]["port"] == 9999

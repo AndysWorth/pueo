@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/evals.md](plan/evals.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/evals.md](plan/evals.md)
 
 ---
 
@@ -30,6 +30,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 17  | NetAlertX AI Diagnosis                                               | ✅ Done (2026-07-20) |
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
+| 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
 | 20  | Evals with Synthetic HA Scenarios                                    | ✅ TODO              |
 
 ---
@@ -44,7 +45,7 @@ Items 1–9. All complete as of 2026-07-15. Covers prompt management, SSH/Ollama
 ---
 
 ### Phase 3.5 — Cross-Cutting: Autonomy Control (1 session) ✅ TODO
-Item 9.5. Adds `agent.autonomy_level` (integer 1–4, default 2) and `AutonomyGate` — the single ask/skip decision point imported by every Pueo module. Also adds `FakeAutonomyGate` for tests and `agent.hitl_timeout_minutes`. Refactors the hardcoded `requires_hitl()` in the HA sandbox engine. **All Phase 4 items depend on this being implemented first.**
+Item 9.5. Adds `agent.autonomy_level` (integer 1–4, default 2) and `AutonomyGate` — the single ask/skip decision point imported by every Pueo module. Also adds `FakeAutonomyGate` for tests. Refactors the hardcoded `requires_hitl()` in the HA sandbox engine. **All Phase 4 items depend on this being implemented first.**
 
 Levels: 1 = report only · 2 = suggest + approve all · 3 = auto LOW-risk + approve MEDIUM/HIGH/CRITICAL · 4 = auto LOW/MEDIUM/HIGH + approve CRITICAL only.
 
@@ -65,6 +66,13 @@ Items 10–19. Full lifecycle for a new integration target: install from scratch
 | 18–19 | Healing actions gated by autonomy level; HA integration maintenance |
 
 → [plan/netalertx.md](plan/netalertx.md)
+
+---
+
+### Phase 4.5 — HITL UX (1 session) ✅ Complete
+Item 19.5. Eliminates the 60-minute blocking timeout from `AutonomyGate.require_approval()`, converts monitoring loops to fire healing as `asyncio.create_task()`, and adds a local FastAPI web dashboard (`python main.py --mode dashboard`) for approving or rejecting pending repair actions via browser. Adds `fastapi`, `jinja2`, and `uvicorn` dependencies.
+
+→ [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
 
 ---
 
