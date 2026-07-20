@@ -198,7 +198,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 
 ---
 
-### 14. NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices ✅ TODO
+### 14. NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices ✅ Done (2026-07-20) — PR #26
 **Depends on:** Item 13 (`HaNameSync` class, `SyncReport` schema, Cases 1–2 implemented)
 
 **Problem:** Cases 3 (HA name conflicts with existing NetAlertX name) and 4 (no HA name at all) need separate handling — conflicts require user arbitration, unknowns need a multi-step fallback and a targeted per-device sync hook for the health monitor.

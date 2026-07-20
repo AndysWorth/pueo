@@ -1,14 +1,21 @@
-"""NetAlertX ↔ HA device name synchronisation — Cases 1 and 2 (item 13).
+"""NetAlertX ↔ HA device name synchronisation — Cases 1–4 (items 13 and 14).
 
 Reads friendly names from three HA sources (priority: Source 1 wins):
   1. /config/.storage/core.device_registry  (user-set or auto names)
   2. /config/known_devices.yaml             (deprecated but common in many installs)
   3. GET /api/states device_tracker.*        (lowest priority)
 
-sync_names() applies:
+sync_names() applies all four cases:
   Case 1 — blank/auto-generated devName + HA name known → write devName + lock
   Case 2 — devName already matches HA name (case-insensitive) → lock only
-Cases 3 (conflict) and 4 (no HA name) are collected in SyncReport for item 14.
+  Case 3 — devName non-empty and differs from HA name → single HITL; write+lock on approval
+  Case 4 — no HA name found:
+    Step A — existing plausible devName → lock and keep
+    Step B — reverse DNS lookup → write hostname + lock if usable
+    Step C — still unnamed → single LOW-risk HITL listing unnamed devices
+
+sync_device(mac) runs a single MAC through Cases 1–4; called by the health monitor
+when a device with devIsNew or blank devName is detected.
 """
 
 from __future__ import annotations
@@ -160,8 +167,130 @@ class HaNameSync:
 
         return names
 
+    async def _reverse_dns(self, ip: str) -> str:
+        """Run 'host <ip>' over SSH and return a usable hostname, or ''."""
+        if not ip:
+            return ""
+        try:
+            _, stdout, _ = await self._ssh.run(f"host {ip}")
+            for line in stdout.splitlines():
+                if "domain name pointer" in line:
+                    hostname = line.split("domain name pointer")[-1].strip().rstrip(".")
+                    if (
+                        hostname
+                        and not hostname.endswith(".in-addr.arpa")
+                        and not _matches_auto_pattern(hostname, self._patterns)
+                    ):
+                        return hostname
+        except Exception as exc:
+            log.warning("reverse_dns_failed", ip=ip, error=str(exc))
+        return ""
+
+    async def _process_one(
+        self, mac: str, dev: dict, ha_names: dict[str, str], report: SyncReport
+    ) -> None:
+        """Apply Cases 1, 2, 4A, 4B for one device; collect Cases 3 and 4C into report."""
+        dev_name: str = dev.get("devName", "") or ""
+        ha_name = ha_names.get(mac, "")
+
+        if ha_name:
+            if _matches_auto_pattern(dev_name, self._patterns):
+                # Case 1: blank/auto-generated name + HA name known → write + lock
+                await self._api.update_device_column(mac, "devName", ha_name)
+                await self._api.lock_device_field(mac, "devName", lock=True)
+                report.written.append(mac)
+                log.info("name_written", mac=mac, ha_name=ha_name)
+            elif dev_name.lower() == ha_name.lower():
+                # Case 2: already matches → lock idempotently
+                await self._api.lock_device_field(mac, "devName", lock=True)
+                report.locked.append(mac)
+                log.info("name_already_correct", mac=mac)
+            else:
+                # Case 3: conflict → collect for batch HITL after the loop
+                report.conflicted.append(
+                    ConflictEntry(mac=mac, ha_name=ha_name, netalertx_name=dev_name)
+                )
+        else:
+            # Case 4: no HA name — try Steps A → B → C
+            if dev_name and not _matches_auto_pattern(dev_name, self._patterns):
+                # Step A: plausible existing name → lock and keep it
+                await self._api.lock_device_field(mac, "devName", lock=True)
+                report.locked.append(mac)
+                log.info("hostname_plugin_name_kept", mac=mac, dev_name=dev_name)
+            else:
+                # Step B: reverse DNS
+                rdns_name = await self._reverse_dns(dev.get("devLastIP", ""))
+                if rdns_name:
+                    await self._api.update_device_column(mac, "devName", rdns_name)
+                    await self._api.lock_device_field(mac, "devName", lock=True)
+                    report.written.append(mac)
+                    report.reverse_dns.append(mac)
+                    log.info("reverse_dns_name_written", mac=mac, rdns_name=rdns_name)
+                else:
+                    # Step C: truly unnamed → collect for HITL
+                    report.unnamed.append(
+                        UnnamedEntry(
+                            mac=mac,
+                            vendor=dev.get("devVendor", ""),
+                            last_ip=dev.get("devLastIP", ""),
+                        )
+                    )
+
+    async def _resolve_conflicts(self, report: SyncReport) -> None:
+        """Issue a single MEDIUM-risk HITL for all collected conflicts; write+lock on approval."""
+        from utils.autonomy import RiskLevel
+
+        conflict_table = "\n".join(
+            f"  {e.mac} | {e.ha_name} | {e.netalertx_name}" for e in report.conflicted
+        )
+        body = (
+            f"Name conflicts ({len(report.conflicted)}):\n"
+            f"  MAC | HA name | NetAlertX name\n"
+            f"{conflict_table}\n\n"
+            "Approve to overwrite NetAlertX names with HA names."
+        )
+        approved = await self._gate.require_approval(
+            subject="Pueo: NetAlertX name conflicts",
+            body=body,
+            payload={"notification_id": "ha_name_sync_conflicts"},
+            notifier=self._notifier,
+            risk=RiskLevel.MEDIUM,
+        )
+        if approved:
+            for entry in report.conflicted:
+                await self._api.update_device_column(
+                    entry.mac, "devName", entry.ha_name
+                )
+                await self._api.lock_device_field(entry.mac, "devName", lock=True)
+                report.written.append(entry.mac)
+                log.info("conflict_resolved", mac=entry.mac, ha_name=entry.ha_name)
+        else:
+            for entry in report.conflicted:
+                log.info("conflict_skipped", mac=entry.mac)
+
+    async def _notify_unnamed(self, report: SyncReport) -> None:
+        """Issue a single LOW-risk HITL listing all still-unnamed devices."""
+        from utils.autonomy import RiskLevel
+
+        unnamed_table = "\n".join(
+            f"  {e.mac} | {e.vendor} | {e.last_ip}" for e in report.unnamed
+        )
+        body = (
+            f"Unnamed devices ({len(report.unnamed)}):\n"
+            f"  MAC | Vendor | Last IP\n"
+            f"{unnamed_table}\n\n"
+            "Name them in NetAlertX or add entries to /config/known_devices.yaml."
+        )
+        await self._gate.require_approval(
+            subject="Pueo: Unnamed NetAlertX devices",
+            body=body,
+            payload={"notification_id": "ha_name_sync_unnamed"},
+            notifier=self._notifier,
+            risk=RiskLevel.LOW,
+        )
+
     async def sync_names(self) -> SyncReport:
-        """Sync HA names into NetAlertX — Cases 1 and 2; collect Cases 3 and 4."""
+        """Sync HA names into NetAlertX — all four Cases."""
         from utils.autonomy import RiskLevel
 
         ha_names = await self.read_ha_names()
@@ -184,35 +313,13 @@ class HaNameSync:
 
         for dev in devices:
             mac = _normalize_mac(dev.get("devMAC", ""))
-            dev_name: str = dev.get("devName", "") or ""
-            ha_name = ha_names.get(mac, "")
+            await self._process_one(mac, dev, ha_names, report)
 
-            if ha_name:
-                if _matches_auto_pattern(dev_name, self._patterns):
-                    # Case 1: blank/auto-generated name + HA name known → write + lock
-                    await self._api.update_device_column(mac, "devName", ha_name)
-                    await self._api.lock_device_field(mac, "devName", lock=True)
-                    report.written.append(mac)
-                    log.info("name_written", mac=mac, ha_name=ha_name)
-                elif dev_name.lower() == ha_name.lower():
-                    # Case 2: already matches → lock idempotently
-                    await self._api.lock_device_field(mac, "devName", lock=True)
-                    report.locked.append(mac)
-                    log.info("name_already_correct", mac=mac)
-                else:
-                    # Case 3: conflict → collect for item 14
-                    report.conflicted.append(
-                        ConflictEntry(mac=mac, ha_name=ha_name, netalertx_name=dev_name)
-                    )
-            else:
-                # Case 4: no HA name → collect for item 14
-                report.unnamed.append(
-                    UnnamedEntry(
-                        mac=mac,
-                        vendor=dev.get("devVendor", ""),
-                        last_ip=dev.get("devLastIP", ""),
-                    )
-                )
+        if report.conflicted:
+            await self._resolve_conflicts(report)
+
+        if report.unnamed:
+            await self._notify_unnamed(report)
 
         log.info(
             "sync_names_complete",
@@ -222,3 +329,31 @@ class HaNameSync:
             unnamed=len(report.unnamed),
         )
         return report
+
+    async def sync_device(self, mac: str) -> None:
+        """Targeted sync for a single MAC — called by health monitor on devIsNew or blank devName."""
+        ha_names = await self.read_ha_names()
+        devices = await self._api.get_devices()
+        dev = next(
+            (d for d in devices if _normalize_mac(d.get("devMAC", "")) == mac),
+            None,
+        )
+        if dev is None:
+            log.warning("sync_device_not_found", mac=mac)
+            return
+
+        report = SyncReport()
+        await self._process_one(mac, dev, ha_names, report)
+
+        if report.conflicted:
+            await self._resolve_conflicts(report)
+
+        if report.unnamed:
+            await self._notify_unnamed(report)
+
+        log.info(
+            "sync_device_complete",
+            mac=mac,
+            written=len(report.written),
+            locked=len(report.locked),
+        )
