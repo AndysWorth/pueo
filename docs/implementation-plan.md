@@ -31,7 +31,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
 | 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
-| 20  | NetAlertX Setup Status Logging                                       | ⬜ TODO              |
+| 20  | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
 
 ---
 

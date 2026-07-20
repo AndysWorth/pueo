@@ -1,7 +1,7 @@
 # Item 20 — NetAlertX Setup Status Logging
 
 ## Status
-⬜ TODO
+✅ Done (2026-07-20) — PR #36
 
 ## Problem
 
