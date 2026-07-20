@@ -28,7 +28,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 15  | NetAlertX Log Monitoring                                             | ✅ Done (2026-07-20) |
 | 16  | NetAlertX Health Polling and MQTT                                    | ✅ Done (2026-07-20) |
 | 17  | NetAlertX AI Diagnosis                                               | ✅ Done (2026-07-20) |
-| 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ TODO              |
+| 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ TODO              |
 | 20  | Evals with Synthetic HA Scenarios                                    | ✅ TODO              |
 

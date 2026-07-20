@@ -285,7 +285,7 @@ Extends `netalertx/ha_name_sync.py`:
 
 ---
 
-### 18. NetAlertX Autonomy-Gated Healing ✅ TODO
+### 18. NetAlertX Autonomy-Gated Healing ✅ Done (2026-07-20) — PR #30
 **Depends on:** Items 9.5 (AutonomyGate, FakeAutonomyGate), 17 (`NetAlertXDiagnostic`, `config_validator`)
 
 **Problem:** Diagnosis alone doesn't fix anything. Pueo needs to act on findings, with the level of autonomy controlled by `agent.autonomy_level` via `AutonomyGate`.
