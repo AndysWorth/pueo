@@ -8225,9 +8225,11 @@ class _FakeAPIClient:
 
     def __init__(self) -> None:
         self.trigger_scan_calls = 0
+        self.trigger_scan_types: list[str] = []
 
-    async def trigger_scan(self) -> None:
+    async def trigger_scan(self, scan_type: str = "ARPSCAN") -> None:
         self.trigger_scan_calls += 1
+        self.trigger_scan_types.append(scan_type)
 
     async def get_devices(self):
         return []
@@ -8246,3 +8248,386 @@ class _FakeHealer:
     async def heal(self, diagnostic) -> None:
         self.heal_calls += 1
         self.last_diagnostic = diagnostic
+
+
+# ===========================================================================
+# TestNetAlertXMaintenanceValidator  (item 19)
+# ===========================================================================
+
+
+class TestNetAlertXMaintenanceValidator:
+    """Tests for the three new validators in config_validator.py (item 19)."""
+
+    # ── validate_ha_automation_files ─────────────────────────────────────────
+
+    def test_netalertx_webhook_snake_case_detected(self):
+        from netalertx.config_validator import validate_ha_automation_files
+
+        files = {
+            "automations.yaml": (
+                "- trigger:\n"
+                "  - platform: webhook\n"
+                "    webhook_id: netalertx_event\n"
+                "  action:\n"
+                "  - data:\n"
+                "      mac: '{{ trigger.json.eve_mac }}'\n"
+            )
+        }
+        issues = validate_ha_automation_files(files)
+        assert any(i.field == "eve_mac" for i in issues)
+
+    def test_non_netalertx_automation_ignored(self):
+        from netalertx.config_validator import validate_ha_automation_files
+
+        files = {
+            "automations.yaml": (
+                "- trigger:\n"
+                "  - platform: webhook\n"
+                "    webhook_id: some_other_event\n"
+                "  action:\n"
+                "  - data:\n"
+                "      mac: '{{ trigger.json.eve_mac }}'\n"
+            )
+        }
+        # No 'netalertx' in the content → ignored
+        assert validate_ha_automation_files(files) == []
+
+    def test_camelcase_fields_return_no_issues(self):
+        from netalertx.config_validator import validate_ha_automation_files
+
+        files = {
+            "automations.yaml": (
+                "- trigger:\n"
+                "  - platform: webhook\n"
+                "    webhook_id: netalertx_event\n"
+                "  action:\n"
+                "  - data:\n"
+                "      mac: '{{ trigger.json.eveMac }}'\n"
+                "      ip: '{{ trigger.json.eveIp }}'\n"
+            )
+        }
+        assert validate_ha_automation_files(files) == []
+
+    def test_multiple_files_only_netalertx_checked(self):
+        from netalertx.config_validator import validate_ha_automation_files
+
+        files = {
+            "light_auto.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: lights\n  action:\n  - data:\n      eve_mac: x\n",
+            "nax_auto.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n  action:\n  - data:\n      eve_mac: '{{ trigger.json.eve_mac }}'\n",
+        }
+        issues = validate_ha_automation_files(files)
+        # Only nax_auto.yaml is a NetAlertX automation
+        assert all("nax_auto.yaml" in i.message for i in issues)
+        assert len(issues) == 1
+
+    def test_filename_appears_in_issue_message(self):
+        from netalertx.config_validator import validate_ha_automation_files
+
+        files = {
+            "my_netalertx_automation.yaml": "trigger:\n- platform: webhook\n  webhook_id: netalertx_hook\naction:\n- data:\n    mac: '{{ trigger.json.eve_mac }}'\n"
+        }
+        issues = validate_ha_automation_files(files)
+        assert any("my_netalertx_automation.yaml" in i.message for i in issues)
+
+    # ── validate_mqtt_entity_coverage ────────────────────────────────────────
+
+    def test_device_absent_from_ha_returns_warning(self):
+        from netalertx.config_validator import validate_mqtt_entity_coverage
+
+        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        ha_states: list[dict] = []
+        issues = validate_mqtt_entity_coverage(devices, ha_states)
+        assert len(issues) == 1
+        assert issues[0].field == "mqtt_entity_divergence"
+        assert issues[0].severity == "WARNING"
+        assert "AA:BB:CC:DD:EE:FF" in issues[0].message
+
+    def test_device_present_in_ha_returns_no_issue(self):
+        from netalertx.config_validator import validate_mqtt_entity_coverage
+
+        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        ha_states = [
+            {
+                "entity_id": "device_tracker.router",
+                "attributes": {"mac_address": "AA:BB:CC:DD:EE:FF"},
+            }
+        ]
+        assert validate_mqtt_entity_coverage(devices, ha_states) == []
+
+    def test_mac_normalization_matches_different_formats(self):
+        from netalertx.config_validator import validate_mqtt_entity_coverage
+
+        devices = [{"devMAC": "aabbccddeeff", "devName": "switch"}]
+        ha_states = [
+            {
+                "entity_id": "device_tracker.switch",
+                "attributes": {"mac_address": "AA:BB:CC:DD:EE:FF"},
+            }
+        ]
+        # Both normalize to AA:BB:CC:DD:EE:FF → no divergence
+        assert validate_mqtt_entity_coverage(devices, ha_states) == []
+
+    def test_empty_mac_skipped(self):
+        from netalertx.config_validator import validate_mqtt_entity_coverage
+
+        devices = [{"devMAC": "", "devName": "unknown"}]
+        assert validate_mqtt_entity_coverage(devices, []) == []
+
+    def test_ha_state_without_mac_attribute_ignored(self):
+        from netalertx.config_validator import validate_mqtt_entity_coverage
+
+        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        ha_states = [{"entity_id": "device_tracker.router", "attributes": {}}]
+        issues = validate_mqtt_entity_coverage(devices, ha_states)
+        assert len(issues) == 1
+
+    # ── validate_db_row_counts ────────────────────────────────────────────────
+
+    def test_over_threshold_returns_warning(self):
+        from netalertx.config_validator import validate_db_row_counts
+
+        metrics = {"Plugins_History": 150000.0, "Events": 200000.0}
+        issues = validate_db_row_counts(metrics, max_rows=100000)
+        fields = [i.field for i in issues]
+        assert "Plugins_History" in fields
+        assert "Events" in fields
+        assert all(i.severity == "WARNING" for i in issues)
+
+    def test_under_threshold_returns_no_issues(self):
+        from netalertx.config_validator import validate_db_row_counts
+
+        metrics = {"Plugins_History": 50000.0, "Events": 30000.0}
+        assert validate_db_row_counts(metrics, max_rows=100000) == []
+
+    def test_missing_metric_key_skipped(self):
+        from netalertx.config_validator import validate_db_row_counts
+
+        metrics: dict[str, float] = {}
+        assert validate_db_row_counts(metrics, max_rows=100000) == []
+
+    def test_exactly_at_threshold_no_issue(self):
+        from netalertx.config_validator import validate_db_row_counts
+
+        metrics = {"Plugins_History": 100000.0}
+        assert validate_db_row_counts(metrics, max_rows=100000) == []
+
+
+# ===========================================================================
+# TestNetAlertXMaintenanceHealer  (item 19)
+# ===========================================================================
+
+
+class TestNetAlertXMaintenanceHealer:
+    """Tests for heal_maintenance_issues in healer.py (item 19)."""
+
+    def _make_issue(self, field: str, message: str = "test", severity: str = "MEDIUM"):
+        from netalertx.config_validator import ConfigIssue
+
+        return ConfigIssue(field=field, message=message, severity=severity)
+
+    def _make_healer(
+        self, gate, ssh_client=None, ha_ssh_client=None, api_client=None, notifier=None
+    ):
+        import sqlite3
+
+        from netalertx.healer import NetAlertXHealer
+        from utils.ssh_client import FakeSSHClient
+
+        if ssh_client is None:
+            ssh_client = FakeSSHClient()
+        if ha_ssh_client is None:
+            ha_ssh_client = FakeSSHClient(
+                file_contents={
+                    "/config/automations.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n  action:\n  - data:\n      mac: eve_mac\n"
+                }
+            )
+        if notifier is None:
+            from utils.notify import FakeNotifier
+
+            notifier = FakeNotifier(approve=True)
+        if api_client is None:
+            api_client = _FakeAPIClient()
+
+        db_path = ":memory:"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS netalertx_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+        return NetAlertXHealer(
+            gate=gate,
+            ssh_client=ssh_client,
+            ha_ssh_client=ha_ssh_client,
+            api_client=api_client,
+            notifier=notifier,
+            db_path=db_path,
+        )
+
+    # ── webhook field fix ────────────────────────────────────────────────────
+
+    def test_webhook_snake_case_level_4_auto_fixes(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/automations.yaml": (
+                    "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
+                    "  action:\n  - data:\n      mac: eve_mac\n"
+                )
+            }
+        )
+        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh)
+        issue = self._make_issue("eve_mac", severity="MEDIUM")
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        # automations.yaml was written (snake_case replaced)
+        assert "/config/automations.yaml" in ha_ssh.written_files
+        # No HITL call needed at level 4
+        assert len(gate.require_approval_calls) == 0
+
+    def test_webhook_snake_case_level_3_requires_approval(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/automations.yaml": "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
+            }
+        )
+        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
+        issue = self._make_issue("eve_mac", severity="MEDIUM")
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        # Approval was requested but rejected → no write
+        assert len(gate.require_approval_calls) == 1
+        assert ha_ssh.written_files == {}
+
+    def test_webhook_snake_case_level_3_approval_writes(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/automations.yaml": (
+                    "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
+                    "  action:\n  - data:\n      mac: eve_mac\n"
+                )
+            }
+        )
+        healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
+        issue = self._make_issue("eve_mac", severity="MEDIUM")
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        assert "/config/automations.yaml" in ha_ssh.written_files
+
+    # ── MQTT divergence: notify only at all levels ───────────────────────────
+
+    def test_mqtt_divergence_sends_notifier_event_no_writes(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        healer = self._make_healer(gate=gate, ssh_client=ssh, notifier=notifier)
+        issue = self._make_issue(
+            "mqtt_entity_divergence",
+            message="Device AA:BB:CC:DD:EE:FF not found as MQTT entity",
+            severity="WARNING",
+        )
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        assert len(notifier.sent) == 1
+        assert "mqtt_entity_divergence" in notifier.sent[0]["payload"]["field"]
+        assert ssh.written_files == {}
+        assert ssh.commands_run == []
+
+    def test_mqtt_divergence_no_hitl_gate_called(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier(approve=True)
+        healer = self._make_healer(gate=gate, notifier=notifier)
+        issue = self._make_issue("mqtt_entity_divergence", severity="WARNING")
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        assert len(gate.require_approval_calls) == 0
+
+    # ── DB row count: DBCLNP cleanup at level 4 only ─────────────────────────
+
+    def test_db_issue_level_4_triggers_dbclnp(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        api = _FakeAPIClient()
+        healer = self._make_healer(gate=gate, api_client=api)
+        issue = self._make_issue(
+            "Plugins_History", message="150k rows", severity="WARNING"
+        )
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        assert api.trigger_scan_calls == 1
+        assert "DBCLNP" in api.trigger_scan_types
+
+    def test_db_issue_level_3_no_dbclnp(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+
+        # should_auto_execute returns False → no DBCLNP at level < 4
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        api = _FakeAPIClient()
+        healer = self._make_healer(gate=gate, api_client=api)
+        issue = self._make_issue("Events", message="200k rows", severity="WARNING")
+        asyncio.run(healer.heal_maintenance_issues([issue]))
+
+        assert api.trigger_scan_calls == 0
+
+    def test_no_issues_is_noop(self):
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier(approve=True)
+        ssh = FakeSSHClient()
+        api = _FakeAPIClient()
+        healer = self._make_healer(
+            gate=gate, ssh_client=ssh, notifier=notifier, api_client=api
+        )
+        asyncio.run(healer.heal_maintenance_issues([]))
+
+        assert ssh.written_files == {}
+        assert api.trigger_scan_calls == 0
+        assert len(notifier.sent) == 0

@@ -23,12 +23,16 @@ from config import (
     DB_PATH,
     NETALERTX_LOG_CONTAINER_NAME,
 )
-from netalertx.config_validator import _SNAKE_TO_CAMEL, validate_app_conf
+from netalertx.config_validator import (
+    _SNAKE_TO_CAMEL,
+    validate_app_conf,
+)
 from utils.autonomy import RiskLevel
 from utils.logging import get_logger
 
 if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient
+    from netalertx.config_validator import ConfigIssue
     from netalertx.diagnosis import NetAlertXDiagnostic
     from interfaces import SSHClientProtocol
     from utils.autonomy import AutonomyGate
@@ -343,3 +347,58 @@ class NetAlertXHealer:
         log.info("netalertx_container_restart_start", container=self._container)
         await self._ssh.run(f"docker restart {self._container}")
         log.info("netalertx_container_restart_done")
+
+    # ------------------------------------------------------------------
+    # Item 19: maintenance issue healing
+    # ------------------------------------------------------------------
+
+    async def heal_maintenance_issues(self, config_issues: list["ConfigIssue"]) -> None:
+        """Process ConfigIssues from item 19 maintenance checks.
+
+        - Webhook field snake_case → camelCase fix (HIGH risk gate)
+        - MQTT entity divergence → notify only at all levels
+        - DB row count excess → DBCLNP cleanup at level 4 only
+        """
+        _webhook_fields = set(_SNAKE_TO_CAMEL.keys())
+        _db_metrics = {"Plugins_History", "Events"}
+
+        webhook_issues = [i for i in config_issues if i.field in _webhook_fields]
+        divergence_issues = [
+            i for i in config_issues if i.field == "mqtt_entity_divergence"
+        ]
+        db_issues = [i for i in config_issues if i.field in _db_metrics]
+
+        if webhook_issues:
+            await self._heal_webhook_fields(webhook_issues)
+
+        for issue in divergence_issues:
+            log.info("netalertx_mqtt_divergence_notified", detail=issue.message)
+            await self._notifier.send(
+                subject="Pueo: NetAlertX MQTT entity divergence",
+                body=issue.message,
+                payload={"field": issue.field, "severity": issue.severity},
+            )
+
+        if db_issues and self._gate.should_auto_execute(RiskLevel.HIGH):
+            await self._api.trigger_scan("DBCLNP")
+            log.info("netalertx_dbclnp_triggered", issue_count=len(db_issues))
+
+    async def _heal_webhook_fields(self, issues: list["ConfigIssue"]) -> None:
+        """Fix webhook automation snake_case fields to camelCase (HIGH risk)."""
+        if self._gate.should_auto_execute(RiskLevel.HIGH):
+            await self._fix_ha_automation_fields()
+            return
+
+        fields_str = ", ".join(i.field for i in issues)
+        approved = await self._gate.require_approval(
+            subject="Pueo: NetAlertX — fix HA automation webhook fields to camelCase",
+            body=(
+                f"Snake_case webhook fields detected: {fields_str}. "
+                "Rewrite to camelCase via HA sandbox engine."
+            ),
+            payload={"fields": [i.field for i in issues]},
+            notifier=self._notifier,
+            risk=RiskLevel.HIGH,
+        )
+        if approved:
+            await self._fix_ha_automation_fields()
