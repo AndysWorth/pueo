@@ -54,6 +54,10 @@ def main() -> None:
     # Must be set before importing agent modules so config.py picks up the right path
     os.environ["PUEO_CONFIG"] = str(config_path)
 
+    from utils.logging import setup_logging
+
+    setup_logging(console_text=(args.mode == "netalertx-setup"))
+
     if args.mode == "monitor":
         import ha_log_monitor
 
