@@ -263,7 +263,7 @@ Extends `netalertx/ha_name_sync.py`:
 
 ---
 
-### 17. NetAlertX AI Diagnosis ✅ TODO
+### 17. NetAlertX AI Diagnosis ✅ Done (2026-07-20) — PR #29
 **Depends on:** Items 10 (API client), 15 (`LogEvaluation` schema pattern), 16 (`HealthReport` schema)
 
 **Problem:** Raw anomalies from the health monitor and log monitor need AI triage — not every issue warrants action, and the right fix depends on root cause (networking, MQTT, version change, HA config conflict).
