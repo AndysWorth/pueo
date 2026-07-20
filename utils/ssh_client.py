@@ -68,10 +68,12 @@ class FakeSSHClient:
         file_contents: dict[str, str] | None = None,
         command_results: dict[str, tuple[int, str, str]] | None = None,
         stream_data: list[str] | None = None,
+        stream_error: Exception | None = None,
     ) -> None:
         self._file_contents: dict[str, str] = file_contents or {}
         self._command_results: dict[str, tuple[int, str, str]] = command_results or {}
         self._stream_data: list[str] = stream_data or []
+        self._stream_error: Exception | None = stream_error
         self.written_files: dict[str, str] = {}
         self.commands_run: list[str] = []
 
@@ -96,3 +98,5 @@ class FakeSSHClient:
     async def stream_lines(self, command: str) -> AsyncIterator[str]:  # type: ignore[misc]
         for line in self._stream_data:
             yield line
+        if self._stream_error is not None:
+            raise self._stream_error

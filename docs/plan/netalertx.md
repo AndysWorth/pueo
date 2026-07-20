@@ -226,7 +226,7 @@ Extends `netalertx/ha_name_sync.py`:
 
 ---
 
-### 15. NetAlertX Log Monitoring ✅ TODO
+### 15. NetAlertX Log Monitoring ✅ Done (2026-07-20) — PR #27
 **Depends on:** Items 9.5 (AutonomyGate), 10 (config, `DeploymentInfo`, `netalertx.log_container_name`)
 
 **Problem:** NetAlertX errors appear in `app.log` (the only log path since v26.7.1). Without a log monitor, Pueo has no real-time visibility into scan failures, MQTT disconnections, or plugin errors.
