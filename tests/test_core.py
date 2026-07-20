@@ -1306,6 +1306,32 @@ class TestTextFormatter:
                     pueo_logger.removeHandler(h)
                     h.close()
 
+    def test_setup_logging_default_uses_json_formatter(self, monkeypatch):
+        import logging as logging_mod
+        import utils.logging as logging_utils
+        from utils.logging import _JsonFormatter, _TextFormatter
+
+        monkeypatch.setattr(logging_utils, "_configured", False)
+        pueo_logger = logging_mod.getLogger("pueo")
+        original_handlers = pueo_logger.handlers[:]
+        try:
+            logging_utils.setup_logging()
+            stream_handlers = [
+                h
+                for h in pueo_logger.handlers
+                if isinstance(h, logging_mod.StreamHandler)
+                and not isinstance(h, logging_mod.FileHandler)
+            ]
+            assert any(isinstance(h.formatter, _JsonFormatter) for h in stream_handlers)
+            assert not any(
+                isinstance(h.formatter, _TextFormatter) for h in stream_handlers
+            )
+        finally:
+            for h in pueo_logger.handlers[:]:
+                if h not in original_handlers:
+                    pueo_logger.removeHandler(h)
+                    h.close()
+
 
 class TestCorrelationId:
     def test_default_is_empty_string(self):
