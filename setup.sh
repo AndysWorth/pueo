@@ -227,7 +227,7 @@ if $WRITE_CONFIG; then
     echo
     ask "Require human approval before every repair? (true/false)"  "false"  HITL_ALWAYS
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
-    ask "HITL approval timeout in minutes"  "60"  HITL_TIMEOUT_MINUTES
+    ask "HITL dashboard port"  "8080"  DASHBOARD_PORT
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
@@ -317,7 +317,7 @@ agent:
   self_healing_enabled: ${SELF_HEALING}
   hitl_always: ${HITL_ALWAYS}
   autonomy_level: ${AUTONOMY_LEVEL}
-  hitl_timeout_minutes: ${HITL_TIMEOUT_MINUTES}
+  dashboard_port: ${DASHBOARD_PORT}
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"
@@ -338,7 +338,8 @@ echo "  Activate environment : source .venv/bin/activate"
 echo "  Live log monitor     : python main.py --mode monitor"
 echo "  One-shot diagnostics : python main.py --mode diagnose"
 echo "  With memory layer    : python main.py --mode advanced"
-echo "  Full repair pipeline : python main.py --mode repair"
+echo "  Full repair pipeline : python main.py --mode repair
+  HITL dashboard       : python main.py --mode dashboard"
 if [ "${NAX_ENABLED}" = "true" ]; then
   echo
   echo "  NetAlertX install    : python main.py --mode netalertx-setup"

@@ -23,7 +23,6 @@ from config import (
     NOTIFY_WATCH_DIR,
     HITL_ALWAYS,
     AUTONOMY_LEVEL,
-    HITL_TIMEOUT_MINUTES,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -348,7 +347,7 @@ async def main(
     _notifier: NotifierProtocol = notifier or get_notifier(
         NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
     )
-    _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL, HITL_TIMEOUT_MINUTES)
+    _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL)
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
     report = await analyze_config_locally(yaml_content, llm_client=llm_client)

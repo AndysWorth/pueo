@@ -16,10 +16,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "modes:\n"
-            "  monitor   live SSH log tail with AI triage (default, daemon mode)\n"
-            "  diagnose  one-shot config fetch and analysis\n"
-            "  advanced  diagnose + SQLite memory + backup triggering\n"
-            "  repair    full sandbox-test-then-atomic-swap repair cycle\n"
+            "  monitor    live SSH log tail with AI triage (default, daemon mode)\n"
+            "  diagnose   one-shot config fetch and analysis\n"
+            "  advanced   diagnose + SQLite memory + backup triggering\n"
+            "  repair     full sandbox-test-then-atomic-swap repair cycle\n"
+            "  dashboard  HITL web dashboard for approving/rejecting pending actions\n"
         ),
     )
     parser.add_argument(
@@ -37,6 +38,7 @@ def main() -> None:
             "repair",
             "netalertx-setup",
             "netalertx",
+            "dashboard",
         ],
         default="monitor",
         help="agent mode (default: monitor)",
@@ -80,6 +82,10 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.log_monitor.main())
+    elif args.mode == "dashboard":
+        from web.dashboard import run_dashboard
+
+        run_dashboard()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="10">
+  <title>Pueo HITL Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; padding: 1.5rem; }
+    h1 { font-size: 1.4rem; margin-bottom: 1.5rem; color: #333; }
+    .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+    .badge { font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .badge-pending  { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+    .badge-approved { background: #d1e7dd; color: #0a3622; border: 1px solid #28a745; }
+    .badge-rejected { background: #f8d7da; color: #58151c; border: 1px solid #dc3545; }
+    .subject { font-weight: 600; font-size: 1rem; }
+    .elapsed { font-size: 0.8rem; color: #888; margin-left: auto; }
+    .body { font-size: 0.9rem; color: #444; margin-bottom: 0.5rem; white-space: pre-wrap; }
+    .meta { font-size: 0.8rem; color: #666; margin-bottom: 0.5rem; }
+    details { margin-bottom: 0.75rem; }
+    summary { font-size: 0.8rem; color: #555; cursor: pointer; }
+    pre { font-size: 0.78rem; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; padding: 0.6rem; overflow-x: auto; margin-top: 0.4rem; }
+    .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    .btn { padding: 0.35rem 1rem; font-size: 0.85rem; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+    .btn-approve { background: #28a745; color: #fff; }
+    .btn-approve:hover { background: #218838; }
+    .btn-reject  { background: #dc3545; color: #fff; }
+    .btn-reject:hover  { background: #c82333; }
+    .empty { color: #888; font-size: 0.9rem; text-align: center; padding: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>🦉 Pueo — HITL Approval Queue</h1>
+  {% block content %}{% endblock %}
+</body>
+</html>

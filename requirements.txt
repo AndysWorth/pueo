@@ -1,6 +1,9 @@
 aiomqtt
 asyncssh
+fastapi
 httpx
+jinja2
 ollama
 pydantic
 pyyaml
+uvicorn
