@@ -189,6 +189,7 @@ fi
 hdr "4. Configuration"
 
 WRITE_CONFIG=false
+NAX_ENABLED=""
 if [[ -f "config.yaml" ]]; then
     ok "config.yaml already exists"
     read -rp "  Reconfigure? [y/N]: " reconf
@@ -324,6 +325,11 @@ EOF
     ok "config.yaml written"
 fi
 
+# Read NAX_ENABLED from config.yaml if not set by this run (e.g. user skipped reconfigure)
+if [[ -z "${NAX_ENABLED}" && -f "config.yaml" ]]; then
+    NAX_ENABLED=$(grep "enabled:" config.yaml | head -1 | awk '{print $2}' | tr -d '"' || echo "false")
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
@@ -333,4 +339,9 @@ echo "  Live log monitor     : python main.py --mode monitor"
 echo "  One-shot diagnostics : python main.py --mode diagnose"
 echo "  With memory layer    : python main.py --mode advanced"
 echo "  Full repair pipeline : python main.py --mode repair"
+if [ "${NAX_ENABLED}" = "true" ]; then
+  echo
+  echo "  NetAlertX install    : python main.py --mode netalertx-setup"
+  echo "  NetAlertX monitor    : python main.py --mode netalertx"
+fi
 echo
