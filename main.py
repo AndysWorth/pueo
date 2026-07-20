@@ -69,12 +69,16 @@ def main() -> None:
 
         asyncio.run(ha_agent_sandbox_engine.main())
     elif args.mode == "netalertx-setup":
+        import ha_agent_advanced
         import netalertx.installer
 
+        ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.installer.main())
     elif args.mode == "netalertx":
+        import ha_agent_advanced
         import netalertx.log_monitor
 
+        ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.log_monitor.main())
 
 
