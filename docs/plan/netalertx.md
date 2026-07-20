@@ -243,7 +243,7 @@ Extends `netalertx/ha_name_sync.py`:
 
 ---
 
-### 16. NetAlertX Health Polling and MQTT ✅ TODO
+### 16. NetAlertX Health Polling and MQTT ✅ Done (2026-07-20) — PR #28
 **Depends on:** Items 10 (API client, all config keys), 14 (`HaNameSync.sync_device`), 15 (log monitor pattern established)
 
 **Problem:** Log monitoring is reactive. Pueo also needs proactive visibility: scan freshness, device counts, and MQTT bridge health checked on a regular schedule.
