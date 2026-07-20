@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/evals.md](plan/evals.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
 
 ---
 
@@ -31,7 +31,6 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
 | 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
-| 20  | Evals with Synthetic HA Scenarios                                    | ✅ TODO              |
 
 ---
 
@@ -73,13 +72,6 @@ Items 10–19. Full lifecycle for a new integration target: install from scratch
 Item 19.5. Eliminates the 60-minute blocking timeout from `AutonomyGate.require_approval()`, converts monitoring loops to fire healing as `asyncio.create_task()`, and adds a local FastAPI web dashboard (`python main.py --mode dashboard`) for approving or rejecting pending repair actions via browser. Adds `fastapi`, `jinja2`, and `uvicorn` dependencies.
 
 → [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
-
----
-
-### Phase 5 — Agent Quality (1–2 sessions) ✅ TODO
-Item 20. Eval framework with ≥ 10 synthetic HA scenarios; baseline scoring against `is_valid` accuracy, severity accuracy, keyword recall, fix parse rate, and latency; `/project:run-evals` slash command; optional CI job.
-
-→ [plan/evals.md](plan/evals.md)
 
 ---
 
