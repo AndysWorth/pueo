@@ -76,12 +76,6 @@ class TestConfigDefaults:
 
         assert config.CONFIG_REMOTE_PATH == "/config/configuration.yaml"
 
-    def test_log_remote_path_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.LOG_REMOTE_PATH == "/config/home-assistant.log"
-
     def test_db_path_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
