@@ -41,10 +41,14 @@ from config import (
     NETALERTX_SCAN_INTERFACE,
 )
 from utils.autonomy import RiskLevel
+from netalertx.installer_diagnostics import (
+    diagnose_installer_failure,
+    format_diagnostic_for_hitl,
+)
 from utils.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
-    from interfaces import SSHClientProtocol
+    from interfaces import LLMClientProtocol, SSHClientProtocol
     from utils.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
@@ -219,6 +223,7 @@ async def _step2_install_mosquitto(
     details: dict,
     cid: str,
     db_path: str,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> bool:
     """Install and start the Mosquitto MQTT add-on if needed.
 
@@ -251,14 +256,43 @@ async def _step2_install_mosquitto(
 
     running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
     if not running:
-        log.error("step2_mosquitto_not_running", correlation_id=cid)
-        await gate.require_approval(
-            subject="NetAlertX installer: Mosquitto failed to start",
-            body="Mosquitto did not reach running state within 30 s. Aborting.",
-            payload={"notification_id": f"{cid}_step2_abort", "step": 2},
-            notifier=notifier,
-            risk=RiskLevel.CRITICAL,
+        diagnostic = await diagnose_installer_failure(
+            "mosquitto_start", ssh_client, llm_client
         )
+        log.error(
+            "step2_mosquitto_not_running",
+            hypothesis=diagnostic.primary_hypothesis,
+            confidence=diagnostic.confidence,
+            correlation_id=cid,
+        )
+        approved = await gate.require_approval(
+            subject="NetAlertX installer: Mosquitto failed to start",
+            body=format_diagnostic_for_hitl(diagnostic),
+            payload={
+                "notification_id": f"{cid}_step2_abort",
+                "step": 2,
+                "can_auto_fix": diagnostic.can_auto_fix,
+                "auto_fix_command": diagnostic.auto_fix_command,
+            },
+            notifier=notifier,
+            risk=RiskLevel.HIGH,
+        )
+        if approved and diagnostic.can_auto_fix and diagnostic.auto_fix_command:
+            ec, _, _ = await ssh_client.run(diagnostic.auto_fix_command, check=False)
+            log.info(
+                "step2_auto_fix_attempted",
+                command=diagnostic.auto_fix_command,
+                ec=ec,
+                correlation_id=cid,
+            )
+            if ec == 0:
+                running = await _poll_addon_state(
+                    ssh_client, "core_mosquitto", "running"
+                )
+                if running:
+                    _write_install_state(db_path, "MQTT_RUNNING", details, cid)
+                    log.info("step2_complete_after_fix", correlation_id=cid)
+                    return True
         return False
 
     _write_install_state(db_path, "MQTT_RUNNING", details, cid)
@@ -547,6 +581,7 @@ async def _step5_install_addon(
     details: dict,
     cid: str,
     db_path: str,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> bool:
     """Install and start the NetAlertX add-on.
 
@@ -584,13 +619,19 @@ async def _step5_install_addon(
                 ssh_client, slug, "unknown", attempts=60, delay=5.0
             )
             if not installed:
-                log.error("step5_install_timeout", slug=slug, correlation_id=cid)
+                diagnostic = await diagnose_installer_failure(
+                    "addon_install", ssh_client, llm_client, slug
+                )
+                log.error(
+                    "step5_install_timeout",
+                    slug=slug,
+                    hypothesis=diagnostic.primary_hypothesis,
+                    confidence=diagnostic.confidence,
+                    correlation_id=cid,
+                )
                 await gate.require_approval(
                     subject="NetAlertX installer: add-on install timed out",
-                    body=(
-                        f"Add-on {slug!r} did not complete installation within 5 minutes. "
-                        "Check Supervisor logs and re-run setup."
-                    ),
+                    body=format_diagnostic_for_hitl(diagnostic),
                     payload={
                         "notification_id": f"{cid}_step5_install_timeout",
                         "step": 5,
@@ -624,13 +665,19 @@ async def _step5_install_addon(
             ssh_client, slug, "running", attempts=60, delay=5.0
         )
         if not running:
-            log.error("step5_start_timeout", slug=slug, correlation_id=cid)
+            diagnostic = await diagnose_installer_failure(
+                "addon_start", ssh_client, llm_client, slug
+            )
+            log.error(
+                "step5_start_timeout",
+                slug=slug,
+                hypothesis=diagnostic.primary_hypothesis,
+                confidence=diagnostic.confidence,
+                correlation_id=cid,
+            )
             await gate.require_approval(
                 subject="NetAlertX installer: add-on start timed out",
-                body=(
-                    f"Add-on {slug!r} did not reach running state within 5 minutes. "
-                    "Check Supervisor logs and re-run setup."
-                ),
+                body=format_diagnostic_for_hitl(diagnostic),
                 payload={
                     "notification_id": f"{cid}_step5_start_timeout",
                     "step": 5,
@@ -976,6 +1023,7 @@ async def run_steps_5_to_8(
     notifier: "NotifierProtocol",
     db_path: str = DB_PATH,
     http_client: httpx.AsyncClient | None = None,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> str:
     """Execute installer steps 5–8, resuming from the current persisted state.
 
@@ -997,7 +1045,7 @@ async def run_steps_5_to_8(
     # Step 5: ADDON_REPO_ADDED / ADDON_INSTALLED → ADDON_RUNNING
     if _STATE_RANK[current_state] < _STATE_RANK["ADDON_RUNNING"]:
         ok = await _step5_install_addon(
-            ssh_client, gate, notifier, details, cid, db_path
+            ssh_client, gate, notifier, details, cid, db_path, llm_client
         )
         if not ok:
             return _read_install_state(db_path)[0]
@@ -1044,6 +1092,7 @@ async def run_steps_1_to_4(
     notifier: "NotifierProtocol",
     db_path: str = DB_PATH,
     http_client: httpx.AsyncClient | None = None,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> str:
     """Execute installer steps 1–4, resuming from the current persisted state.
 
@@ -1072,7 +1121,7 @@ async def run_steps_1_to_4(
     # Step 2: MQTT_INSTALLED → MQTT_RUNNING
     if _STATE_RANK[current_state] < _STATE_RANK["MQTT_RUNNING"]:
         ok = await _step2_install_mosquitto(
-            ssh_client, gate, notifier, details, cid, db_path
+            ssh_client, gate, notifier, details, cid, db_path, llm_client
         )
         if not ok:
             return _read_install_state(db_path)[0]
@@ -1110,15 +1159,20 @@ async def run_installer(
     notifier: "NotifierProtocol",
     db_path: str = DB_PATH,
     http_client: httpx.AsyncClient | None = None,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> str:
     """Execute all 8 installer steps, resuming from the current persisted state.
 
     Returns the final state string.
     """
-    state = await run_steps_1_to_4(ssh_client, gate, notifier, db_path, http_client)
+    state = await run_steps_1_to_4(
+        ssh_client, gate, notifier, db_path, http_client, llm_client
+    )
     if _STATE_RANK.get(state, -1) < _STATE_RANK["ADDON_REPO_ADDED"]:
         return state
-    return await run_steps_5_to_8(ssh_client, gate, notifier, db_path, http_client)
+    return await run_steps_5_to_8(
+        ssh_client, gate, notifier, db_path, http_client, llm_client
+    )
 
 
 async def main(
@@ -1126,6 +1180,7 @@ async def main(
     gate: "AutonomyGate | None" = None,
     notifier: "NotifierProtocol | None" = None,
     db_path: str = DB_PATH,
+    llm_client: "LLMClientProtocol | None" = None,
 ) -> None:
     """Entry point for `--mode netalertx-setup`."""
     from config import (
@@ -1147,7 +1202,12 @@ async def main(
 
     async with httpx.AsyncClient() as _http:
         final_state = await run_installer(
-            _ssh, _gate, _notifier, db_path=db_path, http_client=_http
+            _ssh,
+            _gate,
+            _notifier,
+            db_path=db_path,
+            http_client=_http,
+            llm_client=llm_client,
         )
     log.info("netalertx_setup_done", state=final_state)
 

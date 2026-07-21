@@ -4084,7 +4084,9 @@ class TestNetAlertXInstallerSteps1to4:
     def test_step2_mosquitto_start_poll_fails_aborts(self, tmp_path, monkeypatch):
         import asyncio
         from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
         from netalertx.installer import run_steps_1_to_4
+        from netalertx.installer_diagnostics import InstallerDiagnostic
 
         db = _make_installer_db(tmp_path, monkeypatch)
 
@@ -4093,6 +4095,14 @@ class TestNetAlertXInstallerSteps1to4:
 
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_false)
 
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Port 1883 is in use",
+            confidence=0.8,
+            supporting_evidence=["state: stopped"],
+            alternative_hypotheses=[],
+            recommended_action="Stop the conflicting process",
+            can_auto_fix=False,
+        )
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
@@ -4102,7 +4112,13 @@ class TestNetAlertXInstallerSteps1to4:
         )
         gate = self._gate_ask()
         state = asyncio.run(
-            run_steps_1_to_4(ssh, gate, self._notifier(approve=False), db_path=db)
+            run_steps_1_to_4(
+                ssh,
+                gate,
+                self._notifier(approve=False),
+                db_path=db,
+                llm_client=FakeLLMClient(diag.model_dump_json()),
+            )
         )
         assert state == "MQTT_INSTALLED"
         assert any(
@@ -4556,6 +4572,8 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+        from utils.ollama_client import FakeLLMClient
 
         async def poll_false(*a, **k):
             return False
@@ -4565,6 +4583,14 @@ class TestNetAlertXInstallerSteps5to8:
 
         from utils.ssh_client import FakeSSHClient
 
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Network issue downloading image",
+            confidence=0.5,
+            supporting_evidence=[],
+            alternative_hypotheses=["Supervisor not yet indexed the repo"],
+            recommended_action="Wait and re-run setup",
+            can_auto_fix=False,
+        )
         ssh = FakeSSHClient(
             command_results={
                 f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
@@ -4586,6 +4612,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
+                llm_client=FakeLLMClient(diag.model_dump_json()),
             )
         )
         assert state == "ADDON_REPO_ADDED"
@@ -4597,6 +4624,8 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+        from utils.ollama_client import FakeLLMClient
 
         async def poll_not_state_true(*a, **k):
             return True
@@ -4612,6 +4641,14 @@ class TestNetAlertXInstallerSteps5to8:
 
         from utils.ssh_client import FakeSSHClient
 
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Add-on config issue causing immediate exit",
+            confidence=0.6,
+            supporting_evidence=[],
+            alternative_hypotheses=["NET_RAW capability missing"],
+            recommended_action="Check add-on logs for specific error",
+            can_auto_fix=False,
+        )
         ssh = FakeSSHClient(
             command_results={
                 f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
@@ -4634,6 +4671,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
+                llm_client=FakeLLMClient(diag.model_dump_json()),
             )
         )
         assert state == "ADDON_INSTALLED"
@@ -9013,3 +9051,336 @@ class TestDashboardRoutes:
         monkeypatch.setattr(dashboard, "DASHBOARD_PORT", 9999)
         dashboard.run_dashboard()
         assert calls[0]["port"] == 9999
+
+
+# ── netalertx/installer_diagnostics.py ───────────────────────────────────────
+
+
+class TestInstallerDiagnostics:
+    # ── schema tests ─────────────────────────────────────────────────────────
+
+    def test_installer_diagnostic_valid_construction(self):
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+
+        d = InstallerDiagnostic(
+            primary_hypothesis="Port 1883 is in use",
+            confidence=0.85,
+            supporting_evidence=["state: stopped"],
+            alternative_hypotheses=["TLS cert mismatch"],
+            recommended_action="Stop conflicting process",
+            can_auto_fix=True,
+            auto_fix_command="ha addons restart core_mosquitto",
+            verification_command="ha addons info core_mosquitto",
+        )
+        assert d.confidence == 0.85
+        assert d.can_auto_fix is True
+        assert d.auto_fix_command == "ha addons restart core_mosquitto"
+
+    def test_installer_diagnostic_missing_required_field_raises(self):
+        from pydantic import ValidationError
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+
+        with pytest.raises(ValidationError):
+            InstallerDiagnostic(
+                confidence=0.5,
+                supporting_evidence=[],
+                alternative_hypotheses=[],
+                recommended_action="do something",
+                can_auto_fix=False,
+            )
+
+    def test_installer_diagnostic_json_round_trip(self):
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+
+        d = InstallerDiagnostic(
+            primary_hypothesis="Slug not found",
+            confidence=0.4,
+            supporting_evidence=[],
+            alternative_hypotheses=["Supervisor not indexed yet"],
+            recommended_action="Run ha supervisor reload",
+            can_auto_fix=True,
+            auto_fix_command="ha supervisor reload",
+            verification_command="ha store addons",
+        )
+        restored = InstallerDiagnostic.model_validate_json(d.model_dump_json())
+        assert restored.primary_hypothesis == d.primary_hypothesis
+        assert restored.auto_fix_command == d.auto_fix_command
+
+    # ── evidence gatherer tests ───────────────────────────────────────────────
+
+    def test_gather_mosquitto_evidence_returns_expected_keys(self):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer_diagnostics import gather_mosquitto_evidence
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha addons info core_mosquitto": (0, "state: error\n", ""),
+                "ha addons logs core_mosquitto -n 50": (
+                    0,
+                    "Error: Port '1883' is already in use\n",
+                    "",
+                ),
+                "ss -tlnp | grep 1883": (0, "tcp LISTEN 0 128 *:1883\n", ""),
+                "ha supervisor info": (0, "version: 2024.1\n", ""),
+            }
+        )
+        evidence = asyncio.run(gather_mosquitto_evidence(ssh))
+        assert set(evidence.keys()) == {
+            "addon_info",
+            "addon_logs",
+            "port_1883",
+            "supervisor_info",
+        }
+        assert "state: error" in evidence["addon_info"]
+        assert "Port '1883'" in evidence["addon_logs"]
+
+    def test_gather_addon_install_evidence_passes_slug(self):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer_diagnostics import gather_addon_install_evidence
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha addons info netalertx_fa": (0, "state: installing\n", ""),
+                "ha supervisor info": (0, "version: 2024.1\n", ""),
+            }
+        )
+        evidence = asyncio.run(gather_addon_install_evidence(ssh, "netalertx_fa"))
+        assert "addon_info" in evidence
+        assert "supervisor_info" in evidence
+        assert "ha addons info netalertx_fa" in ssh.commands_run
+
+    def test_gather_addon_start_evidence_passes_slug(self):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer_diagnostics import gather_addon_start_evidence
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha addons info netalertx_fa": (0, "state: error\n", ""),
+                "ha addons logs netalertx_fa -n 50": (
+                    0,
+                    "NET_RAW capability missing\n",
+                    "",
+                ),
+            }
+        )
+        evidence = asyncio.run(gather_addon_start_evidence(ssh, "netalertx_fa"))
+        assert "addon_info" in evidence
+        assert "addon_logs" in evidence
+        assert "NET_RAW" in evidence["addon_logs"]
+
+    # ── diagnostic flow tests ─────────────────────────────────────────────────
+
+    def test_diagnose_installer_failure_mosquitto_start_calls_llm(self):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from netalertx.installer_diagnostics import (
+            InstallerDiagnostic,
+            diagnose_installer_failure,
+        )
+
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Port 1883 in use",
+            confidence=0.9,
+            supporting_evidence=["Port '1883' is already in use"],
+            alternative_hypotheses=[],
+            recommended_action="Stop the other MQTT broker",
+            can_auto_fix=False,
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient()
+
+        result = asyncio.run(diagnose_installer_failure("mosquitto_start", ssh, llm))
+        assert isinstance(result, InstallerDiagnostic)
+        assert result.primary_hypothesis == "Port 1883 in use"
+        assert len(llm.calls) == 1
+
+    def test_diagnose_installer_failure_addon_install_passes_slug(self):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from netalertx.installer_diagnostics import (
+            InstallerDiagnostic,
+            diagnose_installer_failure,
+        )
+
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Supervisor not yet indexed the repo",
+            confidence=0.7,
+            supporting_evidence=[],
+            alternative_hypotheses=["Network issue"],
+            recommended_action="Run ha supervisor reload",
+            can_auto_fix=True,
+            auto_fix_command="ha supervisor reload",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient()
+
+        result = asyncio.run(
+            diagnose_installer_failure("addon_install", ssh, llm, "netalertx_fa")
+        )
+        assert result.can_auto_fix is True
+        assert "ha addons info netalertx_fa" in ssh.commands_run
+
+    # ── HITL formatter tests ──────────────────────────────────────────────────
+
+    def test_format_diagnostic_for_hitl_renders_all_fields(self):
+        from netalertx.installer_diagnostics import (
+            InstallerDiagnostic,
+            format_diagnostic_for_hitl,
+        )
+
+        d = InstallerDiagnostic(
+            primary_hypothesis="Port 1883 is in use by another process",
+            confidence=0.82,
+            supporting_evidence=["Supervisor log: Port '1883' is already in use"],
+            alternative_hypotheses=["SSL cert mismatch"],
+            recommended_action="Stop the conflicting process",
+            can_auto_fix=True,
+            auto_fix_command="ha addons restart core_mosquitto",
+            verification_command="ha addons info core_mosquitto",
+        )
+        text = format_diagnostic_for_hitl(d)
+        assert "Port 1883 is in use" in text
+        assert "82%" in text
+        assert "Port '1883' is already in use" in text
+        assert "SSL cert mismatch" in text
+        assert "Stop the conflicting process" in text
+        assert "ha addons restart core_mosquitto" in text
+        assert "ha addons info core_mosquitto" in text
+        assert "Pueo can attempt this fix automatically" in text
+
+    # ── installer integration tests ───────────────────────────────────────────
+
+    def _make_diag(self, **kwargs):
+        from netalertx.installer_diagnostics import InstallerDiagnostic
+
+        defaults = dict(
+            primary_hypothesis="Test hypothesis",
+            confidence=0.8,
+            supporting_evidence=[],
+            alternative_hypotheses=[],
+            recommended_action="Do something",
+            can_auto_fix=False,
+        )
+        defaults.update(kwargs)
+        return InstallerDiagnostic(**defaults)
+
+    def test_step2_failure_calls_llm_and_enriches_hitl_body(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from netalertx.installer import run_steps_1_to_4
+
+        async def poll_false(*a, **k):
+            return False
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_false)
+
+        diag = self._make_diag(primary_hypothesis="Port 1883 conflict", confidence=0.9)
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: stopped", ""),
+                "ha addons start core_mosquitto": (0, "", ""),
+            }
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False)
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        asyncio.run(
+            run_steps_1_to_4(
+                ssh, gate, FakeNotifier(approve=False), db_path=db, llm_client=llm
+            )
+        )
+        assert len(llm.calls) == 1
+        assert any(
+            "Port 1883 conflict" in c.get("body", "")
+            for c in gate.require_approval_calls
+        )
+
+    def test_step2_auto_fix_success_advances_state(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        poll_call_count = [0]
+
+        async def poll_conditional(*a, **k):
+            poll_call_count[0] += 1
+            return poll_call_count[0] > 1
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_conditional)
+
+        diag = self._make_diag(
+            primary_hypothesis="Port conflict",
+            can_auto_fix=True,
+            auto_fix_command="ha addons restart core_mosquitto",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: stopped", ""),
+                "ha addons start core_mosquitto": (0, "", ""),
+                "ha addons restart core_mosquitto": (0, "", ""),
+            }
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        state = asyncio.run(
+            run_steps_1_to_4(
+                ssh, gate, FakeNotifier(approve=True), db_path=db, llm_client=llm
+            )
+        )
+        assert state == "MQTT_RUNNING"
+        assert "ha addons restart core_mosquitto" in ssh.commands_run
+
+    def test_step2_auto_fix_nonzero_ec_returns_false(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from netalertx.installer import run_steps_1_to_4
+
+        async def poll_false(*a, **k):
+            return False
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_false)
+
+        diag = self._make_diag(
+            primary_hypothesis="Port conflict",
+            can_auto_fix=True,
+            auto_fix_command="ha addons restart core_mosquitto",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "ok", ""),
+                "ha addons info core_mosquitto": (0, "state: stopped", ""),
+                "ha addons start core_mosquitto": (0, "", ""),
+                "ha addons restart core_mosquitto": (1, "", "error"),
+            }
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        state = asyncio.run(
+            run_steps_1_to_4(
+                ssh, gate, FakeNotifier(approve=True), db_path=db, llm_client=llm
+            )
+        )
+        assert state == "MQTT_INSTALLED"
