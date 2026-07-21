@@ -24,7 +24,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 3.5 · 1 s
 |------|---------|
 | LOW | Reading a file, locking a device name in NetAlertX, read-only API calls |
 | MEDIUM | Rewriting a non-production config file (e.g., NetAlertX `app.conf`), writing to a sandbox path |
-| HIGH | Writing to production HA `configuration.yaml`, restarting an add-on or container, calling `ha core reload` |
+| HIGH | Writing to production HA `configuration.yaml`, restarting an add-on or container, calling `ha core restart` |
 | CRITICAL | Removing a top-level block from production config, bulk irreversible operations, any action when backup slug is unavailable |
 
 **Autonomy × Risk matrix** (✓ = auto-execute, ask = HITL approval required, skip = no action taken):

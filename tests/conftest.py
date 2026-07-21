@@ -16,7 +16,7 @@ _DEFAULT_CONFIG_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 81
 _DEFAULT_COMMAND_RESULTS = {
     "ha backup new": (0, "Slug: test-slug-abc\n", ""),
     "ha core check": (0, "", ""),
-    "ha core reload": (0, "", ""),
+    "ha core restart": (0, "", ""),
     "mkdir": (0, "", ""),
     "mv": (0, "", ""),
     "cp": (0, "", ""),

@@ -1913,7 +1913,7 @@ class TestSandboxPipeline:
             command_results={
                 "ha backup new": (0, "Slug: sbx-slug-1\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -1929,7 +1929,7 @@ class TestSandboxPipeline:
             command_results={
                 "ha backup new": (0, "Slug: sbx-slug-2\n", ""),
                 "ha core check": (1, "", "config error"),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -2464,7 +2464,7 @@ class TestHitlPipelineGate:
             command_results={
                 "ha backup new": (0, "Slug: hitl-slug-1\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -2944,7 +2944,7 @@ class TestAutonomyGate:
             command_results={
                 "ha backup new": (0, "Slug: s1\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -2983,7 +2983,7 @@ class TestAutonomyGate:
             command_results={
                 "ha backup new": (0, "Slug: s1\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -3021,7 +3021,7 @@ class TestAutonomyGate:
             command_results={
                 "ha backup new": (0, "Slug: s1\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "mkdir": (0, "", ""),
                 "mv": (0, "", ""),
                 "cp": (0, "", ""),
@@ -3050,12 +3050,6 @@ class TestAutonomyGate:
 
 
 class TestNetAlertXConfigKeys:
-    def test_netalertx_enabled_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.NETALERTX_ENABLED is False
-
     def test_netalertx_deployment_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
@@ -3121,7 +3115,7 @@ class TestNetAlertXConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert "jokob-sk/NetAlertX" in config.NETALERTX_ADDON_REPOSITORY_URL
+        assert "alexbelgium/hassio-addons" in config.NETALERTX_ADDON_REPOSITORY_URL
 
     def test_netalertx_addon_slug_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
@@ -3173,7 +3167,6 @@ class TestNetAlertXConfigKeys:
             yaml.dump(
                 {
                     "netalertx": {
-                        "enabled": True,
                         "api_port": 9999,
                         "api_token": "tok123",
                         "max_scan_age_minutes": 5,
@@ -3186,7 +3179,6 @@ class TestNetAlertXConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.NETALERTX_ENABLED is True
         assert config.NETALERTX_API_PORT == 9999
         assert config.NETALERTX_API_TOKEN == "tok123"
         assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 5
@@ -3580,12 +3572,12 @@ class TestNetAlertXInstallerSteps1to4:
                 ),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
                 "ha store addons": (
                     0,
-                    "slug: jokob-sk_NetAlertX\nrepository: jokob-sk/NetAlertX",
+                    "slug: netalertx_fa\nrepository: alexbelgium/hassio-addons",
                     "",
                 ),
             }
@@ -3606,7 +3598,7 @@ class TestNetAlertXInstallerSteps1to4:
                 ),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
                 "ha store addons": (0, "", ""),
@@ -3760,10 +3752,10 @@ class TestNetAlertXInstallerSteps1to4:
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
-                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+                "ha store addons": (0, "slug: netalertx_fa", ""),
             }
         )
         gate = self._gate_ask()
@@ -3852,10 +3844,10 @@ class TestNetAlertXInstallerSteps1to4:
                 ),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
-                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+                "ha store addons": (0, "slug: netalertx_fa", ""),
             }
         )
         gate = self._gate_ask()
@@ -3942,7 +3934,7 @@ class TestNetAlertXInstallerSteps1to4:
         monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
         monkeypatch.setattr(
             "netalertx.installer.NETALERTX_ADDON_REPOSITORY_URL",
-            "https://github.com/jokob-sk/NetAlertX",
+            "https://github.com/alexbelgium/hassio-addons",
         )
 
         ssh = FakeSSHClient(
@@ -3982,7 +3974,7 @@ class TestNetAlertXInstallerSteps1to4:
             )
         )
         _, details = _read_install_state(db)
-        assert details.get("addon_slug") == "jokob-sk_NetAlertX"
+        assert details.get("addon_slug") == "netalertx_fa"
 
     def test_step4_slug_from_config_takes_precedence(self, tmp_path, monkeypatch):
         import asyncio
@@ -4033,17 +4025,19 @@ class TestNetAlertXInstallerSteps1to4:
 
         output = (
             "- name: NetAlertX\n"
-            "  slug: jokob-sk_NetAlertX\n"
-            "  repository: https://github.com/jokob-sk/NetAlertX\n"
+            "  slug: netalertx_fa\n"
+            "  repository: https://github.com/alexbelgium/hassio-addons\n"
         )
-        slug = _parse_slug_from_store(output, "https://github.com/jokob-sk/NetAlertX")
-        assert slug == "jokob-sk_NetAlertX"
+        slug = _parse_slug_from_store(
+            output, "https://github.com/alexbelgium/hassio-addons"
+        )
+        assert slug == "netalertx_fa"
 
     def test_parse_slug_from_store_returns_empty_when_not_found(self):
         from netalertx.installer import _parse_slug_from_store
 
         slug = _parse_slug_from_store(
-            "no relevant content here", "https://github.com/jokob-sk/NetAlertX"
+            "no relevant content here", "https://github.com/alexbelgium/hassio-addons"
         )
         assert slug == ""
 
@@ -4075,10 +4069,10 @@ class TestNetAlertXInstallerSteps1to4:
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
-                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+                "ha store addons": (0, "slug: netalertx_fa", ""),
             }
         )
         asyncio.run(
@@ -4152,7 +4146,7 @@ class TestNetAlertXInstallerSteps1to4:
 
         _write_install_state(str(db), "MQTT_RUNNING", {}, "test-cid")
 
-        _repo_url = "https://github.com/jokob-sk/NetAlertX"
+        _repo_url = "https://github.com/alexbelgium/hassio-addons"
         list_call_count = [0]
 
         class TrackingSSHClient(FakeSSHClient):
@@ -4167,7 +4161,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = TrackingSSHClient(
             command_results={
                 f"ha store repositories add {_repo_url}": (0, "", ""),
-                "ha store addons": (0, "slug: jokob-sk_NetAlertX", ""),
+                "ha store addons": (0, "slug: netalertx_fa", ""),
             }
         )
         gate = self._gate_auto()
@@ -4360,7 +4354,7 @@ class TestInstallerHelpers5to8:
 
 # ── TestNetAlertXInstallerSteps5to8 ──────────────────────────────────────────
 
-_SLUG = "jokob-sk_NetAlertX"
+_SLUG = "netalertx_fa"
 _DATA_PATH = "/data/netalertx"
 _CONF_PATH = f"{_DATA_PATH}/app.conf"
 _ORIG_APP_CONF = "MQTT_BROKER = 'localhost'\nLOADED_PLUGINS = ['ARPSCAN']\n"
@@ -4439,7 +4433,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha addons restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: test-backup-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 f"ip addr show": (
                     0,
                     "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
@@ -4497,7 +4491,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha addons restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: fresh-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "ip addr show": (
                     0,
                     "inet 192.168.1.5/24 scope global eth0\n",
@@ -5110,7 +5104,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha addons restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-run-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
             },
         )
@@ -5219,7 +5213,7 @@ class TestNetAlertXInstallerSteps5to8:
                 "ha backup new": (0, "Slug: bk-slug\n", ""),
                 f"ha addons restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
             },
         )
@@ -5295,7 +5289,7 @@ class TestNetAlertXInstallerSteps5to8:
                 "ha backup new": (0, "Slug: bk-tz\n", ""),
                 f"ha addons restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
             },
         )
@@ -5644,7 +5638,7 @@ class TestNetAlertXInstallerSteps5to8:
             command_results={
                 "ha backup new": (0, "Slug: bk-fallback\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
             },
         )
         db = _make_installer_db_at_state(
@@ -5683,7 +5677,7 @@ class TestNetAlertXInstallerSteps5to8:
             command_results={
                 "ha backup new": (0, "Slug: bk-new\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
             },
         )
         db = _make_installer_db_at_state(
@@ -5733,7 +5727,7 @@ class TestRunInstaller:
         monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        _slug = "jokob-sk_NetAlertX"
+        _slug = "netalertx_fa"
         _data = "/data/netalertx"
         _conf = f"{_data}/app.conf"
 
@@ -5768,7 +5762,7 @@ class TestRunInstaller:
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
-                    "https://github.com/jokob-sk/NetAlertX",
+                    "https://github.com/alexbelgium/hassio-addons",
                     "",
                 ),
                 "ha store addons": (0, f"slug: {_slug}", ""),
@@ -5778,7 +5772,7 @@ class TestRunInstaller:
                 f"ha addons restart {_slug}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core reload": (0, "", ""),
+                "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
             },
         )

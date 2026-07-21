@@ -41,7 +41,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phases 1–3.
 ---
 
 ### 3. Rate Limiting and Debounce ✅ Done (2026-07-15)
-**Problem:** A burst of HA errors triggers sequential repair attempts with no cooldown, potentially flooding HA with config writes and `ha core reload` calls.
+**Problem:** A burst of HA errors triggers sequential repair attempts with no cooldown, potentially flooding HA with config writes and `ha core restart` calls.
 
 **Build:** `utils/rate_limiter.py` — two primitives:
 - `Debouncer(window_seconds)` — collects events over a time window, yields one aggregated trigger

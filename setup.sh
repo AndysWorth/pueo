@@ -189,7 +189,6 @@ fi
 hdr "4. Configuration"
 
 WRITE_CONFIG=false
-NAX_ENABLED=""
 if [[ -f "config.yaml" ]]; then
     ok "config.yaml already exists"
     read -rp "  Reconfigure? [y/N]: " reconf
@@ -273,16 +272,11 @@ if $WRITE_CONFIG; then
     fi
 
     echo
-    echo "  ── NetAlertX integration (optional) ──────────────────────────"
-    echo "  Set enabled=true and provide an API token to activate network"
-    echo "  monitoring. All other values default to your HA SSH settings."
+    echo "  ── NetAlertX ──────────────────────────────────────────────────"
+    echo "  Provide an API token to enable REST API calls from Pueo."
+    echo "  All other values default to your HA SSH settings."
     echo
-    ask "Enable NetAlertX integration? (true/false)"  "false"  NAX_ENABLED
-
-    NAX_API_TOKEN=""
-    if [[ "$NAX_ENABLED" == "true" ]]; then
-        ask "NetAlertX API token"  ""  NAX_API_TOKEN
-    fi
+    ask "NetAlertX API token"  ""  NAX_API_TOKEN
 
     cat > config.yaml <<EOF
 home_assistant:
@@ -298,7 +292,6 @@ ollama:
   endpoint: "http://localhost:11434"
 
 netalertx:
-  enabled: ${NAX_ENABLED}
   api_token: "${NAX_API_TOKEN}"
   # Advanced tuning — edit config.yaml directly to override these defaults:
   # deployment: auto          # auto | addon | docker
@@ -307,7 +300,7 @@ netalertx:
   # ssh_host: <same as home_assistant.host>
   # ssh_user: <same as home_assistant.user>
   # ssh_key_path: <same as home_assistant.ssh_key_path>
-  # addon_repository_url: https://github.com/jokob-sk/NetAlertX
+  # addon_repository_url: https://github.com/alexbelgium/hassio-addons
   # addon_slug: ""            # blank = auto-resolved from Supervisor store
   # scan_interface: ""        # blank = auto-detected from default route
   # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
@@ -339,11 +332,6 @@ EOF
     ok "config.yaml written"
 fi
 
-# Read NAX_ENABLED from config.yaml if not set by this run (e.g. user skipped reconfigure)
-if [[ -z "${NAX_ENABLED}" && -f "config.yaml" ]]; then
-    NAX_ENABLED=$(grep "enabled:" config.yaml | head -1 | awk '{print $2}' | tr -d '"' || echo "false")
-fi
-
 # ── Done ─────────────────────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
@@ -354,9 +342,7 @@ echo "  One-shot diagnostics : python main.py --mode diagnose"
 echo "  With memory layer    : python main.py --mode advanced"
 echo "  Full repair pipeline : python main.py --mode repair
   HITL dashboard       : python main.py --mode dashboard"
-if [ "${NAX_ENABLED}" = "true" ]; then
-  echo
-  echo "  NetAlertX install    : python main.py --mode netalertx-setup"
-  echo "  NetAlertX monitor    : python main.py --mode netalertx"
-fi
+echo
+echo "  NetAlertX install    : python main.py --mode netalertx-setup"
+echo "  NetAlertX monitor    : python main.py --mode netalertx"
 echo

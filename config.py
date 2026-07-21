@@ -55,7 +55,6 @@ DASHBOARD_PORT: int = int(_agent.get("dashboard_port", 8080))
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 
-NETALERTX_ENABLED: bool = bool(_nax.get("enabled", False))
 NETALERTX_DEPLOYMENT: str = _nax.get("deployment", "auto")
 NETALERTX_HOST: str = _nax.get("host", _ha.get("host", "homeassistant.local"))
 NETALERTX_API_PORT: int = int(_nax.get("api_port", 20212))
@@ -66,7 +65,7 @@ NETALERTX_SSH_KEY_PATH: str = os.path.expanduser(
     _nax.get("ssh_key_path", _ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
 )
 NETALERTX_ADDON_REPOSITORY_URL: str = _nax.get(
-    "addon_repository_url", "https://github.com/jokob-sk/NetAlertX"
+    "addon_repository_url", "https://github.com/alexbelgium/hassio-addons"
 )
 NETALERTX_ADDON_SLUG: str = _nax.get("addon_slug", "")
 NETALERTX_SCAN_INTERFACE: str = _nax.get("scan_interface", "")

@@ -340,7 +340,7 @@ class NetAlertXHealer:
         record_backup_slug(slug)
 
         await self._ha_ssh.write_file(_AUTOMATIONS_PATH, fixed)
-        await self._ha_ssh.run("ha core reload")
+        await self._ha_ssh.run("ha core restart")
         log.info("netalertx_ha_automation_fields_fixed")
 
     async def _restart_container(self) -> None:
