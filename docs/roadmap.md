@@ -2,12 +2,18 @@
 
 ## Milestone Status
 
+The strategic milestones (numbered rows) reflect long-running objectives. Implementation plan phases (lettered rows) are the tactical backlog that delivers them.
+
 | Milestone | Status | Module |
 |---|---|---|
 | 1. Read-only ingestion & diagnostics | ✅ Complete | `ha_agent_core.py` |
 | 2. Local RAG & knowledge ingestion | ❌ Not started | — |
 | 3. Safe execution / shadow mode | ✅ Complete | `ha_agent_sandbox_engine.py` |
 | 4. Closed-loop autonomous healing | ✅ Complete | `ha_agent_sandbox_engine.py` |
+| — Phase 3.5: Autonomy control | ✅ Complete (2026-07-19) | `utils/autonomy.py` |
+| — Phase 4: NetAlertX integration | ✅ Complete (2026-07-20) | `netalertx/` |
+| — Phase 4.5: HITL web dashboard | ✅ Complete (2026-07-20) | `web/dashboard.py` |
+| — Phase 5: Observability UX | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py` |
 | 5. Agent quality & evaluation | ❌ Not started | `evals/` |
 
 ---

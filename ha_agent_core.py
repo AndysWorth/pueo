@@ -2,7 +2,7 @@
 """Layer 1 — read-only SSH fetch and local Ollama config diagnostics."""
 
 import uuid
-from typing import Any, Optional
+from typing import Optional
 from pydantic import BaseModel, Field
 
 from config import (
@@ -21,16 +21,10 @@ from utils.context import estimate_tokens, truncate_to_budget
 from utils.logging import get_logger, setup_logging, set_correlation_id
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
-from utils.retry import async_retry
+from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_agent_core")
-
-_SSH_RETRY: dict[str, Any] = dict(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(OSError,),
-)
 
 
 # ==========================================
@@ -54,7 +48,7 @@ class DiagnosticsReport(BaseModel):
 # ==========================================
 # LOCAL AGENTIC TOOL LAYER
 # ==========================================
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def fetch_remote_config(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> str:
@@ -69,7 +63,7 @@ async def fetch_remote_config(
         raise
 
 
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_preflight_check(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> tuple[int, str, str]:

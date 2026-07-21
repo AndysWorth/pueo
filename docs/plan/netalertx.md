@@ -18,7 +18,9 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 4 · 11–
 ---
 
 ### 10. NetAlertX Foundation — Package, Config, and API Client ✅ Done (2026-07-19) — PR #18
-**Depends on:** Item 9.5 (AutonomyGate, FakeAutonomyGate, hitl_timeout_minutes config key)
+**Depends on:** Item 9.5 (AutonomyGate, FakeAutonomyGate)
+
+> **Note:** `netalertx.mode` (`diagnose|auto_fix|autonomous`) is deprecated and mapped to `agent.autonomy_level` via a shim in `config.py` — see [autonomy.md](autonomy.md) for the migration rationale.
 
 **Problem:** Before any NetAlertX installer or monitoring logic can be written, Pueo needs the package skeleton, all NetAlertX configuration keys registered in the triple (config.py / config.yaml.default / setup.sh), the database migration for install state, and a working API client. Every later NetAlertX item depends on these.
 
@@ -147,7 +149,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 **Step 7 — Verify HA MQTT integration** (cannot be automated — UI-only on current HA)
 - HTTP GET `http://<home_assistant.host>:8123/api/config/config_entries` with Bearer token; search for `domain == "mqtt"`.
 - Found → log and advance to `HA_MQTT_INTEGRATION_VERIFIED`.
-- Not found → `gate.require_approval(risk=LOW, ...)` with step-by-step UI instructions: "Go to Settings → Devices & Services → Add Integration → MQTT → broker: `<host>`, port: 1883, no credentials. Then signal approval." Poll every 60 s until the entry appears or rejection received (max `agent.hitl_timeout_minutes`).
+- Not found → `gate.require_approval(risk=LOW, ...)` with step-by-step UI instructions: "Go to Settings → Devices & Services → Add Integration → MQTT → broker: `<host>`, port: 1883, no credentials. Then signal approval." Polls indefinitely until the user approves or rejects via the HITL dashboard.
 - Note: `mqtt:` cannot be added programmatically — adding that YAML key disables MQTT auto-discovery on current HA (see Phase 4 version constraints).
 
 **Step 8 — Create HA webhook automation for NetAlertX events** (risk=HIGH)

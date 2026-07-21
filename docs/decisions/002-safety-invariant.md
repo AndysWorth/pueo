@@ -18,4 +18,8 @@ If the backup step fails, the pipeline aborts and raises. There is no bypass.
 ## Consequences
 - Every repair cycle creates a backup, even for minor fixes. This is intentional — storage is cheap, an unrecoverable HA instance is not.
 - The sandbox test (write to `.agent_sandbox/`, validate, revert) provides a second safety layer: the backup is the recovery mechanism, the sandbox is the prevention mechanism.
-- Future HITL (human-in-the-loop) gates for critical changes (e.g., HACS updates) should be added before step 1, not between steps.
+- HITL gates for CRITICAL changes are placed before step 1, not between steps. The `AutonomyGate.require_approval()` call in `ha_agent_sandbox_engine.py` is the HITL gate; it precedes the backup trigger.
+
+## Related decisions
+- [ADR 001 — Config centralization](001-config-centralization.md): `CONFIG_REMOTE_PATH` (from `config.py`) governs where the backup target lives; the backup path is not independently hardcoded.
+- [ADR 003 — Structured LLM output](003-structured-llm-output.md): The `DiagnosticsReport.is_valid` field from Ollama is the trigger that initiates the backup chain; schema correctness is required for the safety invariant to fire reliably.

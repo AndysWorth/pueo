@@ -310,6 +310,21 @@ ollama:
 netalertx:
   enabled: ${NAX_ENABLED}
   api_token: "${NAX_API_TOKEN}"
+  # Advanced tuning — edit config.yaml directly to override these defaults:
+  # deployment: auto          # auto | addon | docker
+  # host: <same as home_assistant.host>
+  # api_port: 20212
+  # ssh_host: <same as home_assistant.host>
+  # ssh_user: <same as home_assistant.user>
+  # ssh_key_path: <same as home_assistant.ssh_key_path>
+  # addon_repository_url: https://github.com/jokob-sk/NetAlertX
+  # addon_slug: ""            # blank = auto-resolved from Supervisor store
+  # scan_interface: ""        # blank = auto-detected from default route
+  # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
+  # max_scan_age_minutes: 20
+  # mqtt_subscribe: true
+  # log_container_name: netalertx
+  # max_db_history_rows: 100000
 
 agent:
   db_path: "${DB_PATH}"
@@ -321,6 +336,15 @@ agent:
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"
+  # Advanced tuning — edit config.yaml directly to override these defaults:
+  # ssh_retry_attempts: 3
+  # ssh_retry_base_delay: 2.0
+  # debounce_window_seconds: 30
+  # repair_cooldown_seconds: 300
+  # max_repairs_per_hour: 10
+  # log_level: INFO
+  # log_file: pueo.log
+  # max_prompt_tokens: 7000
 EOF
     ok "config.yaml written"
 fi

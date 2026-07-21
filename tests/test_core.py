@@ -127,6 +127,12 @@ class TestConfigDefaults:
 
         assert config.HA_API_TOKEN == "my-secret-token"
 
+    def test_ollama_endpoint_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_ENDPOINT == "http://localhost:11434"
+
 
 # ── DiagnosticsReport schema ─────────────────────────────────────────────────────
 
@@ -588,13 +594,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_2_after_init(self, db_path):
+    def test_schema_version_is_4_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 4
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -604,7 +610,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 2
+        assert rows[0][0] == 4
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -632,7 +638,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 4
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -644,6 +650,32 @@ class TestSandboxDB:
                 for r in conn.execute("PRAGMA table_info(state_history)").fetchall()
             ]
         assert "correlation_id" in cols
+
+    def test_migration_v3_creates_netalertx_install_state_table(self, db_path):
+        import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "netalertx_install_state" in tables
+
+    def test_migration_v4_creates_netalertx_state_table(self, db_path):
+        import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "netalertx_state" in tables
 
     def test_record_state_memory_stores_correlation_id(self, db_path):
         import ha_agent_sandbox_engine

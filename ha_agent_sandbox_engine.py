@@ -5,8 +5,7 @@ import hashlib
 import sqlite3
 import time
 import uuid
-from typing import Any, Optional
-from pydantic import BaseModel, Field
+from typing import Optional
 
 from config import (
     HA_HOST,
@@ -34,7 +33,8 @@ from utils.logging import (
 )
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
-from utils.retry import async_retry
+from ha_agent_core import DiagnosticsReport
+from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
@@ -42,36 +42,11 @@ from utils.yaml_validator import validate_proposed_fix
 
 log = get_logger("ha_agent_sandbox_engine")
 
-_SSH_RETRY: dict[str, Any] = dict(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(OSError,),
-)
-
 # Sandbox paths derived from CONFIG_REMOTE_PATH
 _config_dir = CONFIG_REMOTE_PATH.rsplit("/", 1)[0]
 _config_filename = CONFIG_REMOTE_PATH.rsplit("/", 1)[1]
 SANDBOX_REMOTE_DIR = f"{_config_dir}/.agent_sandbox"
 SANDBOX_REMOTE_FILE = f"{_config_dir}/.agent_sandbox/{_config_filename}"
-
-
-# ==========================================
-# DATA SHAPE DEFINITIONS
-# ==========================================
-class DiagnosticsReport(BaseModel):
-    is_valid: bool = Field(
-        description="True if the YAML config has no structural flaws."
-    )
-    severity: str = Field(
-        description="Severity classification: 'NONE', 'LOW', 'MEDIUM', 'CRITICAL'"
-    )
-    identified_issues: list[str] = Field(
-        description="List of specific flaws or risks found."
-    )
-    recommended_fix_yaml: Optional[str] = Field(
-        None,
-        description="The complete, fully corrected replacement string for configuration.yaml.",
-    )
 
 
 # ==========================================
@@ -108,9 +83,37 @@ def _migrate_v2(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v3(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS netalertx_install_state (
+            id INTEGER PRIMARY KEY,
+            state TEXT,
+            correlation_id TEXT,
+            timestamp TEXT,
+            details_json TEXT
+        )
+    """
+    )
+
+
+def _migrate_v4(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS netalertx_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL UNIQUE,
+            value TEXT NOT NULL
+        )
+    """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
+    (4, _migrate_v4),
 ]
 
 
@@ -169,7 +172,7 @@ def record_backup_slug(slug: str) -> None:
 # ==========================================
 # REMOTE INFRASTRUCTURE & BACKUP TOOLS
 # ==========================================
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def fetch_remote_config(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> tuple[str, str]:
@@ -191,7 +194,7 @@ def _extract_backup_slug(output: str) -> str:
     return "unknown_slug"
 
 
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_backup(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> str:
@@ -209,7 +212,7 @@ async def execute_remote_backup(
         raise
 
 
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_preflight_check(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> tuple[int, str, str]:
