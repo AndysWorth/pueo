@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR
 
 app = FastAPI(title="Pueo HITL Dashboard")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.filters["epoch_to_iso"] = lambda ts: (
+    datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+)
 
 
 class HITLRequest(BaseModel):

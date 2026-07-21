@@ -9658,3 +9658,157 @@ class TestLLMTrace:
             analyze_log_line_with_ai(["ERROR crash"], broken_llm)
         )
         assert trace.raw_response == ""
+
+
+# ── web/dashboard.py (rich payload rendering) ────────────────────────────────
+
+
+class TestDashboardRichPayload:
+    """Tests for Evidence, Diagnosis, and LLM Interaction sections."""
+
+    def _write_request(self, watch_dir: Path, nid: str, payload: dict) -> None:
+        import json as _json
+        import time as _time
+
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Test subject",
+                    "body": "Test body",
+                    "payload": payload,
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+
+    def test_evidence_section_rendered_when_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(
+            tmp_path,
+            "ev1",
+            {
+                "evidence_raw": {
+                    "addon_info": "state: stopped",
+                    "addon_logs": "ERROR: port in use",
+                }
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Evidence" in html
+        assert "addon_info" in html
+        assert "state: stopped" in html
+
+    def test_evidence_section_absent_when_missing(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "ev2", {"severity": "HIGH"})
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Raw gathered data" not in html
+
+    def test_diagnosis_section_rendered_when_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(
+            tmp_path,
+            "dg1",
+            {
+                "diagnosis": {
+                    "is_valid": False,
+                    "severity": "HIGH",
+                    "identified_issues": ["port conflict"],
+                    "recommended_fix_yaml": None,
+                }
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Diagnosis" in html
+        assert "severity" in html
+        assert "HIGH" in html
+
+    def test_llm_interaction_section_rendered_when_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(
+            tmp_path,
+            "llm1",
+            {
+                "llm_trace": {
+                    "model": "qwen2.5-coder:7b",
+                    "system_prompt": "You are helpful.",
+                    "user_prompt": "Analyze this.",
+                    "raw_response": '{"is_valid": true}',
+                    "timestamp": 1753123200,
+                }
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "LLM Interaction" in html
+        assert "qwen2.5-coder:7b" in html
+        assert "System prompt" in html
+        assert "User prompt" in html
+        assert "Raw response" in html
+
+    def test_log_buffer_snapshot_rendered_as_pre(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(
+            tmp_path,
+            "lb1",
+            {"evidence_raw": {"log_buffer_snapshot": ["ERROR crash", "INFO ok"]}},
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "<pre>" in html
+        assert "ERROR crash" in html
+        assert "INFO ok" in html
+
+    def test_full_payload_fallback_still_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(
+            tmp_path,
+            "fp1",
+            {
+                "diagnosis": {"severity": "LOW"},
+                "llm_trace": {
+                    "model": "m",
+                    "system_prompt": "s",
+                    "user_prompt": "u",
+                    "raw_response": "r",
+                    "timestamp": 1753123200,
+                },
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Full payload (raw JSON)" in html
+
+    def test_epoch_to_iso_filter_registered(self):
+        import web.dashboard as dashboard
+
+        assert "epoch_to_iso" in dashboard.templates.env.filters
+        fn = dashboard.templates.env.filters["epoch_to_iso"]
+        result = fn(1753123200)
+        assert (
+            result.startswith("2025-")
+            or result.startswith("2026-")
+            or len(result) == 19
+        )

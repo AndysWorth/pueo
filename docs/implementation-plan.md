@@ -35,7 +35,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 21  | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
 | 22  | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
 | 23  | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
-| 24  | Dashboard Evidence UI                                                | ☐ TODO              |
+| 24  | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
 | 25  | NetAlertX Old API Migration                                          | ☐ TODO              |
 
 ---
