@@ -34,7 +34,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 20  | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
 | 21  | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
 | 22  | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
-| 23  | Evidence and LLM Trace Capture                                       | ☐ TODO              |
+| 23  | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
 | 24  | Dashboard Evidence UI                                                | ☐ TODO              |
 | 25  | NetAlertX Old API Migration                                          | ☐ TODO              |
 
