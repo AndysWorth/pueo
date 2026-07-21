@@ -114,6 +114,15 @@ def _write_install_state(db_path: str, state: str, details: dict, cid: str) -> N
 # ── step helpers ──────────────────────────────────────────────────────────────
 
 
+def _normalize_addon_state(raw: str) -> str:
+    """Normalize HA supervisor add-on state strings to canonical form.
+
+    HA supervisor returns 'started' for a running add-on; Pueo uses 'running'
+    as the canonical term throughout the installer.
+    """
+    return "running" if raw.lower() == "started" else raw.lower()
+
+
 async def _poll_addon_state(
     ssh_client: "SSHClientProtocol",
     addon_id: str,
@@ -128,7 +137,7 @@ async def _poll_addon_state(
     for _ in range(attempts):
         _, stdout, _ = await ssh_client.run(f"ha addons info {addon_id}")
         m = pattern.search(stdout)
-        if m and m.group(1).lower() == expected.lower():
+        if m and _normalize_addon_state(m.group(1)) == expected.lower():
             return True
         await asyncio.sleep(delay)
     return False
@@ -233,7 +242,9 @@ async def _step2_install_mosquitto(
 
     _, stdout, _ = await ssh_client.run("ha addons info core_mosquitto")
     state_match = re.search(r"state:\s*(\S+)", stdout, re.IGNORECASE)
-    current_addon_state = state_match.group(1).lower() if state_match else "unknown"
+    current_addon_state = (
+        _normalize_addon_state(state_match.group(1)) if state_match else "unknown"
+    )
 
     if current_addon_state in ("unknown",) or "not found" in stdout.lower():
         approved = await gate.require_approval(
@@ -655,7 +666,7 @@ async def _step5_install_addon(
     if _STATE_RANK[current_db_state] < _STATE_RANK["ADDON_RUNNING"]:
         _, info_out, _ = await ssh_client.run(f"ha addons info {slug}")
         state_m = re.search(r"state:\s*(\S+)", info_out, re.IGNORECASE)
-        addon_state = state_m.group(1).lower() if state_m else "unknown"
+        addon_state = _normalize_addon_state(state_m.group(1)) if state_m else "unknown"
 
         if addon_state != "running":
             log.info("step5_starting", slug=slug, correlation_id=cid)

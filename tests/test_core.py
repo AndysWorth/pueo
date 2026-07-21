@@ -3720,6 +3720,57 @@ class TestNetAlertXInstallerSteps1to4:
             "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
         )
 
+    def test_normalize_addon_state_maps_started_to_running(self):
+        from netalertx.installer import _normalize_addon_state
+
+        assert _normalize_addon_state("started") == "running"
+        assert _normalize_addon_state("STARTED") == "running"
+        assert _normalize_addon_state("running") == "running"
+        assert _normalize_addon_state("stopped") == "stopped"
+        assert _normalize_addon_state("error") == "error"
+
+    def test_step2_mosquitto_state_started_treated_as_running(
+        self, tmp_path, monkeypatch
+    ):
+        """HA supervisor returns 'started', not 'running' — installer must accept it."""
+        import asyncio
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer import run_steps_1_to_4, _read_install_state
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha supervisor info": (0, "supervisor_info: ok", ""),
+                "ha addons info core_mosquitto": (0, "state: started", ""),
+                "ip route show default": (
+                    0,
+                    "default via 192.168.1.1 dev eth0 proto dhcp",
+                    "",
+                ),
+                "ha store repositories list": (
+                    0,
+                    "https://github.com/alexbelgium/hassio-addons",
+                    "",
+                ),
+                "ha store addons": (
+                    0,
+                    "slug: netalertx_fa\nrepository: alexbelgium/hassio-addons",
+                    "",
+                ),
+            }
+        )
+        gate = self._gate_auto()
+        ok = asyncio.run(run_steps_1_to_4(ssh, gate, self._notifier(), db_path=db))
+        assert ok
+        state, _ = _read_install_state(db)
+        # All 4 steps complete, so state advances past MQTT_RUNNING to ADDON_REPO_ADDED.
+        assert state == "ADDON_REPO_ADDED"
+        assert not any(
+            "install Mosquitto" in c["subject"] for c in gate.require_approval_calls
+        )
+
     def test_step2_mosquitto_not_installed_requires_approval(
         self, tmp_path, monkeypatch
     ):
