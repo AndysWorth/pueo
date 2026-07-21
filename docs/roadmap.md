@@ -4,20 +4,20 @@
 
 The strategic milestones (numbered rows) reflect long-running objectives. Implementation plan phases (lettered rows) are the tactical backlog that delivers them.
 
-| Milestone | Status | Module |
-|---|---|---|
-| 1. Read-only ingestion & diagnostics | ✅ Complete | `ha_agent_core.py` |
-| 2. Local RAG & knowledge ingestion | ❌ Not started | — |
-| 3. Safe execution / shadow mode | ✅ Complete | `ha_agent_sandbox_engine.py` |
-| 4. Closed-loop autonomous healing | ✅ Complete | `ha_agent_sandbox_engine.py` |
-| — Phase 3.5: Autonomy control | ✅ Complete (2026-07-19) | `utils/autonomy.py` |
-| — Phase 4: NetAlertX integration | ✅ Complete (2026-07-20) | `netalertx/` |
-| — Phase 4.5: HITL web dashboard | ✅ Complete (2026-07-20) | `web/dashboard.py` |
-| — Phase 5: Observability UX | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py` |
-| — Phase 6: Installer Intelligence | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py` |
-| — Phase 7: Evidence Capture & HITL Display | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
-| — Phase 8: NetAlertX Compatibility Maintenance | ☐ Not started | `netalertx/detector.py` |
-| 5. Agent quality & evaluation | ❌ Not started | `evals/` |
+| Milestone                                      | Status                  | Module                                   |
+| ---------------------------------------------- | ----------------------- | ---------------------------------------- |
+| 1. Read-only ingestion & diagnostics           | ✅ Complete              | `ha_agent_core.py`                       |
+| 2. Local RAG & knowledge ingestion             | ❌ Not started           | —                                        |
+| 3. Safe execution / shadow mode                | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
+| 4. Closed-loop autonomous healing              | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
+| — Phase 3.5: Autonomy control                  | ✅ Complete (2026-07-19) | `utils/autonomy.py`                      |
+| — Phase 4: NetAlertX integration               | ✅ Complete (2026-07-20) | `netalertx/`                             |
+| — Phase 4.5: HITL web dashboard                | ✅ Complete (2026-07-20) | `web/dashboard.py`                       |
+| — Phase 5: Observability UX                    | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py`            |
+| — Phase 6: Installer Intelligence              | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py`     |
+| — Phase 7: Evidence Capture & HITL Display     | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
+| — Phase 8: NetAlertX Compatibility Maintenance | ✅ Complete (2026-07-21) | `netalertx/detector.py`                  |
+| 5. Agent quality & evaluation                  | ❌ Not started           | `evals/`                                 |
 
 ---
 

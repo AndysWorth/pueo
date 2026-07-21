@@ -12,8 +12,18 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from utils.logging import get_logger
+
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
+
+log = get_logger("netalertx.detector")
+
+# Minimum NetAlertX version Pueo requires.  All endpoints used by Pueo
+# (/devices, /events, /metrics, /graphql, /settings/<key>, /health,
+# /nettools/trigger-scan, /device/<mac>/update-column, /device/<mac>/field/lock)
+# were present and stable as of v26.5.4.
+NETALERTX_MIN_VERSION: tuple[int, ...] = (26, 5, 4)
 
 
 @dataclass
@@ -67,6 +77,7 @@ async def detect_deployment(
 
     api_base_url = f"http://{host}:{api_port}"
     version = await _fetch_version(api_base_url, http_client)
+    check_min_version(version)
 
     return DeploymentInfo(
         mode=mode,
@@ -93,3 +104,62 @@ async def _fetch_version(
         return str(resp.json().get("value", ""))
     except Exception:
         return ""
+
+
+def parse_version(version_str: str) -> tuple[int, ...] | None:
+    """Parse a version string like 'v26.7.1' or '26.7.1' into an int tuple.
+
+    Returns None if the string cannot be parsed.
+    """
+    s = version_str.strip().lstrip("v")
+    if not s:
+        return None
+    parts = s.split(".")
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def check_min_version(version: str) -> bool:
+    """Return True if *version* meets NETALERTX_MIN_VERSION; log a warning otherwise.
+
+    An empty or unparseable version string is treated as unknown and triggers a
+    warning but does not raise — Pueo may still be able to operate normally.
+    """
+    min_str = ".".join(str(v) for v in NETALERTX_MIN_VERSION)
+    if not version:
+        log.warning(
+            "netalertx_version_unknown",
+            min_version=min_str,
+            detail=(
+                f"NetAlertX version could not be determined; "
+                f"minimum required is v{min_str}. "
+                "Verify the instance is reachable and up to date."
+            ),
+        )
+        return False
+    parsed = parse_version(version)
+    if parsed is None:
+        log.warning(
+            "netalertx_version_unparseable",
+            raw_version=version,
+            min_version=min_str,
+            detail=(
+                f"NetAlertX version '{version}' could not be parsed; "
+                f"expected format like 'v26.7.1'. Minimum required is v{min_str}."
+            ),
+        )
+        return False
+    if parsed < NETALERTX_MIN_VERSION:
+        log.warning(
+            "netalertx_version_too_old",
+            detected_version=version,
+            min_version=min_str,
+            detail=(
+                f"NetAlertX {version} is below the minimum supported version "
+                f"v{min_str}. Some API endpoints may not be available."
+            ),
+        )
+        return False
+    return True
