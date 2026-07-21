@@ -14,6 +14,9 @@ The strategic milestones (numbered rows) reflect long-running objectives. Implem
 | — Phase 4: NetAlertX integration | ✅ Complete (2026-07-20) | `netalertx/` |
 | — Phase 4.5: HITL web dashboard | ✅ Complete (2026-07-20) | `web/dashboard.py` |
 | — Phase 5: Observability UX | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py` |
+| — Phase 6: Installer Intelligence | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py` |
+| — Phase 7: Evidence Capture & HITL Display | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
+| — Phase 8: NetAlertX Compatibility Maintenance | ☐ Not started | `netalertx/detector.py` |
 | 5. Agent quality & evaluation | ❌ Not started | `evals/` |
 
 ---
