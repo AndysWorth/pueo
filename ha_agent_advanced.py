@@ -5,8 +5,7 @@ import hashlib
 import sqlite3
 import time
 import uuid
-from typing import Any, Optional
-from pydantic import BaseModel, Field
+from typing import Optional
 
 from config import (
     HA_HOST,
@@ -29,34 +28,11 @@ from utils.logging import (
 )
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
-from utils.retry import async_retry
+from ha_agent_core import DiagnosticsReport
+from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_agent_advanced")
-
-_SSH_RETRY: dict[str, Any] = dict(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(OSError,),
-)
-
-
-# ==========================================
-# DATA SHAPE DEFINITIONS
-# ==========================================
-class DiagnosticsReport(BaseModel):
-    is_valid: bool = Field(
-        description="True if the YAML config has no structural or deprecated flaws."
-    )
-    severity: str = Field(
-        description="Severity classification: 'NONE', 'LOW', 'MEDIUM', 'CRITICAL'"
-    )
-    identified_issues: list[str] = Field(
-        description="List of specific flaws, deprecated formats, or risks found."
-    )
-    recommended_fix_yaml: Optional[str] = Field(
-        None, description="Corrected YAML block snippet if applicable."
-    )
 
 
 # ==========================================
@@ -184,7 +160,7 @@ def record_backup_slug(slug: str) -> None:
 # ==========================================
 # REMOTE INFRASTRUCTURE & BACKUP TOOLS
 # ==========================================
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def fetch_remote_config(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> tuple[str, str]:
@@ -207,7 +183,7 @@ def _extract_backup_slug(output: str) -> str:
     return "unknown_slug"
 
 
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_backup(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> str:
@@ -227,7 +203,7 @@ async def execute_remote_backup(
         raise
 
 
-@async_retry(**_SSH_RETRY)
+@async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_preflight_check(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> tuple[int, str, str]:

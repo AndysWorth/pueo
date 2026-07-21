@@ -1,6 +1,16 @@
 import asyncio
 import functools
 import secrets
+from typing import Any
+
+from config import SSH_RETRY_ATTEMPTS, SSH_RETRY_BASE_DELAY
+
+# Shared retry kwargs for all SSH operations across agent modules.
+SSH_RETRY_KWARGS: dict[str, Any] = dict(
+    max_attempts=SSH_RETRY_ATTEMPTS,
+    base_delay=SSH_RETRY_BASE_DELAY,
+    exceptions=(OSError,),
+)
 
 
 def async_retry(

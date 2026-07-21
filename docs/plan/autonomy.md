@@ -67,7 +67,7 @@ class AutonomyLevel(IntEnum):
 
 **Config keys to add:**
 - `agent.autonomy_level` (integer 1–4, default 2)
-- `agent.hitl_timeout_minutes` (default 60 — poll timeout for all `require_approval()` calls across every subsystem)
+- ~~`agent.hitl_timeout_minutes`~~ *(Proposed but deleted in item 19.5 — `require_approval()` now polls indefinitely; see [hitl-dashboard.md](hitl-dashboard.md))*
 
 **Deprecate `netalertx.mode`:** The `netalertx.mode` key (`diagnose|auto_fix|autonomous`) will not be added to the codebase. Add a shim in `config.py` that reads any existing `netalertx.mode` value in `config.yaml` and maps it to an integer level: `diagnose`→1, `auto_fix`→3, `autonomous`→4. Log a deprecation warning at startup if the key is set; users should migrate to `agent.autonomy_level`.
 

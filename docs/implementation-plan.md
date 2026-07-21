@@ -44,7 +44,7 @@ Items 1–9. All complete as of 2026-07-15. Covers prompt management, SSH/Ollama
 
 ---
 
-### Phase 3.5 — Cross-Cutting: Autonomy Control (1 session) ✅ TODO
+### Phase 3.5 — Cross-Cutting: Autonomy Control (1 session) ✅ Complete (2026-07-19)
 Item 9.5. Adds `agent.autonomy_level` (integer 1–4, default 2) and `AutonomyGate` — the single ask/skip decision point imported by every Pueo module. Also adds `FakeAutonomyGate` for tests. Refactors the hardcoded `requires_hitl()` in the HA sandbox engine. **All Phase 4 items depend on this being implemented first.**
 
 Levels: 1 = report only · 2 = suggest + approve all · 3 = auto LOW-risk + approve MEDIUM/HIGH/CRITICAL · 4 = auto LOW/MEDIUM/HIGH + approve CRITICAL only.
@@ -53,7 +53,7 @@ Levels: 1 = report only · 2 = suggest + approve all · 3 = auto LOW-risk + appr
 
 ---
 
-### Phase 4 — NetAlertX Integration (11–14 sessions) ✅ TODO
+### Phase 4 — NetAlertX Integration (11–14 sessions) ✅ Complete (2026-07-20)
 Items 10–19. Full lifecycle for a new integration target: install from scratch (items 10–12), sync device names from HA (13–14), monitor logs and health (15–16), AI diagnosis (17), autonomy-gated healing (18), and ongoing HA integration maintenance (19). Requires Phase 3.5 complete before item 10.
 
 | Items | Concern |

@@ -60,7 +60,7 @@ Extends core with a local SQLite database (`ha_agent_state.db`) persisting `stat
 ### Layer 3 — Reasoning + Acting: `ha_agent_sandbox_engine.py`
 Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
-2. Run `requires_hitl()` — if CRITICAL severity or hacs/database keywords, notify and wait for human approval
+2. `AutonomyGate.require_approval()` — if CRITICAL severity or current autonomy level requires HITL, notify and wait for human approval
 3. Trigger HA backup (mandatory)
 4. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
 5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
@@ -82,6 +82,16 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 **Config path resolution**: `config.py` loads at module import time. It checks the `PUEO_CONFIG` environment variable first, then falls back to `config.yaml` next to the script. `main.py` sets `PUEO_CONFIG` before importing any agent module so the right config file is used. Agent imports inside `main.py` must stay deferred (inside the `if args.mode` blocks) — moving them to the top of the file would break this.
 
 **Sandbox path derivation**: `SANDBOX_REMOTE_DIR` and `SANDBOX_REMOTE_FILE` in `ha_agent_sandbox_engine.py` are derived from `CONFIG_REMOTE_PATH`, not independently hardcoded, so changing the config path in `config.yaml` automatically keeps the sandbox path in sync.
+
+**Autonomy gate**: `AutonomyGate` in `utils/autonomy.py` is the single HITL decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
+
+**Rate limiter / debouncer**: `Debouncer` and `RateLimiter` in `utils/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
+
+**Token budget management**: `estimate_tokens()` and `truncate_to_budget()` in `utils/context.py` enforce the 8,000-token evaluation matrix constraint. Every Ollama call site must trim content to `MAX_PROMPT_TOKENS` before dispatch — never pass unbounded YAML or log content.
+
+**Dependency injection via Protocol interfaces**: `interfaces.py` defines `SSHClientProtocol` and `LLMClientProtocol`. Agent functions accept these optional injected clients, falling back to real implementations when `None`. Tests pass `FakeSSHClient` / `FakeLLMClient`; SSH and Ollama are never called in the unit suite.
+
+**Plain-text console formatter**: `_TextFormatter` in `utils/logging.py` is used on `stderr` when `setup_logging(console_text=True)` is called. The file handler always stays JSON. `main.py` enables `console_text` for `--mode netalertx-setup` to produce human-readable installer output.
 
 ## Configuration
 
@@ -108,7 +118,7 @@ The Stop hook (`/.claude/hooks/stop.sh`) will remind you at session end if Pytho
 
 ## CI
 
-`.github/workflows/test.yml` runs on Python 3.12, 3.13, 3.14 against `main`/`develop`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov`.
+`.github/workflows/test.yml` runs on Python 3.12, 3.13, 3.14 against `main`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov --cov-fail-under=90`.
 
 ## Development Procedure
 
@@ -141,8 +151,8 @@ Every code change follows this procedure in order. Never commit directly to `mai
     black --check .
     flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
     mypy --ignore-missing-imports .
-    bandit -r . -x ./tests
-    pytest --cov
+    bandit -r . -x ./tests,./.venv
+    pytest --cov --cov-fail-under=90
     ```
 13. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
 14. If implementing a named plan item: CI passing = done, open the PR. If ad-hoc: confirm with the user that the change is complete before opening the PR.
@@ -174,3 +184,7 @@ Rationale for key architectural choices is in `docs/decisions/`:
 @docs/decisions/002-safety-invariant.md
 
 @docs/decisions/003-structured-llm-output.md
+
+@docs/decisions/004-ssh-known-hosts-none.md
+
+@docs/decisions/005-asyncio-over-agentic-framework.md

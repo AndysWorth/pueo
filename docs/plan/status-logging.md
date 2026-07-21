@@ -1,5 +1,9 @@
 # Item 20 — NetAlertX Setup Status Logging
 
+Part of the [Implementation Plan](../implementation-plan.md) · Phase 5 · 1 session.
+
+**Depends on:** Item 5 (structured logging infrastructure — `utils/logging.py`, `setup_logging()`), Items 11–12 (installer state machine whose output this makes visible).
+
 ## Status
 ✅ Done (2026-07-20) — PR #36
 

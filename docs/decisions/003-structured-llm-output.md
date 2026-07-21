@@ -18,3 +18,8 @@ Each agent layer defines its own response schema:
 - `ollama.chat` is synchronous and must always be wrapped in `asyncio.to_thread()` to avoid blocking the event loop.
 - If the model returns malformed JSON (rare but possible), `model_validate_json` raises and the pipeline logs the error rather than acting on garbage data.
 - Adding a new agent capability means defining a new Pydantic schema first — this is intentional as it forces explicit design of the data contract before the prompt.
+- All Pydantic schemas are defined once and imported where needed — never duplicated across agent modules. Divergent field descriptions produce different `model_json_schema()` output, causing inconsistent Ollama behavior.
+
+## Related decisions
+- [ADR 001 — Config centralization](001-config-centralization.md): `OLLAMA_MODEL` and `OLLAMA_ENDPOINT` (from `config.py`) are the single source of model identity for all structured output calls.
+- [ADR 002 — Safety invariant](002-safety-invariant.md): `DiagnosticsReport.is_valid = False` is what triggers the backup-before-write chain; structured output correctness is a prerequisite for the safety invariant to fire reliably.
