@@ -10,7 +10,6 @@ home_assistant:
   ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
   api_token: ""                        # HA long-lived access token (required for NetAlertX steps 6–7)
   config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
-  log_path: "/config/home-assistant.log"     # Legacy: no longer used by the monitor (which now uses 'ha core logs --follow')
 
 ollama:
   model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair

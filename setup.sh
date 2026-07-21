@@ -207,7 +207,6 @@ if $WRITE_CONFIG; then
     ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
     ask "HA long-lived access token"        ""                              HA_API_TOKEN
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
-    ask "home-assistant.log path on HA"    "/config/home-assistant.log"    HA_LOG_PATH
     ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
     ask "Local SQLite database path"        "ha_agent_state.db"             DB_PATH
     ask "Log confidence threshold (0–1)"    "0.7"                           LOG_THRESHOLD
@@ -268,14 +267,6 @@ if $WRITE_CONFIG; then
             warn "Could not determine HA version — known_version will be empty in config.yaml"
         fi
 
-        # Log file check — informational only; monitor uses 'ha core logs --follow'
-        LOG_EXISTS=$($_SSH "test -f '${HA_LOG_PATH}' && echo yes || echo no" 2>/dev/null || echo no)
-        if [[ "$LOG_EXISTS" == "yes" ]]; then
-            ok "Log file found: ${HA_LOG_PATH} (informational — monitor uses 'ha core logs --follow')"
-        else
-            info "Log file not found at ${HA_LOG_PATH} — this is normal on modern HA."
-            info "The live monitor reads from 'ha core logs --follow' instead of the file."
-        fi
     else
         warn "SSH connection failed — check that ${HA_HOST} is reachable and the key is authorized."
         warn "Test manually: ssh -i ${HA_SSH_KEY} ${HA_USER}@${HA_HOST}"
@@ -300,7 +291,6 @@ home_assistant:
   ssh_key_path: "${HA_SSH_KEY}"
   api_token: "${HA_API_TOKEN}"
   config_path: "${HA_CONFIG_PATH}"
-  log_path: "${HA_LOG_PATH}"
   known_version: "${HA_KNOWN_VERSION}"
 
 ollama:

@@ -31,8 +31,6 @@ HA_USER: str = _ha.get("user", "root")
 SSH_KEY_PATH: str = os.path.expanduser(_ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
 HA_API_TOKEN: str = _ha.get("api_token", "")
 CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
-# Legacy: not currently used — HA logs are now consumed via `ha core logs --follow`.
-LOG_REMOTE_PATH: str = _ha.get("log_path", "/config/home-assistant.log")
 
 OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
 OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")

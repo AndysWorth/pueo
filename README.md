@@ -27,7 +27,7 @@ In alignment with the spirit of open-source and out of respect for Native Hawaii
 
 ## 🚀 Core Features
 
-*   **Vigilant Monitoring:** Continuously tails `home-assistant.log` over SSH and triages entries with a local AI model.
+*   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
 *   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
