@@ -267,7 +267,7 @@ async def _step2_install_mosquitto(
 
     running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
     if not running:
-        diagnostic = await diagnose_installer_failure(
+        diagnostic, llm_trace, evidence = await diagnose_installer_failure(
             "mosquitto_start", ssh_client, llm_client
         )
         log.error(
@@ -284,6 +284,9 @@ async def _step2_install_mosquitto(
                 "step": 2,
                 "can_auto_fix": diagnostic.can_auto_fix,
                 "auto_fix_command": diagnostic.auto_fix_command,
+                "diagnosis": diagnostic.model_dump(),
+                "evidence_raw": evidence,
+                "llm_trace": llm_trace.as_dict(),
             },
             notifier=notifier,
             risk=RiskLevel.HIGH,
@@ -630,7 +633,7 @@ async def _step5_install_addon(
                 ssh_client, slug, "unknown", attempts=60, delay=5.0
             )
             if not installed:
-                diagnostic = await diagnose_installer_failure(
+                diagnostic, llm_trace, evidence = await diagnose_installer_failure(
                     "addon_install", ssh_client, llm_client, slug
                 )
                 log.error(
@@ -646,6 +649,9 @@ async def _step5_install_addon(
                     payload={
                         "notification_id": f"{cid}_step5_install_timeout",
                         "step": 5,
+                        "diagnosis": diagnostic.model_dump(),
+                        "evidence_raw": evidence,
+                        "llm_trace": llm_trace.as_dict(),
                     },
                     notifier=notifier,
                     risk=RiskLevel.CRITICAL,
@@ -676,7 +682,7 @@ async def _step5_install_addon(
             ssh_client, slug, "running", attempts=60, delay=5.0
         )
         if not running:
-            diagnostic = await diagnose_installer_failure(
+            diagnostic, llm_trace, evidence = await diagnose_installer_failure(
                 "addon_start", ssh_client, llm_client, slug
             )
             log.error(
@@ -692,6 +698,9 @@ async def _step5_install_addon(
                 payload={
                     "notification_id": f"{cid}_step5_start_timeout",
                     "step": 5,
+                    "diagnosis": diagnostic.model_dump(),
+                    "evidence_raw": evidence,
+                    "llm_trace": llm_trace.as_dict(),
                 },
                 notifier=notifier,
                 risk=RiskLevel.CRITICAL,

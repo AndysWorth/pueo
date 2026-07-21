@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from config import OLLAMA_MODEL
 from utils.context import estimate_tokens, truncate_to_budget
+from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
@@ -111,11 +112,12 @@ async def diagnose_installer_failure(
     ssh_client: "SSHClientProtocol",
     llm_client: Optional["LLMClientProtocol"] = None,
     slug: str = "",
-) -> InstallerDiagnostic:
+) -> tuple[InstallerDiagnostic, LLMTrace, dict[str, str]]:
     """Gather evidence and return a structured LLM diagnosis for an installer failure.
 
     failure_type: "mosquitto_start" | "addon_install" | "addon_start"
     slug: required for "addon_install" and "addon_start" failure types.
+    Returns a 3-tuple: (diagnostic, llm_trace, evidence_dict).
     """
     if failure_type == "mosquitto_start":
         evidence = await gather_mosquitto_evidence(ssh_client)
@@ -146,23 +148,40 @@ async def diagnose_installer_failure(
             options={"temperature": 0.0},
             format=InstallerDiagnostic.model_json_schema(),
         )
-        result = InstallerDiagnostic.model_validate_json(response["message"]["content"])
+        raw_output = response["message"]["content"]
+        result = InstallerDiagnostic.model_validate_json(raw_output)
         log.info(
             "installer_diagnosis_complete",
             failure_type=failure_type,
             confidence=result.confidence,
             can_auto_fix=result.can_auto_fix,
         )
-        return result
+        trace = LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response=raw_output,
+        )
+        return result, trace, evidence
     except Exception as exc:
         log.error("installer_diagnosis_failed", error=str(exc))
-        return InstallerDiagnostic(
-            primary_hypothesis="Diagnosis unavailable — LLM inference failed.",
-            confidence=0.0,
-            supporting_evidence=[],
-            alternative_hypotheses=[],
-            recommended_action="Review the logs manually and re-run setup.",
-            can_auto_fix=False,
+        sentinel = LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response="",
+        )
+        return (
+            InstallerDiagnostic(
+                primary_hypothesis="Diagnosis unavailable — LLM inference failed.",
+                confidence=0.0,
+                supporting_evidence=[],
+                alternative_hypotheses=[],
+                recommended_action="Review the logs manually and re-run setup.",
+                can_auto_fix=False,
+            ),
+            sentinel,
+            evidence,
         )
 
 

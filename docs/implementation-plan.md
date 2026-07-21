@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md)
 
 ---
 
@@ -34,6 +34,9 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 20  | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
 | 21  | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
 | 22  | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
+| 23  | Evidence and LLM Trace Capture                                       | ☐ TODO              |
+| 24  | Dashboard Evidence UI                                                | ☐ TODO              |
+| 25  | NetAlertX Old API Migration                                          | ☐ TODO              |
 
 ---
 
@@ -94,6 +97,27 @@ and adds evidence-first LLM diagnosis to installer failure paths so Pueo can exp
 and attempt an automated fix rather than silently aborting.
 
 → [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
+
+---
+
+### Phase 7 — Evidence Capture and HITL Display (2 sessions)
+Items 23–24. When Pueo can't fix a problem, all gathered evidence (log snapshots, SSH command output, raw YAML), the structured diagnosis, and the full LLM prompt/response are currently discarded after use. This phase captures them and surfaces them in the web dashboard HITL cards so the user doesn't have to re-gather evidence manually.
+
+| Items | Concern |
+|-------|---------|
+| 23 | `LLMTrace` dataclass; 6 LLM call sites return `(ParsedModel, LLMTrace)` tuples; HITL payloads enriched with `diagnosis`, `evidence_raw`, and `llm_trace` keys |
+| 24 | Dashboard template: 3 new collapsible sections (Evidence, Diagnosis, LLM Interaction); `epoch_to_iso` Jinja2 filter |
+
+→ [plan/evidence-trace.md](plan/evidence-trace.md)
+
+---
+
+### Phase 8 — NetAlertX Compatibility Maintenance (1 session)
+Item 25. The NetAlertX old REST API (`/API_OLD` endpoints) is slated for removal in the next NetAlertX release (flagged since v26.5.4, imminent as of v26.7.1). Although the current Pueo codebase already uses the new API endpoints (`/devices`, `/events`, `/health`, `/settings/<key>`, `/graphql`, `/metrics`, `/nettools/trigger-scan`), this item locks in the migration and adds a version-check guard so Pueo warns at startup if a NetAlertX version is detected that removes expected endpoints.
+
+**Scope:** `netalertx/api_client.py` (remove any old-API fallback paths if present), `netalertx/detector.py` (add minimum-version check against `GET /settings/VERSION`), `tests/test_core.py` (new `TestNetAlertXVersionGuard` class).
+
+**Trigger:** Do this item before the next NetAlertX release drops, or when `GET /settings/VERSION` returns a version > v26.7.1 and integration tests start failing.
 
 ---
 

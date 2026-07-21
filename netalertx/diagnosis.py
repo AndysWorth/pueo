@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from config import OLLAMA_MODEL
 from utils.context import estimate_tokens
+from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
@@ -68,12 +69,12 @@ async def diagnose_health_report(
     report: "HealthReport",
     config_issues: Optional[list["ConfigIssue"]] = None,
     llm_client: Optional["LLMClientProtocol"] = None,
-) -> Optional[NetAlertXDiagnostic]:
-    """Return a NetAlertXDiagnostic, or None if there is nothing to diagnose."""
+) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
+    """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose."""
     all_issues = list(config_issues or [])
 
     if not report.anomalies and not all_issues:
-        return None
+        return None, None
 
     client = llm_client or OllamaClient()
     system_prompt = load_prompt("diagnose_netalertx")
@@ -92,13 +93,20 @@ async def diagnose_health_report(
             options={"temperature": 0.0},
             format=NetAlertXDiagnostic.model_json_schema(),
         )
-        result = NetAlertXDiagnostic.model_validate_json(response["message"]["content"])
+        raw_output = response["message"]["content"]
+        result = NetAlertXDiagnostic.model_validate_json(raw_output)
         log.info(
             "netalertx_diagnosis_complete",
             category=result.category,
             severity=result.severity,
         )
-        return result
+        trace = LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response=raw_output,
+        )
+        return result, trace
     except Exception as exc:
         log.error("netalertx_diagnosis_inference_failed", error=str(exc))
-        return None
+        return None, None
