@@ -18,8 +18,50 @@
       {% if r.payload.get("step") %} &nbsp;·&nbsp; Step: <strong>{{ r.payload.step }}</strong>{% endif %}
     </p>
     {% endif %}
+    {% if r.payload.get("evidence_raw") %}
     <details>
-      <summary>Full payload</summary>
+      <summary><span class="section-label label-evidence">Evidence</span>Raw gathered data</summary>
+      {% if r.payload.evidence_raw.get("log_buffer_snapshot") %}
+      <pre>{{ r.payload.evidence_raw.log_buffer_snapshot | join("\n") }}</pre>
+      {% else %}
+      <div class="kv-grid">
+        {% for k, v in r.payload.evidence_raw.items() %}
+        <span class="k">{{ k }}</span><span class="v">{{ v }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </details>
+    {% endif %}
+    {% if r.payload.get("diagnosis") %}
+    <details>
+      <summary><span class="section-label label-diagnosis">Diagnosis</span>Structured analysis</summary>
+      <div class="kv-grid">
+        {% for k, v in r.payload.diagnosis.items() %}
+        <span class="k">{{ k }}</span>
+        <span class="v">{% if v is iterable and v is not string %}{{ v | join(", ") }}{% else %}{{ v }}{% endif %}</span>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+    {% if r.payload.get("llm_trace") %}
+    <details>
+      <summary><span class="section-label label-llm">LLM Interaction</span>{{ r.payload.llm_trace.model }} &middot; {{ r.payload.llm_trace.timestamp | epoch_to_iso }}</summary>
+      <details>
+        <summary>System prompt</summary>
+        <pre>{{ r.payload.llm_trace.system_prompt }}</pre>
+      </details>
+      <details>
+        <summary>User prompt</summary>
+        <pre>{{ r.payload.llm_trace.user_prompt }}</pre>
+      </details>
+      <details>
+        <summary>Raw response</summary>
+        <pre>{{ r.payload.llm_trace.raw_response }}</pre>
+      </details>
+    </details>
+    {% endif %}
+    <details>
+      <summary>Full payload (raw JSON)</summary>
       <pre>{{ r.payload | tojson(indent=2) }}</pre>
     </details>
     {% if r.status == "PENDING" %}
