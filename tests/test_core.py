@@ -9812,3 +9812,66 @@ class TestDashboardRichPayload:
             or result.startswith("2026-")
             or len(result) == 19
         )
+
+
+class TestNetAlertXVersionGuard:
+    def test_parse_version_with_v_prefix(self):
+        from netalertx.detector import parse_version
+
+        assert parse_version("v26.7.1") == (26, 7, 1)
+
+    def test_parse_version_without_v_prefix(self):
+        from netalertx.detector import parse_version
+
+        assert parse_version("26.5.4") == (26, 5, 4)
+
+    def test_parse_version_empty_returns_none(self):
+        from netalertx.detector import parse_version
+
+        assert parse_version("") is None
+
+    def test_parse_version_malformed_returns_none(self):
+        from netalertx.detector import parse_version
+
+        assert parse_version("not-a-version") is None
+
+    def test_check_min_version_at_minimum_returns_true(self):
+        from netalertx.detector import NETALERTX_MIN_VERSION, check_min_version
+
+        version = "v" + ".".join(str(v) for v in NETALERTX_MIN_VERSION)
+        assert check_min_version(version) is True
+
+    def test_check_min_version_above_minimum_returns_true(self):
+        from netalertx.detector import check_min_version
+
+        assert check_min_version("v26.7.1") is True
+
+    def test_check_min_version_below_minimum_returns_false_and_warns(self, caplog):
+        import logging
+
+        from netalertx.detector import check_min_version
+
+        with caplog.at_level(logging.WARNING):
+            result = check_min_version("v26.3.0")
+        assert result is False
+        assert any("netalertx_version_too_old" in r.message for r in caplog.records)
+
+    def test_check_min_version_empty_returns_false_and_warns(self, caplog):
+        import logging
+
+        from netalertx.detector import check_min_version
+
+        with caplog.at_level(logging.WARNING):
+            result = check_min_version("")
+        assert result is False
+        assert any("netalertx_version_unknown" in r.message for r in caplog.records)
+
+    def test_check_min_version_unparseable_returns_false_and_warns(self, caplog):
+        import logging
+
+        from netalertx.detector import check_min_version
+
+        with caplog.at_level(logging.WARNING):
+            result = check_min_version("not-a-version")
+        assert result is False
+        assert any("netalertx_version_unparseable" in r.message for r in caplog.records)

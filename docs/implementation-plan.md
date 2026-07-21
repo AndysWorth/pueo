@@ -36,7 +36,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 22  | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
 | 23  | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
 | 24  | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
-| 25  | NetAlertX Old API Migration                                          | ☐ TODO              |
+| 25  | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
 
 ---
 
