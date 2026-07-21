@@ -27,6 +27,7 @@ from config import (
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, sliding_window_lines
+from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
@@ -70,7 +71,7 @@ class LogEvaluation(BaseModel):
 async def analyze_log_line_with_ai(
     recent_lines: list[str],
     llm_client: Optional[LLMClientProtocol] = None,
-) -> LogEvaluation:
+) -> tuple[LogEvaluation, LLMTrace]:
     """Uses local Ollama to classify whether recent log context contains a patchable error."""
     client = llm_client or OllamaClient()
 
@@ -91,13 +92,25 @@ async def analyze_log_line_with_ai(
             options={"temperature": 0.0},
             format=LogEvaluation.model_json_schema(),
         )
-        return LogEvaluation.model_validate_json(response["message"]["content"])
+        raw_output = response["message"]["content"]
+        trace = LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response=raw_output,
+        )
+        return LogEvaluation.model_validate_json(raw_output), trace
     except Exception as e:
         log.error("triage_inference_failed", error=str(e))
         return LogEvaluation(
             is_actionable=False,
             root_cause_summary="Inference crash",
             confidence_score=0.0,
+        ), LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response="",
         )
 
 
@@ -127,7 +140,7 @@ async def tail_remote_log_stream(
             if CRITICAL_LOG_PATTERN.search(clean_line):
                 log.warning("log_line_intercepted", line=clean_line)
                 log.info("triage_start", model=OLLAMA_MODEL)
-                evaluation = await analyze_log_line_with_ai(
+                evaluation, llm_trace = await analyze_log_line_with_ai(
                     list(_log_buffer), llm_client=llm_client
                 )
                 log.info(
@@ -166,6 +179,11 @@ async def tail_remote_log_stream(
                             payload={
                                 "cause": evaluation.root_cause_summary,
                                 "confidence": evaluation.confidence_score,
+                                "diagnosis": evaluation.model_dump(),
+                                "evidence_raw": {
+                                    "log_buffer_snapshot": list(_log_buffer)
+                                },
+                                "llm_trace": llm_trace.as_dict(),
                             },
                         )
                         continue

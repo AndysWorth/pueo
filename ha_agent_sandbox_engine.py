@@ -25,6 +25,7 @@ from config import (
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
+from utils.llm_trace import LLMTrace
 from utils.logging import (
     get_logger,
     get_correlation_id,
@@ -287,7 +288,7 @@ async def commit_atomic_swap(
 async def analyze_config_locally(
     yaml_content: str,
     llm_client: Optional[LLMClientProtocol] = None,
-) -> DiagnosticsReport:
+) -> tuple[DiagnosticsReport, LLMTrace]:
     client = llm_client or OllamaClient()
 
     system_prompt = load_prompt("diagnose_config_repair")
@@ -317,7 +318,14 @@ async def analyze_config_locally(
         options={"temperature": 0.0},
         format=DiagnosticsReport.model_json_schema(),
     )
-    return DiagnosticsReport.model_validate_json(response["message"]["content"])
+    raw_output = response["message"]["content"]
+    trace = LLMTrace(
+        model=OLLAMA_MODEL,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        raw_response=raw_output,
+    )
+    return DiagnosticsReport.model_validate_json(raw_output), trace
 
 
 # ==========================================
@@ -353,7 +361,9 @@ async def main(
     _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL)
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
-    report = await analyze_config_locally(yaml_content, llm_client=llm_client)
+    report, llm_trace = await analyze_config_locally(
+        yaml_content, llm_client=llm_client
+    )
 
     if not report.is_valid and report.recommended_fix_yaml:
         log.warning("issue_flagged", severity=report.severity)
@@ -385,6 +395,9 @@ async def main(
                 "severity": report.severity,
                 "issues": report.identified_issues,
                 "correlation_id": get_correlation_id(),
+                "diagnosis": report.model_dump(),
+                "evidence_raw": {"yaml_snippet": yaml_content[:2000]},
+                "llm_trace": llm_trace.as_dict(),
             },
             notifier=_notifier,
             risk=risk,

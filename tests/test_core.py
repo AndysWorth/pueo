@@ -2132,7 +2132,7 @@ class TestLogMonitorTriage:
     def test_analyze_actionable_line(self, llm_actionable):
         from ha_log_monitor import analyze_log_line_with_ai
 
-        result = asyncio.run(
+        result, _trace = asyncio.run(
             analyze_log_line_with_ai(
                 ["ERROR Invalid config for sensor"], llm_actionable
             )
@@ -2143,7 +2143,7 @@ class TestLogMonitorTriage:
     def test_analyze_non_actionable_line(self, llm_not_actionable):
         from ha_log_monitor import analyze_log_line_with_ai
 
-        result = asyncio.run(
+        result, _trace = asyncio.run(
             analyze_log_line_with_ai(["INFO some benign event"], llm_not_actionable)
         )
         assert result.is_actionable is False
@@ -6925,7 +6925,7 @@ class TestNetAlertXLogMonitor:
 
         from netalertx.log_monitor import analyze_log_line_with_ai
 
-        result = asyncio.run(
+        result, _trace = asyncio.run(
             analyze_log_line_with_ai(["ERROR ArpScan failed"], llm_actionable)
         )
         assert result.is_actionable is True
@@ -6948,7 +6948,9 @@ class TestNetAlertXLogMonitor:
 
         # Malformed JSON triggers the except branch
         broken_llm = FakeLLMClient("{not valid json}")
-        result = asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
+        result, _trace = asyncio.run(
+            analyze_log_line_with_ai(["ERROR ..."], broken_llm)
+        )
         assert result.is_actionable is False
         assert result.confidence_score == 0.0
 
@@ -7727,7 +7729,7 @@ class TestNetAlertXDiagnostic:
 
         report = self._zero_devices_report()
         llm = self._make_fake_llm("networking")
-        result = asyncio.run(diagnose_health_report(report, llm_client=llm))
+        result, _trace = asyncio.run(diagnose_health_report(report, llm_client=llm))
         assert result is not None
         assert result.category == "networking"
         assert "--network=host" in result.recommended_fix
@@ -7746,7 +7748,7 @@ class TestNetAlertXDiagnostic:
             anomalies=[],
             netalertx_version="v26.7.1",
         )
-        result = asyncio.run(diagnose_health_report(report, config_issues=[]))
+        result, _trace = asyncio.run(diagnose_health_report(report, config_issues=[]))
         assert result is None
 
     def test_config_issues_trigger_diagnosis(self):
@@ -7770,7 +7772,7 @@ class TestNetAlertXDiagnostic:
             severity="HIGH",
         )
         llm = self._make_fake_llm("mqtt")
-        result = asyncio.run(
+        result, _trace = asyncio.run(
             diagnose_health_report(report, config_issues=[issue], llm_client=llm)
         )
         assert result is not None
@@ -7785,7 +7787,7 @@ class TestNetAlertXDiagnostic:
             async def chat(self, **_):
                 raise RuntimeError("Ollama unavailable")
 
-        result = asyncio.run(
+        result, _trace = asyncio.run(
             diagnose_health_report(
                 self._zero_devices_report(), llm_client=_CrashingLLM()
             )
@@ -9244,7 +9246,9 @@ class TestInstallerDiagnostics:
         llm = FakeLLMClient(diag.model_dump_json())
         ssh = FakeSSHClient()
 
-        result = asyncio.run(diagnose_installer_failure("mosquitto_start", ssh, llm))
+        result, _trace, _evidence = asyncio.run(
+            diagnose_installer_failure("mosquitto_start", ssh, llm)
+        )
         assert isinstance(result, InstallerDiagnostic)
         assert result.primary_hypothesis == "Port 1883 in use"
         assert len(llm.calls) == 1
@@ -9270,7 +9274,7 @@ class TestInstallerDiagnostics:
         llm = FakeLLMClient(diag.model_dump_json())
         ssh = FakeSSHClient()
 
-        result = asyncio.run(
+        result, _trace, _evidence = asyncio.run(
             diagnose_installer_failure("addon_install", ssh, llm, "netalertx_fa")
         )
         assert result.can_auto_fix is True
@@ -9435,3 +9439,222 @@ class TestInstallerDiagnostics:
             )
         )
         assert state == "MQTT_INSTALLED"
+
+
+# ===========================================================================
+# TestLLMTrace  (item 23)
+# ===========================================================================
+class TestLLMTrace:
+    def test_construction(self):
+        from utils.llm_trace import LLMTrace
+
+        trace = LLMTrace(
+            model="qwen2.5-coder:7b",
+            system_prompt="You are an assistant.",
+            user_prompt="Analyze this config.",
+            raw_response='{"is_valid": true}',
+        )
+        assert trace.model == "qwen2.5-coder:7b"
+        assert trace.system_prompt == "You are an assistant."
+        assert trace.user_prompt == "Analyze this config."
+        assert trace.raw_response == '{"is_valid": true}'
+        assert isinstance(trace.timestamp, int)
+
+    def test_as_dict_keys(self):
+        from utils.llm_trace import LLMTrace
+
+        trace = LLMTrace(
+            model="m", system_prompt="sp", user_prompt="up", raw_response="r"
+        )
+        d = trace.as_dict()
+        assert set(d.keys()) == {
+            "model",
+            "system_prompt",
+            "user_prompt",
+            "raw_response",
+            "timestamp",
+        }
+
+    def test_system_prompt_truncated_in_as_dict(self):
+        from utils.llm_trace import LLMTrace
+
+        long_prompt = "x" * 5000
+        trace = LLMTrace(
+            model="m", system_prompt=long_prompt, user_prompt="u", raw_response="r"
+        )
+        d = trace.as_dict()
+        assert len(d["system_prompt"]) <= 4000
+        assert d["system_prompt"].endswith("\n...[truncated]...")
+
+    def test_user_prompt_truncated_in_as_dict(self):
+        from utils.llm_trace import LLMTrace
+
+        long_prompt = "y" * 5000
+        trace = LLMTrace(
+            model="m", system_prompt="s", user_prompt=long_prompt, raw_response="r"
+        )
+        d = trace.as_dict()
+        assert len(d["user_prompt"]) <= 4000
+        assert d["user_prompt"].endswith("\n...[truncated]...")
+
+    def test_short_prompts_not_truncated(self):
+        from utils.llm_trace import LLMTrace
+
+        trace = LLMTrace(
+            model="m", system_prompt="short", user_prompt="also short", raw_response="r"
+        )
+        d = trace.as_dict()
+        assert d["system_prompt"] == "short"
+        assert d["user_prompt"] == "also short"
+
+    def test_analyze_config_returns_trace(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from ha_agent_core import DiagnosticsReport, analyze_config_locally
+
+        report = DiagnosticsReport(
+            is_valid=True,
+            severity="LOW",
+            identified_issues=[],
+            recommended_fix_yaml=None,
+        )
+        llm = FakeLLMClient(report.model_dump_json())
+        _result, trace = asyncio.run(
+            analyze_config_locally("ha_version: 2026.7.3", llm_client=llm)
+        )
+        assert trace.model != ""
+        assert trace.system_prompt != ""
+        assert trace.raw_response != ""
+
+    def test_analyze_log_returns_trace(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from ha_log_monitor import LogEvaluation, analyze_log_line_with_ai
+
+        ev = LogEvaluation(
+            is_actionable=False, root_cause_summary="benign", confidence_score=0.1
+        )
+        llm = FakeLLMClient(ev.model_dump_json())
+        _result, trace = asyncio.run(
+            analyze_log_line_with_ai(["INFO heartbeat"], llm_client=llm)
+        )
+        assert trace.model != ""
+        assert "log lines" in trace.user_prompt
+
+    def test_diagnose_installer_returns_evidence_dict(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.installer_diagnostics import (
+            InstallerDiagnostic,
+            diagnose_installer_failure,
+        )
+
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Port in use",
+            confidence=0.9,
+            supporting_evidence=[],
+            alternative_hypotheses=[],
+            recommended_action="Stop conflicting service",
+            can_auto_fix=False,
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ssh = FakeSSHClient()
+        _result, _trace, evidence = asyncio.run(
+            diagnose_installer_failure("mosquitto_start", ssh, llm)
+        )
+        assert isinstance(evidence, dict)
+        assert "addon_info" in evidence
+
+    def test_hitl_payload_contains_llm_trace(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from ha_agent_core import DiagnosticsReport
+        import ha_agent_sandbox_engine
+
+        _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
+        _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
+        report = DiagnosticsReport(
+            is_valid=False,
+            severity="HIGH",
+            identified_issues=["server_port should be 8124"],
+            recommended_fix_yaml=_fix,
+        )
+        llm = FakeLLMClient(report.model_dump_json())
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _orig},
+            command_results={
+                "ha core check": (0, "OK", ""),
+                "ha backup new": (0, '{"slug": "abc123"}', ""),
+                "ha core restart": (0, "", ""),
+            },
+        )
+        notifier = FakeNotifier(approve=False)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh, llm_client=llm, notifier=notifier, gate=gate
+            )
+        )
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert "llm_trace" in payload
+        assert "model" in payload["llm_trace"]
+        assert "raw_response" in payload["llm_trace"]
+
+    def test_hitl_payload_contains_diagnosis(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from ha_agent_core import DiagnosticsReport
+        import ha_agent_sandbox_engine
+
+        _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
+        _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
+        report = DiagnosticsReport(
+            is_valid=False,
+            severity="HIGH",
+            identified_issues=["server_port should be 8124"],
+            recommended_fix_yaml=_fix,
+        )
+        llm = FakeLLMClient(report.model_dump_json())
+        ssh = FakeSSHClient(
+            file_contents={"/config/configuration.yaml": _orig},
+            command_results={
+                "ha core check": (0, "OK", ""),
+                "ha backup new": (0, '{"slug": "abc123"}', ""),
+                "ha core restart": (0, "", ""),
+            },
+        )
+        notifier = FakeNotifier(approve=False)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh, llm_client=llm, notifier=notifier, gate=gate
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert "diagnosis" in payload
+        assert payload["diagnosis"]["severity"] == "HIGH"
+
+    def test_exception_branch_returns_sentinel_trace(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from ha_log_monitor import analyze_log_line_with_ai
+
+        broken_llm = FakeLLMClient("{not valid json}")
+        _result, trace = asyncio.run(
+            analyze_log_line_with_ai(["ERROR crash"], broken_llm)
+        )
+        assert trace.raw_response == ""

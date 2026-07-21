@@ -18,6 +18,7 @@ from config import (
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
+from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
@@ -108,7 +109,7 @@ async def check_ha_version(
 async def analyze_config_locally(
     yaml_content: str,
     llm_client: Optional[LLMClientProtocol] = None,
-) -> DiagnosticsReport:
+) -> tuple[DiagnosticsReport, LLMTrace]:
     """Uses your local M-series Mac Ollama instance to analyze the config file."""
     client = llm_client or OllamaClient()
 
@@ -141,7 +142,13 @@ async def analyze_config_locally(
             format=DiagnosticsReport.model_json_schema(),
         )
         raw_output = response["message"]["content"]
-        return DiagnosticsReport.model_validate_json(raw_output)
+        trace = LLMTrace(
+            model=OLLAMA_MODEL,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            raw_response=raw_output,
+        )
+        return DiagnosticsReport.model_validate_json(raw_output), trace
     except Exception as e:
         log.error("ollama_inference_failed", error=str(e))
         raise
@@ -161,7 +168,7 @@ async def main(
     await check_ha_version(ssh_client=ssh_client)
     yaml_content = await fetch_remote_config(ssh_client=ssh_client)
 
-    report = await analyze_config_locally(yaml_content, llm_client=llm_client)
+    report, _trace = await analyze_config_locally(yaml_content, llm_client=llm_client)
 
     log.info(
         "diagnostics_complete",
