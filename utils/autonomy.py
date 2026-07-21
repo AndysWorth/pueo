@@ -9,7 +9,7 @@ Levels:
 Risk taxonomy:
   LOW      — read-only calls, name locks
   MEDIUM   — non-production config writes (e.g., NetAlertX app.conf, sandbox path)
-  HIGH     — production HA config write, add-on restart, ha core reload
+  HIGH     — production HA config write, add-on restart, ha core restart
   CRITICAL — removing top-level config block, bulk irreversible ops, no backup slug
 """
 

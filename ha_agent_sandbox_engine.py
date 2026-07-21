@@ -272,7 +272,7 @@ async def commit_atomic_swap(
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     log.info("atomic_swap_start")
     await client.write_file(CONFIG_REMOTE_PATH, fixed_yaml)
-    await client.run("ha core reload", check=False)
+    await client.run("ha core restart", check=False)
     log.info("atomic_swap_complete")
 
 

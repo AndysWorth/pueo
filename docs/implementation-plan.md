@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
 
 ---
 
@@ -32,6 +32,8 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
 | 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
 | 20  | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
+| 21  | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
+| 22  | Installer Diagnostic Intelligence                                    | ☐ TODO              |
 
 ---
 
@@ -83,6 +85,18 @@ Item 20. Wires up `setup_logging()` centrally in `main.py` so all modes emit log
 
 ---
 
+---
+
+### Phase 6 — Installer Intelligence (2 sessions)
+Items 21–22. Fixes three CLI command bugs found during documentation review (2026-07-21), removes
+the NetAlertX enabled/disabled toggle (NetAlertX is always-on), corrects the add-on repository URL,
+and adds evidence-first LLM diagnosis to installer failure paths so Pueo can explain what went wrong
+and attempt an automated fix rather than silently aborting.
+
+→ [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
+
+---
+
 ## Tracking
 
-Update the Status column above (`✅ TODO` → `✅ Done (date)`) **and** the matching entry in the linked detail file when an item completes. Add the PR or commit reference as a note in the detail file.
+Update the Status column above (`☐ TODO` → `✅ Done (date)`) **and** the matching entry in the linked detail file when an item completes. Add the PR or commit reference as a note in the detail file.

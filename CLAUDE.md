@@ -64,7 +64,7 @@ Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_f
 3. Trigger HA backup (mandatory)
 4. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
 5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
-6. Only if the sandbox check passes: atomically write to production and call `ha core reload`
+6. Only if the sandbox check passes: atomically write to production and call `ha core restart`
 
 ### Layer 4 — Continuous Monitoring: `ha_log_monitor.py`
 Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger `ha_agent_sandbox_engine.main()`. Reconnects automatically on stream failure.

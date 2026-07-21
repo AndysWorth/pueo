@@ -951,7 +951,7 @@ async def _step8_create_webhook_automation(
         )
         return False
 
-    await ssh_client.run("ha core reload")
+    await ssh_client.run("ha core restart")
 
     webhook_url = f"http://{HA_HOST}:8123/api/webhook/netalertx_event"
     log.info(

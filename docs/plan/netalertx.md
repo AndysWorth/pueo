@@ -31,7 +31,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 4 · 11–
 - `netalertx.api_port` (default 20212)
 - `netalertx.api_token` (no default — required when `netalertx.enabled = true`)
 - `netalertx.ssh_host`, `netalertx.ssh_user`, `netalertx.ssh_key_path` (default: same as HA SSH config)
-- `netalertx.addon_repository_url` (default `https://github.com/jokob-sk/NetAlertX`)
+- `netalertx.addon_repository_url` (default `https://github.com/alexbelgium/hassio-addons`)
 - `netalertx.addon_slug` (default `""` — if blank, installer auto-resolves from Supervisor store and caches in `netalertx_install_state.details_json`; a non-blank value in config takes precedence and skips auto-resolution)
 - `netalertx.scan_interface` (default `""` — if blank, installer auto-detects via `ip route show default`)
 - `netalertx.auto_generated_name_patterns` (default `["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]`)
@@ -156,7 +156,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 - SFTP-read HA automations directory (`/config/automations.yaml` or files under `/config/automations/`).
 - If a NetAlertX webhook automation already exists (trigger `platform: webhook` + identifier containing `netalertx`) → log and skip.
 - If absent → generate automation YAML with camelCase payload fields: `eveMac`, `eveIp`, `eveDateTime`, `eveEventType`, `devVendor`, `devComments` (schema canonical since NetAlertX v26.4.6).
-- Write via existing HA sandbox engine (sandbox → verify → atomic swap → `ha core reload`); sandbox engine handles backup automatically.
+- Write via existing HA sandbox engine (sandbox → verify → atomic swap → `ha core restart`); sandbox engine handles backup automatically.
 - Log resulting webhook URL (e.g. `http://<ha_host>:8123/api/webhook/netalertx_event`) to structured log as a reminder for NetAlertX `HA_WEBHOOK_URL`.
 - Advance to `HA_AUTOMATION_CREATED` then `FULLY_OPERATIONAL`.
 

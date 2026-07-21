@@ -16,7 +16,6 @@ ollama:
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
 
 netalertx:
-  enabled: false                              # Set to true to activate all NetAlertX features
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
   host: ""                                    # NetAlertX host (default: same as home_assistant.host)
   api_port: 20212                             # NetAlertX REST API port
@@ -24,7 +23,7 @@ netalertx:
   ssh_host: ""                                # SSH host for NetAlertX (default: same as home_assistant.host)
   ssh_user: ""                                # SSH user for NetAlertX (default: same as home_assistant.user)
   ssh_key_path: ""                            # SSH key for NetAlertX (default: same as home_assistant.ssh_key_path)
-  addon_repository_url: "https://github.com/jokob-sk/NetAlertX"  # HA add-on repository URL
+  addon_repository_url: "https://github.com/alexbelgium/hassio-addons"  # HA Supervisor add-on repo (netalertx_fa slug)
   addon_slug: ""                              # Leave blank to auto-resolve from Supervisor store
   scan_interface: ""                          # Network interface for scanning (blank = auto-detect)
   auto_generated_name_patterns:               # Regex patterns identifying auto-generated device names
