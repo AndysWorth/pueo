@@ -28,7 +28,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 6 · 2 ses
 
 ---
 
-### 21. CLI Corrections, NetAlertX Repository Fix, and Remove Optionality ✅ TODO
+### 21. CLI Corrections, NetAlertX Repository Fix, and Remove Optionality ✅ Done (2026-07-21) — PR #39
 
 **Depends on:** Items 1–20 (all complete)
 
@@ -93,7 +93,7 @@ NetAlertX is fundamental to Pueo and should always be installed. Remove the enab
 
 ---
 
-### 22. Installer Diagnostic Intelligence ✅ TODO
+### 22. Installer Diagnostic Intelligence ✅ Done (2026-07-21) — PR #40
 
 **Depends on:** Item 21 (corrections must be in place before adding new diagnostics)
 
