@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md)
 
 ---
 
@@ -37,6 +37,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 23  | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
 | 24  | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
 | 25  | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
+| 26  | Installer Verbose Progress Logging                                   | ☐ TODO               |
 
 ---
 
