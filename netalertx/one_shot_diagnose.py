@@ -27,6 +27,7 @@ from config import (
     SSH_KEY_PATH,
 )
 from netalertx.config_validator import ConfigIssue, validate_app_conf
+from utils.autonomy import RiskLevel
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
@@ -223,17 +224,29 @@ async def run_diagnose(
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
 
-    # 7. Optional healing
+    # 7. Optional healing — only when the gate can auto-proceed without HITL.
+    # The healer's minimum risk is MEDIUM; at autonomy levels 1–3, require_approval()
+    # blocks indefinitely waiting for dashboard input, which is not appropriate for
+    # a one-shot command. Levels 3–4 that can auto-execute HIGH risk will proceed;
+    # all others print a hint and exit cleanly.
     if diagnostic is not None:
-        _healer = healer
-        if _healer is None:
-            from netalertx.healer import NetAlertXHealer
+        if _gate.should_auto_execute(RiskLevel.HIGH):
+            _healer = healer
+            if _healer is None:
+                from netalertx.healer import NetAlertXHealer
 
-            _healer = NetAlertXHealer(
-                gate=_gate,
-                ssh_client=_ssh,
-                ha_ssh_client=_ha_ssh,
-                api_client=_api,
-                notifier=_notifier,
+                _healer = NetAlertXHealer(
+                    gate=_gate,
+                    ssh_client=_ssh,
+                    ha_ssh_client=_ha_ssh,
+                    api_client=_api,
+                    notifier=_notifier,
+                )
+            await _healer.heal(diagnostic)
+        else:
+            log.info(
+                "netalertx_diagnose_heal_skipped",
+                reason="autonomy_level_requires_hitl",
+                hint="Set autonomy_level=4 in config.yaml to auto-heal, "
+                "or use the dashboard to approve the pending action.",
             )
-        await _healer.heal(diagnostic)

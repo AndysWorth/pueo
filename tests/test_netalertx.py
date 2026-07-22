@@ -6007,6 +6007,10 @@ class TestNetAlertXOneShotDiagnose:
         stale_devices = [
             {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
         ]
+        # Gate must allow auto-execution so heal() is called without blocking on HITL
+        from utils.autonomy import FakeAutonomyGate
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
 
         asyncio.run(
             run_diagnose(
@@ -6015,6 +6019,7 @@ class TestNetAlertXOneShotDiagnose:
                 api_client=self._FakeAPIClient(devices=stale_devices),
                 llm_client=llm,
                 healer=healer,
+                gate=gate,
             )
         )
 
