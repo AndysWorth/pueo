@@ -3492,6 +3492,11 @@ class TestNetAlertXAPIClient:
         assert result["connected_devices"] == 31.0
         assert "bad_metric" not in result
 
+    def test_lock_device_field_raises_on_empty_mac(self):
+        c = self._client([])
+        with pytest.raises(ValueError, match="non-empty MAC"):
+            asyncio.run(c.lock_device_field("", "devName"))
+
 
 # ── netalertx SQLite migration ──────────────────────────────────────────────────
 
@@ -3564,7 +3569,7 @@ class TestNetAlertXInstallerSteps1to4:
         return FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "supervisor_info: ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 192.168.1.1 dev eth0 proto dhcp",
@@ -3590,7 +3595,7 @@ class TestNetAlertXInstallerSteps1to4:
             command_results={
                 "ha supervisor info": (1, "", "not found"),
                 "docker info": (0, "docker info ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 10.0.0.1 dev wlan0 proto dhcp",
@@ -3743,7 +3748,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "supervisor_info: ok", ""),
-                "ha addons info core_mosquitto": (0, "state: started", ""),
+                "ha apps info core_mosquitto": (0, "state: started", ""),
                 "ip route show default": (
                     0,
                     "default via 192.168.1.1 dev eth0 proto dhcp",
@@ -3788,7 +3793,7 @@ class TestNetAlertXInstallerSteps1to4:
                 call_counts[command] = call_counts.get(command, 0) + 1
                 # After install+start, polling returns running
                 if (
-                    "ha addons info core_mosquitto" in command
+                    "ha apps info core_mosquitto" in command
                     and call_counts.get(command, 0) > 1
                 ):
                     return 0, "state: running", ""
@@ -3797,9 +3802,9 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = TrackingSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "not found", ""),
-                "ha addons install core_mosquitto": (0, "", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
+                "ha apps info core_mosquitto": (0, "not found", ""),
+                "ha apps install core_mosquitto": (0, "", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
@@ -3827,7 +3832,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "not found", ""),
+                "ha apps info core_mosquitto": (0, "not found", ""),
             }
         )
         state = asyncio.run(
@@ -3887,7 +3892,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
@@ -3924,7 +3929,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (
                     0,
                     "default via 1.1.1.1 dev eth0\ndefault via 2.2.2.2 dev wlan0",
@@ -3950,7 +3955,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "no route found", ""),
             }
         )
@@ -3991,7 +3996,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 # List returns empty both times → add appears to fail
                 "ha store repositories list": (0, "", ""),
@@ -4092,6 +4097,24 @@ class TestNetAlertXInstallerSteps1to4:
         )
         assert slug == ""
 
+    def test_parse_slug_from_store_ignores_other_addons_in_same_repo(self):
+        # alexbelgium/hassio-addons hosts many add-ons; Gazpar2MQTT appears
+        # before NetAlertX alphabetically — the resolver must not return it.
+        from netalertx.installer import _parse_slug_from_store
+
+        output = (
+            "- name: Gazpar2MQTT\n"
+            "  slug: db21ed7f_gazpar2mqtt\n"
+            "  repository: https://github.com/alexbelgium/hassio-addons\n"
+            "- name: NetAlertX\n"
+            "  slug: db21ed7f_netalertx\n"
+            "  repository: https://github.com/alexbelgium/hassio-addons\n"
+        )
+        slug = _parse_slug_from_store(
+            output, "https://github.com/alexbelgium/hassio-addons"
+        )
+        assert slug == "db21ed7f_netalertx"
+
     def test_step2_mosquitto_not_running_starts_without_installing(
         self, tmp_path, monkeypatch
     ):
@@ -4107,7 +4130,7 @@ class TestNetAlertXInstallerSteps1to4:
         class TrackingSSHClient(FakeSSHClient):
             async def run(self, command, check=False):  # type: ignore[override]
                 call_counts[command] = call_counts.get(command, 0) + 1
-                if "ha addons info core_mosquitto" in command:
+                if "ha apps info core_mosquitto" in command:
                     if call_counts[command] == 1:
                         return 0, "state: stopped", ""
                     return 0, "state: running", ""
@@ -4116,7 +4139,7 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = TrackingSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
@@ -4129,8 +4152,8 @@ class TestNetAlertXInstallerSteps1to4:
         asyncio.run(
             run_steps_1_to_4(ssh, self._gate_auto(), self._notifier(), db_path=db)
         )
-        assert "ha addons start core_mosquitto" in ssh.commands_run
-        assert "ha addons install core_mosquitto" not in ssh.commands_run
+        assert "ha apps start core_mosquitto" in ssh.commands_run
+        assert "ha apps install core_mosquitto" not in ssh.commands_run
 
     def test_step2_mosquitto_start_poll_fails_aborts(self, tmp_path, monkeypatch):
         import asyncio
@@ -4157,8 +4180,8 @@ class TestNetAlertXInstallerSteps1to4:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: stopped", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
+                "ha apps info core_mosquitto": (0, "state: stopped", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
             }
         )
         gate = self._gate_ask()
@@ -4320,10 +4343,27 @@ class TestInstallerHelpers5to8:
         info = "name: NetAlertX\ndata: /data/netalertx\nstate: running\n"
         assert _parse_data_path(info) == "/data/netalertx"
 
-    def test_parse_data_path_returns_empty_when_absent(self):
+    def test_parse_data_path_returns_empty_when_absent_no_slug(self):
         from netalertx.installer import _parse_data_path
 
         assert _parse_data_path("name: NetAlertX\nstate: running\n") == ""
+
+    def test_parse_data_path_falls_back_to_addon_configs_when_absent(self):
+        # HA Supervisor omits the data: field for some add-ons; fall back to
+        # /addon_configs/{slug} which is the conventional host path.
+        from netalertx.installer import _parse_data_path
+
+        info = "name: NetAlertX\nstate: running\n"
+        assert (
+            _parse_data_path(info, "db21ed7f_netalertx_fa")
+            == "/addon_configs/db21ed7f_netalertx_fa"
+        )
+
+    def test_parse_data_path_prefers_data_field_over_fallback(self):
+        from netalertx.installer import _parse_data_path
+
+        info = "name: NetAlertX\ndata: /custom/path\nstate: running\n"
+        assert _parse_data_path(info, "db21ed7f_netalertx_fa") == "/custom/path"
 
     def test_check_automation_exists_true(self):
         from netalertx.installer import _check_automation_exists
@@ -4361,7 +4401,7 @@ class TestInstallerHelpers5to8:
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
-            command_results={"ha addons info slug_x": (0, "state: stopped", "")}
+            command_results={"ha apps info slug_x": (0, "state: stopped", "")}
         )
         result = asyncio.run(
             _poll_addon_state(ssh, "slug_x", "running", attempts=2, delay=0.0)
@@ -4374,7 +4414,7 @@ class TestInstallerHelpers5to8:
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
-            command_results={"ha addons info slug_y": (0, "state: unknown", "")}
+            command_results={"ha apps info slug_y": (0, "state: unknown", "")}
         )
         result = asyncio.run(
             _poll_addon_not_state(ssh, "slug_y", "unknown", attempts=2, delay=0.0)
@@ -4387,7 +4427,7 @@ class TestInstallerHelpers5to8:
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
-            command_results={"ha addons info slug_z": (0, "state: running", "")}
+            command_results={"ha apps info slug_z": (0, "state: running", "")}
         )
         result = asyncio.run(
             _poll_addon_not_state(ssh, "slug_z", "unknown", attempts=2, delay=0.0)
@@ -4423,7 +4463,7 @@ class TestInstallerHelpers5to8:
 
 _SLUG = "netalertx_fa"
 _DATA_PATH = "/data/netalertx"
-_CONF_PATH = f"{_DATA_PATH}/app.conf"
+_CONF_PATH = f"{_DATA_PATH}/config/app.conf"
 _ORIG_APP_CONF = "MQTT_BROKER = 'localhost'\nLOADED_PLUGINS = ['ARPSCAN']\n"
 _HA_CONF = "homeassistant:\n  time_zone: America/New_York\n"
 _AUTOMATIONS_PATH = "/config/automations.yaml"
@@ -4479,7 +4519,14 @@ class TestNetAlertXInstallerSteps5to8:
 
         return FakeAutonomyGate(auto_execute_result=False, approval_result=approval)
 
-    def _make_full_ssh(self, app_conf=_ORIG_APP_CONF, automations=""):
+    _MQTT_GREP_CMD = (
+        'grep -c \'"domain":"mqtt"\' '
+        "/config/.storage/core.config_entries 2>/dev/null || true"
+    )
+
+    def _make_full_ssh(
+        self, app_conf=_ORIG_APP_CONF, automations="", mqtt_present=True
+    ):
         """SSH client configured for a typical steps-5-8 run (all pass)."""
         from utils.ssh_client import FakeSSHClient
 
@@ -4490,14 +4537,14 @@ class TestNetAlertXInstallerSteps5to8:
                 _AUTOMATIONS_PATH: automations,
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
                 ),
-                f"ha addons install {_SLUG}": (0, "", ""),
-                f"ha addons start {_SLUG}": (0, "", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps install {_SLUG}": (0, "", ""),
+                f"ha apps start {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: test-backup-slug\n", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
@@ -4506,13 +4553,18 @@ class TestNetAlertXInstallerSteps5to8:
                     "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
                     "",
                 ),
+                self._MQTT_GREP_CMD: (0, "1" if mqtt_present else "0", ""),
             },
         )
+
+    def _make_full_ssh_no_mqtt(self, **kwargs):
+        """SSH client where the MQTT config entry is absent."""
+        return self._make_full_ssh(mqtt_present=False, **kwargs)
 
     def _http_with_mqtt(self):
         return _make_mock_http(
             [
-                ("GET", "/api/config/config_entries", 200, [{"domain": "mqtt"}]),
+                ("GET", "/api/config/config_entries/entry", 200, [{"domain": "mqtt"}]),
                 ("GET", "/health", 200, {"status": "ok"}),
             ]
         )
@@ -4520,7 +4572,7 @@ class TestNetAlertXInstallerSteps5to8:
     def _http_no_mqtt(self):
         return _make_mock_http(
             [
-                ("GET", "/api/config/config_entries", 200, [{"domain": "other"}]),
+                ("GET", "/api/config/config_entries/entry", 200, [{"domain": "other"}]),
                 ("GET", "/health", 200, {"status": "ok"}),
             ]
         )
@@ -4548,14 +4600,14 @@ class TestNetAlertXInstallerSteps5to8:
                 _AUTOMATIONS_PATH: "",
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: unknown\ndata: {_DATA_PATH}\n",
                     "",
                 ),
-                f"ha addons install {_SLUG}": (0, "", ""),
-                f"ha addons start {_SLUG}": (0, "", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps install {_SLUG}": (0, "", ""),
+                f"ha apps start {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: fresh-slug\n", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
@@ -4584,8 +4636,8 @@ class TestNetAlertXInstallerSteps5to8:
             )
         )
         assert state == "FULLY_OPERATIONAL"
-        assert any("ha addons install" in c for c in ssh.commands_run)
-        assert any("ha addons start" in c for c in ssh.commands_run)
+        assert any("ha apps install" in c for c in ssh.commands_run)
+        assert any("ha apps start" in c for c in ssh.commands_run)
 
     def test_step5_already_running_skips_install_and_start(self, tmp_path, monkeypatch):
         import asyncio
@@ -4616,8 +4668,8 @@ class TestNetAlertXInstallerSteps5to8:
             )
         )
         # No install or start commands issued since addon reported running
-        assert not any("ha addons install" in c for c in ssh.commands_run)
-        assert not any("ha addons start" in c for c in ssh.commands_run)
+        assert not any("ha apps install" in c for c in ssh.commands_run)
+        assert not any("ha apps start" in c for c in ssh.commands_run)
 
     def test_step5_install_timeout_triggers_critical_gate(self, tmp_path, monkeypatch):
         import asyncio
@@ -4644,8 +4696,8 @@ class TestNetAlertXInstallerSteps5to8:
         )
         ssh = FakeSSHClient(
             command_results={
-                f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
-                f"ha addons install {_SLUG}": (0, "", ""),
+                f"ha apps info {_SLUG}": (0, "state: unknown\n", ""),
+                f"ha apps install {_SLUG}": (0, "", ""),
             }
         )
         db = _make_installer_db_at_state(
@@ -4702,9 +4754,9 @@ class TestNetAlertXInstallerSteps5to8:
         )
         ssh = FakeSSHClient(
             command_results={
-                f"ha addons info {_SLUG}": (0, "state: unknown\n", ""),
-                f"ha addons install {_SLUG}": (0, "", ""),
-                f"ha addons start {_SLUG}": (0, "", ""),
+                f"ha apps info {_SLUG}": (0, "state: unknown\n", ""),
+                f"ha apps install {_SLUG}": (0, "", ""),
+                f"ha apps start {_SLUG}": (0, "", ""),
             }
         )
         db = _make_installer_db_at_state(
@@ -4787,8 +4839,8 @@ class TestNetAlertXInstallerSteps5to8:
             )
         )
         # Step 5 is entirely skipped — no install or start commands
-        assert not any("ha addons install" in c for c in ssh.commands_run)
-        assert not any("ha addons start" in c for c in ssh.commands_run)
+        assert not any("ha apps install" in c for c in ssh.commands_run)
+        assert not any("ha apps start" in c for c in ssh.commands_run)
 
     # ── step 6: configure app.conf ────────────────────────────────────────────
 
@@ -4845,7 +4897,7 @@ class TestNetAlertXInstallerSteps5to8:
                 "/config/configuration.yaml": _HA_CONF,
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
@@ -4948,7 +5000,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
 
-        ssh = self._make_full_ssh()
+        ssh = self._make_full_ssh_no_mqtt()
         db = _make_installer_db_at_state(
             tmp_path,
             monkeypatch,
@@ -4956,7 +5008,7 @@ class TestNetAlertXInstallerSteps5to8:
             {"addon_slug": _SLUG, "scan_interface": "eth0"},
         )
 
-        # Gate asks and approves — MQTT still not visible in API but user confirmed
+        # Gate asks and approves — MQTT not found by SSH or HTTP, but user confirmed
         gate = self._gate_ask(approval=True)
         state = asyncio.run(
             run_steps_5_to_8(
@@ -4975,7 +5027,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         from netalertx.installer import run_steps_5_to_8
 
-        ssh = self._make_full_ssh()
+        ssh = self._make_full_ssh_no_mqtt()
         db = _make_installer_db_at_state(
             tmp_path,
             monkeypatch,
@@ -5183,14 +5235,14 @@ class TestNetAlertXInstallerSteps5to8:
                 _AUTOMATIONS_PATH: "",
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: unknown\ndata: {_DATA_PATH}\n",
                     "",
                 ),
-                f"ha addons install {_SLUG}": (0, "", ""),
-                f"ha addons start {_SLUG}": (0, "", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps install {_SLUG}": (0, "", ""),
+                f"ha apps start {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-run-slug\n", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
@@ -5242,7 +5294,11 @@ class TestNetAlertXInstallerSteps5to8:
 
     # ── step 6: error paths ───────────────────────────────────────────────────
 
-    def test_step6_no_data_path_aborts(self, tmp_path, monkeypatch):
+    def test_step6_falls_back_to_addon_configs_when_data_field_absent(
+        self, tmp_path, monkeypatch
+    ):
+        # When ha apps info omits the data: field, step 6 falls back to
+        # /addon_configs/{slug}/config/app.conf instead of aborting.
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
@@ -5254,27 +5310,41 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
+        fallback_conf = f"/addon_configs/{_SLUG}/config/app.conf"
         ssh = FakeSSHClient(
-            file_contents={"/config/configuration.yaml": _HA_CONF},
+            file_contents={
+                "/config/configuration.yaml": _HA_CONF,
+                fallback_conf: _ORIG_APP_CONF,
+            },
             command_results={
-                f"ha addons info {_SLUG}": (0, "state: running\n", ""),
+                f"ha apps info {_SLUG}": (0, "state: running\n", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
+                "ha backup new": (0, "Slug: test-backup-slug\n", ""),
+                "ha core check": (0, "", ""),
+                f"ip addr show eth0": (
+                    0,
+                    "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
+                    "",
+                ),
             },
         )
         db = _make_installer_db_at_state(
-            tmp_path, monkeypatch, "ADDON_RUNNING", {"addon_slug": _SLUG}
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
         )
-        gate = self._gate_ask(approval=False)
         state = asyncio.run(
             run_steps_5_to_8(
                 ssh,
-                gate,
-                self._notifier(approve=False),
+                self._gate_auto(),
+                self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
             )
         )
-        assert state == "ADDON_RUNNING"
-        assert any("app.conf" in c["subject"] for c in gate.require_approval_calls)
+        assert "MQTT" in ssh.written_files.get(fallback_conf, "")
+        assert state == "FULLY_OPERATIONAL"
 
     def test_step6_app_conf_missing_uses_empty_original(self, tmp_path, monkeypatch):
         import asyncio
@@ -5294,13 +5364,13 @@ class TestNetAlertXInstallerSteps5to8:
                 _AUTOMATIONS_PATH: "",
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
                 ),
                 "ha backup new": (0, "Slug: bk-slug\n", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
@@ -5370,13 +5440,13 @@ class TestNetAlertXInstallerSteps5to8:
         ssh = FakeSSHClient(
             file_contents={_CONF_PATH: _ORIG_APP_CONF, _AUTOMATIONS_PATH: ""},
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
                 ),
                 "ha backup new": (0, "Slug: bk-tz\n", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
@@ -5425,13 +5495,13 @@ class TestNetAlertXInstallerSteps5to8:
                 "/config/configuration.yaml": _HA_CONF,
             },
             command_results={
-                f"ha addons info {_SLUG}": (
+                f"ha apps info {_SLUG}": (
                     0,
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
                 ),
                 "ha backup new": (0, "Slug: bk-restart\n", ""),
-                f"ha addons restart {_SLUG}": (0, "", ""),
+                f"ha apps restart {_SLUG}": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
             },
         )
@@ -5563,7 +5633,9 @@ class TestNetAlertXInstallerSteps5to8:
                 )
 
         http = httpx.AsyncClient(transport=_Non200Transport())
-        ssh = self._make_full_ssh()
+        # Set a fake token so the HTTP path is actually exercised (not skipped).
+        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
+        ssh = self._make_full_ssh_no_mqtt()
         db = _make_installer_db_at_state(
             tmp_path,
             monkeypatch,
@@ -5600,7 +5672,9 @@ class TestNetAlertXInstallerSteps5to8:
                 raise httpx.ConnectError("refused")
 
         http = httpx.AsyncClient(transport=_ExceptionTransport())
-        ssh = self._make_full_ssh()
+        # Set a fake token so the HTTP path is actually exercised (not skipped).
+        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
+        ssh = self._make_full_ssh_no_mqtt()
         db = _make_installer_db_at_state(
             tmp_path,
             monkeypatch,
@@ -5636,7 +5710,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         class _MqttAppearsAfterApproval(httpx.AsyncBaseTransport):
             async def handle_async_request(self, request):
-                if "/api/config/config_entries" in str(request.url):
+                if "/api/config/config_entries/entry" in str(request.url):
                     call_count[0] += 1
                     if call_count[0] == 1:
                         body = b'[{"domain":"other"}]'
@@ -5650,7 +5724,9 @@ class TestNetAlertXInstallerSteps5to8:
                 )
 
         http = httpx.AsyncClient(transport=_MqttAppearsAfterApproval())
-        ssh = self._make_full_ssh()
+        # Force the HTTP path so both initial check and recheck use the mock.
+        monkeypatch.setattr("netalertx.installer.HA_API_TOKEN", "test-token")
+        ssh = self._make_full_ssh_no_mqtt()
         db = _make_installer_db_at_state(
             tmp_path,
             monkeypatch,
@@ -5847,7 +5923,7 @@ class TestRunInstaller:
             },
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: running", ""),
+                "ha apps info core_mosquitto": (0, "state: running", ""),
                 "ip route show default": (0, "default via 1.1.1.1 dev eth0", ""),
                 "ha store repositories list": (
                     0,
@@ -5855,10 +5931,10 @@ class TestRunInstaller:
                     "",
                 ),
                 "ha store addons": (0, f"slug: {_slug}", ""),
-                f"ha addons info {_slug}": (0, f"state: running\ndata: {_data}\n", ""),
-                f"ha addons install {_slug}": (0, "", ""),
-                f"ha addons start {_slug}": (0, "", ""),
-                f"ha addons restart {_slug}": (0, "", ""),
+                f"ha apps info {_slug}": (0, f"state: running\ndata: {_data}\n", ""),
+                f"ha apps install {_slug}": (0, "", ""),
+                f"ha apps start {_slug}": (0, "", ""),
+                f"ha apps restart {_slug}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-slug\n", ""),
                 "ha core check": (0, "", ""),
                 "ha core restart": (0, "", ""),
@@ -6469,6 +6545,33 @@ class TestHaNameSyncCases1And2:
         assert "AA:BB:CC:DD:EE:02" in report.locked  # Case 2: match
         assert any(c.mac == "AA:BB:CC:DD:EE:03" for c in report.conflicted)  # Case 3
         assert any(u.mac == "AA:BB:CC:DD:EE:04" for u in report.unnamed)  # Case 4
+
+    def test_sync_names_skips_devices_with_empty_mac(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:01"
+        devices = [
+            # Device with no MAC — should be skipped entirely
+            {
+                "devMAC": "",
+                "devName": "",
+                "devVendor": "Unknown",
+                "devLastIP": "10.0.0.5",
+            },
+            {"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""},
+        ]
+        nax = _FakeNAXClient(devices)
+        ha_http = _ha_states_transport(self._simple_states(mac, "Phone"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        report = asyncio.run(syncer.sync_names())
+
+        # No update or lock call should have an empty MAC
+        assert all(m != "" for m, _, _ in nax.updates)
+        assert all(m != "" for m, _, _ in nax.locks)
+        # The valid device is still processed
+        assert mac in report.written
 
 
 class TestHaNameSyncCases3And4:
@@ -9122,12 +9225,12 @@ class TestInstallerDiagnostics:
             alternative_hypotheses=["TLS cert mismatch"],
             recommended_action="Stop conflicting process",
             can_auto_fix=True,
-            auto_fix_command="ha addons restart core_mosquitto",
-            verification_command="ha addons info core_mosquitto",
+            auto_fix_command="ha apps restart core_mosquitto",
+            verification_command="ha apps info core_mosquitto",
         )
         assert d.confidence == 0.85
         assert d.can_auto_fix is True
-        assert d.auto_fix_command == "ha addons restart core_mosquitto"
+        assert d.auto_fix_command == "ha apps restart core_mosquitto"
 
     def test_installer_diagnostic_missing_required_field_raises(self):
         from pydantic import ValidationError
@@ -9168,8 +9271,8 @@ class TestInstallerDiagnostics:
 
         ssh = FakeSSHClient(
             command_results={
-                "ha addons info core_mosquitto": (0, "state: error\n", ""),
-                "ha addons logs core_mosquitto -n 50": (
+                "ha apps info core_mosquitto": (0, "state: error\n", ""),
+                "ha apps logs core_mosquitto -n 50": (
                     0,
                     "Error: Port '1883' is already in use\n",
                     "",
@@ -9195,14 +9298,14 @@ class TestInstallerDiagnostics:
 
         ssh = FakeSSHClient(
             command_results={
-                "ha addons info netalertx_fa": (0, "state: installing\n", ""),
+                "ha apps info netalertx_fa": (0, "state: installing\n", ""),
                 "ha supervisor info": (0, "version: 2024.1\n", ""),
             }
         )
         evidence = asyncio.run(gather_addon_install_evidence(ssh, "netalertx_fa"))
         assert "addon_info" in evidence
         assert "supervisor_info" in evidence
-        assert "ha addons info netalertx_fa" in ssh.commands_run
+        assert "ha apps info netalertx_fa" in ssh.commands_run
 
     def test_gather_addon_start_evidence_passes_slug(self):
         import asyncio
@@ -9211,8 +9314,8 @@ class TestInstallerDiagnostics:
 
         ssh = FakeSSHClient(
             command_results={
-                "ha addons info netalertx_fa": (0, "state: error\n", ""),
-                "ha addons logs netalertx_fa -n 50": (
+                "ha apps info netalertx_fa": (0, "state: error\n", ""),
+                "ha apps logs netalertx_fa -n 50": (
                     0,
                     "NET_RAW capability missing\n",
                     "",
@@ -9278,7 +9381,7 @@ class TestInstallerDiagnostics:
             diagnose_installer_failure("addon_install", ssh, llm, "netalertx_fa")
         )
         assert result.can_auto_fix is True
-        assert "ha addons info netalertx_fa" in ssh.commands_run
+        assert "ha apps info netalertx_fa" in ssh.commands_run
 
     # ── HITL formatter tests ──────────────────────────────────────────────────
 
@@ -9295,8 +9398,8 @@ class TestInstallerDiagnostics:
             alternative_hypotheses=["SSL cert mismatch"],
             recommended_action="Stop the conflicting process",
             can_auto_fix=True,
-            auto_fix_command="ha addons restart core_mosquitto",
-            verification_command="ha addons info core_mosquitto",
+            auto_fix_command="ha apps restart core_mosquitto",
+            verification_command="ha apps info core_mosquitto",
         )
         text = format_diagnostic_for_hitl(d)
         assert "Port 1883 is in use" in text
@@ -9304,8 +9407,8 @@ class TestInstallerDiagnostics:
         assert "Port '1883' is already in use" in text
         assert "SSL cert mismatch" in text
         assert "Stop the conflicting process" in text
-        assert "ha addons restart core_mosquitto" in text
-        assert "ha addons info core_mosquitto" in text
+        assert "ha apps restart core_mosquitto" in text
+        assert "ha apps info core_mosquitto" in text
         assert "Pueo can attempt this fix automatically" in text
 
     # ── installer integration tests ───────────────────────────────────────────
@@ -9344,8 +9447,8 @@ class TestInstallerDiagnostics:
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: stopped", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
+                "ha apps info core_mosquitto": (0, "state: stopped", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
             }
         )
         gate = FakeAutonomyGate(auto_execute_result=False)
@@ -9381,15 +9484,15 @@ class TestInstallerDiagnostics:
         diag = self._make_diag(
             primary_hypothesis="Port conflict",
             can_auto_fix=True,
-            auto_fix_command="ha addons restart core_mosquitto",
+            auto_fix_command="ha apps restart core_mosquitto",
         )
         llm = FakeLLMClient(diag.model_dump_json())
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: stopped", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
-                "ha addons restart core_mosquitto": (0, "", ""),
+                "ha apps info core_mosquitto": (0, "state: stopped", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
+                "ha apps restart core_mosquitto": (0, "", ""),
             }
         )
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -9401,7 +9504,7 @@ class TestInstallerDiagnostics:
             )
         )
         assert state == "MQTT_RUNNING"
-        assert "ha addons restart core_mosquitto" in ssh.commands_run
+        assert "ha apps restart core_mosquitto" in ssh.commands_run
 
     def test_step2_auto_fix_nonzero_ec_returns_false(self, tmp_path, monkeypatch):
         import asyncio
@@ -9419,15 +9522,15 @@ class TestInstallerDiagnostics:
         diag = self._make_diag(
             primary_hypothesis="Port conflict",
             can_auto_fix=True,
-            auto_fix_command="ha addons restart core_mosquitto",
+            auto_fix_command="ha apps restart core_mosquitto",
         )
         llm = FakeLLMClient(diag.model_dump_json())
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
-                "ha addons info core_mosquitto": (0, "state: stopped", ""),
-                "ha addons start core_mosquitto": (0, "", ""),
-                "ha addons restart core_mosquitto": (1, "", "error"),
+                "ha apps info core_mosquitto": (0, "state: stopped", ""),
+                "ha apps start core_mosquitto": (0, "", ""),
+                "ha apps restart core_mosquitto": (1, "", "error"),
             }
         )
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
