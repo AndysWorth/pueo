@@ -5960,8 +5960,10 @@ class TestNetAlertXOneShotDiagnose:
         healer = self._FakeHealer()
         llm = FakeLLMClient("{}")
         ssh = FakeSSHClient(
-            file_contents={"/data/app.conf": self._valid_app_conf()},
-            command_results={"docker exec": (0, "", "")},
+            command_results={
+                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
+                "tail -n": (0, "", ""),
+            },
         )
 
         asyncio.run(
@@ -5996,8 +5998,10 @@ class TestNetAlertXOneShotDiagnose:
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
         ssh = FakeSSHClient(
-            file_contents={"/data/app.conf": self._valid_app_conf()},
-            command_results={"docker exec": (0, "", "")},
+            command_results={
+                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
+                "tail -n": (0, "", ""),
+            },
         )
         # Devices with a timestamp far in the past → scan_age >> threshold
         stale_devices = [
@@ -6036,10 +6040,12 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        # Empty app.conf → all required keys missing → config issues
+        # app.conf with only TIMEZONE set → MQTT_BROKER and other required keys missing
         ssh = FakeSSHClient(
-            file_contents={"/data/app.conf": ""},
-            command_results={"docker exec": (0, "", "")},
+            command_results={
+                "cat /data/app.conf": (0, "TIMEZONE='UTC'\n", ""),
+                "tail -n": (0, "", ""),
+            },
         )
 
         asyncio.run(
@@ -6074,8 +6080,10 @@ class TestNetAlertXOneShotDiagnose:
         healer = self._FakeHealer()
         log_output = "INFO Starting\nERROR scan failed: network unreachable\nINFO Done"
         ssh = FakeSSHClient(
-            file_contents={"/data/app.conf": self._valid_app_conf()},
-            command_results={"docker exec": (0, log_output, "")},
+            command_results={
+                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
+                "tail -n": (0, log_output, ""),
+            },
         )
 
         asyncio.run(
@@ -6113,8 +6121,10 @@ class TestNetAlertXOneShotDiagnose:
             command_results={"ha apps info core_mosquitto": (0, "state: stopped\n", "")}
         )
         ssh = FakeSSHClient(
-            file_contents={"/data/app.conf": self._valid_app_conf()},
-            command_results={"docker exec": (0, "", "")},
+            command_results={
+                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
+                "tail -n": (0, "", ""),
+            },
         )
 
         asyncio.run(
@@ -6151,9 +6161,12 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        # ssh_client has no /data/app.conf → FileNotFoundError → ConfigIssue
+        # docker exec cat returns non-zero → _fetch_app_conf returns None → ConfigIssue
         ssh = FakeSSHClient(
-            command_results={"docker exec": (0, "", "")},
+            command_results={
+                "cat /data/app.conf": (1, "", "cat: /data/app.conf: No such file"),
+                "tail -n": (0, "", ""),
+            },
         )
 
         asyncio.run(

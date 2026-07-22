@@ -78,6 +78,17 @@ async def _fetch_log_snapshot(
     return [line for line in stdout.splitlines() if line.strip()]
 
 
+async def _fetch_app_conf(
+    ssh_client: "SSHClientProtocol", container: str
+) -> str | None:
+    """Read /data/app.conf from inside the NetAlertX container via docker exec.
+
+    Returns None if the container is unreachable or the file does not exist.
+    """
+    rc, stdout, _ = await ssh_client.run(f"docker exec {container} cat {_CONF_PATH}")
+    return stdout if rc == 0 and stdout.strip() else None
+
+
 def _print_summary(
     report: "HealthReport",
     log_evaluation: "Optional[LogEvaluation]",
@@ -174,21 +185,22 @@ async def run_diagnose(
             log_lines, llm_client=llm_client
         )
 
-    # 4. Config validation
-    try:
-        conf_text = await _ssh.read_file(_CONF_PATH)
-        config_issues = validate_app_conf(conf_text)
-    except (FileNotFoundError, OSError):
+    # 4. Config validation — read via docker exec, not SFTP, because the path
+    # /data/app.conf lives inside the container, not on the host filesystem.
+    conf_text = await _fetch_app_conf(_ssh, NETALERTX_LOG_CONTAINER_NAME)
+    if conf_text is None:
         config_issues = [
             ConfigIssue(
                 field="app.conf",
                 message=(
-                    f"NetAlertX app.conf not found at {_CONF_PATH} — "
-                    "container may not be running or the path is wrong"
+                    f"NetAlertX app.conf not found at {_CONF_PATH} inside container "
+                    f"'{NETALERTX_LOG_CONTAINER_NAME}' — container may not be running"
                 ),
                 severity="HIGH",
             )
         ]
+    else:
+        config_issues = validate_app_conf(conf_text)
 
     if not mosquitto_running:
         config_issues.append(
