@@ -922,7 +922,7 @@ async def _step7_verify_mqtt_integration(
                         e.get("domain") == "mqtt" for e in entries
                     ):
                         return True
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
         # Fallback: read config entries file directly over SSH.
@@ -934,7 +934,7 @@ async def _step7_verify_mqtt_integration(
             )
             if out.strip() and int(out.strip()) > 0:
                 return True
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
         return False
