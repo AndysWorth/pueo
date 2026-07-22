@@ -34,10 +34,13 @@ class AsyncSSHClient:
         return kw
 
     async def read_file(self, path: str) -> str:
-        async with asyncssh.connect(self._host, **self._kw()) as conn:
-            async with conn.start_sftp_client() as sftp:
-                async with sftp.open(path, "r") as f:
-                    return await f.read()
+        try:
+            async with asyncssh.connect(self._host, **self._kw()) as conn:
+                async with conn.start_sftp_client() as sftp:
+                    async with sftp.open(path, "r") as f:
+                        return await f.read()
+        except asyncssh.sftp.SFTPNoSuchFile as exc:
+            raise FileNotFoundError(path) from exc
 
     async def write_file(self, path: str, content: str) -> None:
         async with asyncssh.connect(self._host, **self._kw()) as conn:

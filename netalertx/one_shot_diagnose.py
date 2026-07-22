@@ -7,6 +7,7 @@ synthesises an AI diagnosis, and optionally triggers healing via NetAlertXHealer
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Optional
 
 from config import (
@@ -25,7 +26,7 @@ from config import (
     NOTIFY_WATCH_DIR,
     SSH_KEY_PATH,
 )
-from netalertx.config_validator import validate_app_conf
+from netalertx.config_validator import ConfigIssue, validate_app_conf
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
@@ -46,6 +47,22 @@ log = get_logger("netalertx.one_shot_diagnose")
 _LOG_PATH = "/data/app.log"
 _CONF_PATH = "/data/app.conf"
 _LOG_SNAPSHOT_LINES = 100
+_ADDON_STATE_RE = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
+
+
+async def _check_mosquitto_running(ha_ssh_client: "SSHClientProtocol") -> bool:
+    """Return True if the core_mosquitto add-on is in running state on HA.
+
+    Uses the same state string normalization as the installer: HA supervisor
+    reports 'started' for a running add-on.
+    """
+    _, stdout, _ = await ha_ssh_client.run("ha apps info core_mosquitto")
+    m = _ADDON_STATE_RE.search(stdout)
+    if not m:
+        return False
+    raw = m.group(1).lower()
+    state = "running" if raw == "started" else raw
+    return state == "running"
 
 
 async def _fetch_log_snapshot(
@@ -144,6 +161,11 @@ async def run_diagnose(
     monitor = NetAlertXHealthMonitor(api_client=_api)
     report = await monitor.poll_once(asyncio.Queue())
 
+    # 2b. Active MQTT infrastructure check — poll_once() can't detect MQTT
+    # activity without a subscriber, so we SSH to check Mosquitto directly.
+    mosquitto_running = await _check_mosquitto_running(_ha_ssh)
+    log.info("netalertx_diagnose_mqtt_infra", mosquitto_running=mosquitto_running)
+
     # 3. Log snapshot triage
     log_lines = await _fetch_log_snapshot(_ssh, NETALERTX_LOG_CONTAINER_NAME)
     log_evaluation = None
@@ -157,7 +179,29 @@ async def run_diagnose(
         conf_text = await _ssh.read_file(_CONF_PATH)
         config_issues = validate_app_conf(conf_text)
     except (FileNotFoundError, OSError):
-        config_issues = []
+        config_issues = [
+            ConfigIssue(
+                field="app.conf",
+                message=(
+                    f"NetAlertX app.conf not found at {_CONF_PATH} — "
+                    "container may not be running or the path is wrong"
+                ),
+                severity="HIGH",
+            )
+        ]
+
+    if not mosquitto_running:
+        config_issues.append(
+            ConfigIssue(
+                field="core_mosquitto",
+                message=(
+                    "Mosquitto MQTT broker (core_mosquitto) is not running on HA — "
+                    "MQTT publishing to HA will fail. "
+                    "Run 'ha apps start core_mosquitto' or re-run netalertx-setup."
+                ),
+                severity="HIGH",
+            )
+        )
 
     # 5. AI synthesis
     diagnostic, _llm_trace = await diagnose_health_report(

@@ -5942,6 +5942,13 @@ class TestNetAlertXOneShotDiagnose:
             healer.heal_calls == []
         ), "Healer should not be called when API is unreachable"
 
+    def _mosquitto_running_ssh(self):
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
+        )
+
     def test_healthy_system_no_heal(self):
         import asyncio
 
@@ -5960,7 +5967,7 @@ class TestNetAlertXOneShotDiagnose:
         asyncio.run(
             run_diagnose(
                 ssh_client=ssh,
-                ha_ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._mosquitto_running_ssh(),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
@@ -6000,7 +6007,7 @@ class TestNetAlertXOneShotDiagnose:
         asyncio.run(
             run_diagnose(
                 ssh_client=ssh,
-                ha_ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._mosquitto_running_ssh(),
                 api_client=self._FakeAPIClient(devices=stale_devices),
                 llm_client=llm,
                 healer=healer,
@@ -6038,7 +6045,7 @@ class TestNetAlertXOneShotDiagnose:
         asyncio.run(
             run_diagnose(
                 ssh_client=ssh,
-                ha_ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._mosquitto_running_ssh(),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
@@ -6074,7 +6081,7 @@ class TestNetAlertXOneShotDiagnose:
         asyncio.run(
             run_diagnose(
                 ssh_client=ssh,
-                ha_ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._mosquitto_running_ssh(),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
@@ -6082,3 +6089,120 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(llm.calls) == 1, "LLM should be called to triage critical log line"
+
+    def test_mosquitto_not_running_triggers_diagnosis(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Mosquitto not running",
+            severity="HIGH",
+            category="mqtt",
+            recommended_fix="Run 'ha apps start core_mosquitto'.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        healer = self._FakeHealer()
+        # ha_ssh_client returns stopped state for core_mosquitto
+        ha_ssh = FakeSSHClient(
+            command_results={"ha apps info core_mosquitto": (0, "state: stopped\n", "")}
+        )
+        ssh = FakeSSHClient(
+            file_contents={"/data/app.conf": self._valid_app_conf()},
+            command_results={"docker exec": (0, "", "")},
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=ha_ssh,
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called when Mosquitto is not running"
+        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        assert (
+            "core_mosquitto" in call_prompt
+        ), "Mosquitto issue should appear in prompt"
+
+    def test_app_conf_missing_triggers_diagnosis(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="app.conf not found",
+            severity="HIGH",
+            category="mqtt",
+            recommended_fix="Check NetAlertX container is running.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        healer = self._FakeHealer()
+        # ssh_client has no /data/app.conf → FileNotFoundError → ConfigIssue
+        ssh = FakeSSHClient(
+            command_results={"docker exec": (0, "", "")},
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=self._mosquitto_running_ssh(),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called when app.conf is missing"
+        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        assert "app.conf" in call_prompt, "Missing app.conf should appear in LLM prompt"
+
+    def test_check_mosquitto_running_started(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _check_mosquitto_running
+
+        ha_ssh = FakeSSHClient(
+            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
+        )
+        result = asyncio.run(_check_mosquitto_running(ha_ssh))
+        assert result is True
+
+    def test_check_mosquitto_running_stopped(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _check_mosquitto_running
+
+        ha_ssh = FakeSSHClient(
+            command_results={"ha apps info core_mosquitto": (0, "state: stopped\n", "")}
+        )
+        result = asyncio.run(_check_mosquitto_running(ha_ssh))
+        assert result is False
+
+    def test_check_mosquitto_running_no_output(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _check_mosquitto_running
+
+        ha_ssh = FakeSSHClient()  # no command results → empty stdout
+        result = asyncio.run(_check_mosquitto_running(ha_ssh))
+        assert result is False
