@@ -2929,6 +2929,28 @@ class TestAutonomyGate:
         assert result is False
         assert len(notifier.sent) == 1
 
+    def test_require_approval_logs_hitl_wait_and_result(self, caplog):
+        import logging
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=2)
+        notifier = FakeNotifier(approve=True)
+        with caplog.at_level(logging.INFO):
+            result = asyncio.run(
+                gate.require_approval(
+                    subject="test action",
+                    body="test body",
+                    payload={"notification_id": "test_nid"},
+                    notifier=notifier,
+                    risk=RiskLevel.HIGH,
+                )
+            )
+        assert result is True
+        messages = [r.message for r in caplog.records]
+        assert any("hitl_waiting_for_approval" in m for m in messages)
+        assert any("hitl_approval_received" in m for m in messages)
+
     # ── done criteria — level 1: no SSH writes ───────────────────────────────────
 
     def test_level1_sandbox_pipeline_produces_no_ssh_writes(self):
@@ -4408,6 +4430,23 @@ class TestInstallerHelpers5to8:
         )
         assert result is False
 
+    def test_poll_addon_state_logs_each_attempt(self, caplog):
+        import asyncio
+        import logging
+        from netalertx.installer import _poll_addon_state
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={"ha apps info slug_p": (0, "state: stopped", "")}
+        )
+        with caplog.at_level(logging.INFO):
+            result = asyncio.run(
+                _poll_addon_state(ssh, "slug_p", "running", attempts=3, delay=0.0)
+            )
+        assert result is False
+        poll_records = [r for r in caplog.records if "poll_waiting" in r.message]
+        assert len(poll_records) == 3
+
     def test_poll_addon_not_state_timeout_returns_false(self):
         import asyncio
         from netalertx.installer import _poll_addon_not_state
@@ -4503,6 +4542,10 @@ def _make_mock_http(routes):
 
 class TestNetAlertXInstallerSteps5to8:
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    @pytest.fixture(autouse=True)
+    def _zero_restart_wait(self, monkeypatch):
+        monkeypatch.setattr("netalertx.installer._HA_RESTART_WAIT_S", 0)
 
     def _notifier(self, approve: bool = True):
         from utils.notify import FakeNotifier
