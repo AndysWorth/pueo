@@ -6267,3 +6267,83 @@ class TestNetAlertXOneShotDiagnose:
 
         result = asyncio.run(_fetch_app_conf(FakeSSHClient(), "test_slug"))
         assert result is None
+
+    def test_empty_addon_slug_generates_config_issue(self):
+        """Empty addon_slug triggers the 'if not _slug:' ConfigIssue branch."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="addon_slug not configured",
+            severity="HIGH",
+            category="config",
+            recommended_fix="Set netalertx.addon_slug in config.yaml.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        ha_ssh = FakeSSHClient(
+            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=ha_ssh,
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="",
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called when addon_slug is empty"
+        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        assert "addon_slug" in call_prompt
+
+    def test_auto_execute_constructs_healer_when_none(self):
+        """healer=None + should_auto_execute → constructs NetAlertXHealer internally."""
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+        from utils.autonomy import FakeAutonomyGate
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart NetAlertX.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+        fake_healer = self._FakeHealer()
+
+        with patch("netalertx.healer.NetAlertXHealer", return_value=fake_healer):
+            asyncio.run(
+                run_diagnose(
+                    ssh_client=FakeSSHClient(),
+                    ha_ssh_client=self._ha_ssh_client(),
+                    api_client=self._FakeAPIClient(devices=stale_devices),
+                    llm_client=llm,
+                    healer=None,
+                    gate=gate,
+                    addon_slug="test_slug",
+                )
+            )
+
+        assert (
+            len(fake_healer.heal_calls) == 1
+        ), "Internally-constructed healer should be called"

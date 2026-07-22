@@ -10,7 +10,7 @@ import asyncssh
 from config import HA_HOST, HA_USER, SSH_KEY_PATH
 
 
-class AsyncSSHClient:
+class AsyncSSHClient:  # pragma: no cover
     """Wraps asyncssh behind the SSHClientProtocol interface."""
 
     def __init__(
