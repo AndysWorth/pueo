@@ -5,7 +5,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · 1 session.
 **Depends on:** Item 20 (plain-text console formatter), Items 11–12 (installer state machine).
 
 ## Status
-☐ TODO
+✅ Done (2026-07-22) — PR #48
 
 ## Problem
 
