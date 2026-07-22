@@ -14,10 +14,10 @@ from config import (
     AUTONOMY_LEVEL,
     HA_HOST,
     HA_USER,
+    NETALERTX_ADDON_SLUG,
     NETALERTX_API_PORT,
     NETALERTX_API_TOKEN,
     NETALERTX_HOST,
-    NETALERTX_LOG_CONTAINER_NAME,
     NETALERTX_SSH_HOST,
     NETALERTX_SSH_KEY_PATH,
     NETALERTX_SSH_USER,
@@ -27,10 +27,10 @@ from config import (
     SSH_KEY_PATH,
 )
 from netalertx.config_validator import ConfigIssue, validate_app_conf
-from utils.autonomy import RiskLevel
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
+from utils.autonomy import RiskLevel
 from utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -45,8 +45,6 @@ if TYPE_CHECKING:
 
 log = get_logger("netalertx.one_shot_diagnose")
 
-_LOG_PATH = "/data/app.log"
-_CONF_PATH = "/data/app.conf"
 _LOG_SNAPSHOT_LINES = 100
 _ADDON_STATE_RE = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
 
@@ -67,27 +65,35 @@ async def _check_mosquitto_running(ha_ssh_client: "SSHClientProtocol") -> bool:
 
 
 async def _fetch_log_snapshot(
-    ssh_client: "SSHClientProtocol", container: str
+    ha_ssh_client: "SSHClientProtocol", slug: str
 ) -> list[str]:
-    """Return the last 100 lines of the NetAlertX app log via docker exec.
+    """Return the last 100 lines of NetAlertX logs via `ha apps logs`.
 
-    Returns an empty list if the container is unreachable or produces no output.
+    Returns an empty list if the slug is unknown or the command produces no output.
+    On HA OS, `docker` is not in PATH for SSH sessions; `ha apps logs` is the
+    correct way to read add-on log output.
     """
-    _, stdout, _ = await ssh_client.run(
-        f"docker exec {container} tail -n {_LOG_SNAPSHOT_LINES} {_LOG_PATH}"
-    )
-    return [line for line in stdout.splitlines() if line.strip()]
+    if not slug:
+        return []
+    _, stdout, _ = await ha_ssh_client.run(f"ha apps logs {slug}")
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    return lines[-_LOG_SNAPSHOT_LINES:]
 
 
-async def _fetch_app_conf(
-    ssh_client: "SSHClientProtocol", container: str
-) -> str | None:
-    """Read /data/app.conf from inside the NetAlertX container via docker exec.
+async def _fetch_app_conf(ha_ssh_client: "SSHClientProtocol", slug: str) -> str | None:
+    """Read app.conf from the HA add-on config directory via SFTP.
 
-    Returns None if the container is unreachable or the file does not exist.
+    On HA OS, add-on config files live at /addon_configs/<slug>/config/app.conf
+    on the host filesystem — directly readable via SFTP without docker exec.
+    Returns None if the slug is unknown or the file does not exist.
     """
-    rc, stdout, _ = await ssh_client.run(f"docker exec {container} cat {_CONF_PATH}")
-    return stdout if rc == 0 and stdout.strip() else None
+    if not slug:
+        return None
+    conf_path = f"/addon_configs/{slug}/config/app.conf"
+    try:
+        return await ha_ssh_client.read_file(conf_path)
+    except (FileNotFoundError, OSError):
+        return None
 
 
 def _print_summary(
@@ -141,6 +147,7 @@ async def run_diagnose(
     gate: "AutonomyGate | None" = None,
     notifier: "NotifierProtocol | None" = None,
     healer: "NetAlertXHealer | None" = None,
+    addon_slug: str | None = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
 
@@ -161,6 +168,7 @@ async def run_diagnose(
     )
     _gate = gate or AutonomyGate(level=AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    _slug = addon_slug if addon_slug is not None else NETALERTX_ADDON_SLUG
 
     # 1. Connectivity check — exit early if NetAlertX is unreachable
     try:
@@ -178,30 +186,46 @@ async def run_diagnose(
     mosquitto_running = await _check_mosquitto_running(_ha_ssh)
     log.info("netalertx_diagnose_mqtt_infra", mosquitto_running=mosquitto_running)
 
-    # 3. Log snapshot triage
-    log_lines = await _fetch_log_snapshot(_ssh, NETALERTX_LOG_CONTAINER_NAME)
+    # 3. Log snapshot triage — uses `ha apps logs` via HA SSH; on HA OS, docker
+    # is not in PATH for SSH sessions so docker exec cannot be used.
+    log_lines = await _fetch_log_snapshot(_ha_ssh, _slug)
     log_evaluation = None
     if any(CRITICAL_LOG_PATTERN.search(line) for line in log_lines):
         log_evaluation, _ = await analyze_log_line_with_ai(
             log_lines, llm_client=llm_client
         )
 
-    # 4. Config validation — read via docker exec, not SFTP, because the path
-    # /data/app.conf lives inside the container, not on the host filesystem.
-    conf_text = await _fetch_app_conf(_ssh, NETALERTX_LOG_CONTAINER_NAME)
-    if conf_text is None:
-        config_issues = [
+    # 4. Config validation — read via SFTP from the host addon config directory.
+    # On HA OS, add-on config files are at /addon_configs/<slug>/config/app.conf.
+    if not _slug:
+        config_issues: list[ConfigIssue] = [
             ConfigIssue(
-                field="app.conf",
+                field="netalertx.addon_slug",
                 message=(
-                    f"NetAlertX app.conf not found at {_CONF_PATH} inside container "
-                    f"'{NETALERTX_LOG_CONTAINER_NAME}' — container may not be running"
+                    "netalertx.addon_slug is not set in config.yaml — "
+                    "cannot read app.conf or fetch logs. "
+                    "Run netalertx-setup or set addon_slug manually."
                 ),
                 severity="HIGH",
             )
         ]
     else:
-        config_issues = validate_app_conf(conf_text)
+        conf_text = await _fetch_app_conf(_ha_ssh, _slug)
+        if conf_text is None:
+            conf_host_path = f"/addon_configs/{_slug}/config/app.conf"
+            config_issues = [
+                ConfigIssue(
+                    field="app.conf",
+                    message=(
+                        f"NetAlertX app.conf not found at {conf_host_path} — "
+                        "add-on may not have written its config yet; "
+                        "try re-running netalertx-setup."
+                    ),
+                    severity="HIGH",
+                )
+            ]
+        else:
+            config_issues = validate_app_conf(conf_text)
 
     if not mosquitto_running:
         config_issues.append(
@@ -227,8 +251,7 @@ async def run_diagnose(
     # 7. Optional healing — only when the gate can auto-proceed without HITL.
     # The healer's minimum risk is MEDIUM; at autonomy levels 1–3, require_approval()
     # blocks indefinitely waiting for dashboard input, which is not appropriate for
-    # a one-shot command. Levels 3–4 that can auto-execute HIGH risk will proceed;
-    # all others print a hint and exit cleanly.
+    # a one-shot command. Only autonomy level 4 (AUTONOMOUS) auto-executes HIGH risk.
     if diagnostic is not None:
         if _gate.should_auto_execute(RiskLevel.HIGH):
             _healer = healer

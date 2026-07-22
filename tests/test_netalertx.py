@@ -5934,6 +5934,7 @@ class TestNetAlertXOneShotDiagnose:
                 api_client=self._FakeAPIClient(raise_on_about=True),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -5942,11 +5943,24 @@ class TestNetAlertXOneShotDiagnose:
             healer.heal_calls == []
         ), "Healer should not be called when API is unreachable"
 
-    def _mosquitto_running_ssh(self):
+    def _ha_ssh_client(self, app_conf=None, log_output="", mosquitto_state="started"):
+        """Build a FakeSSHClient covering all ha_ssh interactions in run_diagnose.
+
+        app_conf=None → valid app.conf; app_conf=<str> → that content;
+        omit file_contents entirely to simulate a missing file (see test_app_conf_missing).
+        """
         from utils.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
-            command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
+            file_contents={
+                "/addon_configs/test_slug/config/app.conf": (
+                    self._valid_app_conf() if app_conf is None else app_conf
+                )
+            },
+            command_results={
+                "ha apps info core_mosquitto": (0, f"state: {mosquitto_state}\n", ""),
+                "ha apps logs": (0, log_output, ""),
+            },
         )
 
     def test_healthy_system_no_heal(self):
@@ -5959,20 +5973,15 @@ class TestNetAlertXOneShotDiagnose:
 
         healer = self._FakeHealer()
         llm = FakeLLMClient("{}")
-        ssh = FakeSSHClient(
-            command_results={
-                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
-                "tail -n": (0, "", ""),
-            },
-        )
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=self._mosquitto_running_ssh(),
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -5997,12 +6006,6 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        ssh = FakeSSHClient(
-            command_results={
-                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
-                "tail -n": (0, "", ""),
-            },
-        )
         # Devices with a timestamp far in the past → scan_age >> threshold
         stale_devices = [
             {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
@@ -6014,12 +6017,13 @@ class TestNetAlertXOneShotDiagnose:
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=self._mosquitto_running_ssh(),
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
                 api_client=self._FakeAPIClient(devices=stale_devices),
                 llm_client=llm,
                 healer=healer,
                 gate=gate,
+                addon_slug="test_slug",
             )
         )
 
@@ -6045,21 +6049,16 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        # app.conf with only TIMEZONE set → MQTT_BROKER and other required keys missing
-        ssh = FakeSSHClient(
-            command_results={
-                "cat /data/app.conf": (0, "TIMEZONE='UTC'\n", ""),
-                "tail -n": (0, "", ""),
-            },
-        )
+        # app.conf with only TIMEZONE → MQTT_BROKER and other required keys missing
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=self._mosquitto_running_ssh(),
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(app_conf="TIMEZONE='UTC'\n"),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -6084,20 +6083,15 @@ class TestNetAlertXOneShotDiagnose:
         llm = FakeLLMClient(ev.model_dump_json())
         healer = self._FakeHealer()
         log_output = "INFO Starting\nERROR scan failed: network unreachable\nINFO Done"
-        ssh = FakeSSHClient(
-            command_results={
-                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
-                "tail -n": (0, log_output, ""),
-            },
-        )
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=self._mosquitto_running_ssh(),
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(log_output=log_output),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -6121,24 +6115,15 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        # ha_ssh_client returns stopped state for core_mosquitto
-        ha_ssh = FakeSSHClient(
-            command_results={"ha apps info core_mosquitto": (0, "state: stopped\n", "")}
-        )
-        ssh = FakeSSHClient(
-            command_results={
-                "cat /data/app.conf": (0, self._valid_app_conf(), ""),
-                "tail -n": (0, "", ""),
-            },
-        )
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=ha_ssh,
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(mosquitto_state="stopped"),
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -6161,26 +6146,28 @@ class TestNetAlertXOneShotDiagnose:
             issue="app.conf not found",
             severity="HIGH",
             category="mqtt",
-            recommended_fix="Check NetAlertX container is running.",
+            recommended_fix="Re-run netalertx-setup.",
             affected_netalertx_version="unknown",
         )
         llm = FakeLLMClient(diag.model_dump_json())
         healer = self._FakeHealer()
-        # docker exec cat returns non-zero → _fetch_app_conf returns None → ConfigIssue
-        ssh = FakeSSHClient(
+        # No file_contents → FakeSSHClient.read_file raises FileNotFoundError
+        # → _fetch_app_conf returns None → ConfigIssue generated
+        ha_ssh = FakeSSHClient(
             command_results={
-                "cat /data/app.conf": (1, "", "cat: /data/app.conf: No such file"),
-                "tail -n": (0, "", ""),
-            },
+                "ha apps info core_mosquitto": (0, "state: started\n", ""),
+                "ha apps logs": (0, "", ""),
+            }
         )
 
         asyncio.run(
             run_diagnose(
-                ssh_client=ssh,
-                ha_ssh_client=self._mosquitto_running_ssh(),
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=ha_ssh,
                 api_client=self._FakeAPIClient(devices=[]),
                 llm_client=llm,
                 healer=healer,
+                addon_slug="test_slug",
             )
         )
 
@@ -6224,3 +6211,59 @@ class TestNetAlertXOneShotDiagnose:
         ha_ssh = FakeSSHClient()  # no command results → empty stdout
         result = asyncio.run(_check_mosquitto_running(ha_ssh))
         assert result is False
+
+    def test_fetch_log_snapshot_empty_slug_returns_empty(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_log_snapshot
+
+        result = asyncio.run(_fetch_log_snapshot(FakeSSHClient(), ""))
+        assert result == []
+
+    def test_fetch_log_snapshot_returns_last_100_lines(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_log_snapshot
+
+        lines = "\n".join(f"line {i}" for i in range(200))
+        ha_ssh = FakeSSHClient(command_results={"ha apps logs": (0, lines, "")})
+        result = asyncio.run(_fetch_log_snapshot(ha_ssh, "test_slug"))
+        assert len(result) == 100
+        assert result[0] == "line 100"
+
+    def test_fetch_app_conf_empty_slug_returns_none(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_app_conf
+
+        result = asyncio.run(_fetch_app_conf(FakeSSHClient(), ""))
+        assert result is None
+
+    def test_fetch_app_conf_returns_file_contents(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_app_conf
+
+        ha_ssh = FakeSSHClient(
+            file_contents={"/addon_configs/s/config/app.conf": "KEY=value\n"}
+        )
+        result = asyncio.run(_fetch_app_conf(ha_ssh, "s"))
+        assert result == "KEY=value\n"
+
+    def test_fetch_app_conf_missing_file_returns_none(self):
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_app_conf
+
+        result = asyncio.run(_fetch_app_conf(FakeSSHClient(), "test_slug"))
+        assert result is None
