@@ -16,11 +16,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "modes:\n"
-            "  monitor    live SSH log tail with AI triage (default, daemon mode)\n"
-            "  diagnose   one-shot config fetch and analysis\n"
-            "  advanced   diagnose + SQLite memory + backup triggering\n"
-            "  repair     full sandbox-test-then-atomic-swap repair cycle\n"
-            "  dashboard  HITL web dashboard for approving/rejecting pending actions\n"
+            "  monitor             live SSH log tail with AI triage (default, daemon mode)\n"
+            "  diagnose            one-shot config fetch and analysis\n"
+            "  advanced            diagnose + SQLite memory + backup triggering\n"
+            "  repair              full sandbox-test-then-atomic-swap repair cycle\n"
+            "  netalertx-setup     install and configure NetAlertX on HA\n"
+            "  netalertx           monitor NetAlertX logs continuously\n"
+            "  netalertx-diagnose  one-shot NetAlertX health check and optional heal\n"
+            "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
         ),
     )
     parser.add_argument(
@@ -38,6 +41,7 @@ def main() -> None:
             "repair",
             "netalertx-setup",
             "netalertx",
+            "netalertx-diagnose",
             "dashboard",
         ],
         default="monitor",
@@ -56,7 +60,7 @@ def main() -> None:
 
     from utils.logging import setup_logging
 
-    setup_logging(console_text=(args.mode == "netalertx-setup"))
+    setup_logging(console_text=(args.mode in ("netalertx-setup", "netalertx-diagnose")))
 
     if args.mode == "monitor":
         import ha_log_monitor
@@ -86,6 +90,12 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.log_monitor.main())
+    elif args.mode == "netalertx-diagnose":
+        import ha_agent_advanced
+        import netalertx.one_shot_diagnose
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(netalertx.one_shot_diagnose.run_diagnose())
     elif args.mode == "dashboard":
         from web.dashboard import run_dashboard
 

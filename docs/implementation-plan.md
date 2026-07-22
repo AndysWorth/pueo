@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
 
 ---
 
@@ -38,6 +38,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 24  | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
 | 25  | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
 | 26  | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
+| 27  | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
 
 ---
 
@@ -119,6 +120,17 @@ Item 25. The NetAlertX old REST API (`/API_OLD` endpoints) is slated for removal
 **Scope:** `netalertx/api_client.py` (remove any old-API fallback paths if present), `netalertx/detector.py` (add minimum-version check against `GET /settings/VERSION`), `tests/test_core.py` (new `TestNetAlertXVersionGuard` class).
 
 **Trigger:** Do this item before the next NetAlertX release drops, or when `GET /settings/VERSION` returns a version > v26.7.1 and integration tests start failing.
+
+---
+
+### Phase 9 — NetAlertX One-Shot Diagnosis (1 session)
+Item 27. Adds `--mode netalertx-diagnose`: a single proactive pass that checks the current
+state of NetAlertX and the HA integration, synthesises an AI diagnosis, and optionally
+triggers healing. Fills the gap between the reactive `--mode netalertx` daemon and having no
+way to ask "what is wrong right now?" All building blocks exist (health poller, log triage,
+config validator, healer); this item wires them together behind a new CLI entry point.
+
+→ [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
 
 ---
 

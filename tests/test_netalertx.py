@@ -5871,3 +5871,214 @@ class TestNetAlertXVersionGuard:
             result = check_min_version("not-a-version")
         assert result is False
         assert any("netalertx_version_unparseable" in r.message for r in caplog.records)
+
+
+class TestNetAlertXOneShotDiagnose:
+    """Tests for netalertx/one_shot_diagnose.py (item 27)."""
+
+    # ── shared helpers ────────────────────────────────────────────────────────
+
+    class _FakeAPIClient:
+        """Minimal API client double for one-shot diagnose tests."""
+
+        def __init__(self, devices=None, about=None, raise_on_about=False):
+            self._devices = devices or []
+            self._about = about or {"version": "v26.7.1"}
+            self._raise_on_about = raise_on_about
+
+        async def get_about(self):
+            if self._raise_on_about:
+                raise OSError("connection refused")
+            return self._about
+
+        async def get_devices(self):
+            return self._devices
+
+    class _FakeHealer:
+        """Records heal() calls without executing any real actions."""
+
+        def __init__(self):
+            self.heal_calls = []
+
+        async def heal(self, diagnostic):
+            self.heal_calls.append(diagnostic)
+
+    def _valid_app_conf(self) -> str:
+        return (
+            "MQTT_BROKER='localhost'\n"
+            "MQTT_PORT=1883\n"
+            "HA_URL='http://homeassistant.local:8123'\n"
+            "HA_BEARER_TOKEN='token'\n"
+            "SCAN_SUBNETS=['192.168.1.0/24   eth0']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS=['MQTT', 'ARPSCAN']\n"
+        )
+
+    # ── tests ─────────────────────────────────────────────────────────────────
+
+    def test_api_unreachable_exits_early(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        healer = self._FakeHealer()
+        llm = FakeLLMClient("{}")
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=FakeSSHClient(),
+                api_client=self._FakeAPIClient(raise_on_about=True),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert llm.calls == [], "LLM should not be called when API is unreachable"
+        assert (
+            healer.heal_calls == []
+        ), "Healer should not be called when API is unreachable"
+
+    def test_healthy_system_no_heal(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        healer = self._FakeHealer()
+        llm = FakeLLMClient("{}")
+        ssh = FakeSSHClient(
+            file_contents={"/data/app.conf": self._valid_app_conf()},
+            command_results={"docker exec": (0, "", "")},
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=FakeSSHClient(),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert llm.calls == [], "LLM should not run when system is healthy"
+        assert healer.heal_calls == [], "Healer should not be called on healthy system"
+
+    def test_stale_scan_triggers_diagnosis_and_heal(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart NetAlertX and trigger a new scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        healer = self._FakeHealer()
+        ssh = FakeSSHClient(
+            file_contents={"/data/app.conf": self._valid_app_conf()},
+            command_results={"docker exec": (0, "", "")},
+        )
+        # Devices with a timestamp far in the past → scan_age >> threshold
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=FakeSSHClient(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called once for diagnosis"
+        assert len(healer.heal_calls) == 1, "Healer should be called with diagnostic"
+        assert healer.heal_calls[0].category == "networking"
+
+    def test_config_issues_trigger_diagnosis(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="MQTT_BROKER missing from app.conf",
+            severity="HIGH",
+            category="mqtt",
+            recommended_fix="Add MQTT_BROKER to app.conf.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        healer = self._FakeHealer()
+        # Empty app.conf → all required keys missing → config issues
+        ssh = FakeSSHClient(
+            file_contents={"/data/app.conf": ""},
+            command_results={"docker exec": (0, "", "")},
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=FakeSSHClient(),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called when config issues are found"
+        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        assert "MQTT_BROKER" in call_prompt, "Config issue should appear in LLM prompt"
+
+    def test_critical_log_line_triggers_triage(self):
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.log_monitor import LogEvaluation
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed: network unreachable",
+            confidence_score=0.9,
+        )
+        llm = FakeLLMClient(ev.model_dump_json())
+        healer = self._FakeHealer()
+        log_output = "INFO Starting\nERROR scan failed: network unreachable\nINFO Done"
+        ssh = FakeSSHClient(
+            file_contents={"/data/app.conf": self._valid_app_conf()},
+            command_results={"docker exec": (0, log_output, "")},
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=ssh,
+                ha_ssh_client=FakeSSHClient(),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=healer,
+            )
+        )
+
+        assert len(llm.calls) == 1, "LLM should be called to triage critical log line"
