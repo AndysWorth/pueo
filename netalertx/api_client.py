@@ -114,6 +114,8 @@ class NetAlertXAPIClient:
         self, mac: str, field_name: str, lock: bool = True
     ) -> None:
         """Lock or unlock a device field via POST /device/<mac>/field/lock."""
+        if not mac:
+            raise ValueError("lock_device_field requires a non-empty MAC address")
         resp = await self._post(
             f"/device/{mac}/field/lock",
             json={"fieldName": field_name, "lock": lock},

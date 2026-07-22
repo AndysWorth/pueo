@@ -130,12 +130,12 @@ async def _poll_addon_state(
     attempts: int = 6,
     delay: float = 5.0,
 ) -> bool:
-    """Poll `ha addons info <addon_id>` until state == expected or timeout."""
+    """Poll `ha apps info <addon_id>` until state == expected or timeout."""
     import asyncio
 
     pattern = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
     for _ in range(attempts):
-        _, stdout, _ = await ssh_client.run(f"ha addons info {addon_id}")
+        _, stdout, _ = await ssh_client.run(f"ha apps info {addon_id}")
         m = pattern.search(stdout)
         if m and _normalize_addon_state(m.group(1)) == expected.lower():
             return True
@@ -146,8 +146,15 @@ async def _poll_addon_state(
 def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
     """Parse the add-on slug from `ha store addons` output.
 
-    Looks for a slug: field near a line referencing the repository URL or
-    'netalertx'.  Returns the first match, or "" if none.
+    Strategy:
+    1. Prefer a slug whose value itself contains 'netalertx' — HA supervisor
+       slugs are formatted as {repo_hash}_{addon_name}, so the correct slug
+       contains the add-on name directly.
+    2. Fall back to the first slug near any line mentioning 'netalertx' (name,
+       description, etc.).
+    3. Last resort: first slug near the repository URL — avoided as primary
+       because large repos (e.g. alexbelgium/hassio-addons) host many add-ons
+       and the wrong one can match first.
     """
     repo_suffix = (
         repository_url.rstrip("/").split("/")[-2]
@@ -155,8 +162,16 @@ def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
         + repository_url.rstrip("/").split("/")[-1]
     )
     lines = store_output.splitlines()
+
+    # Pass 1: slug field value contains 'netalertx'
+    for line in lines:
+        m = re.search(r"slug:\s*(\S*netalertx\S*)", line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+    # Pass 2: any line mentions 'netalertx' — grab nearest slug
     for i, line in enumerate(lines):
-        if repo_suffix.lower() in line.lower() or "netalertx" in line.lower():
+        if "netalertx" in line.lower():
             slug_match = re.search(r"slug:\s*(\S+)", line, re.IGNORECASE)
             if slug_match:
                 return slug_match.group(1)
@@ -164,6 +179,18 @@ def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
                 m = re.search(r"slug:\s*(\S+)", ctx_line, re.IGNORECASE)
                 if m:
                     return m.group(1)
+
+    # Pass 3: repo URL match (last resort; matches all add-ons in same repo)
+    for i, line in enumerate(lines):
+        if repo_suffix.lower() in line.lower():
+            slug_match = re.search(r"slug:\s*(\S+)", line, re.IGNORECASE)
+            if slug_match:
+                return slug_match.group(1)
+            for ctx_line in lines[max(0, i - 3) : i + 4]:
+                m = re.search(r"slug:\s*(\S+)", ctx_line, re.IGNORECASE)
+                if m:
+                    return m.group(1)
+
     return ""
 
 
@@ -240,7 +267,7 @@ async def _step2_install_mosquitto(
     """
     log.info("step2_start", step="install_mosquitto", correlation_id=cid)
 
-    _, stdout, _ = await ssh_client.run("ha addons info core_mosquitto")
+    _, stdout, _ = await ssh_client.run("ha apps info core_mosquitto")
     state_match = re.search(r"state:\s*(\S+)", stdout, re.IGNORECASE)
     current_addon_state = (
         _normalize_addon_state(state_match.group(1)) if state_match else "unknown"
@@ -260,10 +287,10 @@ async def _step2_install_mosquitto(
         if not approved:
             log.warning("step2_mosquitto_install_rejected", correlation_id=cid)
             return False
-        await ssh_client.run("ha addons install core_mosquitto", check=True)
-        await ssh_client.run("ha addons start core_mosquitto", check=True)
+        await ssh_client.run("ha apps install core_mosquitto", check=True)
+        await ssh_client.run("ha apps start core_mosquitto", check=True)
     elif current_addon_state != "running":
-        await ssh_client.run("ha addons start core_mosquitto", check=True)
+        await ssh_client.run("ha apps start core_mosquitto", check=True)
 
     running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
     if not running:
@@ -474,7 +501,7 @@ async def _poll_addon_not_state(
     """Poll until state != excluded_state (used to detect install completion)."""
     pattern = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
     for _ in range(attempts):
-        _, stdout, _ = await ssh_client.run(f"ha addons info {addon_id}")
+        _, stdout, _ = await ssh_client.run(f"ha apps info {addon_id}")
         m = pattern.search(stdout)
         if m and m.group(1).lower() != excluded_state.lower():
             return True
@@ -482,10 +509,18 @@ async def _poll_addon_not_state(
     return False
 
 
-def _parse_data_path(info_output: str) -> str:
-    """Parse the add-on data directory from `ha addons info` output (`data:` field)."""
+def _parse_data_path(info_output: str, slug: str = "") -> str:
+    """Parse the add-on data directory from `ha apps info` output.
+
+    Falls back to /addon_configs/{slug} when the `data:` field is absent —
+    HA Supervisor omits it for some add-ons but the path is conventional.
+    """
     m = re.search(r"^\s*data:\s*(.+)$", info_output, re.MULTILINE | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
+    if m:
+        return m.group(1).strip()
+    if slug:
+        return f"/addon_configs/{slug}"
+    return ""
 
 
 def _merge_plugins(existing_val: str, required: list[str]) -> str:
@@ -622,13 +657,13 @@ async def _step5_install_addon(
 
     # ── sub-step A: install (skip if already at ADDON_INSTALLED or beyond) ────
     if _STATE_RANK[current_db_state] < _STATE_RANK["ADDON_INSTALLED"]:
-        _, info_out, _ = await ssh_client.run(f"ha addons info {slug}")
+        _, info_out, _ = await ssh_client.run(f"ha apps info {slug}")
         state_m = re.search(r"state:\s*(\S+)", info_out, re.IGNORECASE)
         addon_state = state_m.group(1).lower() if state_m else "unknown"
 
         if addon_state == "unknown":
             log.info("step5_installing", slug=slug, correlation_id=cid)
-            await ssh_client.run(f"ha addons install {slug}", check=True)
+            await ssh_client.run(f"ha apps install {slug}", check=True)
             installed = await _poll_addon_not_state(
                 ssh_client, slug, "unknown", attempts=60, delay=5.0
             )
@@ -670,13 +705,13 @@ async def _step5_install_addon(
 
     # ── sub-step B: start (skip if already ADDON_RUNNING) ────────────────────
     if _STATE_RANK[current_db_state] < _STATE_RANK["ADDON_RUNNING"]:
-        _, info_out, _ = await ssh_client.run(f"ha addons info {slug}")
+        _, info_out, _ = await ssh_client.run(f"ha apps info {slug}")
         state_m = re.search(r"state:\s*(\S+)", info_out, re.IGNORECASE)
         addon_state = _normalize_addon_state(state_m.group(1)) if state_m else "unknown"
 
         if addon_state != "running":
             log.info("step5_starting", slug=slug, correlation_id=cid)
-            await ssh_client.run(f"ha addons start {slug}", check=True)
+            await ssh_client.run(f"ha apps start {slug}", check=True)
 
         running = await _poll_addon_state(
             ssh_client, slug, "running", attempts=60, delay=5.0
@@ -734,8 +769,8 @@ async def _step6_configure_app_conf(
     slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
 
     # Locate the add-on data directory
-    _, info_out, _ = await ssh_client.run(f"ha addons info {slug}")
-    data_path = _parse_data_path(info_out)
+    _, info_out, _ = await ssh_client.run(f"ha apps info {slug}")
+    data_path = _parse_data_path(info_out, slug)
     if not data_path:
         log.error("step6_no_data_path", slug=slug, correlation_id=cid)
         await gate.require_approval(
@@ -750,7 +785,7 @@ async def _step6_configure_app_conf(
         )
         return False
 
-    conf_path = f"{data_path}/app.conf"
+    conf_path = f"{data_path}/config/app.conf"
 
     try:
         original_conf = await ssh_client.read_file(conf_path)
@@ -817,7 +852,7 @@ async def _step6_configure_app_conf(
     log.info("step6_app_conf_written", diff=diff, path=conf_path, correlation_id=cid)
 
     # Restart and verify
-    await ssh_client.run(f"ha addons restart {slug}", check=True)
+    await ssh_client.run(f"ha apps restart {slug}", check=True)
     running = await _poll_addon_state(ssh_client, slug, "running")
     if not running:
         log.error("step6_restart_timeout", slug=slug, correlation_id=cid)
@@ -870,23 +905,39 @@ async def _step7_verify_mqtt_integration(
     """
     log.info("step7_start", step="verify_mqtt_integration", correlation_id=cid)
 
-    entries_url = f"http://{HA_HOST}:8123/api/config/config_entries"
+    entries_url = f"http://{HA_HOST}:8123/api/config/config_entries/entry"
 
     async def _mqtt_configured() -> bool:
+        # Primary: HTTP API (requires HA_API_TOKEN to be set)
+        if HA_API_TOKEN:
+            try:
+                resp = await http_client.get(
+                    entries_url,
+                    headers={"Authorization": f"Bearer {HA_API_TOKEN}"},
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    entries = resp.json()
+                    if isinstance(entries, list) and any(
+                        e.get("domain") == "mqtt" for e in entries
+                    ):
+                        return True
+            except Exception:
+                pass
+
+        # Fallback: read config entries file directly over SSH.
+        # The JSON uses "domain":"mqtt" (no spaces) in all known HA versions.
         try:
-            resp = await http_client.get(
-                entries_url,
-                headers={"Authorization": f"Bearer {HA_API_TOKEN}"},
-                timeout=10,
+            _, out, _ = await ssh_client.run(
+                'grep -c \'"domain":"mqtt"\' '
+                "/config/.storage/core.config_entries 2>/dev/null || true"
             )
-            if resp.status_code != 200:
-                return False
-            entries = resp.json()
-            return isinstance(entries, list) and any(
-                e.get("domain") == "mqtt" for e in entries
-            )
+            if out.strip() and int(out.strip()) > 0:
+                return True
         except Exception:
-            return False
+            pass
+
+        return False
 
     if await _mqtt_configured():
         log.info("step7_mqtt_found", correlation_id=cid)

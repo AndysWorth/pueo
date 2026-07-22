@@ -60,9 +60,9 @@ async def gather_mosquitto_evidence(
 ) -> dict[str, str]:
     """Gather diagnostic evidence when core_mosquitto fails to start."""
     evidence: dict[str, str] = {}
-    _, out, _ = await ssh_client.run("ha addons info core_mosquitto")
+    _, out, _ = await ssh_client.run("ha apps info core_mosquitto")
     evidence["addon_info"] = out
-    _, out, _ = await ssh_client.run("ha addons logs core_mosquitto -n 50")
+    _, out, _ = await ssh_client.run("ha apps logs core_mosquitto -n 50")
     evidence["addon_logs"] = out
     _, out, _ = await ssh_client.run("ss -tlnp | grep 1883")
     evidence["port_1883"] = out or "(nothing listening on 1883)"
@@ -77,7 +77,7 @@ async def gather_addon_install_evidence(
 ) -> dict[str, str]:
     """Gather diagnostic evidence when a named add-on fails to install."""
     evidence: dict[str, str] = {}
-    _, out, _ = await ssh_client.run(f"ha addons info {slug}")
+    _, out, _ = await ssh_client.run(f"ha apps info {slug}")
     evidence["addon_info"] = out
     _, out, _ = await ssh_client.run("ha supervisor info")
     evidence["supervisor_info"] = out
@@ -90,9 +90,9 @@ async def gather_addon_start_evidence(
 ) -> dict[str, str]:
     """Gather diagnostic evidence when a named add-on fails to reach running state."""
     evidence: dict[str, str] = {}
-    _, out, _ = await ssh_client.run(f"ha addons info {slug}")
+    _, out, _ = await ssh_client.run(f"ha apps info {slug}")
     evidence["addon_info"] = out
-    _, out, _ = await ssh_client.run(f"ha addons logs {slug} -n 50")
+    _, out, _ = await ssh_client.run(f"ha apps logs {slug} -n 50")
     evidence["addon_logs"] = out
     return evidence
 

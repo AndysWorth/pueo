@@ -313,6 +313,9 @@ class HaNameSync:
 
         for dev in devices:
             mac = _normalize_mac(dev.get("devMAC", ""))
+            if not mac:
+                log.warning("name_sync_skip_no_mac", dev_name=dev.get("devName", ""))
+                continue
             await self._process_one(mac, dev, ha_names, report)
 
         if report.conflicted:
