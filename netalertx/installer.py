@@ -70,6 +70,10 @@ INSTALL_STATES: list[str] = [
 
 _STATE_RANK: dict[str, int] = {s: i for i, s in enumerate(INSTALL_STATES)}
 
+# How long (seconds) to wait for HA to fully restart after `ha core restart`.
+# Tests monkeypatch this to 0.
+_HA_RESTART_WAIT_S: int = 60
+
 
 # ── persistence helpers ───────────────────────────────────────────────────────
 
@@ -134,7 +138,14 @@ async def _poll_addon_state(
     import asyncio
 
     pattern = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
-    for _ in range(attempts):
+    for attempt_num in range(1, attempts + 1):
+        log.info(
+            "poll_waiting",
+            addon_id=addon_id,
+            expected=expected,
+            attempt=attempt_num,
+            elapsed_s=round((attempt_num - 1) * delay),
+        )
         _, stdout, _ = await ssh_client.run(f"ha apps info {addon_id}")
         m = pattern.search(stdout)
         if m and _normalize_addon_state(m.group(1)) == expected.lower():
@@ -287,9 +298,18 @@ async def _step2_install_mosquitto(
         if not approved:
             log.warning("step2_mosquitto_install_rejected", correlation_id=cid)
             return False
+        log.info(
+            "running_command", cmd="ha apps install core_mosquitto", correlation_id=cid
+        )
         await ssh_client.run("ha apps install core_mosquitto", check=True)
+        log.info(
+            "running_command", cmd="ha apps start core_mosquitto", correlation_id=cid
+        )
         await ssh_client.run("ha apps start core_mosquitto", check=True)
     elif current_addon_state != "running":
+        log.info(
+            "running_command", cmd="ha apps start core_mosquitto", correlation_id=cid
+        )
         await ssh_client.run("ha apps start core_mosquitto", check=True)
 
     running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
@@ -500,7 +520,14 @@ async def _poll_addon_not_state(
 ) -> bool:
     """Poll until state != excluded_state (used to detect install completion)."""
     pattern = re.compile(r"state:\s*(\S+)", re.IGNORECASE)
-    for _ in range(attempts):
+    for attempt_num in range(1, attempts + 1):
+        log.info(
+            "poll_waiting",
+            addon_id=addon_id,
+            excluded_state=excluded_state,
+            attempt=attempt_num,
+            elapsed_s=round((attempt_num - 1) * delay),
+        )
         _, stdout, _ = await ssh_client.run(f"ha apps info {addon_id}")
         m = pattern.search(stdout)
         if m and m.group(1).lower() != excluded_state.lower():
@@ -663,6 +690,9 @@ async def _step5_install_addon(
 
         if addon_state == "unknown":
             log.info("step5_installing", slug=slug, correlation_id=cid)
+            log.info(
+                "running_command", cmd=f"ha apps install {slug}", correlation_id=cid
+            )
             await ssh_client.run(f"ha apps install {slug}", check=True)
             installed = await _poll_addon_not_state(
                 ssh_client, slug, "unknown", attempts=60, delay=5.0
@@ -711,6 +741,7 @@ async def _step5_install_addon(
 
         if addon_state != "running":
             log.info("step5_starting", slug=slug, correlation_id=cid)
+            log.info("running_command", cmd=f"ha apps start {slug}", correlation_id=cid)
             await ssh_client.run(f"ha apps start {slug}", check=True)
 
         running = await _poll_addon_state(
@@ -852,6 +883,7 @@ async def _step6_configure_app_conf(
     log.info("step6_app_conf_written", diff=diff, path=conf_path, correlation_id=cid)
 
     # Restart and verify
+    log.info("running_command", cmd=f"ha apps restart {slug}", correlation_id=cid)
     await ssh_client.run(f"ha apps restart {slug}", check=True)
     running = await _poll_addon_state(ssh_client, slug, "running")
     if not running:
@@ -1069,7 +1101,11 @@ async def _step8_create_webhook_automation(
         )
         return False
 
+    log.info("running_command", cmd="ha core restart", correlation_id=cid)
     await ssh_client.run("ha core restart")
+    log.info("ha_restarting", wait_s=_HA_RESTART_WAIT_S, correlation_id=cid)
+    await asyncio.sleep(_HA_RESTART_WAIT_S)
+    log.info("ha_restart_wait_complete", correlation_id=cid)
 
     webhook_url = f"http://{HA_HOST}:8123/api/webhook/netalertx_event"
     log.info(

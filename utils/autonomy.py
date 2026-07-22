@@ -17,8 +17,12 @@ import uuid
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
+from utils.logging import get_logger
+
 if TYPE_CHECKING:
     from utils.notify import NotifierProtocol
+
+log = get_logger("autonomy")
 
 
 class RiskLevel(IntEnum):
@@ -79,8 +83,11 @@ class AutonomyGate:
             return True
         # Send HITL notification and poll indefinitely for response
         nid = payload.get("notification_id", str(uuid.uuid4()))
+        log.info("hitl_waiting_for_approval", subject=subject, risk=risk.name)
         await notifier.send(subject, body, payload)
-        return await notifier.wait_for_approval(nid)
+        approved = await notifier.wait_for_approval(nid)
+        log.info("hitl_approval_received", approved=approved, subject=subject)
+        return approved
 
 
 class FakeAutonomyGate:
