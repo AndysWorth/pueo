@@ -1,11 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="refresh" content="10">
-  <title>Pueo HITL Dashboard</title>
-  <style>
+  <head>
+
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,
+      initial-scale=1.0">
+    <meta http-equiv="refresh" content="10">
+    <title>Pueo HITL Dashboard</title>
+    <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; padding: 1.5rem; }
     h1 { font-size: 1.4rem; margin-bottom: 1.5rem; color: #333; }
@@ -37,9 +40,10 @@
     .kv-grid .v { color: #222; word-break: break-word; }
     pre { font-size: 0.78rem; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; padding: 0.6rem; overflow-x: auto; margin-top: 0.4rem; white-space: pre-wrap; }
   </style>
-</head>
-<body>
-  <h1>🦉 Pueo — HITL Approval Queue</h1>
-  {% block content %}{% endblock %}
-</body>
+  </head>
+  <body>
+    <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
+        height="32">&nbsp;Pueo — HITL Approval Queue</h1>
+    {% block content %}{% endblock %}
+  </body>
 </html>
