@@ -71,10 +71,14 @@ A reference template for `config.yaml` is available in `config.yaml.default`.
 ```bash
 source .venv/bin/activate
 
-python main.py --mode monitor   # live log daemon (default) — runs continuously
-python main.py --mode diagnose  # one-shot config fetch and analysis
-python main.py --mode advanced  # diagnose + SQLite memory + backup triggering
-python main.py --mode repair    # full sandbox-test-then-atomic-swap repair cycle
+python main.py --mode monitor            # live SSH log tail with AI triage (default, daemon)
+python main.py --mode diagnose           # one-shot config fetch and analysis
+python main.py --mode advanced           # diagnose + SQLite memory + backup triggering
+python main.py --mode repair             # full sandbox-test-then-atomic-swap repair cycle
+python main.py --mode netalertx-setup    # install and configure NetAlertX on HA
+python main.py --mode netalertx          # monitor NetAlertX logs continuously
+python main.py --mode netalertx-diagnose # one-shot NetAlertX health check and optional heal
+python main.py --mode dashboard          # HITL web dashboard for approving/rejecting actions
 ```
 
 Pass `--config /path/to/config.yaml` if your config file is not in the project directory.
