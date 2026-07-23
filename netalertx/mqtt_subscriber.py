@@ -73,6 +73,29 @@ class MQTTSubscriber:
                 await asyncio.sleep(self._reconnect_delay)
 
 
+async def probe_mqtt_active(
+    host: str, port: int = 1883, timeout: float = 5.0
+) -> bool:  # pragma: no cover
+    """Return True if the broker accepts a connection and publishes a message within timeout.
+
+    Connects, subscribes to _TOPICS, and waits up to `timeout` seconds for one
+    message. Returns False on timeout or any broker connection error.
+    """
+    try:
+        async with aiomqtt.Client(host, port) as client:
+            for topic in _TOPICS:
+                await client.subscribe(topic)
+            try:
+                async with asyncio.timeout(timeout):
+                    async for _ in client.messages:
+                        return True
+            except TimeoutError:
+                pass
+    except aiomqtt.MqttError:
+        pass
+    return False
+
+
 class FakeMQTTSubscriber:
     """Test double — puts pre-configured events into the queue, then optionally raises."""
 

@@ -6347,3 +6347,88 @@ class TestNetAlertXOneShotDiagnose:
         assert (
             len(fake_healer.heal_calls) == 1
         ), "Internally-constructed healer should be called"
+
+    def test_mqtt_probe_fn_called_and_true_sets_mqtt_active(self):
+        """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+        probe_calls: list[str] = []
+
+        async def fake_probe(host: str) -> bool:
+            probe_calls.append(host)
+            return True
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=fake_probe,
+            )
+        )
+
+        assert len(probe_calls) == 1, "mqtt_probe_fn must be called exactly once"
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert "MQTT active: True" in prompt, "Probe True must propagate to LLM prompt"
+
+    def test_mqtt_probe_fn_false_sets_mqtt_inactive(self):
+        """mqtt_probe_fn returning False → mqtt_active=False in LLM diagnosis prompt."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+
+        async def false_probe(_: str) -> bool:
+            return False
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=false_probe,
+            )
+        )
+
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert (
+            "MQTT active: False" in prompt
+        ), "Probe False must propagate to LLM prompt"

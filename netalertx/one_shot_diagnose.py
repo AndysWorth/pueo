@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from config import (
     AUTONOMY_LEVEL,
@@ -148,6 +148,7 @@ async def run_diagnose(
     notifier: "NotifierProtocol | None" = None,
     healer: "NetAlertXHealer | None" = None,
     addon_slug: str | None = None,
+    mqtt_probe_fn: "Callable[[str], Awaitable[bool]] | None" = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
 
@@ -177,12 +178,24 @@ async def run_diagnose(
         log.error("netalertx_api_unreachable", error=str(exc))
         return
 
-    # 2. Health report (no MQTT subscriber needed for one-shot)
-    monitor = NetAlertXHealthMonitor(api_client=_api)
-    report = await monitor.poll_once(asyncio.Queue())
+    # 2. Health report — probe MQTT broker briefly so mqtt_active reflects reality.
+    # poll_once() determines mqtt_active by draining a queue; pre-populate it if
+    # the probe receives a message within the timeout window.
+    from netalertx.mqtt_subscriber import DevicePresenceEvent, probe_mqtt_active
 
-    # 2b. Active MQTT infrastructure check — poll_once() can't detect MQTT
-    # activity without a subscriber, so we SSH to check Mosquitto directly.
+    _probe = mqtt_probe_fn or (lambda h: probe_mqtt_active(h))
+    mqtt_live = await _probe(NETALERTX_HOST)
+    log.info("netalertx_diagnose_mqtt_probe", mqtt_live=mqtt_live)
+
+    queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
+    if mqtt_live:
+        await queue.put(DevicePresenceEvent(topic="probe", payload=""))
+
+    monitor = NetAlertXHealthMonitor(api_client=_api)
+    report = await monitor.poll_once(queue)
+
+    # 2b. Active MQTT infrastructure check — confirms the broker process is up
+    # independently of whether messages are flowing.
     mosquitto_running = await _check_mosquitto_running(_ha_ssh)
     log.info("netalertx_diagnose_mqtt_infra", mosquitto_running=mosquitto_running)
 
