@@ -362,6 +362,47 @@ EOF
     ok "config.yaml written"
 fi
 
+# ── 5. NetAlertX ──────────────────────────────────────────────────────────────────
+hdr "5. NetAlertX"
+
+# Read db_path from config.yaml; fall back to default
+DB_PATH=$(grep -E '^\s+db_path:' config.yaml 2>/dev/null | awk '{print $2}' | tr -d '"')
+[[ -z "$DB_PATH" ]] && DB_PATH="ha_agent_state.db"
+
+# Check installer state via Python sqlite3 (guaranteed available in .venv)
+NAX_STATE=$(.venv/bin/python -c "
+import sqlite3, os
+db = '${DB_PATH}'
+if not os.path.exists(db):
+    print('NOT_INSTALLED')
+else:
+    try:
+        with sqlite3.connect(db) as c:
+            row = c.execute(
+                'SELECT state FROM netalertx_install_state WHERE id=1'
+            ).fetchone()
+            print(row[0] if row else 'NOT_INSTALLED')
+    except Exception:
+        print('NOT_INSTALLED')
+" 2>/dev/null || echo "NOT_INSTALLED")
+
+if [[ "$NAX_STATE" == "FULLY_OPERATIONAL" ]]; then
+    ok "NetAlertX is already fully set up"
+else
+    if [[ "$NAX_STATE" == "NOT_INSTALLED" ]]; then
+        info "NetAlertX has not been set up yet."
+    else
+        info "NetAlertX installer is partially complete (state: ${NAX_STATE})."
+    fi
+    echo
+    read -rp "  Run the NetAlertX installer now? [Y/n]: " run_nax
+    if [[ "${run_nax:-Y}" =~ ^[Yy] ]]; then
+        .venv/bin/python main.py --mode netalertx-setup
+    else
+        info "You can run it later: python main.py --mode netalertx-setup"
+    fi
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
@@ -370,9 +411,10 @@ echo "  Activate environment : source .venv/bin/activate"
 echo "  Live log monitor     : python main.py --mode monitor"
 echo "  One-shot diagnostics : python main.py --mode diagnose"
 echo "  With memory layer    : python main.py --mode advanced"
-echo "  Full repair pipeline : python main.py --mode repair
-  HITL dashboard       : python main.py --mode dashboard"
+echo "  Full repair pipeline : python main.py --mode repair"
+echo "  HITL dashboard       : python main.py --mode dashboard"
 echo
 echo "  NetAlertX install    : python main.py --mode netalertx-setup"
 echo "  NetAlertX monitor    : python main.py --mode netalertx"
+echo "  NetAlertX diagnose   : python main.py --mode netalertx-diagnose"
 echo
