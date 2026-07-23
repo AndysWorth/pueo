@@ -18,6 +18,8 @@ from config import (
     NETALERTX_API_PORT,
     NETALERTX_API_TOKEN,
     NETALERTX_HOST,
+    NETALERTX_MQTT_PASSWORD,
+    NETALERTX_MQTT_USER,
     NETALERTX_SSH_HOST,
     NETALERTX_SSH_KEY_PATH,
     NETALERTX_SSH_USER,
@@ -183,7 +185,11 @@ async def run_diagnose(
     # the probe receives a message within the timeout window.
     from netalertx.mqtt_subscriber import DevicePresenceEvent, probe_mqtt_active
 
-    _probe = mqtt_probe_fn or (lambda h: probe_mqtt_active(h))
+    _probe = mqtt_probe_fn or (
+        lambda h: probe_mqtt_active(
+            h, username=NETALERTX_MQTT_USER, password=NETALERTX_MQTT_PASSWORD
+        )
+    )
     mqtt_live = await _probe(NETALERTX_HOST)
     log.info("netalertx_diagnose_mqtt_probe", mqtt_live=mqtt_live)
 

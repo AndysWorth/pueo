@@ -306,6 +306,8 @@ netalertx:
   # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
   # max_scan_age_minutes: 20
   # mqtt_subscribe: true
+  # mqtt_user: ""       # MQTT broker username (blank = anonymous)
+  # mqtt_password: ""   # MQTT broker password (blank = anonymous)
   # log_container_name: netalertx
   # max_db_history_rows: 100000
 
