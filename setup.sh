@@ -278,6 +278,35 @@ if $WRITE_CONFIG; then
     echo
     ask "NetAlertX API token"  ""  NAX_API_TOKEN
 
+    # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
+    echo
+    echo "  ── MQTT (Mosquitto broker) ─────────────────────────────────────"
+    MQTT_USER=""
+    MQTT_PASSWORD=""
+    if $_SSH "echo ok" &>/dev/null; then
+        mosquitto_state=$($_SSH "ha addons info core_mosquitto 2>/dev/null | grep -E '^\s*state:' | awk '{print \$2}'" 2>/dev/null || echo "")
+        if [[ "$mosquitto_state" == "started" ]]; then
+            ok "Mosquitto broker is running"
+        else
+            warn "Mosquitto does not appear to be running (state: ${mosquitto_state:-unknown})"
+            warn "Install it from the HA App Store (search: Mosquitto broker), then re-run setup."
+        fi
+    fi
+    echo
+    echo "  If Mosquitto requires authentication, enter the credentials Pueo should"
+    echo "  use to connect. Create a dedicated HA user at:"
+    echo "    Settings → People → Users → Add User (enable 'Local access only')"
+    echo "  Leave blank for anonymous (unauthenticated) access."
+    echo
+    read -rp "  MQTT username (blank = anonymous): " MQTT_USER
+    if [[ -n "$MQTT_USER" ]]; then
+        read -rsp "  MQTT password: " MQTT_PASSWORD
+        echo
+        ok "MQTT credentials recorded"
+    else
+        ok "MQTT anonymous access configured"
+    fi
+
     cat > config.yaml <<EOF
 home_assistant:
   host: "${HA_HOST}"
@@ -305,7 +334,8 @@ netalertx:
   # scan_interface: ""        # blank = auto-detected from default route
   # auto_generated_name_patterns: ["^unknown-", "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"]
   # max_scan_age_minutes: 20
-  # mqtt_subscribe: true
+  mqtt_user: "${MQTT_USER}"
+  mqtt_password: "${MQTT_PASSWORD}"
   # log_container_name: netalertx
   # max_db_history_rows: 100000
 

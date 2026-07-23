@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from config import (
     AUTONOMY_LEVEL,
@@ -18,6 +18,8 @@ from config import (
     NETALERTX_API_PORT,
     NETALERTX_API_TOKEN,
     NETALERTX_HOST,
+    NETALERTX_MQTT_PASSWORD,
+    NETALERTX_MQTT_USER,
     NETALERTX_SSH_HOST,
     NETALERTX_SSH_KEY_PATH,
     NETALERTX_SSH_USER,
@@ -148,6 +150,7 @@ async def run_diagnose(
     notifier: "NotifierProtocol | None" = None,
     healer: "NetAlertXHealer | None" = None,
     addon_slug: str | None = None,
+    mqtt_probe_fn: "Callable[[str], Awaitable[bool]] | None" = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
 
@@ -177,12 +180,28 @@ async def run_diagnose(
         log.error("netalertx_api_unreachable", error=str(exc))
         return
 
-    # 2. Health report (no MQTT subscriber needed for one-shot)
-    monitor = NetAlertXHealthMonitor(api_client=_api)
-    report = await monitor.poll_once(asyncio.Queue())
+    # 2. Health report — probe MQTT broker briefly so mqtt_active reflects reality.
+    # poll_once() determines mqtt_active by draining a queue; pre-populate it if
+    # the probe receives a message within the timeout window.
+    from netalertx.mqtt_subscriber import DevicePresenceEvent, probe_mqtt_active
 
-    # 2b. Active MQTT infrastructure check — poll_once() can't detect MQTT
-    # activity without a subscriber, so we SSH to check Mosquitto directly.
+    _probe = mqtt_probe_fn or (
+        lambda h: probe_mqtt_active(
+            h, username=NETALERTX_MQTT_USER, password=NETALERTX_MQTT_PASSWORD
+        )
+    )
+    mqtt_live = await _probe(NETALERTX_HOST)
+    log.info("netalertx_diagnose_mqtt_probe", mqtt_live=mqtt_live)
+
+    queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
+    if mqtt_live:
+        await queue.put(DevicePresenceEvent(topic="probe", payload=""))
+
+    monitor = NetAlertXHealthMonitor(api_client=_api)
+    report = await monitor.poll_once(queue)
+
+    # 2b. Active MQTT infrastructure check — confirms the broker process is up
+    # independently of whether messages are flowing.
     mosquitto_running = await _check_mosquitto_running(_ha_ssh)
     log.info("netalertx_diagnose_mqtt_infra", mosquitto_running=mosquitto_running)
 
@@ -239,6 +258,19 @@ async def run_diagnose(
                 severity="HIGH",
             )
         )
+    elif not report.mqtt_active:
+        config_issues.append(
+            ConfigIssue(
+                field="mqtt_traffic",
+                message=(
+                    "Mosquitto is running but no MQTT messages were received during "
+                    "the probe window. NetAlertX may not be configured to publish "
+                    "device events via MQTT, or the MQTT broker address in app.conf "
+                    "does not match the running broker."
+                ),
+                severity="MEDIUM",
+            )
+        )
 
     # 5. AI synthesis
     diagnostic, _llm_trace = await diagnose_health_report(
@@ -248,10 +280,11 @@ async def run_diagnose(
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
 
-    # 7. Optional healing — only when the gate can auto-proceed without HITL.
-    # The healer's minimum risk is MEDIUM; at autonomy levels 1–3, require_approval()
-    # blocks indefinitely waiting for dashboard input, which is not appropriate for
-    # a one-shot command. Only autonomy level 4 (AUTONOMOUS) auto-executes HIGH risk.
+    # 7. Heal or enqueue for HITL approval.
+    # At autonomy level 4, auto-execute HIGH-risk actions immediately.
+    # At all other levels, submit to the HITL notifier so the action appears
+    # in the dashboard queue — but do not block waiting for approval, since
+    # one-shot mode must return promptly.
     if diagnostic is not None:
         if _gate.should_auto_execute(RiskLevel.HIGH):
             _healer = healer
@@ -267,9 +300,21 @@ async def run_diagnose(
                 )
             await _healer.heal(diagnostic)
         else:
+            import uuid
+
+            nid = str(uuid.uuid4())
+            await _notifier.send(
+                subject=f"Pueo: NetAlertX {diagnostic.severity} — {diagnostic.issue}",
+                body=diagnostic.recommended_fix,
+                payload={
+                    "notification_id": nid,
+                    "category": diagnostic.category,
+                    "severity": diagnostic.severity,
+                    "source": "netalertx-diagnose",
+                },
+            )
             log.info(
-                "netalertx_diagnose_heal_skipped",
-                reason="autonomy_level_requires_hitl",
-                hint="Set autonomy_level=4 in config.yaml to auto-heal, "
-                "or use the dashboard to approve the pending action.",
+                "netalertx_diagnose_hitl_submitted",
+                notification_id=nid,
+                hint="Approve or reject via the HITL dashboard (--mode dashboard).",
             )

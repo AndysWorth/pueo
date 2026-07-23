@@ -38,16 +38,25 @@ class MQTTSubscriber:
         host: str,
         port: int = 1883,
         reconnect_delay: float = 5.0,
+        username: str = "",
+        password: str = "",  # nosec B107 — empty string signals anonymous; caller supplies real value
     ) -> None:
         self._host = host
         self._port = port
         self._reconnect_delay = reconnect_delay
+        self._username = username or None
+        self._password = password or None
 
     async def subscribe(self, queue: asyncio.Queue[DevicePresenceEvent]) -> None:
         """Subscribe and feed events into queue. Runs until cancelled."""
         while True:
             try:
-                async with aiomqtt.Client(self._host, self._port) as client:
+                async with aiomqtt.Client(
+                    self._host,
+                    self._port,
+                    username=self._username,
+                    password=self._password,
+                ) as client:
                     for topic in _TOPICS:
                         await client.subscribe(topic)
                     log.info(
@@ -71,6 +80,35 @@ class MQTTSubscriber:
                     reconnect_in=self._reconnect_delay,
                 )
                 await asyncio.sleep(self._reconnect_delay)
+
+
+async def probe_mqtt_active(
+    host: str,
+    port: int = 1883,
+    timeout: float = 5.0,
+    username: str = "",
+    password: str = "",
+) -> bool:  # pragma: no cover
+    """Return True if the broker is reachable and any message arrives within timeout.
+
+    Subscribes to '#' (all topics) so any publisher on the broker satisfies the
+    probe — not just the narrow _TOPICS the daemon uses. Returns False on timeout
+    or any broker connection error.
+    """
+    _user = username or None
+    _pass = password or None
+    try:
+        async with aiomqtt.Client(host, port, username=_user, password=_pass) as client:
+            await client.subscribe("#")
+            try:
+                async with asyncio.timeout(timeout):
+                    async for _ in client.messages:
+                        return True
+            except TimeoutError:
+                pass
+    except aiomqtt.MqttError:
+        pass
+    return False
 
 
 class FakeMQTTSubscriber:

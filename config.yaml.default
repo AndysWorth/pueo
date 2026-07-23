@@ -31,6 +31,8 @@ netalertx:
     - "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
   max_scan_age_minutes: 20                    # Alert if no scan completed within this window
   mqtt_subscribe: true                        # Subscribe to NetAlertX MQTT device presence events
+  mqtt_user: ""                               # MQTT broker username (leave blank for anonymous)
+  mqtt_password: ""                           # MQTT broker password (leave blank for anonymous)
   log_container_name: "netalertx"            # Docker container name (Docker deployments only)
   max_db_history_rows: 100000                 # Trigger DB cleanup above this row count
 

@@ -38,6 +38,8 @@ from config import (
     NETALERTX_ADDON_SLUG,
     NETALERTX_API_PORT,
     NETALERTX_HOST,
+    NETALERTX_MQTT_PASSWORD,
+    NETALERTX_MQTT_USER,
     NETALERTX_SCAN_INTERFACE,
 )
 from utils.autonomy import RiskLevel
@@ -858,6 +860,9 @@ async def _step6_configure_app_conf(
         "TIMEZONE": f"'{timezone}'",
         "LOADED_PLUGINS": merged_plugins,
     }
+    if NETALERTX_MQTT_USER:
+        updates["MQTT_USER"] = f"'{NETALERTX_MQTT_USER}'"
+        updates["MQTT_PASSWORD"] = f"'{NETALERTX_MQTT_PASSWORD}'"
 
     merged_conf, diff = _merge_app_conf(original_conf, updates)
 
@@ -977,13 +982,17 @@ async def _step7_verify_mqtt_integration(
         return True
 
     # Not found — send HITL with manual setup instructions
+    if NETALERTX_MQTT_USER:
+        cred_hint = f"Username: {NETALERTX_MQTT_USER} / Password: (from config.yaml)"
+    else:
+        cred_hint = "no credentials (anonymous)"
     approved = await gate.require_approval(
         subject="NetAlertX installer: configure MQTT integration in HA",
         body=(
             "HA MQTT integration is not yet configured. Set it up manually:\n"
             "  1. Settings → Devices & Services → Add Integration\n"
             "  2. Search for 'MQTT'\n"
-            f"  3. Broker: {HA_HOST}, Port: 1883, no credentials\n"
+            f"  3. Broker: {HA_HOST}, Port: 1883, {cred_hint}\n"
             "  4. Save, then signal approval to continue.\n\n"
             "Note: do NOT add `mqtt:` to configuration.yaml — "
             "that key disables MQTT auto-discovery on current HA."

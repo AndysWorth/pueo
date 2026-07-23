@@ -439,6 +439,18 @@ class TestNetAlertXConfigKeys:
 
         assert config.NETALERTX_MQTT_SUBSCRIBE is True
 
+    def test_netalertx_mqtt_user_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_MQTT_USER == ""
+
+    def test_netalertx_mqtt_password_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_MQTT_PASSWORD == ""
+
     def test_netalertx_log_container_name_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

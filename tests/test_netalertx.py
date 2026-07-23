@@ -1871,6 +1871,40 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert gate.require_approval_calls  # HITL notification was sent
 
+    def test_step7_hitl_body_includes_credentials_when_configured(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
+
+        ssh = self._make_full_ssh_no_mqtt()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        gate = self._gate_ask(approval=True)
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(approve=True),
+                db_path=db,
+                http_client=self._http_no_mqtt(),
+            )
+        )
+        body = gate.require_approval_calls[-1]["body"]
+        assert "mqttuser" in body
+        assert "anonymous" not in body
+
     def test_step7_mqtt_not_found_rejection_aborts(self, tmp_path, monkeypatch):
         import asyncio
 
@@ -2460,6 +2494,72 @@ class TestNetAlertXInstallerSteps5to8:
             )
         )
         assert state == "FULLY_OPERATIONAL"
+
+    def test_step6_writes_mqtt_credentials_when_configured(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "s3cr3t")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        written = ssh.written_files.get(_CONF_PATH, "")
+        assert "MQTT_USER = 'mqttuser'" in written
+        assert "MQTT_PASSWORD = 's3cr3t'" in written
+
+    def test_step6_omits_mqtt_credentials_when_empty(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        written = ssh.written_files.get(_CONF_PATH, "")
+        assert "MQTT_USER" not in written
+        assert "MQTT_PASSWORD" not in written
 
     # ── step 7: _mqtt_configured edge paths ──────────────────────────────────
 
@@ -5903,6 +6003,16 @@ class TestNetAlertXOneShotDiagnose:
         async def heal(self, diagnostic):
             self.heal_calls.append(diagnostic)
 
+    @staticmethod
+    async def _true_probe(_: str) -> bool:
+        """Fake mqtt_probe_fn that simulates an active broker."""
+        return True
+
+    @staticmethod
+    async def _false_probe(_: str) -> bool:
+        """Fake mqtt_probe_fn that simulates no MQTT traffic."""
+        return False
+
     def _valid_app_conf(self) -> str:
         return (
             "MQTT_BROKER='localhost'\n"
@@ -5982,6 +6092,7 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -6092,6 +6203,7 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -6347,3 +6459,177 @@ class TestNetAlertXOneShotDiagnose:
         assert (
             len(fake_healer.heal_calls) == 1
         ), "Internally-constructed healer should be called"
+
+    def test_mqtt_probe_fn_called_and_true_sets_mqtt_active(self):
+        """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+        probe_calls: list[str] = []
+
+        async def fake_probe(host: str) -> bool:
+            probe_calls.append(host)
+            return True
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=fake_probe,
+            )
+        )
+
+        assert len(probe_calls) == 1, "mqtt_probe_fn must be called exactly once"
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert "MQTT active: True" in prompt, "Probe True must propagate to LLM prompt"
+
+    def test_mqtt_probe_fn_false_sets_mqtt_inactive(self):
+        """mqtt_probe_fn returning False → mqtt_active=False in LLM diagnosis prompt."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+
+        async def false_probe(_: str) -> bool:
+            return False
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=false_probe,
+            )
+        )
+
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert (
+            "MQTT active: False" in prompt
+        ), "Probe False must propagate to LLM prompt"
+
+    def test_mqtt_inactive_with_mosquitto_running_triggers_config_issue(self):
+        """mqtt_active=False + mosquitto running → ConfigIssue added → LLM called."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="No MQTT traffic detected",
+            severity="MEDIUM",
+            category="mqtt",
+            recommended_fix="Check MQTT_BROKER in app.conf.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+
+        async def false_probe(_: str) -> bool:
+            return False
+
+        # Healthy devices (no stale scan) — LLM call must come from mqtt_traffic issue alone
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(mosquitto_state="started"),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=false_probe,
+            )
+        )
+
+        assert (
+            len(llm.calls) == 1
+        ), "LLM should be called when MQTT is silent but broker is up"
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert (
+            "mqtt_traffic" in prompt
+        ), "mqtt_traffic ConfigIssue must appear in LLM prompt"
+
+    def test_hitl_required_submits_to_notifier_without_blocking(self):
+        """When HITL is required, one-shot mode sends to the notifier and returns."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart NetAlertX and trigger a new scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        notifier = FakeNotifier()
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                notifier=notifier,
+                gate=gate,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
+            )
+        )
+
+        assert len(notifier.sent) == 1, "Exactly one HITL notification should be sent"
+        sent = notifier.sent[0]
+        assert "Scan is stale" in sent["subject"]
+        assert sent["payload"]["source"] == "netalertx-diagnose"
+        assert "notification_id" in sent["payload"]
