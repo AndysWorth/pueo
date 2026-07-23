@@ -2461,6 +2461,72 @@ class TestNetAlertXInstallerSteps5to8:
         )
         assert state == "FULLY_OPERATIONAL"
 
+    def test_step6_writes_mqtt_credentials_when_configured(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "s3cr3t")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        written = ssh.written_files.get(_CONF_PATH, "")
+        assert "MQTT_USER = 'mqttuser'" in written
+        assert "MQTT_PASSWORD = 's3cr3t'" in written
+
+    def test_step6_omits_mqtt_credentials_when_empty(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "")
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_PASSWORD", "")
+
+        ssh = self._make_full_ssh()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "ADDON_RUNNING",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        written = ssh.written_files.get(_CONF_PATH, "")
+        assert "MQTT_USER" not in written
+        assert "MQTT_PASSWORD" not in written
+
     # ── step 7: _mqtt_configured edge paths ──────────────────────────────────
 
     def test_step7_mqtt_check_non_200_triggers_hitl(self, tmp_path, monkeypatch):

@@ -2,43 +2,44 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md)
 
 ---
 
 ## Status
 
-| #   | Item                                                                 | Status              |
-| --- | -------------------------------------------------------------------- | ------------------- |
-| 1   | Prompt Management                                                    | ✅ Done (2026-07-15) |
-| 2   | Retry with Exponential Backoff                                       | ✅ Done (2026-07-15) |
-| 3   | Rate Limiting and Debounce                                           | ✅ Done (2026-07-15) |
-| 4   | SQLite Migration Strategy                                            | ✅ Done (2026-07-15) |
-| 5   | Structured Logging + Correlation IDs                                 | ✅ Done (2026-07-15) |
-| 6   | Context Window / Token Management                                    | ✅ Done (2026-07-15) |
-| 7   | Agent Output Content Validation                                      | ✅ Done (2026-07-15) |
-| 8   | Dependency Injection / Protocol Interfaces                           | ✅ Done (2026-07-15) |
-| 9   | HITL Notification Infrastructure                                     | ✅ Done (2026-07-15) |
-| 9.5 | Unified Autonomy Level                                               | ✅ Done (2026-07-19) |
-| 10  | NetAlertX Foundation — Package, Config, and API Client               | ✅ Done (2026-07-19) |
-| 11  | NetAlertX Installer — Steps 1–4                                      | ✅ Done (2026-07-19) |
-| 12  | NetAlertX Installer — Steps 5–8                                      | ✅ Done (2026-07-19) |
-| 13  | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ Done (2026-07-20) |
-| 14  | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ Done (2026-07-20) |
-| 15  | NetAlertX Log Monitoring                                             | ✅ Done (2026-07-20) |
-| 16  | NetAlertX Health Polling and MQTT                                    | ✅ Done (2026-07-20) |
-| 17  | NetAlertX AI Diagnosis                                               | ✅ Done (2026-07-20) |
-| 18  | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
-| 19  | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
-| 19.5 | HITL Web Dashboard                                                  | ✅ Done (2026-07-20) |
-| 20  | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
-| 21  | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
-| 22  | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
-| 23  | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
-| 24  | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
-| 25  | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
-| 26  | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
-| 27  | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
+| #    | Item                                                                 | Status              |
+| ---- | -------------------------------------------------------------------- | ------------------- |
+| 1    | Prompt Management                                                    | ✅ Done (2026-07-15) |
+| 2    | Retry with Exponential Backoff                                       | ✅ Done (2026-07-15) |
+| 3    | Rate Limiting and Debounce                                           | ✅ Done (2026-07-15) |
+| 4    | SQLite Migration Strategy                                            | ✅ Done (2026-07-15) |
+| 5    | Structured Logging + Correlation IDs                                 | ✅ Done (2026-07-15) |
+| 6    | Context Window / Token Management                                    | ✅ Done (2026-07-15) |
+| 7    | Agent Output Content Validation                                      | ✅ Done (2026-07-15) |
+| 8    | Dependency Injection / Protocol Interfaces                           | ✅ Done (2026-07-15) |
+| 9    | HITL Notification Infrastructure                                     | ✅ Done (2026-07-15) |
+| 9.5  | Unified Autonomy Level                                               | ✅ Done (2026-07-19) |
+| 10   | NetAlertX Foundation — Package, Config, and API Client               | ✅ Done (2026-07-19) |
+| 11   | NetAlertX Installer — Steps 1–4                                      | ✅ Done (2026-07-19) |
+| 12   | NetAlertX Installer — Steps 5–8                                      | ✅ Done (2026-07-19) |
+| 13   | NetAlertX Device Name Sync — HA Name Reading and Safe Writes         | ✅ Done (2026-07-20) |
+| 14   | NetAlertX Device Name Sync — Conflict Resolution and Unknown Devices | ✅ Done (2026-07-20) |
+| 15   | NetAlertX Log Monitoring                                             | ✅ Done (2026-07-20) |
+| 16   | NetAlertX Health Polling and MQTT                                    | ✅ Done (2026-07-20) |
+| 17   | NetAlertX AI Diagnosis                                               | ✅ Done (2026-07-20) |
+| 18   | NetAlertX Autonomy-Gated Healing                                     | ✅ Done (2026-07-20) |
+| 19   | NetAlertX HA Integration Maintenance                                 | ✅ Done (2026-07-20) |
+| 19.5 | HITL Web Dashboard                                                   | ✅ Done (2026-07-20) |
+| 20   | NetAlertX Setup Status Logging                                       | ✅ Done (2026-07-20) |
+| 21   | CLI Corrections, NetAlertX Repository Fix, Remove Optionality        | ✅ Done (2026-07-21) |
+| 22   | Installer Diagnostic Intelligence                                    | ✅ Done (2026-07-21) |
+| 23   | Evidence and LLM Trace Capture                                       | ✅ Done (2026-07-21) |
+| 24   | Dashboard Evidence UI                                                | ✅ Done (2026-07-21) |
+| 25   | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
+| 26   | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
+| 27   | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
+| 28   | MQTT Credential Setup                                                | ✅ Done (2026-07-23) |
 
 ---
 
