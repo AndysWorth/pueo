@@ -39,7 +39,7 @@ class MQTTSubscriber:
         port: int = 1883,
         reconnect_delay: float = 5.0,
         username: str = "",
-        password: str = "",
+        password: str = "",  # nosec B107 — empty string signals anonymous; caller supplies real value
     ) -> None:
         self._host = host
         self._port = port
