@@ -1,4 +1,4 @@
-# 🦉 pueo
+# <img src="web/static/nav_32.png" alt="pueo" height="32" valign="middle"> pueo
 
 [![CI](https://github.com/AndysWorth/pueo/actions/workflows/test.yml/badge.svg)](https://github.com/AndysWorth/pueo/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/AndysWorth/pueo/graph/badge.svg)](https://codecov.io/gh/AndysWorth/pueo)
