@@ -190,7 +190,7 @@ class HaNameSync:
         self, mac: str, dev: dict, ha_names: dict[str, str], report: SyncReport
     ) -> None:
         """Apply Cases 1, 2, 4A, 4B for one device; collect Cases 3 and 4C into report."""
-        dev_name: str = dev.get("devName", "") or ""
+        dev_name: str = str(dev.get("devName") or "")
         ha_name = ha_names.get(mac, "")
 
         if ha_name:
@@ -312,7 +312,7 @@ class HaNameSync:
         report = SyncReport()
 
         for dev in devices:
-            mac = _normalize_mac(dev.get("devMAC", ""))
+            mac = _normalize_mac(dev.get("devMac", ""))
             if not mac:
                 log.warning("name_sync_skip_no_mac", dev_name=dev.get("devName", ""))
                 continue
@@ -338,7 +338,7 @@ class HaNameSync:
         ha_names = await self.read_ha_names()
         devices = await self._api.get_devices()
         dev = next(
-            (d for d in devices if _normalize_mac(d.get("devMAC", "")) == mac),
+            (d for d in devices if _normalize_mac(d.get("devMac", "")) == mac),
             None,
         )
         if dev is None:

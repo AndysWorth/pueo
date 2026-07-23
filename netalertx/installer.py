@@ -72,10 +72,6 @@ INSTALL_STATES: list[str] = [
 
 _STATE_RANK: dict[str, int] = {s: i for i, s in enumerate(INSTALL_STATES)}
 
-# How long (seconds) to wait for HA to fully restart after `ha core restart`.
-# Tests monkeypatch this to 0.
-_HA_RESTART_WAIT_S: int = 60
-
 
 # ── persistence helpers ───────────────────────────────────────────────────────
 
@@ -534,6 +530,30 @@ async def _poll_addon_not_state(
         m = pattern.search(stdout)
         if m and m.group(1).lower() != excluded_state.lower():
             return True
+        await asyncio.sleep(delay)
+    return False
+
+
+async def _poll_api_ready(
+    base_url: str,
+    attempts: int = 15,
+    delay: float = 2.0,
+) -> bool:
+    """Poll GET /health until HTTP 200 or timeout (default ~30 s)."""
+    health_url = f"{base_url.rstrip('/')}/health"
+    for attempt_num in range(1, attempts + 1):
+        log.info(
+            "api_poll_waiting",
+            url=health_url,
+            attempt=attempt_num,
+            elapsed_s=round((attempt_num - 1) * delay),
+        )
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                await c.get(health_url)
+            return True  # any HTTP response means the server is up
+        except httpx.ConnectError:
+            pass
         await asyncio.sleep(delay)
     return False
 
@@ -1110,11 +1130,23 @@ async def _step8_create_webhook_automation(
         )
         return False
 
-    log.info("running_command", cmd="ha core restart", correlation_id=cid)
-    await ssh_client.run("ha core restart")
-    log.info("ha_restarting", wait_s=_HA_RESTART_WAIT_S, correlation_id=cid)
-    await asyncio.sleep(_HA_RESTART_WAIT_S)
-    log.info("ha_restart_wait_complete", correlation_id=cid)
+    # Reload only the automations component — a full core restart is unnecessary
+    # and causes 2-5 minutes of HA downtime.
+    reload_cmd = (
+        "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
+        ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
+        ' -H "Content-Type: application/json"'
+    )
+    log.info("running_command", cmd="automation/reload", correlation_id=cid)
+    ec, _, stderr = await ssh_client.run(reload_cmd)
+    if ec != 0:
+        log.warning(
+            "step8_automation_reload_failed",
+            error=stderr,
+            correlation_id=cid,
+        )
+    else:
+        log.info("automations_reloaded", correlation_id=cid)
 
     webhook_url = f"http://{HA_HOST}:8123/api/webhook/netalertx_event"
     log.info(
@@ -1332,21 +1364,26 @@ async def main(
         from netalertx.api_client import NetAlertXAPIClient
         from netalertx.ha_name_sync import HaNameSync
 
-        _api = NetAlertXAPIClient(
-            base_url=f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}",
-            api_token=NETALERTX_API_TOKEN,
-        )
-        _syncer = HaNameSync(
-            ssh_client=_ssh,
-            api_client=_api,
-            gate=_gate,
-            notifier=_notifier,
-        )
-        report = await _syncer.sync_names()
-        log.info(
-            "ha_name_sync_done",
-            written=len(report.written),
-            locked=len(report.locked),
-            conflicted=len(report.conflicted),
-            unnamed=len(report.unnamed),
-        )
+        _base_url = f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}"
+        api_ready = await _poll_api_ready(_base_url)
+        if not api_ready:
+            log.warning(
+                "ha_name_sync_skipped",
+                reason="NetAlertX API did not become ready within 30 s — re-run setup to sync device names",
+            )
+        else:
+            _api = NetAlertXAPIClient(base_url=_base_url, api_token=NETALERTX_API_TOKEN)
+            _syncer = HaNameSync(
+                ssh_client=_ssh,
+                api_client=_api,
+                gate=_gate,
+                notifier=_notifier,
+            )
+            report = await _syncer.sync_names()
+            log.info(
+                "ha_name_sync_done",
+                written=len(report.written),
+                locked=len(report.locked),
+                conflicted=len(report.conflicted),
+                unnamed=len(report.unnamed),
+            )

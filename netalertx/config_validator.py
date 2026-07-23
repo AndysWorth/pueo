@@ -184,7 +184,7 @@ def validate_mqtt_entity_coverage(
 
     issues: list[ConfigIssue] = []
     for device in netalertx_devices:
-        mac = _normalize_mac(device.get("devMAC", ""))
+        mac = _normalize_mac(device.get("devMac", ""))
         if mac and mac not in ha_macs:
             name = device.get("devName", "unnamed")
             issues.append(

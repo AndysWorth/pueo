@@ -32,7 +32,6 @@ from netalertx.config_validator import ConfigIssue, validate_app_conf
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
-from utils.autonomy import RiskLevel
 from utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -280,41 +279,21 @@ async def run_diagnose(
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
 
-    # 7. Heal or enqueue for HITL approval.
-    # At autonomy level 4, auto-execute HIGH-risk actions immediately.
-    # At all other levels, submit to the HITL notifier so the action appears
-    # in the dashboard queue — but do not block waiting for approval, since
-    # one-shot mode must return promptly.
+    # 7. Heal — the healer + autonomy gate handle auto-execute vs. HITL blocking.
+    # At level 4, healer runs immediately. At levels 2–3, healer calls
+    # require_approval(), sends a dashboard notification, and blocks until the
+    # user approves or rejects. At level 1 (report only), require_approval
+    # returns False without notifying and no action is taken.
     if diagnostic is not None:
-        if _gate.should_auto_execute(RiskLevel.HIGH):
-            _healer = healer
-            if _healer is None:
-                from netalertx.healer import NetAlertXHealer
+        _healer = healer
+        if _healer is None:
+            from netalertx.healer import NetAlertXHealer
 
-                _healer = NetAlertXHealer(
-                    gate=_gate,
-                    ssh_client=_ssh,
-                    ha_ssh_client=_ha_ssh,
-                    api_client=_api,
-                    notifier=_notifier,
-                )
-            await _healer.heal(diagnostic)
-        else:
-            import uuid
-
-            nid = str(uuid.uuid4())
-            await _notifier.send(
-                subject=f"Pueo: NetAlertX {diagnostic.severity} — {diagnostic.issue}",
-                body=diagnostic.recommended_fix,
-                payload={
-                    "notification_id": nid,
-                    "category": diagnostic.category,
-                    "severity": diagnostic.severity,
-                    "source": "netalertx-diagnose",
-                },
+            _healer = NetAlertXHealer(
+                gate=_gate,
+                ssh_client=_ssh,
+                ha_ssh_client=_ha_ssh,
+                api_client=_api,
+                notifier=_notifier,
             )
-            log.info(
-                "netalertx_diagnose_hitl_submitted",
-                notification_id=nid,
-                hint="Approve or reject via the HITL dashboard (--mode dashboard).",
-            )
+        await _healer.heal(diagnostic)

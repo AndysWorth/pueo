@@ -9,7 +9,18 @@
       "Bash(bandit*)",
       "Bash(pip install*)",
       "Bash(pip show*)",
-      "Bash(ollama*)"
+      "Bash(ollama*)",
+      "Bash(source .venv/bin/activate*)",
+      "Bash(.venv/bin/pytest*)",
+      "Bash(.venv/bin/python -m pytest*)",
+      "Bash(.venv/bin/python -m black*)",
+      "Bash(.venv/bin/python -m flake8*)",
+      "Bash(.venv/bin/python -m mypy*)",
+      "Bash(.venv/bin/python -m bandit*)",
+      "Bash(.venv/bin/black*)",
+      "Bash(.venv/bin/flake8*)",
+      "Bash(.venv/bin/mypy*)",
+      "Bash(.venv/bin/bandit*)"
     ]
   },
   "hooks": {
