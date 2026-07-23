@@ -29,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/stop.sh"
+            "command": "bash .claude/hooks/stop.sh",
+            "timeout": 180
           }
         ]
       }
