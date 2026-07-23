@@ -252,6 +252,19 @@ async def run_diagnose(
                 severity="HIGH",
             )
         )
+    elif not report.mqtt_active:
+        config_issues.append(
+            ConfigIssue(
+                field="mqtt_traffic",
+                message=(
+                    "Mosquitto is running but no MQTT messages were received during "
+                    "the probe window. NetAlertX may not be configured to publish "
+                    "device events via MQTT, or the MQTT broker address in app.conf "
+                    "does not match the running broker."
+                ),
+                severity="MEDIUM",
+            )
+        )
 
     # 5. AI synthesis
     diagnostic, _llm_trace = await diagnose_health_report(

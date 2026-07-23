@@ -5903,6 +5903,16 @@ class TestNetAlertXOneShotDiagnose:
         async def heal(self, diagnostic):
             self.heal_calls.append(diagnostic)
 
+    @staticmethod
+    async def _true_probe(_: str) -> bool:
+        """Fake mqtt_probe_fn that simulates an active broker."""
+        return True
+
+    @staticmethod
+    async def _false_probe(_: str) -> bool:
+        """Fake mqtt_probe_fn that simulates no MQTT traffic."""
+        return False
+
     def _valid_app_conf(self) -> str:
         return (
             "MQTT_BROKER='localhost'\n"
@@ -5982,6 +5992,7 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -6092,6 +6103,7 @@ class TestNetAlertXOneShotDiagnose:
                 llm_client=llm,
                 healer=healer,
                 addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
             )
         )
 
@@ -6432,3 +6444,46 @@ class TestNetAlertXOneShotDiagnose:
         assert (
             "MQTT active: False" in prompt
         ), "Probe False must propagate to LLM prompt"
+
+    def test_mqtt_inactive_with_mosquitto_running_triggers_config_issue(self):
+        """mqtt_active=False + mosquitto running → ConfigIssue added → LLM called."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="No MQTT traffic detected",
+            severity="MEDIUM",
+            category="mqtt",
+            recommended_fix="Check MQTT_BROKER in app.conf.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+
+        async def false_probe(_: str) -> bool:
+            return False
+
+        # Healthy devices (no stale scan) — LLM call must come from mqtt_traffic issue alone
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(mosquitto_state="started"),
+                api_client=self._FakeAPIClient(devices=[]),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=false_probe,
+            )
+        )
+
+        assert (
+            len(llm.calls) == 1
+        ), "LLM should be called when MQTT is silent but broker is up"
+        prompt = llm.calls[0]["messages"][-1]["content"]
+        assert (
+            "mqtt_traffic" in prompt
+        ), "mqtt_traffic ConfigIssue must appear in LLM prompt"

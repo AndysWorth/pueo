@@ -76,15 +76,15 @@ class MQTTSubscriber:
 async def probe_mqtt_active(
     host: str, port: int = 1883, timeout: float = 5.0
 ) -> bool:  # pragma: no cover
-    """Return True if the broker accepts a connection and publishes a message within timeout.
+    """Return True if the broker is reachable and any message arrives within timeout.
 
-    Connects, subscribes to _TOPICS, and waits up to `timeout` seconds for one
-    message. Returns False on timeout or any broker connection error.
+    Subscribes to '#' (all topics) so any publisher on the broker satisfies the
+    probe — not just the narrow _TOPICS the daemon uses. Returns False on timeout
+    or any broker connection error.
     """
     try:
         async with aiomqtt.Client(host, port) as client:
-            for topic in _TOPICS:
-                await client.subscribe(topic)
+            await client.subscribe("#")
             try:
                 async with asyncio.timeout(timeout):
                     async for _ in client.messages:
