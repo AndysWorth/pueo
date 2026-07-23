@@ -182,15 +182,15 @@ class TestNetAlertXAPIClient:
 
     def test_get_devices_returns_list(self):
         devices = [
-            {"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "laptop"},
-            {"devMAC": "11:22:33:44:55:66", "devName": "phone"},
+            {"devMac": "AA:BB:CC:DD:EE:FF", "devName": "laptop"},
+            {"devMac": "11:22:33:44:55:66", "devName": "phone"},
         ]
         c = self._client(
             [("GET", "/devices", 200, {"success": True, "devices": devices})]
         )
         result = asyncio.run(c.get_devices())
         assert len(result) == 2
-        assert result[0]["devMAC"] == "AA:BB:CC:DD:EE:FF"
+        assert result[0]["devMac"] == "AA:BB:CC:DD:EE:FF"
 
     def test_get_events_returns_list(self):
         events = [
@@ -1349,10 +1349,6 @@ def _make_mock_http(routes):
 class TestNetAlertXInstallerSteps5to8:
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    @pytest.fixture(autouse=True)
-    def _zero_restart_wait(self, monkeypatch):
-        monkeypatch.setattr("netalertx.installer._HA_RESTART_WAIT_S", 0)
-
     def _notifier(self, approve: bool = True):
         from utils.notify import FakeNotifier
 
@@ -1396,7 +1392,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: test-backup-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 f"ip addr show": (
                     0,
                     "inet 192.168.1.5/24 brd 192.168.1.255 scope global eth0\n",
@@ -1459,7 +1455,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: fresh-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 "ip addr show": (
                     0,
                     "inet 192.168.1.5/24 scope global eth0\n",
@@ -2128,7 +2124,7 @@ class TestNetAlertXInstallerSteps5to8:
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-run-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
             },
         )
@@ -2255,7 +2251,7 @@ class TestNetAlertXInstallerSteps5to8:
                 "ha backup new": (0, "Slug: bk-slug\n", ""),
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.2/24 scope global eth0\n", ""),
             },
         )
@@ -2331,7 +2327,7 @@ class TestNetAlertXInstallerSteps5to8:
                 "ha backup new": (0, "Slug: bk-tz\n", ""),
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
             },
         )
@@ -2735,6 +2731,51 @@ class TestNetAlertXInstallerSteps5to8:
             "backup" in c["subject"].lower() for c in gate.require_approval_calls
         )
 
+    def test_step8_automation_reload_fails_still_reaches_fully_operational(
+        self, tmp_path, monkeypatch
+    ):
+        """Reload failure is logged as a warning but installation still completes."""
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+        from utils.ssh_client import FakeSSHClient
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+
+        ssh = FakeSSHClient(
+            file_contents={
+                _CONF_PATH: _ORIG_APP_CONF,
+                "/config/configuration.yaml": _HA_CONF,
+                _AUTOMATIONS_PATH: "",
+            },
+            command_results={
+                f"ha apps info {_SLUG}": (0, f"state: running\ndata: {_DATA_PATH}\n", ""),
+                "ha backup new": (0, "Slug: test-backup-slug\n", ""),
+                "ha core check": (0, "", ""),
+                "automation/reload": (1, "", "curl: connection refused"),
+            },
+        )
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        state = asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        assert any("automation/reload" in cmd for cmd in ssh.commands_run)
+
     def test_step8_fallback_to_directory_automation_path(self, tmp_path, monkeypatch):
         import asyncio
 
@@ -2752,7 +2793,7 @@ class TestNetAlertXInstallerSteps5to8:
             command_results={
                 "ha backup new": (0, "Slug: bk-fallback\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
             },
         )
         db = _make_installer_db_at_state(
@@ -2791,7 +2832,7 @@ class TestNetAlertXInstallerSteps5to8:
             command_results={
                 "ha backup new": (0, "Slug: bk-new\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
             },
         )
         db = _make_installer_db_at_state(
@@ -2886,7 +2927,7 @@ class TestRunInstaller:
                 f"ha apps restart {_slug}": (0, "", ""),
                 "ha backup new": (0, "Slug: full-slug\n", ""),
                 "ha core check": (0, "", ""),
-                "ha core restart": (0, "", ""),
+                "automation/reload": (0, "", ""),
                 "ip addr show": (0, "inet 10.0.0.1/24 scope global eth0\n", ""),
             },
         )
@@ -2932,6 +2973,92 @@ class TestRunInstaller:
             )
         )
         assert state == "NOT_INSTALLED"
+
+    def test_main_skips_name_sync_when_api_not_ready(self, tmp_path, monkeypatch):
+        """When _poll_api_ready times out, sync is skipped and no exception is raised."""
+        import asyncio
+
+        import netalertx.installer as inst
+        from netalertx.installer import main as installer_main
+        from utils.ssh_client import FakeSSHClient
+        import ha_agent_advanced
+
+        db = tmp_path / "main_poll_timeout.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        monkeypatch.setattr(inst, "DB_PATH", str(db))
+
+        async def _fake_run(*a, **k):
+            return "FULLY_OPERATIONAL"
+
+        monkeypatch.setattr(inst, "run_installer", _fake_run)
+
+        async def _poll_never_ready(*a, **k):
+            return False
+
+        monkeypatch.setattr(inst, "_poll_api_ready", _poll_never_ready)
+
+        ssh = FakeSSHClient()
+        asyncio.run(
+            installer_main(
+                ssh_client=ssh,
+                gate=self._gate_auto(),
+                notifier=self._notifier(),
+                db_path=str(db),
+            )
+        )
+
+    def test_main_runs_name_sync_when_api_ready(self, tmp_path, monkeypatch):
+        """When _poll_api_ready succeeds, sync_names is called and its report logged."""
+        import asyncio
+
+        import netalertx.installer as inst
+        from netalertx.installer import main as installer_main
+        from utils.ssh_client import FakeSSHClient
+        import ha_agent_advanced
+
+        db = tmp_path / "main_poll_ready.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        monkeypatch.setattr(inst, "DB_PATH", str(db))
+
+        async def _fake_run(*a, **k):
+            return "FULLY_OPERATIONAL"
+
+        monkeypatch.setattr(inst, "run_installer", _fake_run)
+
+        async def _poll_ready(*a, **k):
+            return True
+
+        monkeypatch.setattr(inst, "_poll_api_ready", _poll_ready)
+
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class _FakeReport:
+            written: list = field(default_factory=list)
+            locked: list = field(default_factory=list)
+            conflicted: list = field(default_factory=list)
+            unnamed: list = field(default_factory=list)
+
+        sync_called = []
+
+        async def _fake_sync(self_inner, *a, **k):
+            sync_called.append(True)
+            return _FakeReport()
+
+        monkeypatch.setattr("netalertx.ha_name_sync.HaNameSync.sync_names", _fake_sync)
+
+        ssh = FakeSSHClient()
+        asyncio.run(
+            installer_main(
+                ssh_client=ssh,
+                gate=self._gate_auto(),
+                notifier=self._notifier(),
+                db_path=str(db),
+            )
+        )
+        assert sync_called, "sync_names should have been called when API is ready"
 
 
 # ── netalertx/ha_name_sync.py ────────────────────────────────────────────────
@@ -3204,7 +3331,7 @@ class TestHaNameSyncCases1And2:
 
         mac = "AA:BB:CC:DD:EE:01"
         nax = _FakeNAXClient(
-            [{"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
         )
         ha_http = _ha_states_transport(self._simple_states(mac, "Living Room TV"))
         syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
@@ -3227,7 +3354,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": mac,
                     "devVendor": "Acme",
                     "devLastIP": "10.0.0.2",
@@ -3251,7 +3378,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "unknown-abc123",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3273,7 +3400,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "Kitchen Hub",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3298,7 +3425,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "kitchen hub",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3323,7 +3450,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "Bob's Laptop",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3363,7 +3490,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": mac,  # MAC-as-name matches auto-generated pattern
                     "devVendor": "Synology",
                     "devLastIP": "10.0.0.100",
@@ -3431,25 +3558,25 @@ class TestHaNameSyncCases1And2:
 
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:01",
+                "devMac": "AA:BB:CC:DD:EE:01",
                 "devName": "",
                 "devVendor": "",
                 "devLastIP": "",
             },
             {
-                "devMAC": "AA:BB:CC:DD:EE:02",
+                "devMac": "AA:BB:CC:DD:EE:02",
                 "devName": "Hub",
                 "devVendor": "",
                 "devLastIP": "",
             },
             {
-                "devMAC": "AA:BB:CC:DD:EE:03",
+                "devMac": "AA:BB:CC:DD:EE:03",
                 "devName": "Old",
                 "devVendor": "",
                 "devLastIP": "",
             },
             {
-                "devMAC": "AA:BB:CC:DD:EE:04",
+                "devMac": "AA:BB:CC:DD:EE:04",
                 "devName": "",  # blank → no HA name + no DNS → Step C (unnamed)
                 "devVendor": "X",
                 "devLastIP": "",
@@ -3504,12 +3631,12 @@ class TestHaNameSyncCases1And2:
         devices = [
             # Device with no MAC — should be skipped entirely
             {
-                "devMAC": "",
+                "devMac": "",
                 "devName": "",
                 "devVendor": "Unknown",
                 "devLastIP": "10.0.0.5",
             },
-            {"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""},
+            {"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ""},
         ]
         nax = _FakeNAXClient(devices)
         ha_http = _ha_states_transport(self._simple_states(mac, "Phone"))
@@ -3520,6 +3647,23 @@ class TestHaNameSyncCases1And2:
         assert all(m != "" for m, _, _ in nax.updates)
         assert all(m != "" for m, _, _ in nax.locks)
         # The valid device is still processed
+        assert mac in report.written
+
+    def test_sync_names_handles_non_string_devname(self):
+        """devName values that are not strings (e.g. float from API) must not crash."""
+        import asyncio
+
+        from utils.ssh_client import FakeSSHClient
+
+        mac = "AA:BB:CC:DD:EE:FF"
+        devices = [
+            {"devMac": mac, "devName": float("inf"), "devVendor": "", "devLastIP": ""}
+        ]
+        nax = _FakeNAXClient(devices)
+        ha_http = _ha_states_transport(self._simple_states(mac, "Router"))
+        syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
+        # Should not raise TypeError from re.search
+        report = asyncio.run(syncer.sync_names())
         assert mac in report.written
 
 
@@ -3549,7 +3693,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "Bob's Laptop",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3588,7 +3732,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "Bob's Laptop",
                     "devVendor": "",
                     "devLastIP": "",
@@ -3620,7 +3764,7 @@ class TestHaNameSyncCases3And4:
 
         macs = ["AA:BB:CC:DD:EE:12", "AA:BB:CC:DD:EE:13"]
         devices = [
-            {"devMAC": m, "devName": "Old Name", "devVendor": "", "devLastIP": ""}
+            {"devMac": m, "devName": "Old Name", "devVendor": "", "devLastIP": ""}
             for m in macs
         ]
         states = [
@@ -3652,7 +3796,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "NAS",  # non-empty, not auto-generated → Step A
                     "devVendor": "Synology",
                     "devLastIP": "10.0.0.50",
@@ -3680,7 +3824,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "",
                     "devVendor": "HP",
                     "devLastIP": "10.0.0.5",
@@ -3713,7 +3857,7 @@ class TestHaNameSyncCases3And4:
 
         mac = "AA:BB:CC:DD:EE:22"
         nax = _FakeNAXClient(
-            [{"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": "10.0.0.6"}]
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": "10.0.0.6"}]
         )
         ha_http = _ha_states_transport([])
         # DNS returns the PTR record itself — unusable
@@ -3744,7 +3888,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "",
                     "devVendor": "Acme",
                     "devLastIP": "10.0.0.7",
@@ -3773,7 +3917,7 @@ class TestHaNameSyncCases3And4:
 
         mac = "AA:BB:CC:DD:EE:24"
         nax = _FakeNAXClient(
-            [{"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
         )
         # Provide one HA name so the zero-MAC gate does not fire; the device's
         # MAC is absent so it still goes through Step C (unnamed).
@@ -3810,7 +3954,7 @@ class TestHaNameSyncCases3And4:
 
         mac = "AA:BB:CC:DD:EE:30"
         nax = _FakeNAXClient(
-            [{"devMAC": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
+            [{"devMac": mac, "devName": "", "devVendor": "", "devLastIP": ""}]
         )
         ha_http = _ha_states_transport(self._simple_states(mac, "Front Door Camera"))
         syncer = _make_syncer(FakeSSHClient(), nax, ha_http, patterns=self._PATTERNS)
@@ -3828,7 +3972,7 @@ class TestHaNameSyncCases3And4:
 
         mac = "AA:BB:CC:DD:EE:31"
         nax = _FakeNAXClient(
-            [{"devMAC": mac, "devName": "Old Name", "devVendor": "", "devLastIP": ""}]
+            [{"devMac": mac, "devName": "Old Name", "devVendor": "", "devLastIP": ""}]
         )
         ha_http = _ha_states_transport(self._simple_states(mac, "New HA Name"))
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -3870,7 +4014,7 @@ class TestHaNameSyncCases3And4:
         nax = _FakeNAXClient(
             [
                 {
-                    "devMAC": mac,
+                    "devMac": mac,
                     "devName": "Printer",
                     "devVendor": "Canon",
                     "devLastIP": "",
@@ -4206,7 +4350,7 @@ class TestNetAlertXHealthMonitor:
         from netalertx.health import _compute_scan_age
 
         now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
-        devices = [{"devLastSeen": "2026-07-20 11:58:00"}]
+        devices = [{"devLastConnection": "2026-07-20 11:58:00"}]
         assert _compute_scan_age(devices, now=now) == 2
 
     def test_scan_age_stale_scan_exceeds_threshold(self):
@@ -4215,13 +4359,13 @@ class TestNetAlertXHealthMonitor:
         from netalertx.health import _compute_scan_age
 
         now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
-        devices = [{"devLastSeen": "2026-07-20 11:00:00"}]
+        devices = [{"devLastConnection": "2026-07-20 11:00:00"}]
         assert _compute_scan_age(devices, now=now) == 60
 
     def test_scan_age_no_timestamps_returns_zero(self):
         from netalertx.health import _compute_scan_age
 
-        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF"}]
+        devices = [{"devMac": "AA:BB:CC:DD:EE:FF"}]
         assert _compute_scan_age(devices) == 0
 
     def test_scan_age_picks_most_recent(self):
@@ -4231,8 +4375,8 @@ class TestNetAlertXHealthMonitor:
 
         now = datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc)
         devices = [
-            {"devLastSeen": "2026-07-20 11:00:00"},  # 60 min ago
-            {"devLastSeen": "2026-07-20 11:55:00"},  # 5 min ago
+            {"devLastConnection": "2026-07-20 11:00:00"},  # 60 min ago
+            {"devLastConnection": "2026-07-20 11:55:00"},  # 5 min ago
         ]
         assert _compute_scan_age(devices, now=now) == 5
 
@@ -4305,9 +4449,9 @@ class TestNetAlertXHealthMonitor:
         )
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:FF",
+                "devMac": "AA:BB:CC:DD:EE:FF",
                 "devName": "router",
-                "devLastSeen": "2026-07-20 11:58:00",  # 2 min before fixed_now
+                "devLastConnection": "2026-07-20 11:58:00",  # 2 min before fixed_now
                 "devStatus": "online",
                 "devIsNew": False,
             }
@@ -4339,9 +4483,9 @@ class TestNetAlertXHealthMonitor:
         )
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:FF",
+                "devMac": "AA:BB:CC:DD:EE:FF",
                 "devName": "router",
-                "devLastSeen": "2026-07-20 11:00:00",  # 60 min ago from fixed_now
+                "devLastConnection": "2026-07-20 11:00:00",  # 60 min ago from fixed_now
                 "devStatus": "online",
                 "devIsNew": False,
             }
@@ -4391,9 +4535,9 @@ class TestNetAlertXHealthMonitor:
 
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:11",
+                "devMac": "AA:BB:CC:DD:EE:11",
                 "devName": "",
-                "devLastSeen": "",
+                "devLastConnection": "",
                 "devStatus": "online",
                 "devIsNew": True,
             }
@@ -4423,9 +4567,9 @@ class TestNetAlertXHealthMonitor:
 
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:22",
+                "devMac": "AA:BB:CC:DD:EE:22",
                 "devName": "",
-                "devLastSeen": "",
+                "devLastConnection": "",
                 "devStatus": "online",
                 "devIsNew": False,
             }
@@ -4455,9 +4599,9 @@ class TestNetAlertXHealthMonitor:
 
         devices = [
             {
-                "devMAC": "AA:BB:CC:DD:EE:33",
+                "devMac": "AA:BB:CC:DD:EE:33",
                 "devName": "laptop",
-                "devLastSeen": "",
+                "devLastConnection": "",
                 "devStatus": "online",
                 "devIsNew": False,
             }
@@ -5608,7 +5752,7 @@ class TestNetAlertXMaintenanceValidator:
     def test_device_absent_from_ha_returns_warning(self):
         from netalertx.config_validator import validate_mqtt_entity_coverage
 
-        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
         ha_states: list[dict] = []
         issues = validate_mqtt_entity_coverage(devices, ha_states)
         assert len(issues) == 1
@@ -5619,7 +5763,7 @@ class TestNetAlertXMaintenanceValidator:
     def test_device_present_in_ha_returns_no_issue(self):
         from netalertx.config_validator import validate_mqtt_entity_coverage
 
-        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
         ha_states = [
             {
                 "entity_id": "device_tracker.router",
@@ -5631,7 +5775,7 @@ class TestNetAlertXMaintenanceValidator:
     def test_mac_normalization_matches_different_formats(self):
         from netalertx.config_validator import validate_mqtt_entity_coverage
 
-        devices = [{"devMAC": "aabbccddeeff", "devName": "switch"}]
+        devices = [{"devMac": "aabbccddeeff", "devName": "switch"}]
         ha_states = [
             {
                 "entity_id": "device_tracker.switch",
@@ -5644,13 +5788,13 @@ class TestNetAlertXMaintenanceValidator:
     def test_empty_mac_skipped(self):
         from netalertx.config_validator import validate_mqtt_entity_coverage
 
-        devices = [{"devMAC": "", "devName": "unknown"}]
+        devices = [{"devMac": "", "devName": "unknown"}]
         assert validate_mqtt_entity_coverage(devices, []) == []
 
     def test_ha_state_without_mac_attribute_ignored(self):
         from netalertx.config_validator import validate_mqtt_entity_coverage
 
-        devices = [{"devMAC": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
+        devices = [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": "router"}]
         ha_states = [{"entity_id": "device_tracker.router", "attributes": {}}]
         issues = validate_mqtt_entity_coverage(devices, ha_states)
         assert len(issues) == 1
@@ -6119,7 +6263,7 @@ class TestNetAlertXOneShotDiagnose:
         healer = self._FakeHealer()
         # Devices with a timestamp far in the past → scan_age >> threshold
         stale_devices = [
-            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
         # Gate must allow auto-execution so heal() is called without blocking on HITL
         from utils.autonomy import FakeAutonomyGate
@@ -6417,8 +6561,8 @@ class TestNetAlertXOneShotDiagnose:
         call_prompt = llm.calls[0]["messages"][-1]["content"]
         assert "addon_slug" in call_prompt
 
-    def test_auto_execute_constructs_healer_when_none(self):
-        """healer=None + should_auto_execute → constructs NetAlertXHealer internally."""
+    def test_constructs_healer_when_none_auto_execute(self):
+        """healer=None + should_auto_execute=True → constructs NetAlertXHealer internally."""
         import asyncio
         from unittest.mock import patch
 
@@ -6439,7 +6583,7 @@ class TestNetAlertXOneShotDiagnose:
         llm = FakeLLMClient(diag.model_dump_json())
         gate = FakeAutonomyGate(auto_execute_result=True)
         stale_devices = [
-            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
         fake_healer = self._FakeHealer()
 
@@ -6458,7 +6602,50 @@ class TestNetAlertXOneShotDiagnose:
 
         assert (
             len(fake_healer.heal_calls) == 1
-        ), "Internally-constructed healer should be called"
+        ), "Internally-constructed healer should be called when auto-executing"
+
+    def test_constructs_healer_when_none_hitl(self):
+        """healer=None + should_auto_execute=False → healer still constructed and called."""
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+        from utils.autonomy import FakeAutonomyGate
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart NetAlertX.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        stale_devices = [
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
+        ]
+        fake_healer = self._FakeHealer()
+
+        with patch("netalertx.healer.NetAlertXHealer", return_value=fake_healer):
+            asyncio.run(
+                run_diagnose(
+                    ssh_client=FakeSSHClient(),
+                    ha_ssh_client=self._ha_ssh_client(),
+                    api_client=self._FakeAPIClient(devices=stale_devices),
+                    llm_client=llm,
+                    healer=None,
+                    gate=gate,
+                    addon_slug="test_slug",
+                )
+            )
+
+        assert (
+            len(fake_healer.heal_calls) == 1
+        ), "Healer should be constructed and called even when gate requires HITL approval"
 
     def test_mqtt_probe_fn_called_and_true_sets_mqtt_active(self):
         """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
@@ -6479,7 +6666,7 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         stale_devices = [
-            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
         probe_calls: list[str] = []
 
@@ -6522,7 +6709,7 @@ class TestNetAlertXOneShotDiagnose:
         )
         llm = FakeLLMClient(diag.model_dump_json())
         stale_devices = [
-            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
 
         async def false_probe(_: str) -> bool:
@@ -6588,12 +6775,11 @@ class TestNetAlertXOneShotDiagnose:
             "mqtt_traffic" in prompt
         ), "mqtt_traffic ConfigIssue must appear in LLM prompt"
 
-    def test_hitl_required_submits_to_notifier_without_blocking(self):
-        """When HITL is required, one-shot mode sends to the notifier and returns."""
+    def test_hitl_required_delegates_to_healer(self):
+        """When HITL is required, one-shot mode delegates to healer.heal() — not fire-and-forget."""
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
         from utils.ssh_client import FakeSSHClient
 
@@ -6608,10 +6794,10 @@ class TestNetAlertXOneShotDiagnose:
             affected_netalertx_version="v26.7.1",
         )
         llm = FakeLLMClient(diag.model_dump_json())
-        notifier = FakeNotifier()
-        gate = FakeAutonomyGate(auto_execute_result=False)
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        healer = self._FakeHealer()
         stale_devices = [
-            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+            {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
 
         asyncio.run(
@@ -6620,16 +6806,14 @@ class TestNetAlertXOneShotDiagnose:
                 ha_ssh_client=self._ha_ssh_client(),
                 api_client=self._FakeAPIClient(devices=stale_devices),
                 llm_client=llm,
-                notifier=notifier,
                 gate=gate,
-                healer=self._FakeHealer(),
+                healer=healer,
                 addon_slug="test_slug",
                 mqtt_probe_fn=self._true_probe,
             )
         )
 
-        assert len(notifier.sent) == 1, "Exactly one HITL notification should be sent"
-        sent = notifier.sent[0]
-        assert "Scan is stale" in sent["subject"]
-        assert sent["payload"]["source"] == "netalertx-diagnose"
-        assert "notification_id" in sent["payload"]
+        assert (
+            len(healer.heal_calls) == 1
+        ), "Healer must be called so it can handle HITL blocking via require_approval"
+        assert healer.heal_calls[0].issue == "Scan is stale"
