@@ -1303,6 +1303,46 @@ class TestInstallerHelpers5to8:
         result = asyncio.run(_detect_subnet(ssh, "eth0"))
         assert result == ""
 
+    def test_poll_api_ready_returns_true_on_first_response(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        from netalertx.installer import _poll_api_ready
+
+        inner = AsyncMock()
+        inner.get = AsyncMock(return_value=MagicMock(status_code=200))
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=inner)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(httpx, "AsyncClient", MagicMock(return_value=ctx))
+
+        result = asyncio.run(
+            _poll_api_ready("http://localhost:1234", attempts=1, delay=0.0)
+        )
+        assert result is True
+
+    def test_poll_api_ready_returns_false_after_all_retries_fail(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        from netalertx.installer import _poll_api_ready
+
+        inner = AsyncMock()
+        inner.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=inner)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(httpx, "AsyncClient", MagicMock(return_value=ctx))
+
+        result = asyncio.run(
+            _poll_api_ready("http://localhost:1234", attempts=2, delay=0.0)
+        )
+        assert result is False
+
 
 # ── TestNetAlertXInstallerSteps5to8 ──────────────────────────────────────────
 
