@@ -2752,7 +2752,11 @@ class TestNetAlertXInstallerSteps5to8:
                 _AUTOMATIONS_PATH: "",
             },
             command_results={
-                f"ha apps info {_SLUG}": (0, f"state: running\ndata: {_DATA_PATH}\n", ""),
+                f"ha apps info {_SLUG}": (
+                    0,
+                    f"state: running\ndata: {_DATA_PATH}\n",
+                    "",
+                ),
                 "ha backup new": (0, "Slug: test-backup-slug\n", ""),
                 "ha core check": (0, "", ""),
                 "automation/reload": (1, "", "curl: connection refused"),
