@@ -1871,6 +1871,40 @@ class TestNetAlertXInstallerSteps5to8:
         assert state == "FULLY_OPERATIONAL"
         assert gate.require_approval_calls  # HITL notification was sent
 
+    def test_step7_hitl_body_includes_credentials_when_configured(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_MQTT_USER", "mqttuser")
+
+        ssh = self._make_full_ssh_no_mqtt()
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "NETALERTX_CONFIGURED",
+            {"addon_slug": _SLUG, "scan_interface": "eth0"},
+        )
+        gate = self._gate_ask(approval=True)
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                gate,
+                self._notifier(approve=True),
+                db_path=db,
+                http_client=self._http_no_mqtt(),
+            )
+        )
+        body = gate.require_approval_calls[-1]["body"]
+        assert "mqttuser" in body
+        assert "anonymous" not in body
+
     def test_step7_mqtt_not_found_rejection_aborts(self, tmp_path, monkeypatch):
         import asyncio
 
