@@ -51,7 +51,7 @@ def _compute_scan_age(
     newest: datetime | None = None
 
     for d in devices:
-        ts_str = d.get("devLastSeen", "")
+        ts_str = d.get("devLastConnection", "")
         if not ts_str:
             continue
         try:
@@ -115,7 +115,7 @@ class NetAlertXHealthMonitor:
         # Sync new or unnamed devices
         if self._ha_name_sync is not None:
             for d in devices:
-                mac = _normalize_mac(d.get("devMAC", ""))
+                mac = _normalize_mac(d.get("devMac", ""))
                 if mac and (d.get("devIsNew") or not d.get("devName")):
                     await self._ha_name_sync.sync_device(mac)
 
