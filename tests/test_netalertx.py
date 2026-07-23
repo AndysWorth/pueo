@@ -6487,3 +6487,49 @@ class TestNetAlertXOneShotDiagnose:
         assert (
             "mqtt_traffic" in prompt
         ), "mqtt_traffic ConfigIssue must appear in LLM prompt"
+
+    def test_hitl_required_submits_to_notifier_without_blocking(self):
+        """When HITL is required, one-shot mode sends to the notifier and returns."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="Scan is stale",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Restart NetAlertX and trigger a new scan.",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        notifier = FakeNotifier()
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        stale_devices = [
+            {"devLastSeen": "2020-01-01 00:00:00", "devMAC": "AA:BB:CC:DD:EE:FF"}
+        ]
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=self._ha_ssh_client(),
+                api_client=self._FakeAPIClient(devices=stale_devices),
+                llm_client=llm,
+                notifier=notifier,
+                gate=gate,
+                healer=self._FakeHealer(),
+                addon_slug="test_slug",
+                mqtt_probe_fn=self._true_probe,
+            )
+        )
+
+        assert len(notifier.sent) == 1, "Exactly one HITL notification should be sent"
+        sent = notifier.sent[0]
+        assert "Scan is stale" in sent["subject"]
+        assert sent["payload"]["source"] == "netalertx-diagnose"
+        assert "notification_id" in sent["payload"]

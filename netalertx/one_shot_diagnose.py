@@ -280,10 +280,11 @@ async def run_diagnose(
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
 
-    # 7. Optional healing — only when the gate can auto-proceed without HITL.
-    # The healer's minimum risk is MEDIUM; at autonomy levels 1–3, require_approval()
-    # blocks indefinitely waiting for dashboard input, which is not appropriate for
-    # a one-shot command. Only autonomy level 4 (AUTONOMOUS) auto-executes HIGH risk.
+    # 7. Heal or enqueue for HITL approval.
+    # At autonomy level 4, auto-execute HIGH-risk actions immediately.
+    # At all other levels, submit to the HITL notifier so the action appears
+    # in the dashboard queue — but do not block waiting for approval, since
+    # one-shot mode must return promptly.
     if diagnostic is not None:
         if _gate.should_auto_execute(RiskLevel.HIGH):
             _healer = healer
@@ -299,9 +300,21 @@ async def run_diagnose(
                 )
             await _healer.heal(diagnostic)
         else:
+            import uuid
+
+            nid = str(uuid.uuid4())
+            await _notifier.send(
+                subject=f"Pueo: NetAlertX {diagnostic.severity} — {diagnostic.issue}",
+                body=diagnostic.recommended_fix,
+                payload={
+                    "notification_id": nid,
+                    "category": diagnostic.category,
+                    "severity": diagnostic.severity,
+                    "source": "netalertx-diagnose",
+                },
+            )
             log.info(
-                "netalertx_diagnose_heal_skipped",
-                reason="autonomy_level_requires_hitl",
-                hint="Set autonomy_level=4 in config.yaml to auto-heal, "
-                "or use the dashboard to approve the pending action.",
+                "netalertx_diagnose_hitl_submitted",
+                notification_id=nid,
+                hint="Approve or reject via the HITL dashboard (--mode dashboard).",
             )
