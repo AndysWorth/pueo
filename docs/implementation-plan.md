@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md)
 
 ---
 
@@ -40,6 +40,39 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 26   | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
 | 27   | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
 | 28   | MQTT Credential Setup                                                | ✅ Done (2026-07-23) |
+| 29   | Disk & Memory Sensing: `ha host info` polling, thresholds, HITL alert, `DiskCriticalError` block | ☐ TODO |
+| 30   | Backup Inventory: SQLite migration, new columns, reconcile on startup, `ha backups list` integration | ☐ TODO |
+| 31   | Backup Offloading: SFTP pull, SHA-256 verify, `location` tracking in SQLite | ☐ TODO |
+| 32   | Retention Policy: HA cleanup after offload, local purge, `--mode backup-status`, dashboard tab | ☐ TODO |
+| 33   | Eval Scenario Bank: 10+ YAML files, `evals/run_evals.py`, `evals/baseline.json` | ☐ TODO |
+| 34   | Eval CI Integration: `/project:run-evals` slash command, optional CI job | ☐ TODO |
+| 35   | Tool Registry + Pydantic Schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` | ☐ TODO |
+| 36   | Tool Execution Layer: `read_config`, `read_logs`, `run_ha_command`, `read_file`, `query_netalertx`, `apply_fix`, `verify_fix`, `finish_repair` | ☐ TODO |
+| 37   | `AgentLoop` Controller: budget accounting, tool dispatch, termination detection, `AgentLoopResult` | ☐ TODO |
+| 38   | HA Agent Pipeline Refactor: replace linear pipeline in `ha_agent_sandbox_engine.py` with `AgentLoop.run()` | ☐ TODO |
+| 39   | NetAlertX Healer Refactor: replace linear pipeline in `netalertx/healer.py` with `AgentLoop.run()` | ☐ TODO |
+| 40   | Safety Audit: backup invariant in `apply_fix`; `run_ha_command` allowlist; `apply_fix` once-per-loop | ☐ TODO |
+| 41   | Eval Regression Check: `run_evals.py` score must not drop vs item-33 baseline | ☐ TODO |
+| 42   | ChromaDB Setup + `nomic-embed-text` embedding via Ollama; collection schema and client wrapper | ☐ TODO |
+| 43   | HA Release Notes Scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
+| 44   | HACS Changelog Scraper + `query_knowledge` tool registered in tool registry | ☐ TODO |
+| 45   | Weekly Refresh: macOS `launchd` plist; vector store maintenance (prune stale chunks) | ☐ TODO |
+| 46   | `ClaudeAPIClient` + tool adapter; `CLOUD_ESCALATION_ENABLED = false` default enforced at startup | ☐ TODO |
+| 47   | Escalation HITL Card: cost estimate, tool history summary, approve/reject with budget display | ☐ TODO |
+| 48   | Cloud Response Pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
+| 49   | Billing Guard: per-incident cap, daily rolling cap, `cloud_spend` SQLite table, midnight reset | ☐ TODO |
+| 50   | `repair_episodes` SQLite Table: migration, `RepairEpisode` dataclass, serialization helper | ☐ TODO |
+| 51   | Episode Serialization Hook at `finish_repair`; update `LLMTrace` to include episode reference | ☐ TODO |
+| 52   | Export + Dashboard: `--mode export-episodes --since <date>`, anonymization, episodes tab | ☐ TODO |
+| 53   | Case Submission: dashboard review → redact → `gh pr create` to `pueo-cases` repo | ☐ TODO |
+| 54   | Case Ingest: weekly pull of merged cases → embed → upsert into `community_cases` ChromaDB collection | ☐ TODO |
+| 55   | Eval Scenario Generation: each ingested case → `.yaml` in `evals/scenarios/community/` | ☐ TODO |
+| 56   | `read_source` + `propose_patch` tools; diff generation prompt *(stretch)* | ☐ TODO |
+| 57   | `sandbox_code` tool: subprocess sandbox, no-network isolation, pytest runner, lint gate *(stretch)* | ☐ TODO |
+| 58   | Code Proposal HITL Card: diff viewer, test output, approve/reject *(stretch)* | ☐ TODO |
+| 59   | `open_pr` tool: `gh pr create` integration, PR body template *(stretch)* | ☐ TODO |
+| 60   | Security Review: sandbox escape vectors, safety-critical file block list *(stretch)* | ☐ TODO |
+| 61   | ADR 007: Agent-generated code proposals with sandboxed CI gate *(stretch)* | ☐ TODO |
 
 ---
 
@@ -132,6 +165,62 @@ way to ask "what is wrong right now?" All building blocks exist (health poller, 
 config validator, healer); this item wires them together behind a new CLI entry point.
 
 → [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
+
+---
+
+### Phase 11 — HA Resource Stewardship (3 sessions) ❌ Not started
+Items 29–32. Adds disk and memory monitoring for the HA machine via `ha host info`, backup inventory tracking in SQLite (new migration), SFTP-based backup offloading from HA to Pueo's local machine with SHA-256 verification, and a retention policy that keeps HA disk clean. Directly protects the safety invariant — if HA disk fills, `ha backups new` fails and the pipeline aborts. **Start here before any other new phase.**
+
+→ [plan/resource-stewardship.md](plan/resource-stewardship.md)
+
+---
+
+### Phase 12 — Evals (2 sessions) ❌ Not started
+Items 33–34. Builds the eval scenario bank (10+ YAML files), `evals/run_evals.py`, and commits `evals/baseline.json`. Establishes the measurement baseline before any architecture change. **Required before Phase 13**: the tool loop refactor must have a regression signal.
+
+→ [plan/evals.md](plan/evals.md)
+
+---
+
+### Phase 13 — Tool-Calling Agent Loop (6 sessions) ❌ Not started
+Items 35–41. Replaces the fixed linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call at each step. Safety invariant unchanged: `apply_fix` enforces backup-before-write internally. `run_ha_command` enforces an explicit allowlist. Eval regression check (item 41) validates no score drop vs Phase 12 baseline. **Requires Phase 12 baseline before starting.**
+
+→ [plan/tool-loop.md](plan/tool-loop.md)
+
+---
+
+### Phase 14 — RAG Knowledge Layer (4 sessions) ❌ Not started
+Items 42–45. Delivers Milestone 2, redesigned. Implemented as a `query_knowledge` tool in the Phase 13 tool registry (not prompt injection). Uses ChromaDB + `nomic-embed-text` via Ollama (zero WAN). Scrapes HA release notes and HACS changelogs weekly via macOS `launchd`. Creates the `community_cases` collection (empty until Phase 17).
+
+→ [plan/rag-tool.md](plan/rag-tool.md)
+
+---
+
+### Phase 15 — HITL Cloud Escalation (3 sessions) ❌ Not started
+Items 46–49. When the tool loop exhausts its budget without a fix, offers escalation to Claude (Anthropic API). Opt-in (`CLOUD_ESCALATION_ENABLED = false` default), user-approved per-incident, billing-guarded. `ClaudeAPIClient` implements `LLMClientProtocol` and uses the same tool execution layer. `ANTHROPIC_API_KEY` from environment only — never from `config.yaml`.
+
+→ [plan/cloud-escalation.md](plan/cloud-escalation.md)
+
+---
+
+### Phase 16 — Repair Episode Recording (2 sessions) ❌ Not started
+Items 50–52. Serializes every successful repair cycle to a `repair_episodes` SQLite table at `finish_repair`. Adds `--mode export-episodes` with anonymization (IPs, hostnames, device names replaced with placeholders) and an episodes tab in the HITL dashboard. Feeds the Federated Case Library (Phase 17).
+
+→ [plan/repair-episodes.md](plan/repair-episodes.md)
+
+---
+
+### Phase 17 — Federated Case Library (3 sessions) ❌ Not started
+Items 53–55. Enables contributing anonymized repair episodes to a public `pueo-cases` GitHub repo and consuming merged cases as a RAG vector source in the `community_cases` ChromaDB collection. Each ingested community case auto-generates an eval scenario in `evals/scenarios/community/`, closing the Phase 12 loop.
+
+→ [plan/federated-cases.md](plan/federated-cases.md)
+
+---
+
+### Phase 18 — Self-Improving Code Proposals *(stretch, 6 sessions)* ❌ Not started
+Items 56–61. Adds `read_source`, `propose_patch`, `sandbox_code`, and `open_pr` tools. The agent proposes Python diffs for capability gaps, validates them against CI in a subprocess sandbox (no network, 60s timeout), and surfaces a HITL PR approval card. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are blocked from agent modification without an additional confirmation step. Does not block any other phase.
+
+→ [plan/code-proposals.md](plan/code-proposals.md)
 
 ---
 
