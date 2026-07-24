@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from config import (
@@ -19,6 +20,8 @@ from config import (
     SSH_RETRY_BASE_DELAY,
     MAX_PROMPT_TOKENS,
     HA_DISK_CRITICAL_GB,
+    BACKUP_OFFLOAD_ENABLED,
+    BACKUP_LOCAL_DIR,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -281,6 +284,52 @@ async def execute_remote_backup(
         raise
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def offload_backup_to_local(
+    slug: str,
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """SFTP-pull /backup/<slug>.tar to BACKUP_LOCAL_DIR, SHA-256 verify, update location."""
+    if not BACKUP_OFFLOAD_ENABLED:
+        return
+    remote_path = f"/backup/{slug}.tar"
+    local_dir = Path(BACKUP_LOCAL_DIR)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_dir / f"{slug}.tar"
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    try:
+        await client.download_file(remote_path, str(local_path))
+        local_hash = _sha256_file(local_path)
+        _, stdout, _ = await client.run(f"sha256sum {remote_path}", check=False)
+        remote_hash = stdout.strip().split()[0] if stdout.strip() else None
+        if remote_hash and remote_hash != local_hash:
+            local_path.unlink(missing_ok=True)
+            log.warning(
+                "backup_offload_checksum_mismatch",
+                slug=slug,
+                local_hash=local_hash,
+                remote_hash=remote_hash,
+            )
+            return
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET location = 'both', offloaded_at = ?"
+                " WHERE backup_slug = ?",
+                (time.time(), slug),
+            )
+            conn.commit()
+        log.info("backup_offloaded", slug=slug, local_path=str(local_path))
+    except Exception as e:
+        log.warning("backup_offload_failed", slug=slug, error=str(e))
+
+
 @async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_preflight_check(
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -367,6 +416,7 @@ async def main(
 
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)
         record_backup_slug(backup_slug)
+        await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
 
         record_state_memory(
             config_hash,

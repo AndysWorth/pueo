@@ -362,6 +362,8 @@ agent:
   # ha_disk_warn_gb: 5.0
   # ha_disk_critical_gb: 2.0
   # ha_mem_warn_mb: 256
+  # backup_offload_enabled: true
+  # backup_local_dir: "./backups/"
 EOF
     ok "config.yaml written"
 fi

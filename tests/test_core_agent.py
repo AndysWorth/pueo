@@ -518,6 +518,140 @@ class TestBackupInventory:
         assert count == 0
 
 
+# ── Backup offloading ─────────────────────────────────────────────────────────────
+
+
+class TestBackupOffloading:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert_slug(self, db_path, slug):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
+                (1000, slug),
+            )
+            conn.commit()
+
+    def test_offload_success_updates_location_to_both(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import hashlib
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        self._insert_slug(db_path, slug)
+        content = b"fake tar content"
+        remote_hash = hashlib.sha256(content).hexdigest()
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        ssh = FakeSSHClient(
+            download_contents={f"/backup/{slug}.tar": content},
+            command_results={
+                "sha256sum": (0, f"{remote_hash}  /backup/{slug}.tar\n", "")
+            },
+        )
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "both"
+
+    def test_offload_checksum_mismatch_leaves_location_ha(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "mismatch-slug"
+        self._insert_slug(db_path, slug)
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        ssh = FakeSSHClient(
+            download_contents={f"/backup/{slug}.tar": b"local content"},
+            command_results={"sha256sum": (0, f"{'a' * 64}  /backup/{slug}.tar\n", "")},
+        )
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "ha"
+        assert not (local_dir / f"{slug}.tar").exists()
+
+    def test_offload_transfer_failure_logs_warning_no_raise(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "fail-slug"
+        self._insert_slug(db_path, slug)
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        ssh = FakeSSHClient(download_error=OSError("SFTP connection refused"))
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "ha"
+
+    def test_offload_disabled_skips_download(self, db_path, monkeypatch, tmp_path):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        slug = "skip-slug"
+        self._insert_slug(db_path, slug)
+        ssh = FakeSSHClient()
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        assert ssh.downloaded_files == []
+
+    def test_offload_no_remote_hash_proceeds(self, db_path, monkeypatch, tmp_path):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "nohash-slug"
+        self._insert_slug(db_path, slug)
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        ssh = FakeSSHClient(
+            download_contents={f"/backup/{slug}.tar": b"data"},
+            command_results={"sha256sum": (1, "", "sha256sum: not found")},
+        )
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "both"
+
+
 # ── ha_agent_sandbox_engine SQLite layer ─────────────────────────────────────────
 
 

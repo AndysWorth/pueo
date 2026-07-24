@@ -58,3 +58,5 @@ agent:
   ha_disk_warn_gb: 5.0               # HITL alert when HA disk free drops below this value (GB)
   ha_disk_critical_gb: 2.0           # Block backup creation and escalate to CRITICAL below this value (GB)
   ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)
+  backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
+  backup_local_dir: "./backups/"     # Local directory for offloaded backup files
