@@ -85,3 +85,4 @@ venv.bak/
 ha_agent_state.db
 *.log
 hitl/
+backups/
