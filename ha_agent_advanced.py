@@ -2,6 +2,7 @@
 """Layer 2 — diagnose + SQLite state memory + pre-repair backup triggering."""
 
 import hashlib
+import json
 import sqlite3
 import time
 import uuid
@@ -97,11 +98,23 @@ def _migrate_v4(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v5(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "ALTER TABLE backup_registry ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE backup_registry ADD COLUMN location TEXT NOT NULL DEFAULT 'ha'"
+    )
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN offloaded_at REAL")
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN deleted_from_ha_at REAL")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
+    (5, _migrate_v5),
 ]
 
 
@@ -153,9 +166,71 @@ def record_backup_slug(slug: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO backup_registry (timestamp, backup_slug, status) VALUES (?, ?, ?)",
-            (int(time.time()), slug, "ACTIVE"),
+            "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+            " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
+            (int(time.time()), slug),
         )
+        conn.commit()
+
+
+def _parse_backup_list(output: str) -> list[dict]:
+    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes}."""
+    try:
+        data = json.loads(output)
+        backups = data.get("data", {}).get("backups", [])
+        return [
+            {"slug": b["slug"], "size_bytes": b.get("size_bytes", 0)}
+            for b in backups
+            if "slug" in b
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return []
+
+
+async def list_ha_backups(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> list[dict]:
+    """Run `ha backups list --raw-json` via SSH. Raises on SSH error."""
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    _, stdout, _ = await client.run("ha backups list --raw-json", check=False)
+    return _parse_backup_list(stdout)
+
+
+async def reconcile_backup_inventory(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """Compare HA backup list against SQLite. Insert HA-only slugs; warn on orphans."""
+    try:
+        ha_backups = await list_ha_backups(ssh_client=ssh_client)
+    except Exception as e:
+        log.warning("backup_reconcile_skipped", error=str(e))
+        return
+
+    ha_slugs = {b["slug"]: b["size_bytes"] for b in ha_backups}
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        db_slugs = {
+            row[0]
+            for row in cursor.execute(
+                "SELECT backup_slug FROM backup_registry"
+            ).fetchall()
+        }
+
+        for slug, size_bytes in ha_slugs.items():
+            if slug not in db_slugs:
+                log.info("backup_inventory_add", slug=slug, size_bytes=size_bytes)
+                cursor.execute(
+                    "INSERT INTO backup_registry"
+                    " (timestamp, backup_slug, status, size_bytes, location)"
+                    " VALUES (?, ?, 'ACTIVE', ?, 'ha')",
+                    (int(time.time()), slug, size_bytes),
+                )
+
+        for slug in db_slugs:
+            if slug not in ha_slugs:
+                log.warning("backup_inventory_orphaned", slug=slug)
+
         conn.commit()
 
 
@@ -274,6 +349,7 @@ async def main(
     setup_logging()
     set_correlation_id(str(uuid.uuid4()))
     init_local_database()
+    await reconcile_backup_inventory(ssh_client=ssh_client)
 
     log.info("ssh_connect_start", host=HA_HOST)
     yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)

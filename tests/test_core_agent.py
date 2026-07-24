@@ -13,6 +13,8 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from utils.ssh_client import FakeSSHClient
+
 _REPO_ROOT = Path(__file__).parent.parent
 # ── DiagnosticsReport schema ─────────────────────────────────────────────────────
 
@@ -302,13 +304,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_3_after_init(self, db_path):
+    def test_schema_version_is_5_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -318,7 +320,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 4
+        assert rows[0][0] == 5
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -347,7 +349,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -370,6 +372,150 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             cid = conn.execute("SELECT correlation_id FROM state_history").fetchone()[0]
         assert cid == "test-cid-adv"
+
+
+# ── Backup inventory (item 30) ───────────────────────────────────────────────────
+
+
+class TestBackupInventory:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        return path
+
+    def test_migration_v5_adds_inventory_columns(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(backup_registry)").fetchall()
+            ]
+        assert "size_bytes" in cols
+        assert "location" in cols
+        assert "offloaded_at" in cols
+        assert "deleted_from_ha_at" in cols
+
+    def test_record_backup_slug_sets_location_ha(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-loc")
+        with sqlite3.connect(db_path) as conn:
+            location = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = 'slug-loc'"
+            ).fetchone()[0]
+        assert location == "ha"
+
+    def test_record_backup_slug_size_bytes_default_zero(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-sz")
+        with sqlite3.connect(db_path) as conn:
+            size = conn.execute(
+                "SELECT size_bytes FROM backup_registry WHERE backup_slug = 'slug-sz'"
+            ).fetchone()[0]
+        assert size == 0
+
+    def test_parse_backup_list_valid_json(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"abc123","size_bytes":56760320}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result == [{"slug": "abc123", "size_bytes": 56760320}]
+
+    def test_parse_backup_list_multiple_backups(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"aaa","size_bytes":1000},{"slug":"bbb","size_bytes":2000}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert len(result) == 2
+        assert result[0]["slug"] == "aaa"
+        assert result[1]["slug"] == "bbb"
+
+    def test_parse_backup_list_empty_backups(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result == []
+
+    def test_parse_backup_list_invalid_json(self):
+        import ha_agent_advanced
+
+        result = ha_agent_advanced._parse_backup_list("not valid json")
+        assert result == []
+
+    def test_parse_backup_list_missing_size_defaults_zero(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"xyz"}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result == [{"slug": "xyz", "size_bytes": 0}]
+
+    def test_reconcile_inserts_ha_only_slug(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        backup_json = (
+            '{"result":"ok","data":{"backups":[{"slug":"newslug","size_bytes":12345}]}}'
+        )
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT backup_slug, size_bytes, location FROM backup_registry"
+                " WHERE backup_slug = 'newslug'"
+            ).fetchone()
+        assert row is not None
+        assert row[1] == 12345
+        assert row[2] == "ha"
+
+    def test_reconcile_skips_existing_slug(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("existing-slug")
+        backup_json = '{"result":"ok","data":{"backups":[{"slug":"existing-slug","size_bytes":9999}]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM backup_registry WHERE backup_slug = 'existing-slug'"
+            ).fetchone()[0]
+        assert count == 1
+
+    def test_reconcile_warns_on_orphaned_slug(self, db_path, caplog):
+        import logging
+
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("orphan-slug")
+        backup_json = '{"result":"ok","data":{"backups":[]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        assert any("orphan" in r.message for r in caplog.records)
+
+    def test_reconcile_skips_on_ssh_error(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+
+        class FailSSH:
+            async def run(self, command, check=False):
+                raise RuntimeError("SSH unavailable")
+
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=FailSSH()))
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
+        assert count == 0
 
 
 # ── ha_agent_sandbox_engine SQLite layer ─────────────────────────────────────────
@@ -474,13 +620,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_4_after_init(self, db_path):
+    def test_schema_version_is_5_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -490,7 +636,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 4
+        assert rows[0][0] == 5
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -518,7 +664,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 4
+        assert version == 5
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine

@@ -110,11 +110,23 @@ def _migrate_v4(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v5(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "ALTER TABLE backup_registry ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "ALTER TABLE backup_registry ADD COLUMN location TEXT NOT NULL DEFAULT 'ha'"
+    )
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN offloaded_at REAL")
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN deleted_from_ha_at REAL")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
+    (5, _migrate_v5),
 ]
 
 
@@ -164,7 +176,8 @@ def record_backup_slug(slug: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO backup_registry (timestamp, backup_slug, status) VALUES (?, ?, 'ACTIVE')",
+            "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+            " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
             (int(time.time()), slug),
         )
         conn.commit()
