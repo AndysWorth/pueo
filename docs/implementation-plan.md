@@ -42,7 +42,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 28   | MQTT Credential Setup                                                | ✅ Done (2026-07-23) |
 | 29   | Disk & Memory Sensing: `ha host info` polling, thresholds, HITL alert, `DiskCriticalError` block | ✅ Done (2026-07-24) |
 | 30   | Backup Inventory: SQLite migration, new columns, reconcile on startup, `ha backups list` integration | ✅ Done (2026-07-24) |
-| 31   | Backup Offloading: SFTP pull, SHA-256 verify, `location` tracking in SQLite | ☐ TODO |
+| 31   | Backup Offloading: SFTP pull, SHA-256 verify, `location` tracking in SQLite | ✅ Done (2026-07-24) |
 | 32   | Retention Policy: HA cleanup after offload, local purge, `--mode backup-status`, dashboard tab | ☐ TODO |
 | 62   | `HARestClient` + update entity polling; `UpdateStatus` dataclass; `--mode update-check`; monitor-loop periodic check | ☐ TODO |
 | 63   | Breaking-change analysis: release notes fetch + cache, `UpdateReadinessReport` Pydantic schema, LLM advisory | ☐ TODO |
