@@ -858,6 +858,449 @@ class TestFakeLLMClient:
         assert c.calls[0]["model"] == "mymodel"
 
 
+# ── utils/resource.py ────────────────────────────────────────────────────────────
+
+_HOST_INFO_OUTPUT = (
+    "agent_version: 1.9.0\n"
+    "disk_free: 4.5\n"
+    "disk_total: 13.6\n"
+    "disk_used: 9.1\n"
+    "hostname: homeassistant\n"
+    "operating_system: Home Assistant OS 18.1\n"
+)
+
+_MEMINFO_OUTPUT = (
+    "MemTotal:        1931384 kB\n"
+    "MemFree:           22100 kB\n"
+    "MemAvailable:     563200 kB\n"
+)
+
+
+class TestResourceParsing:
+    def test_parse_host_info_extracts_disk_fields(self):
+        from utils.resource import _parse_host_info
+
+        free, total, used = _parse_host_info(_HOST_INFO_OUTPUT)
+        assert free == 4.5
+        assert total == 13.6
+        assert used == 9.1
+
+    def test_parse_meminfo_extracts_available_and_total(self):
+        from utils.resource import _parse_meminfo
+
+        available_mb, total_mb = _parse_meminfo(_MEMINFO_OUTPUT)
+        assert available_mb == pytest.approx(563200 / 1024.0)
+        assert total_mb == pytest.approx(1931384 / 1024.0)
+
+    def test_parse_meminfo_missing_fields_returns_zero(self):
+        from utils.resource import _parse_meminfo
+
+        available_mb, total_mb = _parse_meminfo("Buffers: 12345 kB\n")
+        assert available_mb == 0.0
+        assert total_mb == 0.0
+
+
+class TestResourceStatus:
+    def test_construction_and_field_access(self):
+        from utils.resource import ResourceStatus
+
+        s = ResourceStatus(
+            disk_free_gb=4.5,
+            disk_total_gb=13.6,
+            disk_used_gb=9.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=False,
+            mem_warn=False,
+        )
+        assert s.disk_free_gb == 4.5
+        assert s.disk_warn is True
+        assert s.disk_critical is False
+
+    def test_critical_flag_independent_of_warn(self):
+        from utils.resource import ResourceStatus
+
+        s = ResourceStatus(
+            disk_free_gb=1.5,
+            disk_total_gb=13.6,
+            disk_used_gb=12.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+        assert s.disk_critical is True
+        assert s.disk_warn is True
+
+
+class TestPollHostResources:
+    def _fake_ssh(self, disk_free: float = 4.5, mem_available_kb: int = 563200):
+        from utils.ssh_client import FakeSSHClient
+
+        host_info = (
+            f"disk_free: {disk_free}\ndisk_total: 13.6\ndisk_used: {13.6 - disk_free:.1f}\n"
+            "hostname: homeassistant\n"
+        )
+        meminfo = f"MemTotal: 1931384 kB\nMemFree: 22100 kB\nMemAvailable: {mem_available_kb} kB\n"
+        return FakeSSHClient(
+            command_results={
+                "ha host info": (0, host_info, ""),
+                "cat /proc/meminfo": (0, meminfo, ""),
+            }
+        )
+
+    def test_returns_correct_disk_values(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(self._fake_ssh(disk_free=4.5), 5.0, 2.0, 256.0)
+        )
+        assert status.disk_free_gb == 4.5
+        assert status.disk_total_gb == 13.6
+
+    def test_disk_warn_flag_set_when_below_warn_threshold(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(self._fake_ssh(disk_free=3.0), 5.0, 2.0, 256.0)
+        )
+        assert status.disk_warn is True
+        assert status.disk_critical is False
+
+    def test_disk_critical_flag_set_when_below_critical_threshold(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(self._fake_ssh(disk_free=1.5), 5.0, 2.0, 256.0)
+        )
+        assert status.disk_critical is True
+        assert status.disk_warn is True
+
+    def test_disk_flags_clear_when_above_thresholds(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(self._fake_ssh(disk_free=8.0), 5.0, 2.0, 256.0)
+        )
+        assert status.disk_warn is False
+        assert status.disk_critical is False
+
+    def test_mem_warn_flag_set_when_below_warn_threshold(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(
+                self._fake_ssh(mem_available_kb=200 * 1024), 5.0, 2.0, 256.0
+            )
+        )
+        assert status.mem_warn is True
+
+    def test_mem_warn_clear_when_above_threshold(self):
+        from utils.resource import poll_host_resources
+
+        status = asyncio.run(
+            poll_host_resources(
+                self._fake_ssh(mem_available_kb=512 * 1024), 5.0, 2.0, 256.0
+            )
+        )
+        assert status.mem_warn is False
+
+
+class TestCheckDiskNotCritical:
+    def test_raises_disk_critical_error_when_cached_status_is_critical(
+        self, monkeypatch
+    ):
+        from utils.resource import (
+            ResourceStatus,
+            check_disk_not_critical,
+            DiskCriticalError,
+        )
+        import utils.resource as resource_mod
+
+        critical_status = ResourceStatus(
+            disk_free_gb=1.5,
+            disk_total_gb=13.6,
+            disk_used_gb=12.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(resource_mod, "_last_resource_status", critical_status)
+        with pytest.raises(DiskCriticalError, match="1.5 GB"):
+            check_disk_not_critical(2.0)
+
+    def test_passes_when_cached_status_is_not_critical(self, monkeypatch):
+        from utils.resource import ResourceStatus, check_disk_not_critical
+        import utils.resource as resource_mod
+
+        ok_status = ResourceStatus(
+            disk_free_gb=4.5,
+            disk_total_gb=13.6,
+            disk_used_gb=9.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=False,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(resource_mod, "_last_resource_status", ok_status)
+        check_disk_not_critical(2.0)  # must not raise
+
+    def test_passes_when_no_cached_status(self, monkeypatch):
+        from utils.resource import check_disk_not_critical
+        import utils.resource as resource_mod
+
+        monkeypatch.setattr(resource_mod, "_last_resource_status", None)
+        check_disk_not_critical(2.0)  # must not raise
+
+
+class TestResourcePollerAlerts:
+    def _make_status(
+        self,
+        disk_free: float = 6.0,
+        mem_available_mb: float = 550.0,
+        disk_warn: bool = False,
+        disk_critical: bool = False,
+        mem_warn: bool = False,
+    ):
+        from utils.resource import ResourceStatus
+
+        return ResourceStatus(
+            disk_free_gb=disk_free,
+            disk_total_gb=13.6,
+            disk_used_gb=13.6 - disk_free,
+            mem_available_mb=mem_available_mb,
+            mem_total_mb=1886.0,
+            disk_warn=disk_warn,
+            disk_critical=disk_critical,
+            mem_warn=mem_warn,
+        )
+
+    def _make_poller(self, notifier):
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+
+        return ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=notifier,
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+
+    def test_sends_disk_critical_alert_on_first_breach(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 1
+        assert "CRITICAL" in notifier.sent[0]["subject"]
+
+    def test_deduplicates_consecutive_disk_critical_alerts(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+        asyncio.run(poller._check_and_alert(status))
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 1
+
+    def test_resends_alert_after_condition_clears_and_retriggers(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        critical = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+        ok = self._make_status(disk_free=6.0)
+        asyncio.run(poller._check_and_alert(critical))
+        asyncio.run(poller._check_and_alert(ok))
+        asyncio.run(poller._check_and_alert(critical))
+        assert len(notifier.sent) == 2
+
+    def test_sends_disk_warn_alert_when_warn_only(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=3.0, disk_warn=True, disk_critical=False)
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 1
+        assert "WARNING" in notifier.sent[0]["subject"]
+        assert "disk" in notifier.sent[0]["subject"].lower()
+
+    def test_sends_mem_warn_alert_when_mem_low(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(mem_available_mb=100.0, mem_warn=True)
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 1
+        assert "memory" in notifier.sent[0]["subject"].lower()
+
+    def test_no_alert_when_all_thresholds_ok(self):
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=8.0, mem_available_mb=600.0)
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 0
+
+    def test_update_resource_status_sets_cache(self, monkeypatch):
+        from utils.resource import ResourceStatus, update_resource_status
+        import utils.resource as resource_mod
+
+        monkeypatch.setattr(resource_mod, "_last_resource_status", None)
+        status = self._make_status(disk_free=6.0)
+        update_resource_status(status)
+        assert resource_mod._last_resource_status is status
+
+    def test_run_polls_and_updates_cache_then_cancels(self, monkeypatch):
+        from utils.resource import ResourcePoller, ResourceStatus
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        import utils.resource as resource_mod
+
+        polled: list[int] = []
+        poll_status = self._make_status(disk_free=6.0)
+
+        async def fake_poll(*_args, **_kwargs):
+            polled.append(1)
+            return poll_status
+
+        async def fake_sleep(_secs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(resource_mod, "poll_host_resources", fake_poll)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+
+        assert len(polled) == 1
+        assert resource_mod._last_resource_status is poll_status
+
+    def test_run_catches_poll_error_and_sleeps(self, monkeypatch):
+        from utils.resource import ResourcePoller
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        import utils.resource as resource_mod
+
+        async def failing_poll(*_args, **_kwargs):
+            raise RuntimeError("ssh down")
+
+        slept: list[float] = []
+
+        async def fake_sleep(secs: float):
+            slept.append(secs)
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(resource_mod, "poll_host_resources", failing_poll)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+
+        assert len(slept) == 1  # sleep ran despite the poll error
+
+
+class TestExecuteRemoteBackupDiskCheck:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "disk_check_test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_raises_disk_critical_error_when_cached_status_is_critical(
+        self, monkeypatch, db_path
+    ):
+        from utils.resource import ResourceStatus, DiskCriticalError
+        import utils.resource as resource_mod
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        critical_status = ResourceStatus(
+            disk_free_gb=1.5,
+            disk_total_gb=13.6,
+            disk_used_gb=12.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(resource_mod, "_last_resource_status", critical_status)
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, "Slug: test-slug\n", "")}
+        )
+        with pytest.raises(DiskCriticalError):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert "ha backup new" not in ssh.commands_run
+
+    def test_proceeds_when_cached_status_is_not_critical(self, monkeypatch, db_path):
+        from utils.resource import ResourceStatus
+        import utils.resource as resource_mod
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        ok_status = ResourceStatus(
+            disk_free_gb=4.5,
+            disk_total_gb=13.6,
+            disk_used_gb=9.1,
+            mem_available_mb=550.0,
+            mem_total_mb=1886.0,
+            disk_warn=True,
+            disk_critical=False,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(resource_mod, "_last_resource_status", ok_status)
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, "Slug: test-slug\n", "")}
+        )
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "test-slug"
+
+    def test_proceeds_when_no_cached_status(self, monkeypatch, db_path):
+        import utils.resource as resource_mod
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(resource_mod, "_last_resource_status", None)
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, "Slug: fresh-slug\n", "")}
+        )
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "fresh-slug"
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"

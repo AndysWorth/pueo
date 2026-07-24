@@ -40,7 +40,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 26   | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
 | 27   | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
 | 28   | MQTT Credential Setup                                                | ✅ Done (2026-07-23) |
-| 29   | Disk & Memory Sensing: `ha host info` polling, thresholds, HITL alert, `DiskCriticalError` block | ☐ TODO |
+| 29   | Disk & Memory Sensing: `ha host info` polling, thresholds, HITL alert, `DiskCriticalError` block | ✅ Done (2026-07-24) |
 | 30   | Backup Inventory: SQLite migration, new columns, reconcile on startup, `ha backups list` integration | ☐ TODO |
 | 31   | Backup Offloading: SFTP pull, SHA-256 verify, `location` tracking in SQLite | ☐ TODO |
 | 32   | Retention Policy: HA cleanup after offload, local purge, `--mode backup-status`, dashboard tab | ☐ TODO |

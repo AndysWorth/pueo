@@ -24,6 +24,10 @@ from config import (
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
     AUTONOMY_LEVEL,
+    RESOURCE_POLL_INTERVAL_SECONDS,
+    HA_DISK_WARN_GB,
+    HA_DISK_CRITICAL_GB,
+    HA_MEM_WARN_MB,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, sliding_window_lines
@@ -34,6 +38,7 @@ from utils.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
+from utils.resource import ResourcePoller
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
 
@@ -225,11 +230,23 @@ async def main(
     notifier: Optional[NotifierProtocol] = None,
 ) -> None:
     setup_logging()
+    _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    asyncio.create_task(
+        ResourcePoller(
+            ssh_client=_ssh,
+            notifier=_notifier,
+            interval_seconds=RESOURCE_POLL_INTERVAL_SECONDS,
+            disk_warn_gb=HA_DISK_WARN_GB,
+            disk_critical_gb=HA_DISK_CRITICAL_GB,
+            mem_warn_mb=HA_MEM_WARN_MB,
+        ).run()
+    )
     await tail_remote_log_stream(
-        ssh_client=ssh_client,
+        ssh_client=_ssh,
         llm_client=llm_client,
         gate=gate,
-        notifier=notifier,
+        notifier=_notifier,
     )
 
 
