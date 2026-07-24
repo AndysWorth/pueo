@@ -17,14 +17,18 @@ The strategic milestones (numbered rows) reflect long-running objectives. Implem
 | — Phase 6: Installer Intelligence              | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py`     |
 | — Phase 7: Evidence Capture & HITL Display     | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
 | — Phase 8: NetAlertX Compatibility Maintenance | ✅ Complete (2026-07-21) | `netalertx/detector.py`                  |
-| 5. Agent quality & evaluation                  | ❌ Not started           | `evals/`                                 |
 | 4.5. HA Resource Stewardship                   | ❌ Not started           | `ha_agent_advanced.py`, `web/dashboard.py` |
+| 4.6. HA Update Manager                         | ❌ Not started           | `ha_agent_update.py`, `utils/ha_rest_client.py` |
+| 4.7. HA Notification Intelligence              | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py` |
+| 5. Agent quality & evaluation                  | ❌ Not started           | `evals/`                                 |
 | 6. Tool-calling agent loop                     | ❌ Not started           | `utils/agent_loop.py`                    |
 | 7. HITL cloud escalation                       | ❌ Not started           | `utils/cloud_client.py`                  |
 | 8. Repair episode recording                    | ❌ Not started           | `ha_agent_advanced.py`                   |
 | 9. Federated case library                      | ❌ Not started           | `rag/`                                   |
 | 10. Self-improving code proposals *(stretch)*  | ❌ Not started           | —                                        |
 | — Phase 11: Resource Stewardship               | ❌ Not started           | items 29–32                              |
+| — Phase 10: HA Update Manager                  | ❌ Not started           | items 62–66                              |
+| — Phase 10.5: HA Notification Intelligence     | ❌ Not started           | items 67–70                              |
 | — Phase 12: Evals                              | ❌ Not started           | items 33–34                              |
 | — Phase 13: Tool-Calling Agent Loop            | ❌ Not started           | items 35–41                              |
 | — Phase 14: RAG Knowledge Layer                | ❌ Not started           | items 42–45                              |
@@ -37,7 +41,7 @@ The strategic milestones (numbered rows) reflect long-running objectives. Implem
 
 ## Remaining Work
 
-**Execution order:** 4.5 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` Phase 11–18 for item-level detail.
+**Execution order:** 4.5 → 4.6 → 4.7 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` Phase 10–18 for item-level detail.
 
 ---
 
@@ -57,6 +61,61 @@ The strategic milestones (numbered rows) reflect long-running objectives. Implem
 **Validation gate:** HA backup count stays ≤ 2; every backup has a local Pueo copy; HITL alert fires when disk drops below warning threshold in a test scenario.
 
 Full spec: [plan/resource-stewardship.md](plan/resource-stewardship.md)
+
+---
+
+### Milestone 4.6 — HA Update Manager
+
+**Objective:** Detect available Home Assistant Core, OS, and add-on updates during normal monitoring; evaluate whether each update is safe for this specific installation using LLM analysis of release notes; execute updates with the backup invariant intact; verify Pueo's own integration still works after a Core update.
+
+**Why here:** HA ships breaking changes regularly — CLI command renames, config YAML deprecations, REST API shifts. Without this capability, Pueo has no way to know an update is available or whether it will break something it depends on. Pueo has already been broken once by a CLI rename (`ha addons` → `ha apps`). The self-check closes that loop.
+
+**Key design choices:**
+- Update availability read from `update.*` REST state entities — no WebSocket, no SSH parsing
+- Breaking-change analysis is **advisory only** — never a hard gate; human decides
+- Release notes fetched from GitHub once per version and cached locally — no WAN during active monitoring
+- Core and OS updates always require HITL approval regardless of autonomy level
+- Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4
+- `execute_remote_backup()` runs before every update (safety invariant unchanged)
+
+**Tasks:**
+- New `HARestClient` implementing `HARestClientProtocol`; `FakeHARestClient` for tests
+- Poll `update.*` entities via REST; `UpdateStatus` dataclass; `--mode update-check` CLI entry point
+- Fetch + cache HA release notes; `UpdateReadinessReport` Pydantic schema; LLM advisory analysis
+- HITL update approval cards with per-component approval and advisory breaking-changes section
+- `ha core update`, `ha os update`, Supervisor API add-on updates — all with backup invariant
+- Post-update: `ha core check`, log triage, Pueo command catalog smoke-test, LLM cross-reference
+
+**Validation gate:** `--mode update-check` correctly identifies an available Core update; breaking-change analysis flags a known deprecated config key; HITL card appears and requires approval; update executes with backup; self-check passes.
+
+Full spec: [plan/ha-update-manager.md](plan/ha-update-manager.md)
+
+---
+
+### Milestone 4.7 — HA Notification Intelligence
+
+**Objective:** Surface HA persistent notifications (failed logins, config errors, integration failures) as HITL-ready cards with plain-English explanations, enriched context, and clear recommended actions — rather than leaving them as raw technical strings in the HA UI.
+
+**Why here:** HA notifications are Pueo's early warning system. A failed login from an unknown IP, a broken integration, or a config error all appear as notifications before they become active incidents. Pueo can add value here without any repair capability — just explanation and triage.
+
+**Key design choices:**
+- `persistent_notification.*` entities are REST-pollable (no WebSocket needed for listing)
+- For `http_login` (failed auth): extract source IP, enrich with reverse DNS + NetAlertX device name + HA device registry; unknown-source logins escalated to CRITICAL
+- LLM explains each notification in plain English and recommends action
+- Dismissal only on explicit user action — never auto-dismissed
+- `notification_history` SQLite table prevents repeat HITL cards for the same notification
+
+**Tasks:**
+- Poll `persistent_notification.*` REST entities on configurable interval
+- `NotificationAnalysis` Pydantic schema; `notification_history` SQLite migration
+- IP enrichment: reverse DNS (`socket.gethostbyaddr`) + NetAlertX `/devices` + HA device registry via WebSocket
+- Per-notification HITL cards; dismiss service call on approval
+- Notifications tab in HITL dashboard: pending, history, filters
+- `--mode notifications` one-shot CLI entry point
+
+**Validation gate:** A simulated `http_login` notification generates a HITL card with enriched device name; an unknown-IP login is escalated to CRITICAL; dismissal fires the HA dismiss service; notification history prevents duplicate cards.
+
+Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 

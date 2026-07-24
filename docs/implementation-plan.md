@@ -2,7 +2,7 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md)
 
 ---
 
@@ -44,6 +44,15 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 30   | Backup Inventory: SQLite migration, new columns, reconcile on startup, `ha backups list` integration | ☐ TODO |
 | 31   | Backup Offloading: SFTP pull, SHA-256 verify, `location` tracking in SQLite | ☐ TODO |
 | 32   | Retention Policy: HA cleanup after offload, local purge, `--mode backup-status`, dashboard tab | ☐ TODO |
+| 62   | `HARestClient` + update entity polling; `UpdateStatus` dataclass; `--mode update-check`; monitor-loop periodic check | ☐ TODO |
+| 63   | Breaking-change analysis: release notes fetch + cache, `UpdateReadinessReport` Pydantic schema, LLM advisory | ☐ TODO |
+| 64   | HITL update approval card: per-component approval, advisory breaking-changes section, disk-free display | ☐ TODO |
+| 65   | Safe update execution: backup invariant, `ha core update`, OS update, add-on Supervisor API update, post-update validation | ☐ TODO |
+| 66   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference against release notes | ☐ TODO |
+| 67   | Notification polling + triage: `persistent_notification.*` REST poll, `NotificationAnalysis` schema, `notification_history` SQLite table | ☐ TODO |
+| 68   | Notification enrichment: `http_login` IP → reverse DNS + NetAlertX + HA device registry; `invalid_config` config context; `HAWebSocketClient` | ☐ TODO |
+| 69   | Notification HITL cards + dismissal: per-notification card, unknown-IP escalation, dismiss service call | ☐ TODO |
+| 70   | Notification history dashboard tab: pending, history, detail view, category/severity filters | ☐ TODO |
 | 33   | Eval Scenario Bank: 10+ YAML files, `evals/run_evals.py`, `evals/baseline.json` | ☐ TODO |
 | 34   | Eval CI Integration: `/project:run-evals` slash command, optional CI job | ☐ TODO |
 | 35   | Tool Registry + Pydantic Schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` | ☐ TODO |
@@ -169,9 +178,38 @@ config validator, healer); this item wires them together behind a new CLI entry 
 ---
 
 ### Phase 11 — HA Resource Stewardship (3 sessions) ❌ Not started
-Items 29–32. Adds disk and memory monitoring for the HA machine via `ha host info`, backup inventory tracking in SQLite (new migration), SFTP-based backup offloading from HA to Pueo's local machine with SHA-256 verification, and a retention policy that keeps HA disk clean. Directly protects the safety invariant — if HA disk fills, `ha backups new` fails and the pipeline aborts. **Start here before any other new phase.**
+Items 29–32. Adds disk and memory monitoring for the HA machine via `ha host info`, backup inventory tracking in SQLite (new migration), SFTP-based backup offloading from HA to Pueo's local machine with SHA-256 verification, and a retention policy that keeps HA disk clean. Directly protects the safety invariant — if HA disk fills, `ha backups new` fails and the pipeline aborts. **Start here before Phase 10.**
 
 → [plan/resource-stewardship.md](plan/resource-stewardship.md)
+
+---
+
+### Phase 10 — HA Update Manager (3–4 sessions) ❌ Not started
+Items 62–66. Adds update detection via REST polling of `update.*` entities, LLM-powered advisory breaking-change analysis (fetches release notes from GitHub, caches locally, runs analysis against current config.yaml), HITL approval cards for Core/OS/add-on updates, safe update execution with the backup invariant, and a post-update Pueo self-check that verifies Pueo's own SSH command catalog still works after a Core update. Monitor loop gains a periodic update-availability check. **Requires Phase 11 (disk sensing) before starting.**
+
+| Items | Concern |
+|-------|---------|
+| 62 | `HARestClientProtocol`, `HARestClient`, `FakeHARestClient`; `UpdateStatus`; `--mode update-check`; monitor-loop polling |
+| 63 | Release notes fetch + cache; `UpdateReadinessReport` schema; LLM breaking-change analysis |
+| 64 | HITL update approval card; per-component approval; advisory breaking-changes section |
+| 65 | Backup → update execution → post-update validation; Core, OS, add-on update paths |
+| 66 | Pueo self-check: SSH command smoke-test + LLM cross-reference against release notes |
+
+→ [plan/ha-update-manager.md](plan/ha-update-manager.md)
+
+---
+
+### Phase 10.5 — HA Notification Intelligence (3 sessions) ❌ Not started
+Items 67–70. Polls `persistent_notification.*` REST state entities on a configurable interval. Enriches security notifications (failed login `http_login`) with reverse DNS, NetAlertX device name, and HA device registry lookup. Generates LLM plain-English explanations and recommended actions for every notification. Surfaces HITL cards; dismissal calls the HA dismiss service. Adds a Notifications tab to the HITL dashboard. **Can run in parallel with Phase 10; both require `HARestClient` from item 62.**
+
+| Items | Concern |
+|-------|---------|
+| 67 | `persistent_notification.*` polling; `NotificationAnalysis` schema; `notification_history` SQLite table |
+| 68 | IP enrichment (reverse DNS + NetAlertX + HA device registry); `HAWebSocketClient` for device registry |
+| 69 | Per-notification HITL cards; unknown-IP escalation; dismiss service call |
+| 70 | Notifications tab in dashboard: pending, history, filters |
+
+→ [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
