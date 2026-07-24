@@ -192,6 +192,16 @@ class TestNetAlertXAPIClient:
         assert len(result) == 2
         assert result[0]["devMac"] == "AA:BB:CC:DD:EE:FF"
 
+    def test_get_devices_tolerates_infinity_devname(self):
+        # PHP json_encode(INF) emits bare Infinity which is invalid JSON.
+        # One corrupt record must not prevent the rest from being parsed.
+        body = '{"devices": [{"devMac": "AA:BB:CC:DD:EE:FF", "devName": Infinity}, {"devMac": "11:22:33:44:55:66", "devName": "phone"}]}'
+        c = self._client([("GET", "/devices", 200, body)])
+        result = asyncio.run(c.get_devices())
+        assert len(result) == 2
+        assert result[0]["devName"] is None  # Infinity → null → None
+        assert result[1]["devName"] == "phone"  # unaffected
+
     def test_get_events_returns_list(self):
         events = [
             {
@@ -310,6 +320,33 @@ class TestNetAlertXAPIClient:
 
         c = NetAlertXAPIClient(base_url="http://nax.local:20212", api_token="tok")
         asyncio.run(c.trigger_scan())
+
+    def test_sanitize_json_replaces_bare_infinity(self):
+        from netalertx.api_client import _sanitize_json
+        import json
+
+        raw = '{"devName": Infinity, "devIP": "10.0.0.1"}'
+        sanitized = _sanitize_json(raw)
+        parsed = json.loads(sanitized)
+        assert parsed["devName"] is None
+        assert parsed["devIP"] == "10.0.0.1"
+
+    def test_sanitize_json_preserves_quoted_infinity_string(self):
+        from netalertx.api_client import _sanitize_json
+        import json
+
+        raw = '{"devName": "Infinity"}'
+        assert _sanitize_json(raw) == raw  # quoted string → untouched
+        assert json.loads(raw)["devName"] == "Infinity"
+
+    def test_sanitize_json_replaces_nan_and_negative_infinity(self):
+        from netalertx.api_client import _sanitize_json
+        import json
+
+        raw = '{"a": NaN, "b": -Infinity}'
+        parsed = json.loads(_sanitize_json(raw))
+        assert parsed["a"] is None
+        assert parsed["b"] is None
 
     def test_parse_prometheus_metrics_skips_invalid_float(self):
         prometheus_text = (
