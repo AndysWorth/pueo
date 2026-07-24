@@ -1094,6 +1094,9 @@ class TestAdvancedPipeline:
 
         path = str(tmp_path / "adv_test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
         return path
 
     @pytest.fixture
@@ -1199,9 +1202,13 @@ class TestSandboxPipeline:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import ha_agent_sandbox_engine
+        import ha_agent_advanced
 
         path = str(tmp_path / "sbx_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
         return path
 
     @pytest.fixture
