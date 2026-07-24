@@ -85,6 +85,22 @@ Pass `--config /path/to/config.yaml` if your config file is not in the project d
 
 ---
 
+## Claude Code configuration
+
+This repo includes a `.claude/settings.json` that configures Claude Code's permission system for Pueo development. It auto-approves a set of shell commands so Claude doesn't prompt for confirmation on routine diagnostic operations:
+
+| Command pattern | Why |
+|---|---|
+| `ssh -i *` | SSH into HA over the configured key |
+| `curl -s *` / `curl --silent *` | NetAlertX and HA REST API calls |
+| `ping -c *` | Connectivity checks |
+| `nc -z *` | Port reachability checks |
+| `nmap *` | Network scanning during NetAlertX diagnostics |
+
+**If you clone this repo and use Claude Code**, be aware that these commands will run without a confirmation prompt. `nmap` in particular is a network scanner — only appropriate on networks you own or have explicit permission to scan. Review `.claude/settings.json` and remove any entries you're not comfortable auto-approving before starting a Claude Code session.
+
+---
+
 ## 📄 License
 
 Distributed under the **GNU Lesser General Public License v3.0 (LGPL-3.0)**. Downstream modifications must remain entirely free and open-source. Commercial corporate branding or exclusive trademark enforcement of this code under the name "Pueo" is strictly prohibited under our cultural attribution guidelines.

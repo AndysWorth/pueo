@@ -20,7 +20,13 @@
       "Bash(.venv/bin/black*)",
       "Bash(.venv/bin/flake8*)",
       "Bash(.venv/bin/mypy*)",
-      "Bash(.venv/bin/bandit*)"
+      "Bash(.venv/bin/bandit*)",
+      "Bash(ssh -i *)",
+      "Bash(curl -s *)",
+      "Bash(curl --silent *)",
+      "Bash(ping -c *)",
+      "Bash(nc -z *)",
+      "Bash(nmap *)"
     ]
   },
   "hooks": {
