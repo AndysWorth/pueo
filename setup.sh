@@ -358,6 +358,10 @@ agent:
   # log_level: INFO
   # log_file: pueo.log
   # max_prompt_tokens: 7000
+  # resource_poll_interval_seconds: 300
+  # ha_disk_warn_gb: 5.0
+  # ha_disk_critical_gb: 2.0
+  # ha_mem_warn_mb: 256
 EOF
     ok "config.yaml written"
 fi

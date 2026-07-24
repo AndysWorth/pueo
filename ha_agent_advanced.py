@@ -17,6 +17,7 @@ from config import (
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
     MAX_PROMPT_TOKENS,
+    HA_DISK_CRITICAL_GB,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -29,6 +30,7 @@ from utils.logging import (
 from utils.ollama_client import OllamaClient
 from utils.prompts import load_prompt
 from ha_agent_core import DiagnosticsReport
+from utils.resource import DiskCriticalError, check_disk_not_critical
 from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 
@@ -188,6 +190,7 @@ async def execute_remote_backup(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> str:
     """Triggers Home Assistant's native backup CLI engine over SSH. Returns backup identifier slug."""
+    check_disk_not_critical(HA_DISK_CRITICAL_GB)
     log.info("backup_trigger_start")
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:

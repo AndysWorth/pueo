@@ -54,3 +54,7 @@ agent:
   hitl_always: false                 # Set to true to require human approval before every repair, not just CRITICAL
   autonomy_level: 2                  # 1=report-only · 2=suggest(approve all) · 3=guided(auto-LOW) · 4=autonomous(auto-LOW/MED/HIGH)
   dashboard_port: 8080               # Port for the HITL web dashboard (python main.py --mode dashboard)
+  resource_poll_interval_seconds: 300  # How often to poll HA disk/memory (seconds)
+  ha_disk_warn_gb: 5.0               # HITL alert when HA disk free drops below this value (GB)
+  ha_disk_critical_gb: 2.0           # Block backup creation and escalate to CRITICAL below this value (GB)
+  ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)

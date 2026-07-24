@@ -485,3 +485,50 @@ class TestNetAlertXConfigKeys:
         assert config.NETALERTX_MAX_SCAN_AGE_MINUTES == 5
         assert config.NETALERTX_MQTT_SUBSCRIBE is False
         assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 50000
+
+
+class TestResourceSensingConfig:
+    def test_resource_poll_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RESOURCE_POLL_INTERVAL_SECONDS == 300.0
+
+    def test_ha_disk_warn_gb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_DISK_WARN_GB == 5.0
+
+    def test_ha_disk_critical_gb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_DISK_CRITICAL_GB == 2.0
+
+    def test_ha_mem_warn_mb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_MEM_WARN_MB == 256.0
+
+    def test_resource_config_keys_loaded_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "agent": {
+                        "resource_poll_interval_seconds": 60,
+                        "ha_disk_warn_gb": 10.0,
+                        "ha_disk_critical_gb": 3.0,
+                        "ha_mem_warn_mb": 512,
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RESOURCE_POLL_INTERVAL_SECONDS == 60.0
+        assert config.HA_DISK_WARN_GB == 10.0
+        assert config.HA_DISK_CRITICAL_GB == 3.0
+        assert config.HA_MEM_WARN_MB == 512.0
