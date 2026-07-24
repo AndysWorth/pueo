@@ -57,6 +57,8 @@ RESOURCE_POLL_INTERVAL_SECONDS: float = float(
 HA_DISK_WARN_GB: float = float(_agent.get("ha_disk_warn_gb", 5.0))
 HA_DISK_CRITICAL_GB: float = float(_agent.get("ha_disk_critical_gb", 2.0))
 HA_MEM_WARN_MB: float = float(_agent.get("ha_mem_warn_mb", 256.0))
+BACKUP_OFFLOAD_ENABLED: bool = bool(_agent.get("backup_offload_enabled", True))
+BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", "./backups/")
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})

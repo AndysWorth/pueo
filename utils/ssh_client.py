@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 from typing import AsyncIterator
 
 import asyncssh
@@ -48,6 +49,11 @@ class AsyncSSHClient:  # pragma: no cover
                 async with sftp.open(path, "w") as f:
                     await f.write(content)
 
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        async with asyncssh.connect(self._host, **self._kw()) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.get(remote_path, local_path)
+
     async def run(self, command: str, check: bool = False) -> tuple[int, str, str]:
         async with asyncssh.connect(self._host, **self._kw()) as conn:
             result = await conn.run(command, check=check)
@@ -72,13 +78,18 @@ class FakeSSHClient:
         command_results: dict[str, tuple[int, str, str]] | None = None,
         stream_data: list[str] | None = None,
         stream_error: Exception | None = None,
+        download_contents: dict[str, bytes] | None = None,
+        download_error: Exception | None = None,
     ) -> None:
         self._file_contents: dict[str, str] = file_contents or {}
         self._command_results: dict[str, tuple[int, str, str]] = command_results or {}
         self._stream_data: list[str] = stream_data or []
         self._stream_error: Exception | None = stream_error
+        self._download_contents: dict[str, bytes] = download_contents or {}
+        self._download_error: Exception | None = download_error
         self.written_files: dict[str, str] = {}
         self.commands_run: list[str] = []
+        self.downloaded_files: list[tuple[str, str]] = []
 
     async def read_file(self, path: str) -> str:
         if path not in self._file_contents:
@@ -87,6 +98,13 @@ class FakeSSHClient:
 
     async def write_file(self, path: str, content: str) -> None:
         self.written_files[path] = content
+
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        self.downloaded_files.append((remote_path, local_path))
+        if self._download_error is not None:
+            raise self._download_error
+        content = self._download_contents.get(remote_path, b"")
+        pathlib.Path(local_path).write_bytes(content)
 
     async def run(self, command: str, check: bool = False) -> tuple[int, str, str]:
         self.commands_run.append(command)

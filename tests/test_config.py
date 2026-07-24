@@ -532,3 +532,32 @@ class TestResourceSensingConfig:
         assert config.HA_DISK_WARN_GB == 10.0
         assert config.HA_DISK_CRITICAL_GB == 3.0
         assert config.HA_MEM_WARN_MB == 512.0
+
+    def test_backup_offload_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_OFFLOAD_ENABLED is True
+
+    def test_backup_local_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_LOCAL_DIR == "./backups/"
+
+    def test_backup_offload_config_keys_loaded_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "agent": {
+                        "backup_offload_enabled": False,
+                        "backup_local_dir": "/mnt/nas/backups/",
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_OFFLOAD_ENABLED is False
+        assert config.BACKUP_LOCAL_DIR == "/mnt/nas/backups/"
