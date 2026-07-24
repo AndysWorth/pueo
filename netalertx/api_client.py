@@ -17,10 +17,23 @@ Endpoint reference (v26.7.1):
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
 _GRAPHQL_ALL_SETTINGS = "{ settings { settings { setKey setValue } count } }"
+
+# PHP json_encode(INF) / json_encode(NAN) emits non-standard literals that
+# JSON decoders reject.  Replace them with null before parsing so one corrupt
+# device record does not make the entire /devices response unreadable.
+# Negative lookbehind/lookahead on ["\w] ensures we match bare value literals
+# only and leave quoted string values like `"Infinity"` untouched.
+_NON_STANDARD_JSON = re.compile(r'(?<!["\w])(Infinity|-Infinity|NaN)(?!["\w])')
+
+
+def _sanitize_json(text: str) -> str:
+    """Replace PHP-generated non-standard JSON value literals with null."""
+    return _NON_STANDARD_JSON.sub("null", text)
 
 
 class NetAlertXAPIClient:
@@ -61,13 +74,13 @@ class NetAlertXAPIClient:
         """Return all devices from GET /devices."""
         resp = await self._get("/devices")
         resp.raise_for_status()
-        return resp.json().get("devices", [])
+        return json.loads(_sanitize_json(resp.text)).get("devices", [])
 
     async def get_events(self) -> list[dict]:
         """Return all events from GET /events."""
         resp = await self._get("/events")
         resp.raise_for_status()
-        return resp.json().get("events", [])
+        return json.loads(_sanitize_json(resp.text)).get("events", [])
 
     async def get_metrics(self) -> dict[str, float]:
         """Return aggregate Prometheus metrics from GET /metrics as a dict.
