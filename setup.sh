@@ -313,6 +313,7 @@ home_assistant:
   user: "${HA_USER}"
   ssh_key_path: "${HA_SSH_KEY}"
   api_token: "${HA_API_TOKEN}"
+  api_port: 8123
   config_path: "${HA_CONFIG_PATH}"
   known_version: "${HA_KNOWN_VERSION}"
 
@@ -366,6 +367,8 @@ agent:
   # backup_local_dir: "./backups/"
   # backup_retain_on_ha: 2
   # backup_retain_local_days: 30
+  # update_check_interval_hours: 0    # Set >0 to poll for HA updates (requires api_token)
+  # update_notify_on_available: true
 EOF
     ok "config.yaml written"
 fi

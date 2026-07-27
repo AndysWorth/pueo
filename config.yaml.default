@@ -8,7 +8,8 @@ home_assistant:
   host: "homeassistant.local"        # IP address or mDNS hostname of your HA server
   user: "root"                        # SSH username (root for the Terminal & SSH App)
   ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
-  api_token: ""                        # HA long-lived access token (required for NetAlertX steps 6–7)
+  api_token: ""                        # HA long-lived access token (required for REST API features)
+  api_port: 8123                       # Port for the HA REST API
   config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
 
 ollama:
@@ -62,3 +63,5 @@ agent:
   backup_local_dir: "./backups/"     # Local directory for offloaded backup files
   backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
   backup_retain_local_days: 30       # Purge local .tar copies older than this many days
+  # update_check_interval_hours: 0    # How often to poll for HA updates (0 = off; requires api_token)
+  # update_notify_on_available: true  # Send HITL notification when any update entity flips to on

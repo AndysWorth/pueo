@@ -1,4 +1,4 @@
-"""Protocol interfaces for SSH and LLM clients."""
+"""Protocol interfaces for SSH, LLM, and HA REST clients."""
 
 from typing import Any, AsyncIterator, Protocol
 
@@ -23,3 +23,11 @@ class LLMClientProtocol(Protocol):
         options: dict,
         format: dict,
     ) -> Any: ...
+
+
+class HARestClientProtocol(Protocol):
+    async def get_states(self, prefix: str | None = None) -> list[dict]: ...
+
+    async def get_state(self, entity_id: str) -> dict: ...
+
+    async def call_service(self, domain: str, service: str, payload: dict) -> dict: ...
