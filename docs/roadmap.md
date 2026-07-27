@@ -2,65 +2,57 @@
 
 ## Milestone Status
 
-The strategic milestones (numbered rows) reflect long-running objectives. Implementation plan phases (lettered rows) are the tactical backlog that delivers them.
+### Milestones
 
-| Milestone                                      | Status                  | Module                                   |
-| ---------------------------------------------- | ----------------------- | ---------------------------------------- |
-| 1. Read-only ingestion & diagnostics           | ✅ Complete              | `ha_agent_core.py`                       |
-| 2. Local RAG & knowledge ingestion             | ❌ Not started           | —                                        |
-| 3. Safe execution / shadow mode                | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
-| 4. Closed-loop autonomous healing              | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
-| — Phase 3.5: Autonomy control                  | ✅ Complete (2026-07-19) | `utils/autonomy.py`                      |
-| — Phase 4: NetAlertX integration               | ✅ Complete (2026-07-20) | `netalertx/`                             |
-| — Phase 4.5: HITL web dashboard                | ✅ Complete (2026-07-20) | `web/dashboard.py`                       |
-| — Phase 5: Observability UX                    | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py`            |
-| — Phase 6: Installer Intelligence              | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py`     |
-| — Phase 7: Evidence Capture & HITL Display     | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
-| — Phase 8: NetAlertX Compatibility Maintenance | ✅ Complete (2026-07-21) | `netalertx/detector.py`                  |
-| 4.5. HA Resource Stewardship                   | ❌ Not started           | `ha_agent_advanced.py`, `web/dashboard.py` |
-| 4.6. HA Update Manager                         | ❌ Not started           | `ha_agent_update.py`, `utils/ha_rest_client.py` |
-| 4.7. HA Notification Intelligence              | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py` |
-| 5. Agent quality & evaluation                  | ❌ Not started           | `evals/`                                 |
-| 6. Tool-calling agent loop                     | ❌ Not started           | `utils/agent_loop.py`                    |
-| 7. HITL cloud escalation                       | ❌ Not started           | `utils/cloud_client.py`                  |
-| 8. Repair episode recording                    | ❌ Not started           | `ha_agent_advanced.py`                   |
-| 9. Federated case library                      | ❌ Not started           | `rag/`                                   |
-| 10. Self-improving code proposals *(stretch)*  | ❌ Not started           | —                                        |
-| — Phase 11: Resource Stewardship               | ❌ Not started           | items 29–32                              |
-| — Phase 10: HA Update Manager                  | ❌ Not started           | items 62–66                              |
-| — Phase 10.5: HA Notification Intelligence     | ❌ Not started           | items 67–70                              |
-| — Phase 12: Evals                              | ❌ Not started           | items 33–34                              |
-| — Phase 13: Tool-Calling Agent Loop            | ❌ Not started           | items 35–41                              |
-| — Phase 14: RAG Knowledge Layer                | ❌ Not started           | items 42–45                              |
-| — Phase 15: HITL Cloud Escalation              | ❌ Not started           | items 46–49                              |
-| — Phase 16: Repair Episode Recording           | ❌ Not started           | items 50–52                              |
-| — Phase 17: Federated Case Library             | ❌ Not started           | items 53–55                              |
-| — Phase 18: Code Proposals *(stretch)*         | ❌ Not started           | items 56–61                              |
+Strategic capabilities in delivery order.
+
+| Milestone                                     | Status                  | Code Location                              |
+| --------------------------------------------- | ----------------------- | ------------------------------------------ |
+| 1. Read-only ingestion & diagnostics          | ✅ Complete              | `ha_agent_core.py`                         |
+| 2. Local RAG & knowledge ingestion            | ❌ Not started           | `rag/`                                     |
+| 3. Safe execution / shadow mode               | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
+| 4. Closed-loop autonomous healing             | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
+| 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
+| 4.6. HA Update Manager                        | ❌ Not started           | `utils/ha_rest_client.py`                  |
+| 4.7. HA Notification Intelligence             | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py`|
+| 5. Agent quality & evaluation                 | ❌ Not started           | `evals/`                                   |
+| 6. Tool-calling agent loop                    | ❌ Not started           | `utils/agent_loop.py`                      |
+| 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
+| 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
+| 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
+| 10. Self-improving code proposals *(stretch)* | ❌ Not started           | —                                          |
+
+### Implementation Phases
+
+Tactical delivery batches in execution order. See `docs/implementation-plan.md` for item-level detail.
+
+| Phase                                              | Status                  | Items  |
+| -------------------------------------------------- | ----------------------- | ------ |
+| Phase 1–3: Foundation, Observability, Architecture | ✅ Complete (2026-07-15) | 1–9    |
+| Phase 3.5: Autonomy Control                        | ✅ Complete (2026-07-19) | 9.5    |
+| Phase 4: NetAlertX Integration                     | ✅ Complete (2026-07-20) | 10–19  |
+| Phase 4.5: HITL Web Dashboard                      | ✅ Complete (2026-07-20) | 19.5   |
+| Phase 5: Observability UX                          | ✅ Complete (2026-07-20) | 20     |
+| Phase 6: Installer Intelligence                    | ✅ Complete (2026-07-21) | 21–22  |
+| Phase 7: Evidence Capture & HITL Display           | ✅ Complete (2026-07-21) | 23–24  |
+| Phase 8: NetAlertX Compatibility Maintenance       | ✅ Complete (2026-07-21) | 25     |
+| Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27     |
+| Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
+| Phase 12: HA Update Manager                        | ❌ Not started           | 33–37  |
+| Phase 13: HA Notification Intelligence             | ❌ Not started           | 38–41  |
+| Phase 14: Tool-Calling Agent Loop                  | ❌ Not started           | 42–48  |
+| Phase 15: RAG Knowledge Layer                      | ❌ Not started           | 49–52  |
+| Phase 16: Evals                                    | ❌ Not started           | 53–54  |
+| Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
+| Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |
+| Phase 19: Federated Case Library                   | ❌ Not started           | 62–64  |
+| Phase 20: Code Proposals *(stretch)*               | ❌ Not started           | 65–70  |
 
 ---
 
 ## Remaining Work
 
-**Execution order:** 4.5 → 4.6 → 4.7 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` Phase 10–18 for item-level detail.
-
----
-
-### Milestone 4.5 — HA Resource Stewardship
-
-**Objective:** Keep the HA Yellow's disk from filling up, which would cause `ha backups new` to fail and break the entire pipeline. Monitor disk and memory continuously; offload backup files to Pueo's machine after each backup; enforce a retention policy that keeps HA clean.
-
-**Why here first:** This protects the safety invariant. Every other milestone depends on backups succeeding. It builds only on existing SSH + SQLite infrastructure — no new architecture needed.
-
-**Tasks:**
-- Poll `ha host info` via SSH on a configurable interval; extract disk and memory; surface HITL alerts when thresholds are crossed; block backup trigger when disk < CRITICAL
-- Extend `backup_registry` with `size_bytes`, `location` (`ha`/`pueo`/`both`), `offloaded_at`, `deleted_from_ha_at`
-- After each confirmed backup slug: SFTP-pull the `.tar` to `BACKUP_LOCAL_DIR`; SHA-256 verify; update inventory
-- Retention policy: keep `BACKUP_RETAIN_ON_HA` (default 2) most-recent on HA; purge local copies older than `BACKUP_RETAIN_LOCAL_DAYS` (default 30 days); never delete from HA without confirmed local copy
-- `--mode backup-status` inventory table; dashboard backup tab
-
-**Validation gate:** HA backup count stays ≤ 2; every backup has a local Pueo copy; HITL alert fires when disk drops below warning threshold in a test scenario.
-
-Full spec: [plan/resource-stewardship.md](plan/resource-stewardship.md)
+**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
 
 ---
 
@@ -119,43 +111,6 @@ Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
-### Milestone 2 — Local RAG & Knowledge Layer
-
-**Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
-
-**Delivered in Phase 14 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 13 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
-
-**Tasks:**
-- Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)
-- Weekly scrapers for: HA core release notes (breaking changes section), HACS component changelogs
-- `query_knowledge` tool registered in the tool registry; returns top-K ranked chunks with source metadata
-- `community_cases` ChromaDB collection created here (empty until Milestone 9 / Phase 17 delivers cases)
-- Weekly refresh via macOS `launchd` plist
-
-**Validation gate:** Agent correctly cites a specific HA breaking change from the local vector DB, zero WAN calls.
-
-Full spec: [plan/rag-tool.md](plan/rag-tool.md)
-
----
-
-### Milestone 5 — Agent Quality & Evaluation
-
-**Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
-
-**Tasks:**
-- `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
-- Minimum 10 scenarios covering: malformed YAML, missing required key, deprecated integration format, valid config (true negative), CRITICAL traceback log line, INFO line (true negative), ambiguous WARNING
-- `evals/run_evals.py` — loads each scenario, runs it through the real Ollama inference pipeline, scores results, prints a summary table, saves scores to `evals/baseline.json` on first run, compares against baseline on subsequent runs
-- Scoring metrics: `is_valid` accuracy, severity accuracy, issue keyword recall, fix YAML parse success rate, mean inference latency
-- `/project:run-evals` slash command — runs `python evals/run_evals.py` and summarises results
-- Optional CI job — runs evals against Ollama if available, gated so it does not block PR merges
-
-**Validation gate:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
-
-Full spec: [plan/evals.md](plan/evals.md)
-
----
-
 ### Milestone 6 — Tool-Calling Agent Loop
 
 **Objective:** Replace the linear `gather→analyze→act` pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call at each step, iterates until it reaches a confident fix or exhausts its budget, and can investigate unknown failure modes rather than only pre-scripted ones.
@@ -171,6 +126,45 @@ Full spec: [plan/evals.md](plan/evals.md)
 **Validation gate:** Score on `evals/run_evals.py` does not drop vs the M5 baseline; `apply_fix` safety audit passes; both HA and NetAlertX healing pipelines use the loop.
 
 Full spec: [plan/tool-loop.md](plan/tool-loop.md)
+
+---
+
+### Milestone 2 — Local RAG & Knowledge Layer
+
+**Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
+
+**Delivered in Phase 15 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
+
+**Tasks:**
+- Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)
+- Weekly scrapers for: HA core release notes (breaking changes section), HACS component changelogs
+- `query_knowledge` tool registered in the tool registry; returns top-K ranked chunks with source metadata
+- `community_cases` ChromaDB collection created here (empty until Milestone 9 / Phase 19 delivers cases)
+- Weekly refresh via macOS `launchd` plist
+
+**Validation gate:** Agent correctly cites a specific HA breaking change from the local vector DB, zero WAN calls.
+
+Full spec: [plan/rag-tool.md](plan/rag-tool.md)
+
+---
+
+### Milestone 5 — Agent Quality & Evaluation
+
+**Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
+
+**Delivered in Phase 16 (after the tool loop and RAG layer are in place).** Having both makes the eval scenarios more meaningful — the loop exercises real tool-calling behaviour and RAG provides the knowledge context the agent will have in production.
+
+**Tasks:**
+- `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
+- Minimum 10 scenarios covering: malformed YAML, missing required key, deprecated integration format, valid config (true negative), CRITICAL traceback log line, INFO line (true negative), ambiguous WARNING
+- `evals/run_evals.py` — loads each scenario, runs it through the real Ollama inference pipeline, scores results, prints a summary table, saves scores to `evals/baseline.json` on first run, compares against baseline on subsequent runs
+- Scoring metrics: `is_valid` accuracy, severity accuracy, issue keyword recall, fix YAML parse success rate, mean inference latency
+- `/project:run-evals` slash command — runs `python evals/run_evals.py` and summarises results
+- Optional CI job — runs evals against Ollama if available, gated so it does not block PR merges
+
+**Validation gate:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
+
+Full spec: [plan/evals.md](plan/evals.md)
 
 ---
 

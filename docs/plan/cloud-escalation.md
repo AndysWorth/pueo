@@ -30,17 +30,19 @@ Cloud escalation is explicitly opt-in, user-approved, and per-incident. It does 
 - Summary of what the local model tried (tool call sequence from `AgentLoopResult.steps`)
 - Termination reason (`exhausted` / `timeout` / `fix_failed`) and step count
 - Estimated cost (token count estimate × current Claude pricing, computed before API call)
-- Scope: which tools Claude will have access to (same registry as local loop, including `query_knowledge` if Phase 14 is installed)
+- Scope: which tools Claude will have access to (same registry as local loop, including `query_knowledge` if Phase 15 is installed)
 - Approve / Reject / Approve with budget cap override
 
 **Billing guard:**
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `CLOUD_ESCALATION_ENABLED` | `false` | Must opt in explicitly in `config.yaml` |
-| `CLOUD_MAX_COST_PER_INCIDENT_USD` | 0.50 | Hard cap per escalation; abort if estimate exceeds this |
-| `CLOUD_MAX_DAILY_SPEND_USD` | 5.00 | Rolling 24-hour spend cap |
-| `ANTHROPIC_API_KEY` | — | Read from environment variable only, never from `config.yaml` |
+| Key | Source | Default | Meaning |
+|-----|--------|---------|---------|
+| `CLOUD_ESCALATION_ENABLED` | `config.yaml` | `false` | Must opt in explicitly |
+| `CLOUD_MAX_COST_PER_INCIDENT_USD` | `config.yaml` | `0.50` | Hard cap per escalation; abort if estimate exceeds this |
+| `CLOUD_MAX_DAILY_SPEND_USD` | `config.yaml` | `5.00` | Rolling 24-hour spend cap |
+| `ANTHROPIC_API_KEY` | environment variable | — | Anthropic API key (see credential note in [ha-update-manager.md](ha-update-manager.md)) |
+
+`config.py` reads `ANTHROPIC_API_KEY` via `os.getenv("ANTHROPIC_API_KEY")` and raises at startup if `CLOUD_ESCALATION_ENABLED` is `true` but the key is absent. It also raises if the key appears anywhere inside `config.yaml` — that file is gitignored but still plaintext on disk, which is not an appropriate store for a credential that grants billable API access.
 
 Daily spend is tracked in a new `cloud_spend` SQLite table. Resets at midnight local time.
 
@@ -50,10 +52,10 @@ Daily spend is tracked in a new `cloud_spend` SQLite table. Resets at midnight l
 
 | Item | Description |
 |------|-------------|
-| 46 | `ClaudeAPIClient` + tool adapter; `CLOUD_ESCALATION_ENABLED = false` default enforced at startup |
-| 47 | Escalation HITL card: cost estimate, tool history summary, approve/reject with budget display |
-| 48 | Cloud response pipeline: Claude's tool calls dispatched via the same Pueo tool execution layer as local calls |
-| 49 | Billing guard: per-incident cap, daily rolling cap, `cloud_spend` SQLite table, midnight reset |
+| 55 | `ClaudeAPIClient` + tool adapter; `CLOUD_ESCALATION_ENABLED = false` default enforced at startup |
+| 56 | Escalation HITL card: cost estimate, tool history summary, approve/reject with budget display |
+| 57 | Cloud response pipeline: Claude's tool calls dispatched via the same Pueo tool execution layer as local calls |
+| 58 | Billing guard: per-incident cap, daily rolling cap, `cloud_spend` SQLite table, midnight reset |
 
 ---
 

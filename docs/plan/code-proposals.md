@@ -12,7 +12,7 @@ This is a stretch goal. It does not block any other milestone. Implement when Mi
 
 ---
 
-### New Tools (added to registry in Phase 18)
+### New Tools (added to registry in Phase 20)
 
 | Tool | Description |
 |------|-------------|
@@ -44,12 +44,12 @@ This is a stretch goal. It does not block any other milestone. Implement when Mi
 
 | Item | Description |
 |------|-------------|
-| 56 | `read_source` + `propose_patch` tools; diff generation prompt engineering |
-| 57 | `sandbox_code` tool: subprocess sandbox with no-network isolation, pytest runner, lint gate |
-| 58 | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject |
-| 59 | `open_pr` tool: `gh pr create` integration, PR body template (diff + test summary + ADR reference) |
-| 60 | Security review: sandbox escape vectors, allowlist enforcement, safety-critical file block list |
-| 61 | ADR 007: Agent-generated code proposals with sandboxed CI gate |
+| 65 | `read_source` + `propose_patch` tools; diff generation prompt engineering |
+| 66 | `sandbox_code` tool: subprocess sandbox with no-network isolation, pytest runner, lint gate |
+| 67 | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject |
+| 68 | `open_pr` tool: `gh pr create` integration, PR body template (diff + test summary + ADR reference) |
+| 69 | Security review: sandbox escape vectors, allowlist enforcement, safety-critical file block list |
+| 70 | ADR 007: Agent-generated code proposals with sandboxed CI gate |
 
 ---
 

@@ -84,13 +84,13 @@ AgentLoopResult(
 
 | Item | Description |
 |------|-------------|
-| 35 | Tool registry + Pydantic schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` |
-| 36 | Tool execution implementations for all tools in the table above |
-| 37 | `AgentLoop` controller: budget accounting, tool dispatch, termination detection |
-| 38 | HA sandbox engine refactor: replace linear pipeline with `AgentLoop.run()` |
-| 39 | NetAlertX healer refactor: same |
-| 40 | Safety audit: backup invariant in `apply_fix`; `run_ha_command` allowlist; `apply_fix` once-per-loop |
-| 41 | Eval regression check: run `evals/run_evals.py` against refactored pipeline; score must not drop vs item-33 baseline |
+| 42 | Tool registry + Pydantic schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` |
+| 43 | Tool execution implementations for all tools in the table above |
+| 44 | `AgentLoop` controller: budget accounting, tool dispatch, termination detection |
+| 45 | HA sandbox engine refactor: replace linear pipeline with `AgentLoop.run()` |
+| 46 | NetAlertX healer refactor: same |
+| 47 | Safety audit: backup invariant in `apply_fix`; `run_ha_command` allowlist; `apply_fix` once-per-loop |
+| 48 | Functional verification: run tool loop against representative HA config error and NetAlertX failure scenarios; review tool call traces; confirm `apply_fix` enforces backup-first; confirm `run_ha_command` rejects off-allowlist commands; at least one full repair episode reaches `success` outcome |
 
 ---
 
@@ -100,7 +100,7 @@ AgentLoopResult(
 - `read_file` enforces an allowlist of permitted remote directories (`/config/`, `/backup/`)
 - The backup invariant lives inside `apply_fix`, not at the loop level — the loop cannot bypass it
 - `AutonomyGate.require_approval()` is called inside `apply_fix` before the backup trigger, matching current ordering in `ha_agent_sandbox_engine.py`
-- The `query_knowledge` tool (Milestone 2 / Phase 14) is registered here but implemented later; the registry slot is reserved from item 35
+- The `query_knowledge` tool (Milestone 2 / Phase 15) is registered here but implemented later; the registry slot is reserved from item 42
 
 ---
 
@@ -109,5 +109,6 @@ AgentLoopResult(
 - `AgentLoop.run()` replaces the linear pipeline in `ha_agent_sandbox_engine.py` and `netalertx/healer.py`
 - All tools are unit-tested with `FakeSSHClient` / `FakeLLMClient`; no real SSH or Ollama calls in the unit suite
 - `apply_fix` still enforces backup-first; safety audit signed off
-- Eval regression check passes (score does not drop vs M5 baseline)
+- Functional verification: tool call traces reviewed for representative HA and NetAlertX scenarios; at least one full repair episode reaches `success`; no safety invariant violations
+- Phase 16 (Evals) follows and establishes the tool loop's first performance baseline
 - ADR 006 committed
