@@ -204,7 +204,7 @@ Items 28–32. Protects the backup-before-write safety invariant by keeping HA d
 
 ---
 
-### Phase 12 — HA Update Manager (5 items)
+### Phase 12 — HA Update Manager (5 items) ✅ Complete (2026-07-27)
 Items 33–37. Detects available Core, OS, and add-on updates via `update.*` REST entities; evaluates each update for breaking changes using local LLM analysis of cached release notes; executes updates with the backup invariant intact; validates Pueo's own command catalog survives a Core update. Prerequisite: Phase 11 complete (`execute_remote_backup()` blocks on `DiskCriticalError`).
 
 | Items | Concern |

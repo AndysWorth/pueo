@@ -179,6 +179,80 @@ class TestLogMonitor:
         importlib.reload(ha_log_monitor)
         assert ha_log_monitor.CONFIDENCE_THRESHOLD == 0.85
 
+    def test_main_schedules_notification_polling_when_configured(self, monkeypatch):
+        import asyncio as asyncio_mod
+        import ha_log_monitor
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        created_names: list[str] = []
+
+        async def fake_tail(*args, **kwargs):
+            pass
+
+        def fake_create_task(coro: object, **kwargs: object) -> object:
+            name = getattr(coro, "__qualname__", type(coro).__qualname__)
+            created_names.append(name)
+            if hasattr(coro, "close"):
+                coro.close()  # type: ignore[union-attr]
+            loop = asyncio_mod.get_running_loop()
+            f: asyncio.Future[None] = loop.create_future()
+            f.set_result(None)
+            return f
+
+        monkeypatch.setattr(ha_log_monitor, "tail_remote_log_stream", fake_tail)
+        monkeypatch.setattr(asyncio_mod, "create_task", fake_create_task)
+        monkeypatch.setattr(
+            ha_log_monitor, "HA_NOTIFICATION_POLL_INTERVAL_MINUTES", 5.0
+        )
+        monkeypatch.setattr(ha_log_monitor, "HA_API_TOKEN", "fake-token")
+        monkeypatch.setattr(ha_log_monitor, "HA_UPDATE_CHECK_INTERVAL_HOURS", 0.0)
+
+        asyncio.run(
+            ha_log_monitor.main(
+                ha_rest_client=FakeHARestClient(),
+                notifier=FakeNotifier(),
+            )
+        )
+        assert any("poll_for_notifications" in n for n in created_names)
+
+    def test_main_skips_notification_polling_when_interval_zero(self, monkeypatch):
+        import asyncio as asyncio_mod
+        import ha_log_monitor
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        created_names: list[str] = []
+
+        async def fake_tail(*args, **kwargs):
+            pass
+
+        def fake_create_task(coro: object, **kwargs: object) -> object:
+            name = getattr(coro, "__qualname__", type(coro).__qualname__)
+            created_names.append(name)
+            if hasattr(coro, "close"):
+                coro.close()  # type: ignore[union-attr]
+            loop = asyncio_mod.get_running_loop()
+            f: asyncio.Future[None] = loop.create_future()
+            f.set_result(None)
+            return f
+
+        monkeypatch.setattr(ha_log_monitor, "tail_remote_log_stream", fake_tail)
+        monkeypatch.setattr(asyncio_mod, "create_task", fake_create_task)
+        monkeypatch.setattr(
+            ha_log_monitor, "HA_NOTIFICATION_POLL_INTERVAL_MINUTES", 0.0
+        )
+        monkeypatch.setattr(ha_log_monitor, "HA_API_TOKEN", "fake-token")
+        monkeypatch.setattr(ha_log_monitor, "HA_UPDATE_CHECK_INTERVAL_HOURS", 0.0)
+
+        asyncio.run(
+            ha_log_monitor.main(
+                ha_rest_client=FakeHARestClient(),
+                notifier=FakeNotifier(),
+            )
+        )
+        assert not any("poll_for_notifications" in n for n in created_names)
+
 
 # ── LogEvaluation schema ──────────────────────────────────────────────────────────
 
@@ -4269,7 +4343,20 @@ class TestPollForNotifications:
             },
         }
 
-    def test_new_notification_triggers_notifier(self, db_path):
+    @staticmethod
+    def _one_shot_sleep() -> object:
+        """Fake asyncio.sleep: no-op on first call, raises CancelledError on second."""
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise asyncio.CancelledError()
+
+        return fake_sleep
+
+    def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
+        import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -4279,157 +4366,93 @@ class TestPollForNotifications:
         )
         rest = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
-        async def run():
-            import ha_log_monitor
-
-            original = ha_log_monitor.HA_NOTIFICATION_POLL_INTERVAL_MINUTES
-
-            async def one_shot(ha_rest_client, notifier, db_path):
-                from ha_notification_manager import (
-                    classify_notification,
-                    record_notification_seen,
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=rest, notifier=notifier, db_path=db_path
                 )
+            )
 
-                entities = await ha_rest_client.get_states(
-                    prefix="persistent_notification."
-                )
-                for ent in entities:
-                    entity_id = ent.get("entity_id", "")
-                    nid = entity_id.removeprefix("persistent_notification.")
-                    attrs = ent.get("attributes", {})
-                    title = attrs.get("title")
-                    message = attrs.get("message", "")
-                    category, severity = classify_notification(nid)
-                    is_new = record_notification_seen(
-                        nid, category, severity, db_path=db_path
-                    )
-                    if is_new:
-                        await notifier.send(
-                            subject=f"Pueo: HA notification — {title or nid} [{severity}]",
-                            body=message,
-                            payload={
-                                "notification_id": nid,
-                                "category": category,
-                                "severity": severity,
-                            },
-                        )
-
-            await one_shot(rest, notifier, db_path)
-
-        asyncio.run(run())
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["notification_id"] == "http_login"
         assert notifier.sent[0]["payload"]["category"] == "security"
         assert notifier.sent[0]["payload"]["severity"] == "HIGH"
 
-    def test_duplicate_notification_not_resent(self, db_path):
+    def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
+        import asyncio as asyncio_mod
         from ha_notification_manager import record_notification_seen
-
-        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
-
+        from ha_log_monitor import poll_for_notifications
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         entity = self._make_notification_entity("http_login", "Login attempt")
         rest = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
-        async def run():
-            from ha_notification_manager import (
-                classify_notification,
-                record_notification_seen as rns,
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=rest, notifier=notifier, db_path=db_path
+                )
             )
 
-            entities = await rest.get_states(prefix="persistent_notification.")
-            for ent in entities:
-                entity_id = ent.get("entity_id", "")
-                nid = entity_id.removeprefix("persistent_notification.")
-                attrs = ent.get("attributes", {})
-                title = attrs.get("title")
-                message = attrs.get("message", "")
-                category, severity = classify_notification(nid)
-                is_new = rns(nid, category, severity, db_path=db_path)
-                if is_new:
-                    await notifier.send(
-                        subject="duplicate",
-                        body=message,
-                        payload={},
-                    )
-
-        asyncio.run(run())
         assert len(notifier.sent) == 0
 
-    def test_poll_failure_does_not_raise(self, db_path, monkeypatch):
+    def test_poll_failure_continues(self, db_path, monkeypatch):
+        import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
         class ExplodingRestClient:
-            async def get_states(self, prefix=None):
+            async def get_states(self, prefix: str | None = None) -> list:
                 raise RuntimeError("network down")
 
-            async def get_state(self, entity_id):
+            async def get_state(self, entity_id: str) -> dict:
                 raise RuntimeError("network down")
 
-            async def call_service(self, domain, service, payload):
+            async def call_service(
+                self, domain: str, service: str, payload: dict
+            ) -> dict:
                 raise RuntimeError("network down")
 
         notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
-        call_count = 0
-
-        async def run():
-            nonlocal call_count
-            from ha_notification_manager import (
-                classify_notification,
-                record_notification_seen,
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=ExplodingRestClient(),
+                    notifier=notifier,
+                    db_path=db_path,
+                )
             )
 
-            try:
-                entities = await ExplodingRestClient().get_states(
-                    prefix="persistent_notification."
-                )
-            except Exception:
-                call_count += 1
-                return
+        assert len(notifier.sent) == 0
 
-        asyncio.run(run())
-        assert call_count == 1
-
-    def test_unknown_notification_id_classified_as_other(self, db_path):
-        from ha_notification_manager import (
-            classify_notification,
-            record_notification_seen,
-        )
-        from utils.notify import FakeNotifier
+    def test_unknown_notification_id_classified_as_other(self, db_path, monkeypatch):
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
         from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
 
         entity = self._make_notification_entity(
             "some_integration_abc", message="Something failed"
         )
         rest = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
-        async def run():
-            entities = await rest.get_states(prefix="persistent_notification.")
-            for ent in entities:
-                nid = ent["entity_id"].removeprefix("persistent_notification.")
-                category, severity = classify_notification(nid)
-                is_new = record_notification_seen(
-                    nid, category, severity, db_path=db_path
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=rest, notifier=notifier, db_path=db_path
                 )
-                if is_new:
-                    await notifier.send(
-                        subject=f"Pueo: HA notification — {nid} [{severity}]",
-                        body=ent["attributes"].get("message", ""),
-                        payload={
-                            "notification_id": nid,
-                            "category": category,
-                            "severity": severity,
-                        },
-                    )
+            )
 
-        asyncio.run(run())
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["category"] == "other"
         assert notifier.sent[0]["payload"]["severity"] == "MEDIUM"
