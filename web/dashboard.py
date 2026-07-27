@@ -130,6 +130,30 @@ async def defer(nid: str) -> RedirectResponse:
     return RedirectResponse(url="/", status_code=303)
 
 
+@app.post("/dismiss-notification/{card_id}")
+async def dismiss_notification(card_id: str) -> RedirectResponse:
+    from config import HA_API_PORT, HA_API_TOKEN, HA_HOST
+    from ha_notification_manager import mark_notification_dismissed
+    from utils.ha_rest_client import HARestClient
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{card_id}.json"
+    if json_path.exists() and _status(card_id, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        ha_nid = data.get("payload", {}).get("ha_notification_id", "")
+        if ha_nid:
+            try:
+                rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+                await rest.call_service(
+                    "persistent_notification", "dismiss", {"notification_id": ha_nid}
+                )
+                mark_notification_dismissed(ha_nid, dismissed_by="user")
+            except Exception:  # nosec B110
+                pass
+        (watch_dir / f"{card_id}.approved").touch()
+    return RedirectResponse(url="/", status_code=303)
+
+
 def _load_backup_inventory() -> list[dict]:
     """Return backup_registry rows ordered newest-first for the dashboard tab."""
     try:

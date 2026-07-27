@@ -10,6 +10,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+from typing import TYPE_CHECKING
+
 from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
@@ -18,6 +20,7 @@ from config import (
     OLLAMA_MODEL,
 )
 from interfaces import (
+    HARestClientProtocol,
     HAWebSocketClientProtocol,
     LLMClientProtocol,
     NetAlertXClientProtocol,
@@ -25,6 +28,9 @@ from interfaces import (
 )
 from utils.context import truncate_to_budget
 from utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from utils.notify import NotifierProtocol
 
 log = get_logger("ha_notification_manager")
 
@@ -317,3 +323,141 @@ def get_pending_notifications(
             "SELECT * FROM notification_history WHERE dismissed_at IS NULL ORDER BY first_seen_at DESC"
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ── HITL card formatting ──────────────────────────────────────────────────────
+
+
+def _format_notification_subject(analysis: "NotificationAnalysis") -> str:
+    """Build the HITL card subject line for a notification."""
+    if analysis.notification_id == "http_login":
+        ec = analysis.enriched_context
+        if not ec.get("is_known_device", True):
+            return "⚠ Unknown source IP — Failed login attempt"
+        device = (
+            ec.get("netalertx_name") or ec.get("ha_device_name") or ec.get("hostname")
+        )
+        if device:
+            return f"Login attempt from {device}"
+        return "Failed login attempt from known device"
+    if analysis.notification_id == "invalid_config":
+        return "Home Assistant Configuration Error"
+    if analysis.original_title:
+        return analysis.original_title
+    return f"HA Notification: {analysis.notification_id}"
+
+
+def _format_notification_body(analysis: "NotificationAnalysis") -> str:
+    """Build the HITL card body text for a notification."""
+    lines = [analysis.human_explanation]
+    if analysis.recommended_action:
+        lines.append(f"\nRecommended action: {analysis.recommended_action}")
+    return "\n".join(lines)
+
+
+# ── One-shot entry point (--mode notifications) ───────────────────────────────
+
+
+async def run_notifications(
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
+    netalertx_client: Optional[NetAlertXClientProtocol] = None,
+    ws_client: Optional[HAWebSocketClientProtocol] = None,
+    notifier: Optional["NotifierProtocol"] = None,
+    db_path: str = DB_PATH,
+) -> int:
+    """Poll persistent_notification.* entities and send HITL cards for new ones.
+
+    Returns the count of new HITL cards sent.
+    """
+    from config import HA_API_PORT, HA_API_TOKEN, HA_HOST, NOTIFY_WATCH_DIR
+    from utils.ha_rest_client import HARestClient
+    from utils.notify import FileNotifier
+
+    rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    card_notifier: "NotifierProtocol" = notifier or FileNotifier(  # pragma: no cover
+        watch_dir=NOTIFY_WATCH_DIR
+    )
+
+    try:
+        entities = await rest.get_states(prefix="persistent_notification.")
+    except Exception as exc:
+        log.error("notification_poll_failed", error=str(exc))
+        print(f"Error polling notifications: {exc}")
+        return 0
+
+    new_count = 0
+    for entity in entities:
+        attrs = entity.get("attributes", {})
+        ha_nid: str = attrs.get("notification_id") or entity.get(
+            "entity_id", ""
+        ).removeprefix("persistent_notification.")
+        title: Optional[str] = attrs.get("title")
+        message: str = attrs.get("message", "")
+
+        category, severity = classify_notification(ha_nid)
+        record_notification_seen(ha_nid, category, severity, db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                (ha_nid,),
+            ).fetchone()
+        if row and row[0] is not None:
+            log.debug("notification_card_already_sent", ha_notification_id=ha_nid)
+            continue
+
+        try:
+            analysis = await enrich_and_analyze_notification(
+                ha_nid,
+                title,
+                message,
+                ssh_client,
+                llm_client,
+                netalertx_client,
+                ws_client,
+            )
+        except Exception as exc:
+            log.error(
+                "notification_analysis_failed",
+                ha_notification_id=ha_nid,
+                error=str(exc),
+            )
+            continue
+
+        card_id = f"notif_{ha_nid}"
+        subject = _format_notification_subject(analysis)
+        body = _format_notification_body(analysis)
+
+        payload: dict = {
+            "notification_id": card_id,
+            "ha_notification_id": ha_nid,
+            "is_notification_card": True,
+            "category": analysis.category,
+            "severity": analysis.severity,
+            "human_explanation": analysis.human_explanation,
+            "recommended_action": analysis.recommended_action,
+            "enriched_context": analysis.enriched_context,
+            "original_message": analysis.original_message,
+            "original_title": analysis.original_title,
+        }
+
+        await card_notifier.send(subject, body, payload)
+        mark_notification_hitl_sent(ha_nid, db_path)
+        new_count += 1
+        log.info(
+            "notification_hitl_sent",
+            ha_notification_id=ha_nid,
+            severity=analysis.severity,
+        )
+        print(f"[{analysis.severity}] {subject}")
+
+    if new_count == 0:
+        print("No new notifications to triage.")
+    else:
+        print(f"\n{new_count} notification HITL card(s) sent.")
+
+    return new_count
