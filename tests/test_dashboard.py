@@ -1576,3 +1576,26 @@ class TestNotificationsDashboard:
         _, history = _load_notification_dashboard_data(watch_dir, sort_by="category")
         categories = [r["category"] for r in history]
         assert categories == sorted(categories)
+
+    def test_db_exception_returns_empty(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        from web.dashboard import _load_notification_dashboard_data
+
+        # Point DB_PATH at a path with no notification_history table
+        empty_db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", empty_db)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        pending, history = _load_notification_dashboard_data(watch_dir)
+        assert pending == []
+        assert history == []
+
+    def test_malformed_card_json_row_still_included(self, db_path, watch_dir):
+        from web.dashboard import _load_notification_dashboard_data
+
+        self._insert_notification(db_path, "http_login")
+        (watch_dir / "notif_http_login.json").write_text("not valid json {{{{")
+        pending, history = _load_notification_dashboard_data(watch_dir)
+        # Row is still returned; enrichment fields are simply absent
+        assert len(pending) == 1
+        assert "human_explanation" not in pending[0]
