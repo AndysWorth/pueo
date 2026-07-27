@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """HA Update Manager — detects available updates and surfaces them as HITL cards."""
 
+import asyncio
+import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import httpx
 from pydantic import BaseModel
@@ -340,3 +342,302 @@ async def run_update_check(
             print(f"\nWarning: breaking-change analysis failed: {exc}")
 
     return updates
+
+
+# ── Update Execution (item 36) ────────────────────────────────────────────────
+
+_CORE_UPDATE_TIMEOUT = 480  # seconds
+_OS_UPDATE_TIMEOUT = 480
+_ADDON_UPDATE_TIMEOUT = 180
+_POLL_INTERVAL_CORE = 15
+_POLL_INTERVAL_OS = 15
+_POLL_INTERVAL_ADDON = 10
+
+
+async def _poll_core_version(
+    target_version: str,
+    ssh_client: SSHClientProtocol,
+    timeout_seconds: int = _CORE_UPDATE_TIMEOUT,
+    interval: int = _POLL_INTERVAL_CORE,
+    _sleep: Optional[Callable] = None,
+) -> bool:
+    """Poll `ha core info` every ``interval`` seconds until version matches target or timeout."""
+    sleep_fn = _sleep or asyncio.sleep
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        try:
+            _, stdout, _ = await ssh_client.run("ha core info --raw-json", check=False)
+            data = json.loads(stdout)
+            info = data.get("data", data)
+            current = info.get("version", "")
+            update_available = info.get("update_available", True)
+            if current == target_version or not update_available:
+                return True
+        except Exception as exc:
+            log.warning("poll_core_version_error", error=str(exc))
+        await sleep_fn(interval)
+        elapsed += interval
+    return False
+
+
+async def _poll_os_online(
+    ha_host: str,
+    ha_port: int,
+    timeout_seconds: int = _OS_UPDATE_TIMEOUT,
+    interval: int = _POLL_INTERVAL_OS,
+    _sleep: Optional[Callable] = None,
+    _connect: Optional[Callable] = None,
+) -> bool:
+    """Poll TCP connect to ha_host:ha_port until success or timeout."""
+    sleep_fn = _sleep or asyncio.sleep
+    connect_fn = _connect or asyncio.open_connection
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        try:
+            reader, writer = await connect_fn(ha_host, ha_port)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (
+            Exception
+        ):  # nosec B110 — intentional: any connection error means HA not yet up
+            pass
+        await sleep_fn(interval)
+        elapsed += interval
+    return False
+
+
+async def _poll_addon_version(
+    slug: str,
+    target_version: str,
+    ssh_client: SSHClientProtocol,
+    timeout_seconds: int = _ADDON_UPDATE_TIMEOUT,
+    interval: int = _POLL_INTERVAL_ADDON,
+    _sleep: Optional[Callable] = None,
+) -> bool:
+    """Poll `ha apps info <slug>` until version matches and state=started or timeout."""
+    sleep_fn = _sleep or asyncio.sleep
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        try:
+            _, stdout, _ = await ssh_client.run(
+                f"ha apps info {slug} --raw-json", check=False
+            )
+            data = json.loads(stdout)
+            info = data.get("data", data)
+            version = info.get("version", "")
+            state = info.get("state", "")
+            if version == target_version and state == "started":
+                return True
+        except Exception as exc:
+            log.warning("poll_addon_version_error", slug=slug, error=str(exc))
+        await sleep_fn(interval)
+        elapsed += interval
+    return False
+
+
+async def _send_post_update_card(
+    update: UpdateStatus,
+    notifier: "NotifierProtocol",
+    success: bool,
+    config_check_output: str,
+    log_triage_summary: str,
+    notification_id: Optional[str] = None,
+) -> None:
+    """Send an informational result card after an update attempt."""
+    nid = notification_id or str(uuid.uuid4())
+    outcome = "succeeded" if success else "timed out — check HA UI"
+    subject = f"Update {outcome}: {update.component} → {update.latest_version}"
+    body_lines = [
+        f"Component: {update.component}",
+        f"Version: {update.installed_version} → {update.latest_version}",
+        f"Outcome: {outcome}",
+    ]
+    if config_check_output:
+        body_lines.append(f"Config check: {config_check_output[:200]}")
+    if log_triage_summary:
+        body_lines.append(f"Log triage: {log_triage_summary}")
+    body = "\n".join(body_lines)
+    payload = {
+        "notification_id": nid,
+        "type": "update_result",
+        "component": update.component,
+        "installed_version": update.installed_version,
+        "latest_version": update.latest_version,
+        "success": success,
+        "config_check_output": config_check_output,
+        "log_triage_summary": log_triage_summary,
+    }
+    log.info(
+        "post_update_card_sent",
+        component=update.component,
+        version=update.latest_version,
+        success=success,
+        notification_id=nid,
+    )
+    await notifier.send(subject, body, payload)
+
+
+async def execute_core_update(
+    update: UpdateStatus,
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    gate: "AutonomyGate | FakeAutonomyGate",
+    llm_client: Optional[LLMClientProtocol] = None,
+    _poll: Optional[Callable] = None,
+) -> bool:
+    """Execute Core update: backup → ha core update → poll → post-check → result card."""
+    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+
+    log.info("core_update_start", version=update.latest_version)
+    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+    record_backup_slug(backup_slug)
+    log.info("core_update_backup_complete", slug=backup_slug)
+
+    _, _, update_stderr = await ssh_client.run(
+        "ha core update --no-progress", check=False
+    )
+    if update_stderr:
+        log.warning("core_update_stderr", stderr=update_stderr[:200])
+
+    poll_fn = _poll or _poll_core_version
+    success = await poll_fn(
+        update.latest_version, ssh_client, timeout_seconds=_CORE_UPDATE_TIMEOUT
+    )
+
+    config_check_output = ""
+    log_triage_summary = ""
+    if success:
+        try:
+            _, cc_out, cc_err = await ssh_client.run("ha core check", check=False)
+            config_check_output = (cc_out or cc_err or "").strip()
+        except Exception as exc:
+            log.warning("post_update_config_check_failed", error=str(exc))
+
+        try:
+            _, log_out, _ = await ssh_client.run(
+                "ha core logs --lines 100", check=False
+            )
+            if log_out:
+                from ha_log_monitor import analyze_log_line_with_ai
+
+                lines = log_out.splitlines()
+                evaluation, _ = await analyze_log_line_with_ai(lines, llm_client)
+                log_triage_summary = evaluation.root_cause_summary
+                log.info(
+                    "post_update_log_triage",
+                    actionable=evaluation.is_actionable,
+                    confidence=evaluation.confidence_score,
+                )
+        except Exception as exc:
+            log.warning("post_update_log_triage_failed", error=str(exc))
+
+    await _send_post_update_card(
+        update, notifier, success, config_check_output, log_triage_summary
+    )
+
+    if not success:
+        log.warning(
+            "core_update_timed_out",
+            version=update.latest_version,
+            detail="Update may still be in progress — check HA UI",
+        )
+    return success
+
+
+async def execute_os_update(
+    update: UpdateStatus,
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    gate: "AutonomyGate | FakeAutonomyGate",
+    ha_host: Optional[str] = None,
+    ha_port: Optional[int] = None,
+    _poll: Optional[Callable] = None,
+) -> bool:
+    """Execute OS update: backup → ha os update → TCP poll → result card."""
+    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+
+    log.info("os_update_start", version=update.latest_version)
+    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+    record_backup_slug(backup_slug)
+    log.info("os_update_backup_complete", slug=backup_slug)
+
+    await ssh_client.run("ha os update --no-progress", check=False)
+
+    host = ha_host or HA_HOST
+    port = ha_port or HA_API_PORT
+    poll_fn = _poll or _poll_os_online
+    success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
+
+    await _send_post_update_card(update, notifier, success, "", "")
+
+    if not success:
+        log.warning(
+            "os_update_timed_out",
+            version=update.latest_version,
+            detail="HA did not come back online — check HA UI",
+        )
+    return success
+
+
+async def execute_addon_update(
+    update: UpdateStatus,
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    gate: "AutonomyGate | FakeAutonomyGate",
+    _poll: Optional[Callable] = None,
+) -> bool:
+    """Execute add-on update: backup → Supervisor API curl → poll → result card."""
+    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+
+    log.info("addon_update_start", slug=update.component, version=update.latest_version)
+    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+    record_backup_slug(backup_slug)
+    log.info("addon_update_backup_complete", slug=backup_slug)
+
+    curl_cmd = (
+        f"curl -sf -X POST "
+        f'-H "Authorization: Bearer $SUPERVISOR_TOKEN" '
+        f"http://supervisor/store/addons/{update.component}/update"
+    )
+    ec, _, curl_err = await ssh_client.run(curl_cmd, check=False)
+    if ec != 0:
+        log.warning(
+            "addon_update_curl_failed",
+            slug=update.component,
+            error=curl_err[:200] if curl_err else "",
+        )
+
+    poll_fn = _poll or _poll_addon_version
+    success = await poll_fn(
+        update.component,
+        update.latest_version,
+        ssh_client,
+        timeout_seconds=_ADDON_UPDATE_TIMEOUT,
+    )
+
+    await _send_post_update_card(update, notifier, success, "", "")
+
+    if not success:
+        log.warning(
+            "addon_update_timed_out",
+            slug=update.component,
+            version=update.latest_version,
+            detail="Add-on may still be updating — check HA UI",
+        )
+    return success
+
+
+async def execute_update(
+    update: UpdateStatus,
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    gate: "AutonomyGate | FakeAutonomyGate",
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> bool:
+    """Dispatch update execution by component type."""
+    if update.component == "core":
+        return await execute_core_update(update, ssh_client, notifier, gate, llm_client)
+    if update.component == "os":
+        return await execute_os_update(update, ssh_client, notifier, gate)
+    return await execute_addon_update(update, ssh_client, notifier, gate)
