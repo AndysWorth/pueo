@@ -18,6 +18,28 @@
       {% if r.payload.get("step") %} &nbsp;·&nbsp; Step: <strong>{{ r.payload.step }}</strong>{% endif %}
     </p>
     {% endif %}
+    {% if r.payload.get("disk_free_gb") is not none %}
+    <p class="meta">
+      Disk free: <strong {% if r.payload.get("disk_critical") %}style="color:var(--red)"{% elif r.payload.get("disk_warn") %}style="color:var(--orange)"{% endif %}>{{ "%.1f"|format(r.payload.disk_free_gb) }} GB</strong>
+      {% if r.payload.get("disk_critical") %}<em>(CRITICAL — below threshold)</em>{% elif r.payload.get("disk_warn") %}<em>(Warning — low)</em>{% endif %}
+    </p>
+    {% endif %}
+    {% if r.payload.get("breaking_changes") %}
+    <details open>
+      <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>
+      <ul>{% for bc in r.payload.breaking_changes %}<li>{{ bc }}</li>{% endfor %}</ul>
+      {% if r.payload.get("affected_config_keys") %}
+      <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>
+      {% endif %}
+      {% if r.payload.get("pueo_command_risks") %}
+      <p><strong>Pueo command risks</strong> (Pueo may need attention after update):</p>
+      <ul>{% for risk in r.payload.pueo_command_risks %}<li>⚠ {{ risk }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if r.payload.get("advisory") %}
+      <p><em>{{ r.payload.advisory }}</em></p>
+      {% endif %}
+    </details>
+    {% endif %}
     {% if r.payload.get("evidence_raw") %}
     <details>
       <summary><span class="section-label label-evidence">Evidence</span>Raw gathered data</summary>
@@ -71,6 +93,9 @@
       </form>
       <form method="POST" action="/reject/{{ r.notification_id }}">
         <button class="btn btn-reject" type="submit">Reject</button>
+      </form>
+      <form method="POST" action="/defer/{{ r.notification_id }}">
+        <button class="btn btn-defer" type="submit">Defer (24h)</button>
       </form>
     </div>
     {% endif %}

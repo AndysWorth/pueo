@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """HA Update Manager — detects available updates and surfaces them as HITL cards."""
 
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 from pydantic import BaseModel
@@ -16,9 +17,14 @@ from config import (
     OLLAMA_MODEL,
 )
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
+from utils.autonomy import RiskLevel
 from utils.context import truncate_to_budget
 from utils.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from utils.autonomy import AutonomyGate, FakeAutonomyGate
+    from utils.notify import NotifierProtocol
 
 log = get_logger("ha_update_manager")
 
@@ -168,6 +174,85 @@ def _format_readiness_report(report: UpdateReadinessReport) -> str:
         for risk in report.pueo_command_risks:
             lines.append(f"  ⚠ {risk}")
     return "\n".join(lines)
+
+
+def _component_risk_level(component: str) -> RiskLevel:
+    """Return the risk level for a component update.
+
+    Core and OS updates always require HITL approval (CRITICAL).
+    Supervisor updates are HIGH risk.
+    Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4.
+    """
+    if component in ("core", "os"):
+        return RiskLevel.CRITICAL
+    if component == "supervisor":
+        return RiskLevel.HIGH
+    return RiskLevel.MEDIUM
+
+
+async def request_update_approval(
+    update: UpdateStatus,
+    gate: "AutonomyGate | FakeAutonomyGate",
+    notifier: "NotifierProtocol",
+    readiness_report: Optional[UpdateReadinessReport] = None,
+    disk_free_gb: Optional[float] = None,
+    disk_warn: bool = False,
+    disk_critical: bool = False,
+    notification_id: Optional[str] = None,
+) -> bool:
+    """Send a per-component HITL update approval card and wait for a decision.
+
+    Returns True if the update should proceed, False if rejected or deferred.
+    Risk is always CRITICAL for core/os, HIGH for supervisor, MEDIUM for add-ons.
+    """
+    risk = _component_risk_level(update.component)
+    nid = notification_id or str(uuid.uuid4())
+
+    subject = (
+        f"Update available: {update.component} "
+        f"{update.installed_version} → {update.latest_version}"
+    )
+    body_parts = [f"Component: {update.component}", f"Risk: {risk.name}"]
+    if update.release_summary:
+        body_parts.append(f"Summary: {update.release_summary}")
+    if readiness_report:
+        advisory = "SAFE" if readiness_report.safe_to_update else "REVIEW REQUIRED"
+        body_parts.append(f"Advisory: {advisory} — {readiness_report.recommendation}")
+    body = "\n".join(body_parts)
+
+    payload: dict = {
+        "notification_id": nid,
+        "component": update.component,
+        "installed_version": update.installed_version,
+        "latest_version": update.latest_version,
+        "release_url": update.release_url,
+        "release_summary": update.release_summary,
+        "risk": risk.name,
+        "severity": risk.name,
+        "breaking_changes": (
+            readiness_report.breaking_changes if readiness_report else []
+        ),
+        "affected_config_keys": (
+            readiness_report.affected_config_keys if readiness_report else []
+        ),
+        "pueo_command_risks": (
+            readiness_report.pueo_command_risks if readiness_report else []
+        ),
+        "advisory": readiness_report.recommendation if readiness_report else None,
+        "safe_to_update": readiness_report.safe_to_update if readiness_report else None,
+        "disk_free_gb": disk_free_gb,
+        "disk_warn": disk_warn,
+        "disk_critical": disk_critical,
+    }
+
+    log.info(
+        "update_hitl_card_sent",
+        component=update.component,
+        version=update.latest_version,
+        risk=risk.name,
+        notification_id=nid,
+    )
+    return await gate.require_approval(subject, body, payload, notifier, risk)
 
 
 async def run_update_check(
