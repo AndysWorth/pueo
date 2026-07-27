@@ -35,12 +35,14 @@ Cloud escalation is explicitly opt-in, user-approved, and per-incident. It does 
 
 **Billing guard:**
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `CLOUD_ESCALATION_ENABLED` | `false` | Must opt in explicitly in `config.yaml` |
-| `CLOUD_MAX_COST_PER_INCIDENT_USD` | 0.50 | Hard cap per escalation; abort if estimate exceeds this |
-| `CLOUD_MAX_DAILY_SPEND_USD` | 5.00 | Rolling 24-hour spend cap |
-| `ANTHROPIC_API_KEY` | — | Read from environment variable only, never from `config.yaml` |
+| Key | Source | Default | Meaning |
+|-----|--------|---------|---------|
+| `CLOUD_ESCALATION_ENABLED` | `config.yaml` | `false` | Must opt in explicitly |
+| `CLOUD_MAX_COST_PER_INCIDENT_USD` | `config.yaml` | `0.50` | Hard cap per escalation; abort if estimate exceeds this |
+| `CLOUD_MAX_DAILY_SPEND_USD` | `config.yaml` | `5.00` | Rolling 24-hour spend cap |
+| `ANTHROPIC_API_KEY` | environment variable | — | Anthropic API key (see credential note in [ha-update-manager.md](ha-update-manager.md)) |
+
+`config.py` reads `ANTHROPIC_API_KEY` via `os.getenv("ANTHROPIC_API_KEY")` and raises at startup if `CLOUD_ESCALATION_ENABLED` is `true` but the key is absent. It also raises if the key appears anywhere inside `config.yaml` — that file is gitignored but still plaintext on disk, which is not an appropriate store for a credential that grants billable API access.
 
 Daily spend is tracked in a new `cloud_spend` SQLite table. Resets at midnight local time.
 

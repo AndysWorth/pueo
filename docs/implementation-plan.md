@@ -67,7 +67,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 45   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
 | 46   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
 | 47   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ☐ TODO |
-| 48   | Eval regression check against Phase 16 baseline                      | ☐ TODO |
+| 48   | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios; confirm apply_fix enforces backup-first; confirm run_ha_command rejects off-allowlist commands | ☐ TODO |
 | 49   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
 | 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
 | 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
@@ -234,7 +234,7 @@ Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`
 ---
 
 ### Phase 14 — Tool-Calling Agent Loop (7 items)
-Items 42–48. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Requires Phase 16 baseline to validate no regression.
+Items 42–48. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Phase 16 (Evals) follows and establishes the tool loop's first performance baseline.
 
 | Items | Concern |
 |-------|---------|
@@ -242,7 +242,7 @@ Items 42–48. Replaces the linear pipeline with an iterative agent loop using O
 | 44 | AgentLoop controller |
 | 45–46 | HA sandbox engine + NetAlertX healer refactors |
 | 47 | Safety audit |
-| 48 | Eval regression check |
+| 48 | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios |
 
 → [plan/tool-loop.md](plan/tool-loop.md)
 
