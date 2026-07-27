@@ -114,12 +114,30 @@ def _migrate_v5(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE backup_registry ADD COLUMN deleted_from_ha_at REAL")
 
 
+def _migrate_v6(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_history (
+            notification_id TEXT PRIMARY KEY,
+            first_seen_at   REAL,
+            last_seen_at    REAL,
+            category        TEXT,
+            severity        TEXT,
+            hitl_sent_at    REAL,
+            dismissed_at    REAL,
+            dismissed_by    TEXT
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
     (5, _migrate_v5),
+    (6, _migrate_v6),
 ]
 
 

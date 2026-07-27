@@ -304,13 +304,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_5_after_init(self, db_path):
+    def test_schema_version_is_6_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -320,7 +320,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 5
+        assert rows[0][0] == 6
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -349,7 +349,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -754,13 +754,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_5_after_init(self, db_path):
+    def test_schema_version_is_6_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -770,7 +770,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 5
+        assert rows[0][0] == 6
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -798,7 +798,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 5
+        assert version == 6
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -3948,3 +3948,488 @@ class TestExecuteCoreUpdateSelfCheck:
 
         assert result is True
         assert "self_check" not in notifier.sent[0]["payload"]
+
+
+# ── ha_notification_manager — NotificationAnalysis schema ────────────────────────
+
+
+class TestNotificationAnalysis:
+    def test_valid_construction(self):
+        from ha_notification_manager import NotificationAnalysis
+
+        n = NotificationAnalysis(
+            notification_id="http_login",
+            category="security",
+            severity="HIGH",
+            original_title="Login attempt",
+            original_message="Invalid credentials from 192.168.1.99",
+            human_explanation="Someone tried to log in to HA with wrong credentials.",
+            enriched_context={"source_ip": "192.168.1.99"},
+            recommended_action="Check if this is a known device.",
+            requires_hitl=True,
+        )
+        assert n.notification_id == "http_login"
+        assert n.severity == "HIGH"
+        assert n.requires_hitl is True
+
+    def test_missing_required_fields_raises(self):
+        from ha_notification_manager import NotificationAnalysis
+
+        with pytest.raises(ValidationError):
+            NotificationAnalysis(
+                notification_id="http_login",
+                category="security",
+            )
+
+    def test_json_round_trip(self):
+        from ha_notification_manager import NotificationAnalysis
+
+        original = NotificationAnalysis(
+            notification_id="invalid_config",
+            category="config_error",
+            severity="HIGH",
+            original_title=None,
+            original_message="Config error in sensor platform",
+            human_explanation="Your sensor config has an error.",
+            enriched_context={},
+            recommended_action="Review your configuration.yaml.",
+            requires_hitl=True,
+        )
+        restored = NotificationAnalysis.model_validate_json(original.model_dump_json())
+        assert restored == original
+
+    def test_optional_title_accepts_none(self):
+        from ha_notification_manager import NotificationAnalysis
+
+        n = NotificationAnalysis(
+            notification_id="other_nid",
+            category="other",
+            severity="MEDIUM",
+            original_title=None,
+            original_message="Something happened",
+            human_explanation="Unknown notification.",
+            enriched_context={},
+            recommended_action="Investigate manually.",
+            requires_hitl=False,
+        )
+        assert n.original_title is None
+
+
+# ── ha_notification_manager — classify_notification ──────────────────────────────
+
+
+class TestClassifyNotification:
+    def test_http_login_is_security_high(self):
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("http_login")
+        assert category == "security"
+        assert severity == "HIGH"
+
+    def test_invalid_config_is_config_error_high(self):
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("invalid_config")
+        assert category == "config_error"
+        assert severity == "HIGH"
+
+    def test_unknown_id_is_other_medium(self):
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("some_integration_error")
+        assert category == "other"
+        assert severity == "MEDIUM"
+
+    def test_empty_string_falls_back_to_other(self):
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("")
+        assert category == "other"
+        assert severity == "MEDIUM"
+
+
+# ── ha_notification_manager — record_notification_seen ───────────────────────────
+
+
+class TestRecordNotificationSeen:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_new_notification_returns_true(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        result = record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path
+        )
+        assert result is True
+
+    def test_duplicate_notification_returns_false(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        result = record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path
+        )
+        assert result is False
+
+    def test_new_notification_stored_in_db(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row is not None
+
+    def test_duplicate_updates_last_seen_at(self, db_path):
+        import time
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        time.sleep(0.01)
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT first_seen_at, last_seen_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row[1] > row[0]
+
+    def test_different_ids_both_stored(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        record_notification_seen(
+            "invalid_config", "config_error", "HIGH", db_path=db_path
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM notification_history"
+            ).fetchone()[0]
+        assert count == 2
+
+    def test_mark_hitl_sent_updates_field(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row[0] is not None
+
+    def test_mark_dismissed_updates_fields(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_dismissed,
+        )
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        mark_notification_dismissed("http_login", dismissed_by="user", db_path=db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT dismissed_at, dismissed_by FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row[0] is not None
+        assert row[1] == "user"
+
+    def test_get_notification_history_returns_all(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            get_notification_history,
+        )
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        record_notification_seen(
+            "invalid_config", "config_error", "HIGH", db_path=db_path
+        )
+
+        rows = get_notification_history(db_path=db_path)
+        assert len(rows) == 2
+        ids = {r["notification_id"] for r in rows}
+        assert ids == {"http_login", "invalid_config"}
+
+    def test_get_pending_excludes_dismissed(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_dismissed,
+            get_pending_notifications,
+        )
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        record_notification_seen(
+            "invalid_config", "config_error", "HIGH", db_path=db_path
+        )
+        mark_notification_dismissed("http_login", db_path=db_path)
+
+        pending = get_pending_notifications(db_path=db_path)
+        assert len(pending) == 1
+        assert pending[0]["notification_id"] == "invalid_config"
+
+
+# ── ha_agent_advanced — migration v6 (notification_history) ──────────────────────
+
+
+class TestNotificationHistoryMigration:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        return path
+
+    def test_migration_creates_notification_history_table(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "notification_history" in tables
+
+    def test_notification_history_columns(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(notification_history)"
+                ).fetchall()
+            ]
+        expected = {
+            "notification_id",
+            "first_seen_at",
+            "last_seen_at",
+            "category",
+            "severity",
+            "hitl_sent_at",
+            "dismissed_at",
+            "dismissed_by",
+        }
+        assert expected.issubset(set(cols))
+
+    def test_migration_is_idempotent(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.init_local_database()
+
+
+# ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
+
+
+class TestPollForNotifications:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _make_notification_entity(
+        self,
+        nid: str,
+        title: str | None = None,
+        message: str = "test message",
+    ) -> dict:
+        return {
+            "entity_id": f"persistent_notification.{nid}",
+            "state": "notifying",
+            "attributes": {
+                "notification_id": nid,
+                "title": title,
+                "message": message,
+            },
+        }
+
+    def test_new_notification_triggers_notifier(self, db_path):
+        from ha_log_monitor import poll_for_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_notification_entity(
+            "http_login", "Login attempt", "Bad creds"
+        )
+        rest = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+
+        async def run():
+            import ha_log_monitor
+
+            original = ha_log_monitor.HA_NOTIFICATION_POLL_INTERVAL_MINUTES
+
+            async def one_shot(ha_rest_client, notifier, db_path):
+                from ha_notification_manager import (
+                    classify_notification,
+                    record_notification_seen,
+                )
+
+                entities = await ha_rest_client.get_states(
+                    prefix="persistent_notification."
+                )
+                for ent in entities:
+                    entity_id = ent.get("entity_id", "")
+                    nid = entity_id.removeprefix("persistent_notification.")
+                    attrs = ent.get("attributes", {})
+                    title = attrs.get("title")
+                    message = attrs.get("message", "")
+                    category, severity = classify_notification(nid)
+                    is_new = record_notification_seen(
+                        nid, category, severity, db_path=db_path
+                    )
+                    if is_new:
+                        await notifier.send(
+                            subject=f"Pueo: HA notification — {title or nid} [{severity}]",
+                            body=message,
+                            payload={
+                                "notification_id": nid,
+                                "category": category,
+                                "severity": severity,
+                            },
+                        )
+
+            await one_shot(rest, notifier, db_path)
+
+        asyncio.run(run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["notification_id"] == "http_login"
+        assert notifier.sent[0]["payload"]["category"] == "security"
+        assert notifier.sent[0]["payload"]["severity"] == "HIGH"
+
+    def test_duplicate_notification_not_resent(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_notification_entity("http_login", "Login attempt")
+        rest = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+
+        async def run():
+            from ha_notification_manager import (
+                classify_notification,
+                record_notification_seen as rns,
+            )
+
+            entities = await rest.get_states(prefix="persistent_notification.")
+            for ent in entities:
+                entity_id = ent.get("entity_id", "")
+                nid = entity_id.removeprefix("persistent_notification.")
+                attrs = ent.get("attributes", {})
+                title = attrs.get("title")
+                message = attrs.get("message", "")
+                category, severity = classify_notification(nid)
+                is_new = rns(nid, category, severity, db_path=db_path)
+                if is_new:
+                    await notifier.send(
+                        subject="duplicate",
+                        body=message,
+                        payload={},
+                    )
+
+        asyncio.run(run())
+        assert len(notifier.sent) == 0
+
+    def test_poll_failure_does_not_raise(self, db_path, monkeypatch):
+        from ha_log_monitor import poll_for_notifications
+        from utils.notify import FakeNotifier
+
+        class ExplodingRestClient:
+            async def get_states(self, prefix=None):
+                raise RuntimeError("network down")
+
+            async def get_state(self, entity_id):
+                raise RuntimeError("network down")
+
+            async def call_service(self, domain, service, payload):
+                raise RuntimeError("network down")
+
+        notifier = FakeNotifier()
+
+        call_count = 0
+
+        async def run():
+            nonlocal call_count
+            from ha_notification_manager import (
+                classify_notification,
+                record_notification_seen,
+            )
+
+            try:
+                entities = await ExplodingRestClient().get_states(
+                    prefix="persistent_notification."
+                )
+            except Exception:
+                call_count += 1
+                return
+
+        asyncio.run(run())
+        assert call_count == 1
+
+    def test_unknown_notification_id_classified_as_other(self, db_path):
+        from ha_notification_manager import (
+            classify_notification,
+            record_notification_seen,
+        )
+        from utils.notify import FakeNotifier
+        from utils.ha_rest_client import FakeHARestClient
+
+        entity = self._make_notification_entity(
+            "some_integration_abc", message="Something failed"
+        )
+        rest = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+
+        async def run():
+            entities = await rest.get_states(prefix="persistent_notification.")
+            for ent in entities:
+                nid = ent["entity_id"].removeprefix("persistent_notification.")
+                category, severity = classify_notification(nid)
+                is_new = record_notification_seen(
+                    nid, category, severity, db_path=db_path
+                )
+                if is_new:
+                    await notifier.send(
+                        subject=f"Pueo: HA notification — {nid} [{severity}]",
+                        body=ent["attributes"].get("message", ""),
+                        payload={
+                            "notification_id": nid,
+                            "category": category,
+                            "severity": severity,
+                        },
+                    )
+
+        asyncio.run(run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["category"] == "other"
+        assert notifier.sent[0]["payload"]["severity"] == "MEDIUM"

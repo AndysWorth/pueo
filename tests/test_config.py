@@ -664,3 +664,33 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR == "/tmp/ha_notes/"
+
+    def test_notification_poll_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_NOTIFICATION_POLL_INTERVAL_MINUTES == 5.0
+
+    def test_notification_poll_interval_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"notification_poll_interval_minutes": 10}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_NOTIFICATION_POLL_INTERVAL_MINUTES == 10.0
+
+    def test_notification_enrich_auth_failures_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_NOTIFICATION_ENRICH_AUTH_FAILURES is True
+
+    def test_notification_enrich_auth_failures_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"notification_enrich_auth_failures": False}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_NOTIFICATION_ENRICH_AUTH_FAILURES is False

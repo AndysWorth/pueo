@@ -9,12 +9,14 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from config import (
+    DB_PATH,
     HA_API_PORT,
     HA_API_TOKEN,
     HA_DISK_CRITICAL_GB,
     HA_DISK_WARN_GB,
     HA_HOST,
     HA_MEM_WARN_MB,
+    HA_NOTIFICATION_POLL_INTERVAL_MINUTES,
     HA_UPDATE_CHECK_INTERVAL_HOURS,
     HA_UPDATE_NOTIFY_ON_AVAILABLE,
     HA_USER,
@@ -262,6 +264,58 @@ async def poll_for_updates(
                 _notified.discard(u.entity_id)
 
 
+async def poll_for_notifications(
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    notifier: Optional[NotifierProtocol] = None,
+    db_path: str = DB_PATH,
+) -> None:
+    """Periodically checks for new HA persistent notifications and fires HITL alerts."""
+    from ha_notification_manager import classify_notification, record_notification_seen
+
+    interval = HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60
+    _client: HARestClientProtocol = ha_rest_client or HARestClient(
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            entities = await _client.get_states(prefix="persistent_notification.")
+        except Exception as exc:
+            log.warning("notification_poll_failed", error=str(exc))
+            continue
+
+        for entity in entities:
+            entity_id = entity.get("entity_id", "")
+            nid = entity_id.removeprefix("persistent_notification.")
+            attrs = entity.get("attributes", {})
+            title = attrs.get("title")
+            message = attrs.get("message", "")
+
+            category, severity = classify_notification(nid)
+            is_new = record_notification_seen(nid, category, severity, db_path=db_path)
+
+            if is_new:
+                log.info(
+                    "new_notification_detected",
+                    notification_id=nid,
+                    category=category,
+                    severity=severity,
+                )
+                await _notifier.send(
+                    subject=f"Pueo: HA notification — {title or nid} [{severity}]",
+                    body=message,
+                    payload={
+                        "notification_id": nid,
+                        "title": title,
+                        "message": message,
+                        "category": category,
+                        "severity": severity,
+                    },
+                )
+
+
 async def trigger_remediation_pipeline() -> None:
     """Invokes the Sandbox & Swap Engine with a fresh correlation ID for this repair cycle."""
     cid = str(uuid.uuid4())
@@ -301,6 +355,10 @@ async def main(
     if HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and HA_API_TOKEN:
         asyncio.create_task(
             poll_for_updates(ha_rest_client=ha_rest_client, notifier=_notifier)
+        )
+    if HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and HA_API_TOKEN:
+        asyncio.create_task(
+            poll_for_notifications(ha_rest_client=ha_rest_client, notifier=_notifier)
         )
     await tail_remote_log_stream(
         ssh_client=_ssh,
