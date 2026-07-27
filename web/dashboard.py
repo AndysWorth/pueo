@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -193,6 +193,98 @@ async def backups(request: Request) -> HTMLResponse:
         request,
         "backups.html",
         {"inventory": inventory},
+    )
+
+
+def _load_notification_dashboard_data(
+    watch_dir: Path,
+    category_filter: str = "",
+    severity_filter: str = "",
+    sort_by: str = "first_seen_at",
+) -> tuple[list[dict], list[dict]]:
+    """Load notification_history rows enriched with HITL card payload data.
+
+    Returns (pending, history) where pending items have dismissed_at IS NULL.
+    history contains all records (filtered and sorted).
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM notification_history ORDER BY first_seen_at DESC"
+            ).fetchall()
+    except Exception:
+        return [], []
+
+    records: list[dict] = []
+    for row in rows:
+        record: dict = dict(row)
+        nid = record["notification_id"]
+        card_id = f"notif_{nid}"
+        json_path = watch_dir / f"{card_id}.json"
+        record["card_id"] = card_id
+        record["card_exists"] = json_path.exists()
+        if json_path.exists():
+            try:
+                card_data = json.loads(json_path.read_text())
+                payload = card_data.get("payload", {})
+                record.setdefault(
+                    "human_explanation", payload.get("human_explanation", "")
+                )
+                record.setdefault(
+                    "recommended_action", payload.get("recommended_action", "")
+                )
+                record.setdefault(
+                    "enriched_context", payload.get("enriched_context", {})
+                )
+                record.setdefault(
+                    "original_message", payload.get("original_message", "")
+                )
+                record.setdefault("original_title", payload.get("original_title", ""))
+            except Exception:  # nosec B110 — skip malformed card JSON
+                pass
+        records.append(record)
+
+    if category_filter:
+        records = [r for r in records if r.get("category") == category_filter]
+    if severity_filter:
+        records = [r for r in records if r.get("severity") == severity_filter]
+
+    valid_sorts = {"first_seen_at", "category", "severity"}
+    sk = sort_by if sort_by in valid_sorts else "first_seen_at"
+    records = sorted(
+        records, key=lambda r: r.get(sk) or "", reverse=(sk == "first_seen_at")
+    )
+
+    pending = [r for r in records if not r.get("dismissed_at")]
+    return pending, records
+
+
+@app.get("/notifications", response_class=HTMLResponse)
+async def notifications_tab(
+    request: Request,
+    category: str = Query(default=""),
+    severity: str = Query(default=""),
+    sort_by: str = Query(default="first_seen_at"),
+) -> HTMLResponse:
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    watch_dir.mkdir(parents=True, exist_ok=True)
+    pending, history = _load_notification_dashboard_data(
+        watch_dir,
+        category_filter=category,
+        severity_filter=severity,
+        sort_by=sort_by,
+    )
+    return templates.TemplateResponse(
+        request,
+        "notifications.html",
+        {
+            "pending": pending,
+            "history": history,
+            "category_filter": category,
+            "severity_filter": severity,
+            "sort_by": sort_by,
+        },
     )
 
 

@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="font-size:1rem;margin-bottom:1rem;color:#555;">HA Notification History</h2>
+
+<!-- Filter bar -->
+<form method="GET" action="/notifications" style="margin-bottom:1.25rem;display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+  <label style="font-size:0.85rem;">Category:
+    <select name="category" style="margin-left:0.4rem;font-size:0.85rem;padding:0.2rem 0.4rem;">
+      <option value="">All</option>
+      <option value="security"{% if category_filter == "security" %} selected{% endif %}>Security</option>
+      <option value="config_error"{% if category_filter == "config_error" %} selected{% endif %}>Config Error</option>
+      <option value="integration"{% if category_filter == "integration" %} selected{% endif %}>Integration</option>
+      <option value="other"{% if category_filter == "other" %} selected{% endif %}>Other</option>
+    </select>
+  </label>
+  <label style="font-size:0.85rem;">Severity:
+    <select name="severity" style="margin-left:0.4rem;font-size:0.85rem;padding:0.2rem 0.4rem;">
+      <option value="">All</option>
+      <option value="CRITICAL"{% if severity_filter == "CRITICAL" %} selected{% endif %}>CRITICAL</option>
+      <option value="HIGH"{% if severity_filter == "HIGH" %} selected{% endif %}>HIGH</option>
+      <option value="MEDIUM"{% if severity_filter == "MEDIUM" %} selected{% endif %}>MEDIUM</option>
+      <option value="LOW"{% if severity_filter == "LOW" %} selected{% endif %}>LOW</option>
+    </select>
+  </label>
+  <label style="font-size:0.85rem;">Sort by:
+    <select name="sort_by" style="margin-left:0.4rem;font-size:0.85rem;padding:0.2rem 0.4rem;">
+      <option value="first_seen_at"{% if sort_by == "first_seen_at" %} selected{% endif %}>Time</option>
+      <option value="category"{% if sort_by == "category" %} selected{% endif %}>Category</option>
+      <option value="severity"{% if sort_by == "severity" %} selected{% endif %}>Severity</option>
+    </select>
+  </label>
+  <button type="submit" class="btn" style="background:#eee;color:#333;font-weight:600;padding:0.25rem 0.75rem;">Apply</button>
+</form>
+
+<!-- Pending section -->
+<h3 style="font-size:0.85rem;color:#555;margin-bottom:0.75rem;text-transform:uppercase;letter-spacing:0.06em;">Pending ({{ pending | length }})</h3>
+{% if not pending %}
+  <p class="empty" style="text-align:left;padding:1rem 0 1.5rem;">No pending notifications.</p>
+{% else %}
+  {% for n in pending %}
+  <div class="card">
+    <div class="card-header">
+      <span class="badge" style="{% if n.severity == 'CRITICAL' %}background:#f8d7da;color:#58151c;border:1px solid #dc3545;{% elif n.severity == 'HIGH' %}background:#fff3cd;color:#856404;border:1px solid #ffc107;{% elif n.severity == 'MEDIUM' %}background:#e0e7ff;color:#3730a3;border:1px solid #6366f1;{% else %}background:#d1e7dd;color:#0a3622;border:1px solid #28a745;{% endif %}">{{ n.severity }}</span>
+      <span class="subject">{{ n.get("original_title") or n.notification_id }}</span>
+      <span class="elapsed">{{ n.first_seen_at | epoch_to_iso }}</span>
+    </div>
+    <p class="meta">Category: <strong>{{ n.category }}</strong></p>
+    {% if n.get("original_message") %}
+    <p class="body">{{ n.original_message }}</p>
+    {% endif %}
+    {% if n.get("human_explanation") %}
+    <p style="font-size:0.9rem;color:#333;margin-bottom:0.5rem;">{{ n.human_explanation }}</p>
+    {% endif %}
+    {% if n.get("recommended_action") %}
+    <p class="meta"><strong>Recommended:</strong> {{ n.recommended_action }}</p>
+    {% endif %}
+    {% if n.get("enriched_context") %}
+    <details>
+      <summary><span class="section-label label-evidence">Context</span>Device enrichment</summary>
+      <div class="kv-grid">
+        {% for k, v in n.enriched_context.items() %}
+        <span class="k">{{ k }}</span><span class="v">{{ v }}</span>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+    {% if n.get("card_exists") %}
+    <div class="actions">
+      <form method="POST" action="/dismiss-notification/{{ n.card_id }}">
+        <button class="btn btn-approve" type="submit">Dismiss in HA</button>
+      </form>
+      <form method="POST" action="/reject/{{ n.card_id }}">
+        <button class="btn btn-reject" type="submit">Keep</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% endif %}
+
+<!-- History section -->
+<h3 style="font-size:0.85rem;color:#555;margin-bottom:0.75rem;text-transform:uppercase;letter-spacing:0.06em;margin-top:1.5rem;">History ({{ history | length }})</h3>
+{% if not history %}
+  <p class="empty">No notification history yet.</p>
+{% else %}
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1.5fr 1.5fr;padding:0.5rem 0.75rem;border-bottom:2px solid #ddd;font-size:0.78rem;color:#555;font-weight:600;background:#f8f8f8;">
+      <span>ID</span>
+      <span>Category</span>
+      <span>Severity</span>
+      <span>First Seen</span>
+      <span>Dismissed</span>
+    </div>
+    {% for n in history %}
+    <details style="border-bottom:1px solid #eee;">
+      <summary style="display:grid;grid-template-columns:2fr 1fr 1fr 1.5fr 1.5fr;padding:0.45rem 0.75rem;cursor:pointer;font-size:0.85rem;list-style:none;">
+        <span style="font-family:monospace;font-size:0.8rem;">{{ n.notification_id }}</span>
+        <span>{{ n.category }}</span>
+        <span {% if n.severity == "CRITICAL" %}style="color:var(--red);font-weight:700;"{% elif n.severity == "HIGH" %}style="color:var(--orange);font-weight:700;"{% endif %}>{{ n.severity }}</span>
+        <span>{{ n.first_seen_at | epoch_to_iso }}</span>
+        <span>{% if n.dismissed_at %}<span style="color:#28a745;">&#10003; {{ n.dismissed_at | epoch_to_iso }}</span>{% else %}—{% endif %}</span>
+      </summary>
+      <div style="padding:0.75rem 1rem;background:#fafafa;border-top:1px solid #eee;">
+        {% if n.get("original_message") %}
+        <p style="font-size:0.85rem;color:#444;margin-bottom:0.4rem;"><strong>Message:</strong> {{ n.original_message }}</p>
+        {% endif %}
+        {% if n.get("human_explanation") %}
+        <p style="font-size:0.85rem;color:#333;margin-bottom:0.4rem;"><strong>Explanation:</strong> {{ n.human_explanation }}</p>
+        {% endif %}
+        {% if n.get("recommended_action") %}
+        <p style="font-size:0.85rem;color:#333;margin-bottom:0.4rem;"><strong>Recommended:</strong> {{ n.recommended_action }}</p>
+        {% endif %}
+        {% if n.get("enriched_context") %}
+        <div class="kv-grid" style="margin-top:0.25rem;">
+          {% for k, v in n.enriched_context.items() %}
+          <span class="k">{{ k }}</span><span class="v">{{ v }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if not n.get("original_message") and not n.get("human_explanation") %}
+        <p style="font-size:0.85rem;color:#888;"><em>No detail data available — notification was not triaged by Pueo.</em></p>
+        {% endif %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}
