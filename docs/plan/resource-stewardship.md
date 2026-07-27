@@ -90,6 +90,16 @@ After `execute_remote_backup()` confirms a slug, SFTP-pull the `.tar` file to Pu
 
 ---
 
+### Implementation notes (item 32, 2026-07-27)
+
+- `enforce_ha_retention(ssh_client)` in `ha_agent_advanced.py`: queries `backup_registry` for all non-deleted HA slugs; if count > `BACKUP_RETAIN_ON_HA`, deletes oldest slugs where `location='both'`; skips most-recent; logs warning on SSH error but continues
+- `purge_local_backups()` in `ha_agent_advanced.py`: deletes `.tar` files older than `BACKUP_RETAIN_LOCAL_DAYS`; protects the single most-recently-offloaded slug
+- Both wired into `ha_agent_advanced.main()` and `ha_agent_sandbox_engine.main()` after `offload_backup_to_local()`
+- `print_backup_status()` prints slug/size/age/HA/Pueo table to stdout
+- `--mode backup-status` in `main.py` calls `init_local_database()` then `print_backup_status()`
+- `/backups` route in `web/dashboard.py` with `backups.html` template; nav link in `base.html`
+- PR #65
+
 ### Done when
 
 - `ha host info` is polled on schedule; disk/memory alerts appear in the HITL dashboard when thresholds are crossed; `execute_remote_backup()` blocks when disk < CRITICAL
