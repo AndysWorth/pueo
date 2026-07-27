@@ -1960,6 +1960,84 @@ class TestRunUpdateCheck:
         out = capsys.readouterr().out
         assert "Error" in out
 
+    def test_ssh_read_file_error_is_skipped(self, tmp_path, capsys):
+        """SSH config fetch failure logs a warning but does not abort analysis."""
+        from ha_update_manager import run_update_check
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake_rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                }
+            ]
+        )
+
+        class BrokenSSH:
+            async def read_file(self, path):
+                raise OSError("sftp error")
+
+            async def run_command(self, cmd):
+                return ""
+
+        # Cache dir with no release notes so the loop skips analysis after the
+        # SSH failure — we just need to cover the except branch.
+        updates = asyncio.run(
+            run_update_check(
+                ha_rest_client=fake_rest,
+                ssh_client=BrokenSSH(),
+                cache_dir=str(tmp_path),
+            )
+        )
+        assert len(updates) == 1
+
+    def test_analyze_breaking_changes_error_is_skipped(self, tmp_path, capsys):
+        """analyze_breaking_changes failure prints a warning and returns all updates."""
+        import unittest.mock as mock
+        from ha_update_manager import run_update_check
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake_rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                }
+            ]
+        )
+
+        # Write a fake cached release notes file so the loop reaches
+        # analyze_breaking_changes.
+        notes_dir = tmp_path / "release_notes"
+        notes_dir.mkdir()
+        (notes_dir / "2026.7.0.txt").write_text(
+            "## Breaking changes\n- Something changed"
+        )
+
+        with mock.patch(
+            "ha_update_manager.analyze_breaking_changes",
+            side_effect=RuntimeError("llm exploded"),
+        ):
+            updates = asyncio.run(
+                run_update_check(
+                    ha_rest_client=fake_rest,
+                    cache_dir=str(notes_dir),
+                )
+            )
+
+        assert len(updates) == 1
+        out = capsys.readouterr().out
+        assert "Warning" in out
+
 
 # ── UpdateReadinessReport schema ─────────────────────────────────────────────────
 class TestUpdateReadinessReport:
