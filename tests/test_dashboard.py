@@ -1119,6 +1119,157 @@ class TestDeferEndpoint:
         assert not (tmp_path / "upd3.deferred").exists()
 
 
+class TestDismissNotificationRoute:
+    """Tests for the /dismiss-notification/{card_id} POST route."""
+
+    def _write_notification_card(
+        self, watch_dir: Path, card_id: str, ha_nid: str
+    ) -> None:
+        import json as _json
+        import time as _time
+
+        (watch_dir / f"{card_id}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Failed login attempt",
+                    "body": "Someone tried to log in.",
+                    "payload": {
+                        "ha_notification_id": ha_nid,
+                        "is_notification_card": True,
+                    },
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+    def test_dismiss_creates_approved_file(self, tmp_path, monkeypatch):
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_http_login", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert (tmp_path / "notif_http_login.approved").exists()
+
+    def test_dismiss_calls_ha_service(self, tmp_path, monkeypatch):
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        fake_rest = FakeHARestClient()
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+        )
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/dismiss-notification/notif_http_login", follow_redirects=False)
+        assert (
+            "persistent_notification",
+            "dismiss",
+            {"notification_id": "http_login"},
+        ) in fake_rest.service_calls
+
+    def test_dismiss_missing_json_is_noop(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_none", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert not (tmp_path / "notif_none.approved").exists()
+
+    def test_dismiss_already_resolved_is_noop(self, tmp_path, monkeypatch):
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        fake_rest = FakeHARestClient()
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+        )
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        (tmp_path / "notif_http_login.rejected").touch()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/dismiss-notification/notif_http_login", follow_redirects=False)
+        assert not fake_rest.service_calls
+
+    def test_notification_card_shows_dismiss_button(self, tmp_path, monkeypatch):
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        card_id = "notif_http_login"
+        (tmp_path / f"{card_id}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Failed login",
+                    "body": "Explanation here.",
+                    "payload": {
+                        "is_notification_card": True,
+                        "ha_notification_id": "http_login",
+                        "category": "security",
+                        "severity": "HIGH",
+                        "enriched_context": {},
+                        "human_explanation": "Explanation here.",
+                        "recommended_action": "Check your logs.",
+                    },
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/")
+        assert "Dismiss in HA" in response.text
+        assert "Keep" in response.text
+
+    def test_repair_card_shows_approve_reject_buttons(self, tmp_path, monkeypatch):
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        card_id = "repair-abc123"
+        (tmp_path / f"{card_id}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Repair action",
+                    "body": "Apply fix?",
+                    "payload": {"severity": "MEDIUM"},
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/")
+        assert "Approve" in response.text
+        assert "Reject" in response.text
+        assert "Defer" in response.text
+
+
 class TestDeferredStatusRecognition:
     def _write_request(self, tmp_path: Path, nid: str) -> None:
         import json as _json

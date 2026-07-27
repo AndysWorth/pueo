@@ -4958,3 +4958,314 @@ class TestFakeHAWebSocketClient:
         result = asyncio.run(ws.get_device_registry())
         result.append({"id": "dev2"})
         assert len(asyncio.run(ws.get_device_registry())) == 1
+
+
+# ── ha_notification_manager — _format_notification_subject ───────────────────────
+
+
+class TestFormatNotificationSubject:
+    def _make_analysis(
+        self, notification_id, enriched_context=None, original_title=None
+    ):
+        from ha_notification_manager import NotificationAnalysis
+
+        return NotificationAnalysis(
+            notification_id=notification_id,
+            category="security",
+            severity="HIGH",
+            original_title=original_title,
+            original_message="msg",
+            human_explanation="explain",
+            enriched_context=enriched_context or {},
+            recommended_action="act",
+            requires_hitl=True,
+        )
+
+    def test_http_login_unknown_device(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis(
+            "http_login",
+            enriched_context={
+                "source_ip": "1.2.3.4",
+                "hostname": None,
+                "netalertx_name": None,
+                "ha_device_name": None,
+                "is_known_device": False,
+            },
+        )
+        subject = _format_notification_subject(analysis)
+        assert "Unknown source IP" in subject
+
+    def test_http_login_netalertx_name(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis(
+            "http_login",
+            enriched_context={
+                "source_ip": "192.168.1.10",
+                "hostname": None,
+                "netalertx_name": "Andy's Phone",
+                "ha_device_name": None,
+                "is_known_device": True,
+            },
+        )
+        subject = _format_notification_subject(analysis)
+        assert "Andy's Phone" in subject
+
+    def test_http_login_ha_device_name_fallback(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis(
+            "http_login",
+            enriched_context={
+                "source_ip": "192.168.1.10",
+                "hostname": None,
+                "netalertx_name": None,
+                "ha_device_name": "Living Room Hub",
+                "is_known_device": True,
+            },
+        )
+        subject = _format_notification_subject(analysis)
+        assert "Living Room Hub" in subject
+
+    def test_http_login_hostname_fallback(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis(
+            "http_login",
+            enriched_context={
+                "source_ip": "192.168.1.20",
+                "hostname": "my-laptop.local",
+                "netalertx_name": None,
+                "ha_device_name": None,
+                "is_known_device": True,
+            },
+        )
+        subject = _format_notification_subject(analysis)
+        assert "my-laptop.local" in subject
+
+    def test_invalid_config(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis("invalid_config")
+        subject = _format_notification_subject(analysis)
+        assert "Configuration" in subject
+
+    def test_other_with_title(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis("custom_integration", original_title="My Title")
+        subject = _format_notification_subject(analysis)
+        assert subject == "My Title"
+
+    def test_other_without_title(self):
+        from ha_notification_manager import _format_notification_subject
+
+        analysis = self._make_analysis("some_random_notification_id")
+        subject = _format_notification_subject(analysis)
+        assert "some_random_notification_id" in subject
+
+
+# ── ha_notification_manager — run_notifications ───────────────────────────────────
+
+
+class TestRunNotifications:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _make_llm_client(self):
+        from ha_notification_manager import _NotificationLLMOutput
+        from utils.ollama_client import FakeLLMClient
+
+        return FakeLLMClient(
+            _NotificationLLMOutput(
+                human_explanation="Someone tried to log in.",
+                recommended_action="Check your logs.",
+                requires_hitl=True,
+            ).model_dump_json()
+        )
+
+    def test_sends_card_for_new_notification(self, db_path):
+        from ha_notification_manager import run_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "persistent_notification.http_login",
+                    "state": "notifying",
+                    "attributes": {
+                        "notification_id": "http_login",
+                        "title": "Login attempt",
+                        "message": "Invalid login from 1.2.3.4",
+                    },
+                }
+            ]
+        )
+        notifier = FakeNotifier()
+        count = asyncio.run(
+            run_notifications(
+                ha_rest_client=rest,
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert count == 1
+        assert len(notifier.sent) == 1
+        sent = notifier.sent[0]
+        assert sent["payload"]["is_notification_card"] is True
+        assert sent["payload"]["ha_notification_id"] == "http_login"
+
+    def test_skips_notification_when_hitl_already_sent(self, db_path):
+        from ha_notification_manager import (
+            mark_notification_hitl_sent,
+            record_notification_seen,
+            run_notifications,
+        )
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "persistent_notification.http_login",
+                    "state": "notifying",
+                    "attributes": {
+                        "notification_id": "http_login",
+                        "title": None,
+                        "message": "Invalid login from 1.2.3.4",
+                    },
+                }
+            ]
+        )
+        notifier = FakeNotifier()
+        count = asyncio.run(
+            run_notifications(
+                ha_rest_client=rest,
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert count == 0
+        assert len(notifier.sent) == 0
+
+    def test_no_entities_returns_zero(self, db_path):
+        from ha_notification_manager import run_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        rest = FakeHARestClient(states=[])
+        notifier = FakeNotifier()
+        count = asyncio.run(
+            run_notifications(
+                ha_rest_client=rest,
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert count == 0
+
+    def test_poll_failure_returns_zero(self, db_path):
+        from ha_notification_manager import run_notifications
+        from utils.notify import FakeNotifier
+
+        class FailingRestClient:
+            async def get_states(self, prefix=None):
+                raise RuntimeError("connection refused")
+
+            async def get_state(self, entity_id):
+                raise RuntimeError("connection refused")
+
+            async def call_service(self, domain, service, payload):
+                raise RuntimeError("connection refused")
+
+        notifier = FakeNotifier()
+        count = asyncio.run(
+            run_notifications(
+                ha_rest_client=FailingRestClient(),
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert count == 0
+
+    def test_card_id_uses_notif_prefix(self, db_path):
+        from ha_notification_manager import run_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "persistent_notification.invalid_config",
+                    "state": "notifying",
+                    "attributes": {
+                        "notification_id": "invalid_config",
+                        "title": "Config Error",
+                        "message": "YAML parse error",
+                    },
+                }
+            ]
+        )
+        notifier = FakeNotifier()
+        asyncio.run(
+            run_notifications(
+                ha_rest_client=rest,
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert notifier.sent[0]["payload"]["notification_id"] == "notif_invalid_config"
+
+    def test_unknown_ip_subject_in_card(self, db_path, monkeypatch):
+        import socket
+
+        import ha_notification_manager
+        from ha_notification_manager import run_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(
+            socket, "gethostbyaddr", lambda ip: (_ for _ in ()).throw(socket.herror())
+        )
+
+        rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "persistent_notification.http_login",
+                    "state": "notifying",
+                    "attributes": {
+                        "notification_id": "http_login",
+                        "title": None,
+                        "message": "Invalid login from 8.8.8.8",
+                    },
+                }
+            ]
+        )
+        notifier = FakeNotifier()
+        asyncio.run(
+            run_notifications(
+                ha_rest_client=rest,
+                llm_client=self._make_llm_client(),
+                notifier=notifier,
+                db_path=db_path,
+            )
+        )
+        assert len(notifier.sent) == 1
+        assert "Unknown source IP" in notifier.sent[0]["subject"]

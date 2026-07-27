@@ -11,7 +11,22 @@
       <span class="elapsed">{{ r.elapsed_seconds }}s ago</span>
     </div>
     <p class="body">{{ r.body }}</p>
-    {% if r.payload.get("severity") or r.payload.get("risk") or r.payload.get("step") %}
+    {% if r.payload.get("is_notification_card") %}
+    <p class="meta">
+      Category: <strong>{{ r.payload.category }}</strong>
+      &nbsp;·&nbsp; Severity: <strong {% if r.payload.severity == "CRITICAL" %}style="color:var(--red)"{% elif r.payload.severity == "HIGH" %}style="color:var(--orange)"{% endif %}>{{ r.payload.severity }}</strong>
+    </p>
+    {% if r.payload.get("enriched_context") %}
+    <details>
+      <summary><span class="section-label label-evidence">Context</span>Device enrichment</summary>
+      <div class="kv-grid">
+        {% for k, v in r.payload.enriched_context.items() %}
+        <span class="k">{{ k }}</span><span class="v">{{ v }}</span>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+    {% elif r.payload.get("severity") or r.payload.get("risk") or r.payload.get("step") %}
     <p class="meta">
       {% if r.payload.get("severity") %}Severity: <strong>{{ r.payload.severity }}</strong>{% endif %}
       {% if r.payload.get("risk") %} &nbsp;·&nbsp; Risk: <strong>{{ r.payload.risk }}</strong>{% endif %}
@@ -88,6 +103,14 @@
     </details>
     {% if r.status == "PENDING" %}
     <div class="actions">
+      {% if r.payload.get("is_notification_card") %}
+      <form method="POST" action="/dismiss-notification/{{ r.notification_id }}">
+        <button class="btn btn-approve" type="submit">Dismiss in HA</button>
+      </form>
+      <form method="POST" action="/reject/{{ r.notification_id }}">
+        <button class="btn btn-reject" type="submit">Keep</button>
+      </form>
+      {% else %}
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Approve</button>
       </form>
@@ -97,6 +120,7 @@
       <form method="POST" action="/defer/{{ r.notification_id }}">
         <button class="btn btn-defer" type="submit">Defer (24h)</button>
       </form>
+      {% endif %}
     </div>
     {% endif %}
   </div>
