@@ -364,6 +364,8 @@ agent:
   # ha_mem_warn_mb: 256
   # backup_offload_enabled: true
   # backup_local_dir: "./backups/"
+  # backup_retain_on_ha: 2
+  # backup_retain_local_days: 30
 EOF
     ok "config.yaml written"
 fi

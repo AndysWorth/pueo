@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 style="font-size:1rem;margin-bottom:1rem;color:#555;">Backup Inventory</h2>
+{% if not inventory %}
+  <p class="empty">No backups recorded yet.</p>
+{% else %}
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+      <thead>
+        <tr style="text-align:left;border-bottom:2px solid #ddd;color:#555;">
+          <th style="padding:0.4rem 0.75rem;">Slug</th>
+          <th style="padding:0.4rem 0.75rem;text-align:right;">Size</th>
+          <th style="padding:0.4rem 0.75rem;text-align:right;">Age</th>
+          <th style="padding:0.4rem 0.75rem;text-align:center;">HA</th>
+          <th style="padding:0.4rem 0.75rem;text-align:center;">Pueo</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in inventory %}
+        <tr style="border-bottom:1px solid #eee;">
+          <td style="padding:0.4rem 0.75rem;font-family:monospace;font-size:0.8rem;">{{ b.slug }}</td>
+          <td style="padding:0.4rem 0.75rem;text-align:right;">{{ b.size_mb }} MB</td>
+          <td style="padding:0.4rem 0.75rem;text-align:right;">{{ b.age }}</td>
+          <td style="padding:0.4rem 0.75rem;text-align:center;">
+            {% if b.on_ha %}<span style="color:#28a745;font-weight:700;">✓</span>{% else %}<span style="color:#dc3545;">✗</span>{% endif %}
+          </td>
+          <td style="padding:0.4rem 0.75rem;text-align:center;">
+            {% if b.on_pueo %}<span style="color:#28a745;font-weight:700;">✓</span>{% else %}<span style="color:#dc3545;">✗</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+{% endblock %}

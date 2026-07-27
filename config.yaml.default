@@ -60,3 +60,5 @@ agent:
   ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
   backup_local_dir: "./backups/"     # Local directory for offloaded backup files
+  backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
+  backup_retain_local_days: 30       # Purge local .tar copies older than this many days

@@ -982,3 +982,74 @@ class TestDashboardRichPayload:
             or result.startswith("2026-")
             or len(result) == 19
         )
+
+
+# ── Backup inventory dashboard tab (item 32) ─────────────────────────────────────
+
+
+class TestBackupInventoryDashboard:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_backups_route_returns_200(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/backups")
+        assert resp.status_code == 200
+
+    def test_empty_inventory_shows_no_backups_message(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/backups").text
+        assert "no backups" in html.lower()
+
+    def test_inventory_row_displays_slug_and_marks(self, db_path):
+        import sqlite3
+        import time
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location, offloaded_at)"
+                " VALUES (?, 'deadbeef', 'ACTIVE', 52428800, 'both', ?)",
+                (int(time.time()), time.time()),
+            )
+            conn.commit()
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/backups").text
+        assert "deadbeef" in html
+        assert "50.0 MB" in html
+
+    def test_ha_only_slug_shows_pueo_cross(self, db_path):
+        import sqlite3
+        import time
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, 'haonly123', 'ACTIVE', 0, 'ha')",
+                (int(time.time()),),
+            )
+            conn.commit()
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/backups").text
+        assert "haonly123" in html

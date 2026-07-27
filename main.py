@@ -23,6 +23,7 @@ def main() -> None:
             "  netalertx-setup     install and configure NetAlertX on HA\n"
             "  netalertx           monitor NetAlertX logs continuously\n"
             "  netalertx-diagnose  one-shot NetAlertX health check and optional heal\n"
+            "  backup-status       print backup inventory table (slug, size, age, HA, Pueo)\n"
             "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
         ),
     )
@@ -42,6 +43,7 @@ def main() -> None:
             "netalertx-setup",
             "netalertx",
             "netalertx-diagnose",
+            "backup-status",
             "dashboard",
         ],
         default="monitor",
@@ -96,6 +98,11 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.one_shot_diagnose.run_diagnose())
+    elif args.mode == "backup-status":
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.print_backup_status()
     elif args.mode == "dashboard":
         from web.dashboard import run_dashboard
 

@@ -561,3 +561,27 @@ class TestResourceSensingConfig:
 
         assert config.BACKUP_OFFLOAD_ENABLED is False
         assert config.BACKUP_LOCAL_DIR == "/mnt/nas/backups/"
+
+    def test_backup_retain_on_ha_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_RETAIN_ON_HA == 2
+
+    def test_backup_retain_local_days_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_RETAIN_LOCAL_DAYS == 30
+
+    def test_backup_retain_keys_loaded_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {"agent": {"backup_retain_on_ha": 5, "backup_retain_local_days": 14}}
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_RETAIN_ON_HA == 5
+        assert config.BACKUP_RETAIN_LOCAL_DAYS == 14

@@ -39,6 +39,11 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 25   | NetAlertX Old API Migration                                          | ✅ Done (2026-07-21) |
 | 26   | Installer Verbose Progress Logging                                   | ✅ Done (2026-07-22) |
 | 27   | NetAlertX One-Shot Diagnosis                                         | ✅ Done (2026-07-22) |
+| 28   | MQTT Credential Setup                                                | ✅ Done (2026-07-23) |
+| 29   | Disk & Memory Sensing                                                | ✅ Done (2026-07-24) |
+| 30   | Backup Inventory Tracking                                            | ✅ Done (2026-07-24) |
+| 31   | Backup Offloading                                                    | ✅ Done (2026-07-24) |
+| 32   | Retention Policy & Cleanup                                           | ✅ Done (2026-07-27) |
 
 ---
 
@@ -131,6 +136,21 @@ way to ask "what is wrong right now?" All building blocks exist (health poller, 
 config validator, healer); this item wires them together behind a new CLI entry point.
 
 → [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
+
+---
+
+### Phase 11 — Resource Stewardship (4 items) ✅ Complete (2026-07-27)
+Items 28–32. Protects the backup-before-write safety invariant by keeping HA disk free.
+
+| Item | Concern |
+|------|---------|
+| 28 | MQTT credential setup |
+| 29 | Disk & memory sensing (`ha host info` polling, HITL alerts, `DiskCriticalError` block) |
+| 30 | Backup inventory tracking (SQLite migration v5, reconcile on startup) |
+| 31 | Backup offloading (SFTP pull, SHA-256 verify, `location='both'`) |
+| 32 | Retention policy (`enforce_ha_retention`, `purge_local_backups`, `--mode backup-status`, dashboard `/backups` tab) |
+
+→ [plan/resource-stewardship.md](plan/resource-stewardship.md)
 
 ---
 
