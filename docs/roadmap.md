@@ -2,65 +2,57 @@
 
 ## Milestone Status
 
-The strategic milestones (numbered rows) reflect long-running objectives. Implementation plan phases (lettered rows) are the tactical backlog that delivers them.
+### Milestones
 
-| Milestone                                      | Status                  | Module                                   |
-| ---------------------------------------------- | ----------------------- | ---------------------------------------- |
-| 1. Read-only ingestion & diagnostics           | ✅ Complete              | `ha_agent_core.py`                       |
-| 2. Local RAG & knowledge ingestion             | ❌ Not started           | —                                        |
-| 3. Safe execution / shadow mode                | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
-| 4. Closed-loop autonomous healing              | ✅ Complete              | `ha_agent_sandbox_engine.py`             |
-| — Phase 3.5: Autonomy control                  | ✅ Complete (2026-07-19) | `utils/autonomy.py`                      |
-| — Phase 4: NetAlertX integration               | ✅ Complete (2026-07-20) | `netalertx/`                             |
-| — Phase 4.5: HITL web dashboard                | ✅ Complete (2026-07-20) | `web/dashboard.py`                       |
-| — Phase 5: Observability UX                    | ✅ Complete (2026-07-20) | `utils/logging.py`, `main.py`            |
-| — Phase 6: Installer Intelligence              | ✅ Complete (2026-07-21) | `netalertx/installer_diagnostics.py`     |
-| — Phase 7: Evidence Capture & HITL Display     | ✅ Complete (2026-07-21) | `utils/llm_trace.py`, `web/dashboard.py` |
-| — Phase 8: NetAlertX Compatibility Maintenance | ✅ Complete (2026-07-21) | `netalertx/detector.py`                  |
-| 4.5. HA Resource Stewardship                   | ❌ Not started           | `ha_agent_advanced.py`, `web/dashboard.py` |
-| 4.6. HA Update Manager                         | ❌ Not started           | `ha_agent_update.py`, `utils/ha_rest_client.py` |
-| 4.7. HA Notification Intelligence              | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py` |
-| 5. Agent quality & evaluation                  | ❌ Not started           | `evals/`                                 |
-| 6. Tool-calling agent loop                     | ❌ Not started           | `utils/agent_loop.py`                    |
-| 7. HITL cloud escalation                       | ❌ Not started           | `utils/cloud_client.py`                  |
-| 8. Repair episode recording                    | ❌ Not started           | `ha_agent_advanced.py`                   |
-| 9. Federated case library                      | ❌ Not started           | `rag/`                                   |
-| 10. Self-improving code proposals *(stretch)*  | ❌ Not started           | —                                        |
-| — Phase 11: Resource Stewardship               | ❌ Not started           | items 29–32                              |
-| — Phase 10: HA Update Manager                  | ❌ Not started           | items 62–66                              |
-| — Phase 10.5: HA Notification Intelligence     | ❌ Not started           | items 67–70                              |
-| — Phase 12: Evals                              | ❌ Not started           | items 33–34                              |
-| — Phase 13: Tool-Calling Agent Loop            | ❌ Not started           | items 35–41                              |
-| — Phase 14: RAG Knowledge Layer                | ❌ Not started           | items 42–45                              |
-| — Phase 15: HITL Cloud Escalation              | ❌ Not started           | items 46–49                              |
-| — Phase 16: Repair Episode Recording           | ❌ Not started           | items 50–52                              |
-| — Phase 17: Federated Case Library             | ❌ Not started           | items 53–55                              |
-| — Phase 18: Code Proposals *(stretch)*         | ❌ Not started           | items 56–61                              |
+Strategic capabilities in delivery order.
+
+| Milestone                                     | Status                  | Code Location                              |
+| --------------------------------------------- | ----------------------- | ------------------------------------------ |
+| 1. Read-only ingestion & diagnostics          | ✅ Complete              | `ha_agent_core.py`                         |
+| 2. Local RAG & knowledge ingestion            | ❌ Not started           | `rag/`                                     |
+| 3. Safe execution / shadow mode               | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
+| 4. Closed-loop autonomous healing             | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
+| 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
+| 4.6. HA Update Manager                        | ❌ Not started           | `utils/ha_rest_client.py`                  |
+| 4.7. HA Notification Intelligence             | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py`|
+| 5. Agent quality & evaluation                 | ❌ Not started           | `evals/`                                   |
+| 6. Tool-calling agent loop                    | ❌ Not started           | `utils/agent_loop.py`                      |
+| 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
+| 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
+| 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
+| 10. Self-improving code proposals *(stretch)* | ❌ Not started           | —                                          |
+
+### Implementation Phases
+
+Tactical delivery batches in execution order. See `docs/implementation-plan.md` for item-level detail.
+
+| Phase                                              | Status                  | Items  |
+| -------------------------------------------------- | ----------------------- | ------ |
+| Phase 1–3: Foundation, Observability, Architecture | ✅ Complete (2026-07-15) | 1–9    |
+| Phase 3.5: Autonomy Control                        | ✅ Complete (2026-07-19) | 9.5    |
+| Phase 4: NetAlertX Integration                     | ✅ Complete (2026-07-20) | 10–19  |
+| Phase 4.5: HITL Web Dashboard                      | ✅ Complete (2026-07-20) | 19.5   |
+| Phase 5: Observability UX                          | ✅ Complete (2026-07-20) | 20     |
+| Phase 6: Installer Intelligence                    | ✅ Complete (2026-07-21) | 21–22  |
+| Phase 7: Evidence Capture & HITL Display           | ✅ Complete (2026-07-21) | 23–24  |
+| Phase 8: NetAlertX Compatibility Maintenance       | ✅ Complete (2026-07-21) | 25     |
+| Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27     |
+| Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
+| Phase 12: HA Update Manager                        | ❌ Not started           | 33–37  |
+| Phase 13: HA Notification Intelligence             | ❌ Not started           | 38–41  |
+| Phase 14: Evals                                    | ❌ Not started           | 42–43  |
+| Phase 15: Tool-Calling Agent Loop                  | ❌ Not started           | 44–50  |
+| Phase 16: RAG Knowledge Layer                      | ❌ Not started           | 51–54  |
+| Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
+| Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |
+| Phase 19: Federated Case Library                   | ❌ Not started           | 62–64  |
+| Phase 20: Code Proposals *(stretch)*               | ❌ Not started           | 65–70  |
 
 ---
 
 ## Remaining Work
 
-**Execution order:** 4.5 → 4.6 → 4.7 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` Phase 10–18 for item-level detail.
-
----
-
-### Milestone 4.5 — HA Resource Stewardship
-
-**Objective:** Keep the HA Yellow's disk from filling up, which would cause `ha backups new` to fail and break the entire pipeline. Monitor disk and memory continuously; offload backup files to Pueo's machine after each backup; enforce a retention policy that keeps HA clean.
-
-**Why here first:** This protects the safety invariant. Every other milestone depends on backups succeeding. It builds only on existing SSH + SQLite infrastructure — no new architecture needed.
-
-**Tasks:**
-- Poll `ha host info` via SSH on a configurable interval; extract disk and memory; surface HITL alerts when thresholds are crossed; block backup trigger when disk < CRITICAL
-- Extend `backup_registry` with `size_bytes`, `location` (`ha`/`pueo`/`both`), `offloaded_at`, `deleted_from_ha_at`
-- After each confirmed backup slug: SFTP-pull the `.tar` to `BACKUP_LOCAL_DIR`; SHA-256 verify; update inventory
-- Retention policy: keep `BACKUP_RETAIN_ON_HA` (default 2) most-recent on HA; purge local copies older than `BACKUP_RETAIN_LOCAL_DAYS` (default 30 days); never delete from HA without confirmed local copy
-- `--mode backup-status` inventory table; dashboard backup tab
-
-**Validation gate:** HA backup count stays ≤ 2; every backup has a local Pueo copy; HITL alert fires when disk drops below warning threshold in a test scenario.
-
-Full spec: [plan/resource-stewardship.md](plan/resource-stewardship.md)
+**Execution order:** 4.6 → 4.7 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
 
 ---
 

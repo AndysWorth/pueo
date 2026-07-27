@@ -1,6 +1,6 @@
 # HA Notification Intelligence
 
-Part of the [Roadmap](../roadmap.md) · Phase 10.5.
+Part of the [Roadmap](../roadmap.md) · Phase 13.
 
 ---
 
@@ -12,7 +12,7 @@ Home Assistant surfaces security events, integration failures, and system state 
 
 ### Architecture notes
 
-**How HA persistent notifications work.** HA creates a state entity for each notification with `entity_id = f"persistent_notification.{notification_id}"`. State value is `"notifying"`. Attributes include `message`, `title`, and `notification_id`. These entities are accessible via `GET /api/states` — no WebSocket required. The `HARestClient` introduced in item 62 handles this polling.
+**How HA persistent notifications work.** HA creates a state entity for each notification with `entity_id = f"persistent_notification.{notification_id}"`. State value is `"notifying"`. Attributes include `message`, `title`, and `notification_id`. These entities are accessible via `GET /api/states` — no WebSocket required. The `HARestClient` introduced in item 33 handles this polling.
 
 **Known notification IDs.** The only system `notification_id` values documented by HA are:
 - `http_login` — invalid authentication / failed login attempt
@@ -20,7 +20,7 @@ Home Assistant surfaces security events, integration failures, and system state 
 
 All other notifications use integration-specific or user-defined IDs. Unknown IDs are handled generically.
 
-**Notification vs update entities.** HA 2022.4+ surfaces update availability as `update.*` entities (item 62), not persistent notifications. This phase handles `persistent_notification.*` entities only.
+**Notification vs update entities.** HA 2022.4+ surfaces update availability as `update.*` entities (item 33), not persistent notifications. This phase handles `persistent_notification.*` entities only.
 
 **Dismissal.** `POST /api/services/persistent_notification/dismiss` with body `{ "notification_id": "<id>" }` clears the notification from the HA UI. Pueo only dismisses after explicit HITL approval — never automatically.
 
@@ -35,7 +35,7 @@ All three are best-effort; enrichment failure does not block the HITL card.
 
 ---
 
-### Feature 1 — Notification Polling + Triage (item 67)
+### Feature 1 — Notification Polling + Triage (item 38)
 
 **Polling.** A new periodic co-routine in the monitor loop polls `GET /api/states` for entities prefixed `persistent_notification.` every `HA_NOTIFICATION_POLL_INTERVAL_MINUTES`. Compares against `notification_history` to find newly appeared notifications.
 
@@ -65,7 +65,7 @@ class NotificationAnalysis(BaseModel):
 |---|---|---|
 | `http_login` | `security` | `HIGH` |
 | `invalid_config` | `config_error` | `HIGH` |
-| Matches `update.*` | routed to item 62 | — |
+| Matches `update.*` | routed to item 33 | — |
 | Anything else | `other` | `MEDIUM` |
 
 **New SQLite table `notification_history`:**
@@ -84,7 +84,7 @@ CREATE TABLE notification_history (
 
 ---
 
-### Feature 2 — Notification Enrichment (item 68)
+### Feature 2 — Notification Enrichment (item 39)
 
 **`http_login` — failed authentication enrichment.** Extract source IP from message using the pattern `r"from (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"`. Then:
 
@@ -113,7 +113,7 @@ Enriched context example:
 
 ---
 
-### Feature 3 — HITL Notification Cards + Dismissal (item 69)
+### Feature 3 — HITL Notification Cards + Dismissal (item 40)
 
 **One HITL card per notification.** The card shows:
 - Notification title and original message
@@ -131,7 +131,7 @@ Enriched context example:
 
 ---
 
-### Feature 4 — Notification History in Dashboard (item 70)
+### Feature 4 — Notification History in Dashboard (item 41)
 
 New **Notifications** tab in the HITL web dashboard (`web/dashboard.py`).
 

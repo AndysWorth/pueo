@@ -1,6 +1,6 @@
 # HA Resource Stewardship
 
-Part of the [Roadmap](../roadmap.md) · Milestone 4.5.
+Part of the [Roadmap](../roadmap.md) · Milestone 4.5. **✅ Complete (2026-07-27) — PRs #61, #62, #63, #65**
 
 ---
 
@@ -89,6 +89,26 @@ After `execute_remote_backup()` confirms a slug, SFTP-pull the `.tar` file to Pu
 - Dashboard: backup inventory tab (slug list, size, HA ✓/✗, Pueo ✓/✗, age)
 
 ---
+
+### Implementation notes (item 29, 2026-07-24) — PR #61
+
+- `poll_disk_and_memory(ssh_client)` in `ha_agent_advanced.py`: runs `ha host info --raw-json` over SSH; extracts `disk_free` (float GB) and computes `mem_available_mb` from `/proc/meminfo MemAvailable`
+- `DiskCriticalError` exception raised by `execute_remote_backup()` when `disk_free < HA_DISK_CRITICAL_GB`; polling loop surfaces HITL dashboard cards for WARN thresholds
+- Config keys added: `RESOURCE_POLL_INTERVAL_SECONDS` (300), `HA_DISK_WARN_GB` (5), `HA_DISK_CRITICAL_GB` (2), `HA_MEM_WARN_MB` (256)
+- Verified `ha host info` field names on live HAOS 18.1: `disk_free`, `disk_total`, `disk_used` (float GB); memory from `/proc/meminfo` (no memory fields in `ha host info`)
+
+### Implementation notes (item 30, 2026-07-24) — PR #62
+
+- SQLite migration v5: adds `size_bytes INTEGER`, `location TEXT` (`'ha'`/`'pueo'`/`'both'`), `offloaded_at REAL`, `deleted_from_ha_at REAL` columns to `backup_registry`
+- `reconcile_backup_inventory(ssh_client)` on startup: calls `ha backups list --raw-json`; marks slugs present on HA but missing from SQLite as `location='ha'`; logs orphan warning for SQLite-only slugs
+- Confirmed backup list command: `ha backups list --raw-json` (NOT `ha backup list`)
+
+### Implementation notes (item 31, 2026-07-24) — PR #63
+
+- `offload_backup_to_local(slug, ssh_client)` in `ha_agent_advanced.py`: SFTP-pulls `/backup/<slug>.tar` to `BACKUP_LOCAL_DIR/<slug>.tar`; computes SHA-256 of transferred file and re-reads remote to verify; updates `location='both'` on success
+- Config keys added: `BACKUP_OFFLOAD_ENABLED` (true), `BACKUP_LOCAL_DIR` (`./backups/`)
+- Transfer failure logs a warning and leaves `location='ha'`; does not abort the repair cycle
+- `backups/` directory added to `.gitignore`
 
 ### Implementation notes (item 32, 2026-07-27)
 

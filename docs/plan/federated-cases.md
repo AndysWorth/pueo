@@ -22,7 +22,7 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 | Role | Description |
 |------|-------------|
 | Contribute | Submit local episodes via a PR to `pueo-cases`; user reviews the redacted YAML before submitting |
-| Consume | Weekly pull of merged cases → embed → upsert into `community_cases` ChromaDB collection (created in Phase 14 but empty until now) |
+| Consume | Weekly pull of merged cases → embed → upsert into `community_cases` ChromaDB collection (created in Phase 16 but empty until now) |
 
 ---
 
@@ -30,9 +30,9 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 
 | Item | Description |
 |------|-------------|
-| 53 | Case submission: dashboard "Prepare for submission" flow — review anonymized YAML, edit redactions, `gh pr create` to `pueo-cases` |
-| 54 | Case ingest: weekly pull of merged YAML from `pueo-cases` → embed with `nomic-embed-text` → upsert into `community_cases` ChromaDB collection |
-| 55 | Eval scenario generation: each newly ingested case produces a `.yaml` scenario file in `evals/scenarios/community/`; `run_evals.py` picks them up automatically |
+| 62 | Case submission: dashboard "Prepare for submission" flow — review anonymized YAML, edit redactions, `gh pr create` to `pueo-cases` |
+| 63 | Case ingest: weekly pull of merged YAML from `pueo-cases` → embed with `nomic-embed-text` → upsert into `community_cases` ChromaDB collection |
+| 64 | Eval scenario generation: each newly ingested case produces a `.yaml` scenario file in `evals/scenarios/community/`; `run_evals.py` picks them up automatically |
 
 ---
 
@@ -48,7 +48,7 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 
 ### Ingest Flow (item 54)
 
-- Weekly `launchd` job: `python main.py --mode refresh-knowledge` (extends existing RAG refresh from Phase 14)
+- Weekly `launchd` job: `python main.py --mode refresh-knowledge` (extends existing RAG refresh from Phase 16)
 - Pull merged PRs from `pueo-cases` since last ingest timestamp
 - Parse each YAML → embed → upsert into `community_cases` with metadata: `source_pr`, `ingest_date`, `trigger_type`
 - Log ingest count; surface in `--mode backup-status` style summary

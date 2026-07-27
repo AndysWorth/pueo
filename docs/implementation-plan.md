@@ -2,7 +2,15 @@
 
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
+## Hierarchy
+
+- **Milestone** (`docs/roadmap.md`) — strategic capability; numbered by capability order (M1–M10 with sub-milestones 4.5/4.6/4.7). Describes *what* is being built and *why*.
+- **Phase** — delivery batch of 2–7 items, typically 1–3 sessions. Numbered in **execution order** (not milestone order). Each phase has a body section below and a linked detail file.
+- **Item** — atomic PR-sized work unit; numbered sequentially 1–N; the tracking primitive (☐ TODO → ✅ Done in the Status table).
+
+Plan detail files use a **Phase Deliverables** table (item number + one-line description) to link items to spec text. Do not introduce new "Feature N" labels — reference items by number.
+
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
@@ -44,6 +52,44 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 30   | Backup Inventory Tracking                                            | ✅ Done (2026-07-24) |
 | 31   | Backup Offloading                                                    | ✅ Done (2026-07-24) |
 | 32   | Retention Policy & Cleanup                                           | ✅ Done (2026-07-27) |
+| 33   | HARestClient + HARestClientProtocol; update entity polling; --mode update-check | ☐ TODO |
+| 34   | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema | ☐ TODO |
+| 35   | HITL update approval card: per-component, advisory breaking-changes section | ☐ TODO |
+| 36   | Safe update execution (Core, OS, add-ons) + post-update validation   | ☐ TODO |
+| 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ☐ TODO |
+| 38   | Notification polling (persistent_notification.*); NotificationAnalysis schema; notification_history table | ☐ TODO |
+| 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ☐ TODO |
+| 40   | HITL notification cards + dismissal service call; --mode notifications | ☐ TODO |
+| 41   | Notifications tab in HITL dashboard: pending, history, filters       | ☐ TODO |
+| 42   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ☐ TODO |
+| 43   | Evals — /project:run-evals slash command + optional CI job           | ☐ TODO |
+| 44   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ☐ TODO |
+| 45   | Tool execution: read_config, read_logs, run_ha_command, read_file, query_netalertx, apply_fix, verify_fix, finish_repair | ☐ TODO |
+| 46   | AgentLoop controller: budget accounting, tool dispatch, termination detection | ☐ TODO |
+| 47   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
+| 48   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
+| 49   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ☐ TODO |
+| 50   | Eval regression check against Phase 14 baseline                      | ☐ TODO |
+| 51   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
+| 52   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
+| 53   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
+| 54   | Weekly refresh via macOS launchd plist; vector store maintenance     | ☐ TODO |
+| 55   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
+| 56   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
+| 57   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
+| 58   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
+| 59   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
+| 60   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
+| 61   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
+| 62   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
+| 63   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
+| 64   | Eval scenario generation from each ingested community case           | ☐ TODO |
+| 65   | read_source + propose_patch tools; diff generation prompt engineering | ☐ TODO |
+| 66   | sandbox_code tool: subprocess sandbox, no-network isolation, pytest runner, lint gate | ☐ TODO |
+| 67   | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject | ☐ TODO |
+| 68   | open_pr tool: gh pr create integration, PR body template             | ☐ TODO |
+| 69   | Security review: sandbox escape vectors, allowlist, safety-critical file block list | ☐ TODO |
+| 70   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
 
 ---
 
@@ -81,14 +127,14 @@ Items 10–19. Full lifecycle for a new integration target: install from scratch
 
 ---
 
-### Phase 4.5 — HITL UX (1 session) ✅ Complete
+### Phase 4.5 — HITL UX (1 session) ✅ Complete (2026-07-20)
 Item 19.5. Eliminates the 60-minute blocking timeout from `AutonomyGate.require_approval()`, converts monitoring loops to fire healing as `asyncio.create_task()`, and adds a local FastAPI web dashboard (`python main.py --mode dashboard`) for approving or rejecting pending repair actions via browser. Adds `fastapi`, `jinja2`, and `uvicorn` dependencies.
 
 → [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
 
 ---
 
-### Phase 5 — Observability UX (1 session)
+### Phase 5 — Observability UX (1 session) ✅ Complete (2026-07-20)
 Item 20. Wires up `setup_logging()` centrally in `main.py` so all modes emit log output, and adds a human-readable plain-text console formatter used by `--mode netalertx-setup`. Currently the installer emits rich structured events at every step but they are silently dropped because no handlers are attached. The file handler always stays JSON; the stderr handler switches to plain text for the setup wizard.
 
 → [plan/status-logging.md](plan/status-logging.md)
@@ -97,7 +143,7 @@ Item 20. Wires up `setup_logging()` centrally in `main.py` so all modes emit log
 
 ---
 
-### Phase 6 — Installer Intelligence (2 sessions)
+### Phase 6 — Installer Intelligence (2 sessions) ✅ Complete (2026-07-21)
 Items 21–22. Fixes three CLI command bugs found during documentation review (2026-07-21), removes
 the NetAlertX enabled/disabled toggle (NetAlertX is always-on), corrects the add-on repository URL,
 and adds evidence-first LLM diagnosis to installer failure paths so Pueo can explain what went wrong
@@ -107,7 +153,7 @@ and attempt an automated fix rather than silently aborting.
 
 ---
 
-### Phase 7 — Evidence Capture and HITL Display (2 sessions)
+### Phase 7 — Evidence Capture and HITL Display (2 sessions) ✅ Complete (2026-07-21)
 Items 23–24. When Pueo can't fix a problem, all gathered evidence (log snapshots, SSH command output, raw YAML), the structured diagnosis, and the full LLM prompt/response are currently discarded after use. This phase captures them and surfaces them in the web dashboard HITL cards so the user doesn't have to re-gather evidence manually.
 
 | Items | Concern |
@@ -119,7 +165,7 @@ Items 23–24. When Pueo can't fix a problem, all gathered evidence (log snapsho
 
 ---
 
-### Phase 8 — NetAlertX Compatibility Maintenance (1 session)
+### Phase 8 — NetAlertX Compatibility Maintenance (1 session) ✅ Complete (2026-07-21)
 Item 25. The NetAlertX old REST API (`/API_OLD` endpoints) is slated for removal in the next NetAlertX release (flagged since v26.5.4, imminent as of v26.7.1). Although the current Pueo codebase already uses the new API endpoints (`/devices`, `/events`, `/health`, `/settings/<key>`, `/graphql`, `/metrics`, `/nettools/trigger-scan`), this item locks in the migration and adds a version-check guard so Pueo warns at startup if a NetAlertX version is detected that removes expected endpoints.
 
 **Scope:** `netalertx/api_client.py` (remove any old-API fallback paths if present), `netalertx/detector.py` (add minimum-version check against `GET /settings/VERSION`), `tests/test_core.py` (new `TestNetAlertXVersionGuard` class).
@@ -128,7 +174,7 @@ Item 25. The NetAlertX old REST API (`/API_OLD` endpoints) is slated for removal
 
 ---
 
-### Phase 9 — NetAlertX One-Shot Diagnosis (1 session)
+### Phase 9 — NetAlertX One-Shot Diagnosis (1 session) ✅ Complete (2026-07-22)
 Item 27. Adds `--mode netalertx-diagnose`: a single proactive pass that checks the current
 state of NetAlertX and the HA integration, synthesises an AI diagnosis, and optionally
 triggers healing. Fills the gap between the reactive `--mode netalertx` daemon and having no
@@ -138,6 +184,8 @@ config validator, healer); this item wires them together behind a new CLI entry 
 → [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
 
 ---
+
+> **Note:** Phase 10 is intentionally retired (gap between Phase 9 and Phase 11 is permanent).
 
 ### Phase 11 — Resource Stewardship (4 items) ✅ Complete (2026-07-27)
 Items 28–32. Protects the backup-before-write safety invariant by keeping HA disk free.
@@ -151,6 +199,134 @@ Items 28–32. Protects the backup-before-write safety invariant by keeping HA d
 | 32 | Retention policy (`enforce_ha_retention`, `purge_local_backups`, `--mode backup-status`, dashboard `/backups` tab) |
 
 → [plan/resource-stewardship.md](plan/resource-stewardship.md)
+
+---
+
+---
+
+### Phase 12 — HA Update Manager (5 items)
+Items 33–37. Detects available Core, OS, and add-on updates via `update.*` REST entities; evaluates each update for breaking changes using local LLM analysis of cached release notes; executes updates with the backup invariant intact; validates Pueo's own command catalog survives a Core update. Prerequisite: Phase 11 complete (`execute_remote_backup()` blocks on `DiskCriticalError`).
+
+| Items | Concern |
+|-------|---------|
+| 33 | HARestClient + update entity polling + --mode update-check |
+| 34 | Breaking change analysis: release notes fetch + cache + UpdateReadinessReport |
+| 35 | HITL update approval card (CRITICAL for Core/OS; MEDIUM for add-ons) |
+| 36 | Safe update execution (Core, OS, add-ons) + post-update log triage |
+| 37 | Pueo self-check after Core update: command catalog smoke-test + LLM cross-reference |
+
+→ [plan/ha-update-manager.md](plan/ha-update-manager.md)
+
+---
+
+### Phase 13 — HA Notification Intelligence (4 items)
+Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`) as enriched HITL cards with plain-English explanations, IP device enrichment, and recommended actions. Uses `HARestClient` from item 33. `http_login` notifications enriched via reverse DNS + NetAlertX + HA device registry; unknown-source logins escalated to CRITICAL.
+
+| Items | Concern |
+|-------|---------|
+| 38 | Notification polling + NotificationAnalysis schema + notification_history table |
+| 39 | Notification enrichment: reverse DNS, NetAlertX, HA device registry via HAWebSocketClient |
+| 40 | HITL notification cards + dismissal + --mode notifications |
+| 41 | Notifications tab in HITL dashboard: pending, history, filters |
+
+→ [plan/ha-notifications.md](plan/ha-notifications.md)
+
+---
+
+### Phase 14 — Evals (2 items)
+Items 42–43. Makes regressions visible: unit tests verify code correctness, evals verify agent intelligence. Synthetic YAML scenario library run through the real Ollama pipeline; scored and baselined in git.
+
+| Items | Concern |
+|-------|---------|
+| 42 | Scenario library (≥10 YAML files) + run_evals.py + baseline.json scoring |
+| 43 | /project:run-evals slash command + optional gated CI job |
+
+→ [plan/evals.md](plan/evals.md)
+
+---
+
+### Phase 15 — Tool-Calling Agent Loop (7 items)
+Items 44–50. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Requires Phase 14 baseline to validate no regression.
+
+| Items | Concern |
+|-------|---------|
+| 44–45 | Tool registry Pydantic schemas + execution implementations |
+| 46 | AgentLoop controller |
+| 47–48 | HA sandbox engine + NetAlertX healer refactors |
+| 49 | Safety audit |
+| 50 | Eval regression check |
+
+→ [plan/tool-loop.md](plan/tool-loop.md)
+
+---
+
+### Phase 16 — RAG Knowledge Layer (4 items)
+Items 51–54. Keeps the agent knowledgeable about HA breaking changes without WAN calls during fix cycles. ChromaDB + `nomic-embed-text` via Ollama; weekly scrapers for HA release notes and HACS changelogs; `query_knowledge` tool registered in the loop (slot reserved from item 44). Requires Phase 15 complete.
+
+| Items | Concern |
+|-------|---------|
+| 51 | ChromaDB setup + embedding client wrapper |
+| 52 | HA release notes scraper |
+| 53 | HACS changelog scraper + query_knowledge tool |
+| 54 | Weekly launchd refresh + vector store maintenance |
+
+→ [plan/rag-tool.md](plan/rag-tool.md)
+
+---
+
+### Phase 17 — HITL Cloud Escalation (4 items)
+Items 55–58. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+
+| Items | Concern |
+|-------|---------|
+| 55 | ClaudeAPIClient + tool adapter |
+| 56 | Escalation HITL card |
+| 57 | Cloud response pipeline via shared tool execution layer |
+| 58 | Billing guard + cloud_spend SQLite table |
+
+→ [plan/cloud-escalation.md](plan/cloud-escalation.md)
+
+---
+
+### Phase 18 — Repair Episode Recording (3 items)
+Items 59–61. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 19 (Federated Case Library).
+
+| Items | Concern |
+|-------|---------|
+| 59 | repair_episodes migration + RepairEpisode dataclass |
+| 60 | Serialization hook at finish_repair in AgentLoop |
+| 61 | --mode export-episodes CLI + episodes dashboard tab |
+
+→ [plan/repair-episodes.md](plan/repair-episodes.md)
+
+---
+
+### Phase 19 — Federated Case Library (3 items)
+Items 62–64. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 14 eval loop.
+
+| Items | Concern |
+|-------|---------|
+| 62 | Case submission flow (dashboard → gh pr create) |
+| 63 | Case ingest (weekly pull → embed → community_cases ChromaDB) |
+| 64 | Eval scenario generation from ingested cases |
+
+→ [plan/federated-cases.md](plan/federated-cases.md)
+
+---
+
+### Phase 20 — Self-Improving Code Proposals *(stretch goal, 6 items)*
+Items 65–70. When Pueo identifies a capability gap, it proposes a Python diff, validates it in a sandboxed temp directory against CI, and surfaces a HITL card to open a PR. Approved changes become reusable tools. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are block-listed from diffs. Requires Milestones 7 and 9 complete.
+
+| Items | Concern |
+|-------|---------|
+| 65 | read_source + propose_patch tools |
+| 66 | sandbox_code tool: subprocess sandbox, no-network, pytest runner |
+| 67 | Code proposal HITL card: diff viewer, test output, approve/reject |
+| 68 | open_pr tool |
+| 69 | Security review: sandbox escape vectors + block list |
+| 70 | ADR 007 |
+
+→ [plan/code-proposals.md](plan/code-proposals.md)
 
 ---
 

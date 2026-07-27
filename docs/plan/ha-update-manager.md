@@ -1,6 +1,6 @@
 # HA Update Manager
 
-Part of the [Roadmap](../roadmap.md) · Phase 10.
+Part of the [Roadmap](../roadmap.md) · Phase 12.
 
 ---
 
@@ -20,7 +20,7 @@ Pueo is also self-exposed: the SSH CLI commands it runs (`ha core check`, `ha ap
 
 **Add-on updates via Supervisor HTTP API.** There is no `ha apps update` CLI command. Add-on updates use `POST http://supervisor/store/addons/<slug>/update` with `Authorization: Bearer $SUPERVISOR_TOKEN` — the same curl-over-SSH pattern used in `installer.py` step 8.
 
-**No dry-run.** `ha core update` has no `--check` or `--dry-run` flag. Pre-update safety comes entirely from the breaking-change analysis (item 63) and HITL approval (item 64). The `--backup` flag on `ha core update` is intentionally NOT used because Pueo's safety invariant already triggers `execute_remote_backup()` before issuing the update command — two consecutive backups would waste disk.
+**No dry-run.** `ha core update` has no `--check` or `--dry-run` flag. Pre-update safety comes entirely from the breaking-change analysis (item 34) and HITL approval (item 35). The `--backup` flag on `ha core update` is intentionally NOT used because Pueo's safety invariant already triggers `execute_remote_backup()` before issuing the update command — two consecutive backups would waste disk.
 
 **Update entity naming.** HA 2022.4+ surfaces updates as `update.*` entities:
 - `update.home_assistant_core_update`
@@ -34,7 +34,7 @@ Entity state is `"on"` (update available) or `"off"` (up to date). Attributes: `
 
 ---
 
-### Feature 1 — `HARestClient` + Update Entity Polling (item 62)
+### Feature 1 — `HARestClient` + Update Entity Polling (item 33)
 
 New `utils/ha_rest_client.py` with `HARestClient`. New protocol `HARestClientProtocol` in `interfaces.py`.
 
@@ -68,13 +68,13 @@ class UpdateStatus:
     in_progress: bool
 ```
 
-**`--mode update-check`** — one-shot: prints a table of all components and their update status, runs the breaking-change analysis (item 63) for any Core update available, and exits. Does not modify anything.
+**`--mode update-check`** — one-shot: prints a table of all components and their update status, runs the breaking-change analysis (item 34) for any Core update available, and exits. Does not modify anything.
 
 **Monitor loop integration** (in `ha_log_monitor.py`) — a periodic `asyncio.create_task()` alongside the existing log-tail loop. Every `HA_UPDATE_CHECK_INTERVAL_HOURS`, call `get_update_status()`; if any `update_available = true`, send a HITL notification and set an in-memory flag so the notification is not repeated until the update entity clears.
 
 ---
 
-### Feature 2 — Breaking Change Analysis (item 63)
+### Feature 2 — Breaking Change Analysis (item 34)
 
 LLM analysis of release notes against the current installation. Advisory only — never a hard gate.
 
@@ -97,7 +97,7 @@ class UpdateReadinessReport(BaseModel):
 - Release notes plaintext (truncated to remaining token budget)
 - Pueo's SSH command catalog as a fixed list in the prompt
 
-**Output:** `UpdateReadinessReport` is attached to the HITL update card (item 64) and printed by `--mode update-check`.
+**Output:** `UpdateReadinessReport` is attached to the HITL update card (item 35) and printed by `--mode update-check`.
 
 **New config key:**
 
@@ -107,7 +107,7 @@ class UpdateReadinessReport(BaseModel):
 
 ---
 
-### Feature 3 — HITL Update Approval Card (item 64)
+### Feature 3 — HITL Update Approval Card (item 35)
 
 Always CRITICAL risk for Core and OS updates regardless of autonomy level. Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4.
 
@@ -129,9 +129,9 @@ Always CRITICAL risk for Core and OS updates regardless of autonomy level. Add-o
 
 ---
 
-### Feature 4 — Safe Update Execution + Post-Update Validation (item 65)
+### Feature 4 — Safe Update Execution + Post-Update Validation (item 36)
 
-Only runs after explicit HITL approval from item 64.
+Only runs after explicit HITL approval from item 35.
 
 **Execution sequence:**
 
@@ -140,7 +140,7 @@ Only runs after explicit HITL approval from item 64.
 3. Poll `ha core info --raw-json` every 15 seconds until `version == latest_version` and `update_available == false`, or 8-minute timeout
 4. If timeout: surface HITL alert "Update may still be in progress — check HA UI" — do NOT attempt rollback (HA Supervisor manages its own rollback state)
 5. On success: run `ha core check`, fetch 100 log lines, LLM triage (`LogEvaluation`)
-6. Post-update HITL card: update complete, config valid/invalid, log triage summary, Pueo self-check results (item 66)
+6. Post-update HITL card: update complete, config valid/invalid, log triage summary, Pueo self-check results (item 37)
 
 **OS update.** Same sequence using `ha os update --no-progress`. OS updates typically require a reboot; poll for HA to come back online (TCP connect to `HA_HOST:8123`) rather than polling `ha os info`.
 
@@ -154,7 +154,7 @@ Poll `ha apps info <slug>` until `state: started` with the new version, or 3-min
 
 ---
 
-### Feature 5 — Pueo Self-Check After Core Update (item 66)
+### Feature 5 — Pueo Self-Check After Core Update (item 37)
 
 After a Core update completes, Pueo verifies its own integration is intact before declaring success.
 

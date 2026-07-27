@@ -1,6 +1,6 @@
 # RAG Knowledge Layer
 
-Part of the [Roadmap](../roadmap.md) · Milestone 2 (redesigned as Phase 14).
+Part of the [Roadmap](../roadmap.md) · Milestone 2 (redesigned as Phase 16).
 
 ---
 
@@ -12,9 +12,9 @@ The agent's knowledge of HA breaking changes, HACS integration deprecations, and
 
 ### Design (updated from original roadmap spec)
 
-Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt. Redesigned as a `query_knowledge` tool registered in the tool-calling loop (Milestone 6 / Phase 13), so the agent queries for relevant context only when it judges it useful. This avoids wasting tokens on irrelevant retrieved chunks and composes naturally with the loop architecture.
+Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt. Redesigned as a `query_knowledge` tool registered in the tool-calling loop (Milestone 6 / Phase 15), so the agent queries for relevant context only when it judges it useful. This avoids wasting tokens on irrelevant retrieved chunks and composes naturally with the loop architecture.
 
-**Prerequisite:** Phase 13 (tool registry) must be complete. The `query_knowledge` slot is reserved in the registry from item 35; implementation arrives here.
+**Prerequisite:** Phase 15 (tool registry) must be complete. The `query_knowledge` slot is reserved in the registry from item 44; implementation arrives here.
 
 ---
 
@@ -30,7 +30,7 @@ Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt.
 |------------|--------|---------|
 | `ha_release_notes` | HA core release pages (breaking changes sections) | Weekly |
 | `hacs_changelogs` | HACS component changelogs for installed integrations | Weekly |
-| `community_cases` | Merged anonymized repair episodes from the Federated Case Library | Weekly (populated by Milestone 9 / Phase 17; collection exists but empty until then) |
+| `community_cases` | Merged anonymized repair episodes from the Federated Case Library | Weekly (populated by Milestone 9 / Phase 19; collection exists but empty until then) |
 
 **Tool (implements reserved slot from item 35):**
 
@@ -54,10 +54,10 @@ Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt.
 
 | Item | Description |
 |------|-------------|
-| 42 | ChromaDB setup + `nomic-embed-text` embedding via Ollama; collection schema and client wrapper |
-| 43 | HA release notes scraper: fetch release pages, parse breaking-changes sections, chunk, embed, upsert |
-| 44 | HACS changelog scraper; `query_knowledge` tool implementation registered in tool registry |
-| 45 | Weekly refresh via macOS `launchd` plist; vector store maintenance (prune stale chunks) |
+| 51 | ChromaDB setup + `nomic-embed-text` embedding via Ollama; collection schema and client wrapper |
+| 52 | HA release notes scraper: fetch release pages, parse breaking-changes sections, chunk, embed, upsert |
+| 53 | HACS changelog scraper; `query_knowledge` tool implementation registered in tool registry |
+| 54 | Weekly refresh via macOS `launchd` plist; vector store maintenance (prune stale chunks) |
 
 ---
 
@@ -67,4 +67,4 @@ Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt.
 - `query_knowledge` tool is registered and tested with a fake ChromaDB client; no real ChromaDB in unit suite
 - Both scrapers run end-to-end and upsert chunks to their collections
 - Weekly `launchd` job fires correctly on schedule
-- `community_cases` collection exists and is queryable (empty until Phase 17 delivers cases)
+- `community_cases` collection exists and is queryable (empty until Phase 19 delivers cases)

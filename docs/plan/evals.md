@@ -17,4 +17,15 @@ Part of the [Roadmap](../roadmap.md) · Milestone 5.
 
 **Add to CI (optional):** A separate workflow job that runs evals against Ollama if available, gated so it does not block PR merges.
 
+---
+
+### Phase Deliverables
+
+| Item | Description |
+|------|-------------|
+| 42 | `evals/scenarios/` with ≥10 YAML scenario files; `evals/run_evals.py` scoring pipeline; `evals/baseline.json` saved on first run and compared on subsequent runs |
+| 43 | `/project:run-evals` slash command (`.claude/commands/run-evals.md`); optional gated CI workflow job |
+
+---
+
 **Done when:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
