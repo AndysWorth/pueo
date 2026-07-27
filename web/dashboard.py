@@ -39,7 +39,7 @@ class HITLRequest(BaseModel):
     @field_validator("status")
     @classmethod
     def _status_must_be_known(cls, v: str) -> str:
-        if v not in {"PENDING", "APPROVED", "REJECTED"}:
+        if v not in {"PENDING", "APPROVED", "REJECTED", "DEFERRED"}:
             raise ValueError(f"unknown status: {v}")
         return v
 
@@ -47,6 +47,8 @@ class HITLRequest(BaseModel):
 def _status(nid: str, watch_dir: Path) -> str:
     if (watch_dir / f"{nid}.approved").exists():
         return "APPROVED"
+    if (watch_dir / f"{nid}.deferred").exists():
+        return "DEFERRED"
     if (watch_dir / f"{nid}.rejected").exists():
         return "REJECTED"
     return "PENDING"
@@ -113,6 +115,17 @@ async def reject(nid: str) -> RedirectResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        (watch_dir / f"{nid}.rejected").touch()
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/defer/{nid}")
+async def defer(nid: str) -> RedirectResponse:
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        (watch_dir / f"{nid}.deferred").touch()
+        # Write .rejected so wait_for_approval() unblocks with False
         (watch_dir / f"{nid}.rejected").touch()
     return RedirectResponse(url="/", status_code=303)
 

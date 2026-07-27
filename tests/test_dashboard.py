@@ -1053,3 +1053,116 @@ class TestBackupInventoryDashboard:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         html = client.get("/backups").text
         assert "haonly123" in html
+
+
+# ── Defer endpoint and DEFERRED status ───────────────────────────────────────────
+
+
+class TestDeferEndpoint:
+    def _write_request(self, watch_dir: Path, nid: str) -> None:
+        import json as _json
+        import time as _time
+
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update available",
+                    "body": "body",
+                    "payload": {"component": "core"},
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+
+    def test_defer_creates_deferred_and_rejected_files(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "upd1")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/defer/upd1", follow_redirects=False)
+        assert (tmp_path / "upd1.deferred").exists()
+        assert (tmp_path / "upd1.rejected").exists()
+
+    def test_defer_shows_deferred_status(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "upd2")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/defer/upd2", follow_redirects=False)
+        response = client.get("/")
+        assert "DEFERRED" in response.text
+
+    def test_defer_unknown_nid_is_noop(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/defer/no-such-id", follow_redirects=False)
+        assert response.status_code == 303
+        assert not (tmp_path / "no-such-id.deferred").exists()
+
+    def test_defer_already_resolved_is_noop(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_request(tmp_path, "upd3")
+        (tmp_path / "upd3.approved").touch()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/defer/upd3", follow_redirects=False)
+        assert not (tmp_path / "upd3.deferred").exists()
+
+
+class TestDeferredStatusRecognition:
+    def _write_request(self, tmp_path: Path, nid: str) -> None:
+        import json as _json
+        import time as _time
+
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+    def test_deferred_file_yields_deferred_status(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "ddd")
+        (tmp_path / "ddd.deferred").touch()
+        (tmp_path / "ddd.rejected").touch()
+        results = _load_requests(tmp_path)
+        assert results[0].status == "DEFERRED"
+
+    def test_deferred_takes_precedence_over_rejected(self, tmp_path):
+        from web.dashboard import _status
+
+        (tmp_path / "x.deferred").touch()
+        (tmp_path / "x.json").touch()
+        (tmp_path / "x.rejected").touch()
+        assert _status("x", tmp_path) == "DEFERRED"
+
+    def test_deferred_is_valid_hitl_request_status(self):
+        from web.dashboard import HITLRequest
+
+        r = HITLRequest(
+            notification_id="x",
+            subject="s",
+            body="b",
+            payload={},
+            sent_at=0,
+            status="DEFERRED",
+            elapsed_seconds=0,
+        )
+        assert r.status == "DEFERRED"

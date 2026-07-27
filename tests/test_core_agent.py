@@ -2302,3 +2302,220 @@ class TestRunUpdateCheckWithAnalysis:
         assert llm.calls == []
         out = capsys.readouterr().out
         assert "Warning" in out
+
+
+# ── request_update_approval ───────────────────────────────────────────────────────
+class TestRequestUpdateApproval:
+    def _make_update(self, component: str = "core"):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.home_assistant_{component}_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url="https://github.com/home-assistant/core/releases/tag/2026.7.0",
+            release_summary="Bug fixes and improvements.",
+            in_progress=False,
+        )
+
+    def test_core_update_uses_critical_risk(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        result = asyncio.run(
+            request_update_approval(self._make_update("core"), gate, notifier)
+        )
+        assert result is True
+        assert len(gate.require_approval_calls) == 1
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
+
+    def test_os_update_uses_critical_risk(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            request_update_approval(self._make_update("os"), gate, notifier)
+        )
+        assert result is False
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
+
+    def test_supervisor_update_uses_high_risk(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            request_update_approval(self._make_update("supervisor"), gate, notifier)
+        )
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.HIGH
+
+    def test_addon_update_uses_medium_risk(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            request_update_approval(self._make_update("some_addon"), gate, notifier)
+        )
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.MEDIUM
+
+    def test_payload_includes_version_info(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(request_update_approval(self._make_update("core"), gate, notifier))
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["component"] == "core"
+        assert payload["installed_version"] == "2026.6.0"
+        assert payload["latest_version"] == "2026.7.0"
+
+    def test_payload_includes_breaking_changes_from_report(self):
+        from ha_update_manager import UpdateReadinessReport, request_update_approval
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=False,
+            breaking_changes=["Template syntax changed"],
+            affected_config_keys=["template"],
+            pueo_command_risks=["ha apps info <slug>"],
+            recommendation="Review before updating.",
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            request_update_approval(
+                self._make_update("core"), gate, notifier, readiness_report=report
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert payload["breaking_changes"] == ["Template syntax changed"]
+        assert payload["affected_config_keys"] == ["template"]
+        assert payload["pueo_command_risks"] == ["ha apps info <slug>"]
+        assert payload["safe_to_update"] is False
+
+    def test_payload_empty_lists_when_no_report(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(request_update_approval(self._make_update("core"), gate, notifier))
+        payload = notifier.sent[0]["payload"]
+        assert payload["breaking_changes"] == []
+        assert payload["affected_config_keys"] == []
+        assert payload["pueo_command_risks"] == []
+        assert payload["advisory"] is None
+
+    def test_disk_info_included_in_payload(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            request_update_approval(
+                self._make_update("core"),
+                gate,
+                notifier,
+                disk_free_gb=3.5,
+                disk_warn=True,
+                disk_critical=False,
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert payload["disk_free_gb"] == 3.5
+        assert payload["disk_warn"] is True
+        assert payload["disk_critical"] is False
+
+    def test_custom_notification_id_used(self):
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            request_update_approval(
+                self._make_update("core"),
+                gate,
+                notifier,
+                notification_id="my-custom-id",
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert payload["notification_id"] == "my-custom-id"
+
+    def test_autonomous_level4_auto_executes_addon(self):
+        """Level-4 autonomy auto-executes MEDIUM-risk add-on updates."""
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import AutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=True)
+        result = asyncio.run(
+            request_update_approval(self._make_update("some_addon"), gate, notifier)
+        )
+        assert result is True
+        assert notifier.sent == []  # no notification sent for auto-execute
+
+    def test_autonomous_level4_still_asks_for_core(self):
+        """Level-4 autonomy must still ask for CRITICAL-risk core updates."""
+        from ha_update_manager import request_update_approval
+        from utils.autonomy import AutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=True)
+        result = asyncio.run(
+            request_update_approval(self._make_update("core"), gate, notifier)
+        )
+        assert result is True
+        assert len(notifier.sent) == 1  # HITL card was sent
+
+
+# ── _component_risk_level ─────────────────────────────────────────────────────────
+class TestComponentRiskLevel:
+    def test_core_is_critical(self):
+        from ha_update_manager import _component_risk_level
+        from utils.autonomy import RiskLevel
+
+        assert _component_risk_level("core") == RiskLevel.CRITICAL
+
+    def test_os_is_critical(self):
+        from ha_update_manager import _component_risk_level
+        from utils.autonomy import RiskLevel
+
+        assert _component_risk_level("os") == RiskLevel.CRITICAL
+
+    def test_supervisor_is_high(self):
+        from ha_update_manager import _component_risk_level
+        from utils.autonomy import RiskLevel
+
+        assert _component_risk_level("supervisor") == RiskLevel.HIGH
+
+    def test_addon_is_medium(self):
+        from ha_update_manager import _component_risk_level
+        from utils.autonomy import RiskLevel
+
+        assert _component_risk_level("my_addon") == RiskLevel.MEDIUM
