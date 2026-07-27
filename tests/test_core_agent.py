@@ -3385,3 +3385,566 @@ class TestExecuteUpdate:
             )
 
         assert called == ["addon"]
+
+
+# ── Item 37: Pueo self-check ──────────────────────────────────────────────────
+
+
+class TestSelfCheckCommandRisk:
+    def test_valid_construction(self):
+        from ha_update_manager import SelfCheckCommandRisk
+
+        report = SelfCheckCommandRisk(
+            command_risks=["ha addons → ha apps renamed"],
+            summary="One command renamed.",
+        )
+        assert len(report.command_risks) == 1
+        assert "renamed" in report.summary
+
+    def test_empty_risks_valid(self):
+        from ha_update_manager import SelfCheckCommandRisk
+
+        report = SelfCheckCommandRisk(command_risks=[], summary="No risks found.")
+        assert report.command_risks == []
+
+    def test_missing_required_field_raises(self):
+        from pydantic import ValidationError
+        from ha_update_manager import SelfCheckCommandRisk
+
+        with pytest.raises(ValidationError):
+            SelfCheckCommandRisk(command_risks=["something"])  # missing summary
+
+    def test_json_round_trip(self):
+        from ha_update_manager import SelfCheckCommandRisk
+
+        report = SelfCheckCommandRisk(
+            command_risks=["ha core check removed"], summary="CLI broke."
+        )
+        restored = SelfCheckCommandRisk.model_validate_json(report.model_dump_json())
+        assert restored.command_risks == report.command_risks
+        assert restored.summary == report.summary
+
+
+class TestPueoSelfCheckResult:
+    def test_all_commands_ok_when_all_pass(self):
+        from ha_update_manager import PueoSelfCheckResult
+
+        result = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=True,
+        )
+        assert result.all_commands_ok is True
+
+    def test_all_commands_ok_false_when_one_fails(self):
+        from ha_update_manager import PueoSelfCheckResult
+
+        result = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=False,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+        )
+        assert result.all_commands_ok is False
+
+    def test_backup_smoke_none_by_default(self):
+        from ha_update_manager import PueoSelfCheckResult
+
+        result = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+        )
+        assert result.backup_smoke_ok is None
+
+    def test_command_risks_defaults_to_empty_list(self):
+        from ha_update_manager import PueoSelfCheckResult
+
+        result = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+        )
+        assert result.command_risks == []
+
+
+class TestRunPueoSelfCheck:
+    def _make_fake_llm(self, risks: list[str] | None = None):
+        from utils.ollama_client import FakeLLMClient
+        from ha_update_manager import SelfCheckCommandRisk
+
+        r = SelfCheckCommandRisk(
+            command_risks=risks or [],
+            summary="No risks." if not risks else "Risks found.",
+        )
+        return FakeLLMClient(response_json=r.model_dump_json())
+
+    def test_all_ok_with_successful_commands(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (0, "Config valid", ""),
+                "ha core info": (0, '{"data": {"version": "2026.7.0"}}', ""),
+                "ha apps list": (0, "db21ed7f_netalertx_fa", ""),
+                "ha apps info": (0, '{"data": {"state": "started"}}', ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh,
+                version="2026.7.0",
+                cache_dir=str(tmp_path),
+                llm_client=self._make_fake_llm(),
+            )
+        )
+        assert result.core_check_ok is True
+        assert result.core_info_ok is True
+        assert result.apps_list_ok is True
+        assert result.netalertx_info_ok is True
+        assert result.all_commands_ok is True
+
+    def test_failed_core_check_sets_flag_false(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (1, "", "Config invalid"),
+                "ha core info": (0, '{"data": {"version": "2026.7.0"}}', ""),
+                "ha apps list": (0, "", ""),
+                "ha apps info": (0, "", ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
+        )
+        assert result.core_check_ok is False
+        assert result.all_commands_ok is False
+
+    def test_failed_core_info_sets_flag_false(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (0, "ok", ""),
+                "ha core info": (1, "", "error"),
+                "ha apps list": (0, "", ""),
+                "ha apps info": (0, "", ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
+        )
+        assert result.core_info_ok is False
+
+    def test_failed_apps_list_sets_flag_false(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (0, "ok", ""),
+                "ha core info": (0, '{"data": {}}', ""),
+                "ha apps list": (1, "", "error"),
+                "ha apps info": (0, "", ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
+        )
+        assert result.apps_list_ok is False
+
+    def test_failed_netalertx_info_sets_flag_false(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (0, "ok", ""),
+                "ha core info": (0, '{"data": {}}', ""),
+                "ha apps list": (0, "", ""),
+                "ha apps info": (1, "", "not found"),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
+        )
+        assert result.netalertx_info_ok is False
+
+    def test_exception_in_cli_command_is_swallowed(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+
+        class ExplodingSSH:
+            async def run(self, command, check=False):
+                raise RuntimeError("SSH died")
+
+        result = asyncio.run(
+            run_pueo_self_check(
+                ExplodingSSH(), version="2026.7.0", cache_dir=str(tmp_path)
+            )
+        )
+        assert result.core_check_ok is False
+        assert result.all_commands_ok is False
+
+    def test_backup_smoke_skipped_when_disk_constrained(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=1.0
+            )
+        )
+        assert result.backup_smoke_ok is None
+        assert not any("pueo_selfcheck" in cmd for cmd in ssh.commands_run)
+
+    def test_backup_smoke_skipped_when_disk_free_is_none(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=None
+            )
+        )
+        assert result.backup_smoke_ok is None
+
+    def test_backup_smoke_ok_when_disk_free_above_threshold(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "pueo_selfcheck": (0, "Backup complete.\nSlug: abc123", ""),
+                "ha backup remove": (0, "", ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=20.0
+            )
+        )
+        assert result.backup_smoke_ok is True
+
+    def test_backup_smoke_false_when_slug_unknown(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "pueo_selfcheck": (0, "no slug info here", ""),
+            }
+        )
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=20.0
+            )
+        )
+        assert result.backup_smoke_ok is False
+
+    def test_backup_smoke_exception_sets_false(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from config import HA_DISK_WARN_GB
+
+        class BrokenSSHForBackup:
+            commands_run = []
+
+            async def run(self, command, check=False):
+                self.commands_run.append(command)
+                if "pueo_selfcheck" in command:
+                    raise RuntimeError("backup exploded")
+                return 0, "", ""
+
+        ssh = BrokenSSHForBackup()
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh,
+                version="2026.7.0",
+                cache_dir=str(tmp_path),
+                disk_free_gb=HA_DISK_WARN_GB + 10.0,
+            )
+        )
+        assert result.backup_smoke_ok is False
+
+    def test_llm_cross_reference_runs_when_notes_cached(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        notes_path = tmp_path / "2026.7.0.txt"
+        notes_path.write_text(
+            "## Breaking changes\n- ha core check renamed to ha core verify"
+        )
+
+        ssh = FakeSSHClient()
+        llm = self._make_fake_llm(risks=["ha core check → renamed"])
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), llm_client=llm
+            )
+        )
+        assert len(result.command_risks) == 1
+        assert "ha core check" in result.command_risks[0]
+
+    def test_llm_cross_reference_skipped_when_no_cache(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
+        )
+        assert result.command_risks == []
+
+    def test_llm_cross_reference_exception_is_swallowed(self, tmp_path):
+        from ha_update_manager import run_pueo_self_check
+        from utils.ssh_client import FakeSSHClient
+
+        notes_path = tmp_path / "2026.7.0.txt"
+        notes_path.write_text("some release notes")
+
+        class BrokenLLM:
+            async def chat(self, **kwargs):
+                raise RuntimeError("LLM unavailable")
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            run_pueo_self_check(
+                ssh, version="2026.7.0", cache_dir=str(tmp_path), llm_client=BrokenLLM()
+            )
+        )
+        assert result.command_risks == []
+
+
+class TestSendPostUpdateCardWithSelfCheck:
+    def _make_update(self):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def test_self_check_included_in_payload(self):
+        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        sc = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=True,
+            command_risks=[],
+        )
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update(), notifier, True, "ok", "all clear", self_check=sc
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert "self_check" in payload
+        assert payload["self_check"]["all_commands_ok"] is True
+        assert payload["self_check"]["backup_smoke_ok"] is True
+
+    def test_self_check_absent_when_none(self):
+        from ha_update_manager import _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        asyncio.run(_send_post_update_card(self._make_update(), notifier, True, "", ""))
+        assert "self_check" not in notifier.sent[0]["payload"]
+
+    def test_command_risks_appear_in_body(self):
+        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        sc = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+            command_risks=["ha core check renamed"],
+        )
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update(), notifier, True, "", "", self_check=sc
+            )
+        )
+        body = notifier.sent[0]["body"]
+        assert "ha core check renamed" in body
+
+    def test_degraded_status_in_body_when_command_fails(self):
+        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        sc = PueoSelfCheckResult(
+            core_check_ok=False,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+        )
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update(), notifier, True, "", "", self_check=sc
+            )
+        )
+        body = notifier.sent[0]["body"]
+        assert "DEGRADED" in body
+
+
+class TestExecuteCoreUpdateSelfCheck:
+    def _make_update(self):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def _patch_backup(self, slug: str = "slug_sc"):
+        import ha_agent_advanced
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            async def mock_backup(ssh_client=None):
+                return slug
+
+            def mock_record(s):
+                pass
+
+            orig_b = ha_agent_advanced.execute_remote_backup
+            orig_r = ha_agent_advanced.record_backup_slug
+            ha_agent_advanced.execute_remote_backup = mock_backup
+            ha_agent_advanced.record_backup_slug = mock_record
+            try:
+                yield
+            finally:
+                ha_agent_advanced.execute_remote_backup = orig_b
+                ha_agent_advanced.record_backup_slug = orig_r
+
+        return _ctx()
+
+    def test_self_check_included_in_card_on_success(self, tmp_path):
+        from unittest.mock import patch, AsyncMock
+        from ha_update_manager import execute_core_update, PueoSelfCheckResult
+        from utils.ssh_client import FakeSSHClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        sc = PueoSelfCheckResult(
+            core_check_ok=True,
+            core_info_ok=True,
+            apps_list_ok=True,
+            netalertx_info_ok=True,
+            backup_smoke_ok=None,
+        )
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        async def fake_self_check(ssh, **kwargs):
+            return sc
+
+        with self._patch_backup():
+            with patch("ha_update_manager.run_pueo_self_check", fake_self_check):
+                asyncio.run(
+                    execute_core_update(
+                        self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                    )
+                )
+
+        payload = notifier.sent[0]["payload"]
+        assert "self_check" in payload
+        assert payload["self_check"]["all_commands_ok"] is True
+
+    def test_self_check_not_run_on_timeout(self, tmp_path):
+        from unittest.mock import patch
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        self_check_called = []
+
+        async def fake_poll_fail(version, client, timeout_seconds=480):
+            return False
+
+        async def fake_self_check(ssh, **kwargs):
+            self_check_called.append(True)
+            return None
+
+        with self._patch_backup():
+            with patch("ha_update_manager.run_pueo_self_check", fake_self_check):
+                asyncio.run(
+                    execute_core_update(
+                        self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                    )
+                )
+
+        assert not self_check_called
+        assert "self_check" not in notifier.sent[0]["payload"]
+
+    def test_self_check_exception_is_swallowed(self, tmp_path):
+        from unittest.mock import patch
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        async def exploding_self_check(ssh, **kwargs):
+            raise RuntimeError("self-check exploded")
+
+        with self._patch_backup():
+            with patch("ha_update_manager.run_pueo_self_check", exploding_self_check):
+                result = asyncio.run(
+                    execute_core_update(
+                        self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                    )
+                )
+
+        assert result is True
+        assert "self_check" not in notifier.sent[0]["payload"]

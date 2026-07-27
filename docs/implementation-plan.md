@@ -56,7 +56,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 34   | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema | ✅ Done (2026-07-27) |
 | 35   | HITL update approval card: per-component, advisory breaking-changes section | ✅ Done (2026-07-27) |
 | 36   | Safe update execution (Core, OS, add-ons) + post-update validation   | ✅ Done (2026-07-27) |
-| 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ☐ TODO |
+| 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ✅ Done (2026-07-27) |
 | 38   | Notification polling (persistent_notification.*); NotificationAnalysis schema; notification_history table | ☐ TODO |
 | 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ☐ TODO |
 | 40   | HITL notification cards + dismissal service call; --mode notifications | ☐ TODO |

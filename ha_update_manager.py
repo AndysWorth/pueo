@@ -4,6 +4,7 @@
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -13,6 +14,7 @@ from pydantic import BaseModel
 from config import (
     HA_API_PORT,
     HA_API_TOKEN,
+    HA_DISK_WARN_GB,
     HA_HOST,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
     MAX_PROMPT_TOKENS,
@@ -344,6 +346,189 @@ async def run_update_check(
     return updates
 
 
+# ── Pueo Self-Check (item 37) ─────────────────────────────────────────────────
+
+# NetAlertX add-on slug used in self-check smoke test.
+_NETALERTX_SLUG = "db21ed7f_netalertx_fa"
+# Disk buffer beyond the warn threshold needed to run the backup smoke test.
+_BACKUP_SMOKE_DISK_BUFFER_GB = 2.0
+
+
+class SelfCheckCommandRisk(BaseModel):
+    """LLM output schema for the post-update command catalog cross-reference."""
+
+    command_risks: list[str]
+    summary: str
+
+
+@dataclass
+class PueoSelfCheckResult:
+    """Results of Pueo's post-Core-update self-check."""
+
+    core_check_ok: bool
+    core_info_ok: bool
+    apps_list_ok: bool
+    netalertx_info_ok: bool
+    backup_smoke_ok: Optional[bool]  # None = skipped (disk constrained)
+    command_risks: list[str] = field(default_factory=list)
+
+    @property
+    def all_commands_ok(self) -> bool:
+        return (
+            self.core_check_ok
+            and self.core_info_ok
+            and self.apps_list_ok
+            and self.netalertx_info_ok
+        )
+
+
+async def _self_check_llm_cross_reference(
+    release_notes: str,
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> SelfCheckCommandRisk:
+    """Ask the LLM which Pueo SSH commands appear in the update's breaking changes."""
+    from utils.ollama_client import OllamaClient
+
+    client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+
+    catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
+    notes_budget = MAX_PROMPT_TOKENS - 300  # 300 for system + catalog text
+    notes_content = truncate_to_budget(release_notes, notes_budget)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are verifying which SSH commands in Pueo's command catalog "
+                "may have been renamed, removed, or changed in a Home Assistant "
+                "Core update. Only flag commands that explicitly appear in the "
+                "breaking changes or migration notes."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"=== Pueo SSH command catalog ===\n{catalog}\n\n"
+                f"=== Release notes ===\n{notes_content}\n\n"
+                "List any catalog commands that appear in breaking changes or "
+                "migration notes. For each, describe what changed."
+            ),
+        },
+    ]
+
+    response = await client.chat(
+        model=OLLAMA_MODEL,
+        messages=messages,
+        options={"temperature": 0.0},
+        format=SelfCheckCommandRisk.model_json_schema(),
+    )
+    raw = response["message"]["content"]
+    return SelfCheckCommandRisk.model_validate_json(raw)
+
+
+async def run_pueo_self_check(
+    ssh_client: SSHClientProtocol,
+    version: str,
+    cache_dir: Optional[str] = None,
+    disk_free_gb: Optional[float] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> PueoSelfCheckResult:
+    """Run CLI smoke tests and LLM command-catalog cross-reference after a Core update."""
+    resolved_cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
+
+    # ── CLI smoke tests ────────────────────────────────────────────────────────
+    core_check_ok = False
+    try:
+        ec, _, _ = await ssh_client.run("ha core check", check=False)
+        core_check_ok = ec == 0
+    except Exception as exc:
+        log.warning("self_check_core_check_failed", error=str(exc))
+
+    core_info_ok = False
+    try:
+        ec, stdout, _ = await ssh_client.run("ha core info --raw-json", check=False)
+        core_info_ok = ec == 0 and bool(stdout.strip())
+    except Exception as exc:
+        log.warning("self_check_core_info_failed", error=str(exc))
+
+    apps_list_ok = False
+    try:
+        ec, _, _ = await ssh_client.run("ha apps list", check=False)
+        apps_list_ok = ec == 0
+    except Exception as exc:
+        log.warning("self_check_apps_list_failed", error=str(exc))
+
+    netalertx_info_ok = False
+    try:
+        ec, _, _ = await ssh_client.run(f"ha apps info {_NETALERTX_SLUG}", check=False)
+        netalertx_info_ok = ec == 0
+    except Exception as exc:
+        log.warning("self_check_netalertx_info_failed", error=str(exc))
+
+    # ── Optional backup smoke test ─────────────────────────────────────────────
+    backup_smoke_ok: Optional[bool] = None
+    disk_ok = (
+        disk_free_gb is not None
+        and disk_free_gb > HA_DISK_WARN_GB + _BACKUP_SMOKE_DISK_BUFFER_GB
+    )
+    if disk_ok:
+        try:
+            from ha_agent_advanced import _extract_backup_slug
+
+            _, bk_out, _ = await ssh_client.run(
+                'ha backup new --name "pueo_selfcheck_DELETE_ME"', check=False
+            )
+            slug = _extract_backup_slug(bk_out.strip())
+            if slug and slug != "unknown_slug":
+                await ssh_client.run(f"ha backup remove {slug}", check=False)
+                backup_smoke_ok = True
+            else:
+                backup_smoke_ok = False
+        except Exception as exc:
+            log.warning("self_check_backup_smoke_failed", error=str(exc))
+            backup_smoke_ok = False
+
+    # ── LLM command-catalog cross-reference ───────────────────────────────────
+    command_risks: list[str] = []
+    try:
+        notes_path = Path(resolved_cache_dir) / f"{version}.txt"
+        if notes_path.exists():
+            release_notes = notes_path.read_text()
+            risk_report = await _self_check_llm_cross_reference(
+                release_notes, llm_client
+            )
+            command_risks = risk_report.command_risks
+            log.info(
+                "self_check_llm_cross_reference_complete",
+                version=version,
+                risks_found=len(command_risks),
+            )
+        else:
+            log.info(
+                "self_check_llm_cross_reference_skipped",
+                reason="no_cached_notes",
+                version=version,
+            )
+    except Exception as exc:
+        log.warning("self_check_llm_cross_reference_failed", error=str(exc))
+
+    result = PueoSelfCheckResult(
+        core_check_ok=core_check_ok,
+        core_info_ok=core_info_ok,
+        apps_list_ok=apps_list_ok,
+        netalertx_info_ok=netalertx_info_ok,
+        backup_smoke_ok=backup_smoke_ok,
+        command_risks=command_risks,
+    )
+    log.info(
+        "self_check_complete",
+        version=version,
+        all_commands_ok=result.all_commands_ok,
+        command_risks=len(command_risks),
+    )
+    return result
+
+
 # ── Update Execution (item 36) ────────────────────────────────────────────────
 
 _CORE_UPDATE_TIMEOUT = 480  # seconds
@@ -443,6 +628,7 @@ async def _send_post_update_card(
     config_check_output: str,
     log_triage_summary: str,
     notification_id: Optional[str] = None,
+    self_check: Optional["PueoSelfCheckResult"] = None,
 ) -> None:
     """Send an informational result card after an update attempt."""
     nid = notification_id or str(uuid.uuid4())
@@ -457,8 +643,15 @@ async def _send_post_update_card(
         body_lines.append(f"Config check: {config_check_output[:200]}")
     if log_triage_summary:
         body_lines.append(f"Log triage: {log_triage_summary}")
+    if self_check is not None:
+        sc_status = "OK" if self_check.all_commands_ok else "DEGRADED"
+        body_lines.append(f"Pueo self-check: {sc_status}")
+        if self_check.command_risks:
+            body_lines.append(
+                f"Command risks: {'; '.join(self_check.command_risks[:3])}"
+            )
     body = "\n".join(body_lines)
-    payload = {
+    payload: dict = {
         "notification_id": nid,
         "type": "update_result",
         "component": update.component,
@@ -468,6 +661,16 @@ async def _send_post_update_card(
         "config_check_output": config_check_output,
         "log_triage_summary": log_triage_summary,
     }
+    if self_check is not None:
+        payload["self_check"] = {
+            "core_check_ok": self_check.core_check_ok,
+            "core_info_ok": self_check.core_info_ok,
+            "apps_list_ok": self_check.apps_list_ok,
+            "netalertx_info_ok": self_check.netalertx_info_ok,
+            "backup_smoke_ok": self_check.backup_smoke_ok,
+            "command_risks": self_check.command_risks,
+            "all_commands_ok": self_check.all_commands_ok,
+        }
     log.info(
         "post_update_card_sent",
         component=update.component,
@@ -485,6 +688,8 @@ async def execute_core_update(
     gate: "AutonomyGate | FakeAutonomyGate",
     llm_client: Optional[LLMClientProtocol] = None,
     _poll: Optional[Callable] = None,
+    disk_free_gb: Optional[float] = None,
+    cache_dir: Optional[str] = None,
 ) -> bool:
     """Execute Core update: backup → ha core update → poll → post-check → result card."""
     from ha_agent_advanced import execute_remote_backup, record_backup_slug
@@ -507,6 +712,7 @@ async def execute_core_update(
 
     config_check_output = ""
     log_triage_summary = ""
+    self_check: Optional[PueoSelfCheckResult] = None
     if success:
         try:
             _, cc_out, cc_err = await ssh_client.run("ha core check", check=False)
@@ -532,8 +738,24 @@ async def execute_core_update(
         except Exception as exc:
             log.warning("post_update_log_triage_failed", error=str(exc))
 
+        try:
+            self_check = await run_pueo_self_check(
+                ssh_client,
+                version=update.latest_version,
+                cache_dir=cache_dir,
+                disk_free_gb=disk_free_gb,
+                llm_client=llm_client,
+            )
+        except Exception as exc:
+            log.warning("post_update_self_check_failed", error=str(exc))
+
     await _send_post_update_card(
-        update, notifier, success, config_check_output, log_triage_summary
+        update,
+        notifier,
+        success,
+        config_check_output,
+        log_triage_summary,
+        self_check=self_check,
     )
 
     if not success:
