@@ -58,7 +58,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 36   | Safe update execution (Core, OS, add-ons) + post-update validation   | ✅ Done (2026-07-27) |
 | 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ✅ Done (2026-07-27) |
 | 38   | Notification polling (persistent_notification.*); NotificationAnalysis schema; notification_history table | ✅ Done (2026-07-27) |
-| 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ☐ TODO |
+| 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ✅ Done (2026-07-27) |
 | 40   | HITL notification cards + dismissal service call; --mode notifications | ☐ TODO |
 | 41   | Notifications tab in HITL dashboard: pending, history, filters       | ☐ TODO |
 | 42   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ☐ TODO |
