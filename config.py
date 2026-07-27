@@ -74,6 +74,14 @@ HA_UPDATE_RELEASE_NOTES_CACHE_DIR: str = _agent.get(
     "update_release_notes_cache_dir", ".cache/ha_release_notes/"
 )
 
+# HA Notification Intelligence
+HA_NOTIFICATION_POLL_INTERVAL_MINUTES: float = float(
+    _agent.get("notification_poll_interval_minutes", 5)
+)
+HA_NOTIFICATION_ENRICH_AUTH_FAILURES: bool = bool(
+    _agent.get("notification_enrich_auth_failures", True)
+)
+
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 

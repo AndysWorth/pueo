@@ -57,7 +57,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 35   | HITL update approval card: per-component, advisory breaking-changes section | ✅ Done (2026-07-27) |
 | 36   | Safe update execution (Core, OS, add-ons) + post-update validation   | ✅ Done (2026-07-27) |
 | 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ✅ Done (2026-07-27) |
-| 38   | Notification polling (persistent_notification.*); NotificationAnalysis schema; notification_history table | ☐ TODO |
+| 38   | Notification polling (persistent_notification.*); NotificationAnalysis schema; notification_history table | ✅ Done (2026-07-27) |
 | 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ☐ TODO |
 | 40   | HITL notification cards + dismissal service call; --mode notifications | ☐ TODO |
 | 41   | Notifications tab in HITL dashboard: pending, history, filters       | ☐ TODO |
@@ -204,7 +204,7 @@ Items 28–32. Protects the backup-before-write safety invariant by keeping HA d
 
 ---
 
-### Phase 12 — HA Update Manager (5 items)
+### Phase 12 — HA Update Manager (5 items) ✅ Complete (2026-07-27)
 Items 33–37. Detects available Core, OS, and add-on updates via `update.*` REST entities; evaluates each update for breaking changes using local LLM analysis of cached release notes; executes updates with the backup invariant intact; validates Pueo's own command catalog survives a Core update. Prerequisite: Phase 11 complete (`execute_remote_backup()` blocks on `DiskCriticalError`).
 
 | Items | Concern |
