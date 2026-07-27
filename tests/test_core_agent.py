@@ -2519,3 +2519,869 @@ class TestComponentRiskLevel:
         from utils.autonomy import RiskLevel
 
         assert _component_risk_level("my_addon") == RiskLevel.MEDIUM
+
+
+# ── _poll_core_version ────────────────────────────────────────────────────────
+async def _noop_sleep(s):
+    pass
+
+
+class TestPollCoreVersion:
+    def _make_ssh(self, version: str = "2026.7.0", update_available: bool = False):
+        import json
+        from utils.ssh_client import FakeSSHClient
+
+        payload = json.dumps(
+            {"data": {"version": version, "update_available": update_available}}
+        )
+        return FakeSSHClient(command_results={"ha core info": (0, payload, "")})
+
+    def test_returns_true_when_version_matches(self):
+        from ha_update_manager import _poll_core_version
+
+        ssh = self._make_ssh("2026.7.0", False)
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.7.0", ssh, timeout_seconds=60, interval=5, _sleep=_noop_sleep
+            )
+        )
+        assert result is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import _poll_core_version
+        from utils.ssh_client import FakeSSHClient
+        import json
+
+        payload = json.dumps(
+            {"data": {"version": "2026.6.0", "update_available": True}}
+        )
+        ssh = FakeSSHClient(command_results={"ha core info": (0, payload, "")})
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.7.0", ssh, timeout_seconds=0, interval=5, _sleep=_noop_sleep
+            )
+        )
+        assert result is False
+
+    def test_handles_json_parse_error(self):
+        from ha_update_manager import _poll_core_version
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core info": (0, "not-json", "")})
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.7.0", ssh, timeout_seconds=0, interval=5, _sleep=_noop_sleep
+            )
+        )
+        assert result is False
+
+    def test_exception_covered_and_retried_until_timeout(self):
+        from ha_update_manager import _poll_core_version
+        from utils.ssh_client import FakeSSHClient
+
+        # timeout=5, interval=5 → one iteration that raises, then elapsed=5 exits loop
+        ssh = FakeSSHClient(command_results={"ha core info": (0, "not-json", "")})
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.7.0", ssh, timeout_seconds=5, interval=5, _sleep=_noop_sleep
+            )
+        )
+        assert result is False
+
+    def test_returns_true_when_update_available_false(self):
+        from ha_update_manager import _poll_core_version
+        import json
+        from utils.ssh_client import FakeSSHClient
+
+        payload = json.dumps(
+            {"data": {"version": "2026.6.0", "update_available": False}}
+        )
+        ssh = FakeSSHClient(command_results={"ha core info": (0, payload, "")})
+        result = asyncio.run(
+            _poll_core_version(
+                "2026.7.0", ssh, timeout_seconds=60, interval=5, _sleep=_noop_sleep
+            )
+        )
+        assert result is True
+
+
+# ── _poll_os_online ────────────────────────────────────────────────────────────
+class TestPollOsOnline:
+    def test_returns_true_on_successful_connect(self):
+        from ha_update_manager import _poll_os_online
+
+        async def fake_connect(host, port):
+            class FakeWriter:
+                def close(self):
+                    pass
+
+                async def wait_closed(self):
+                    pass
+
+            return object(), FakeWriter()
+
+        result = asyncio.run(
+            _poll_os_online(
+                "ha.local",
+                8123,
+                timeout_seconds=60,
+                interval=5,
+                _sleep=_noop_sleep,
+                _connect=fake_connect,
+            )
+        )
+        assert result is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import _poll_os_online
+
+        async def fail_connect(host, port):
+            raise ConnectionRefusedError("no server")
+
+        result = asyncio.run(
+            _poll_os_online(
+                "ha.local",
+                8123,
+                timeout_seconds=0,
+                interval=5,
+                _sleep=_noop_sleep,
+                _connect=fail_connect,
+            )
+        )
+        assert result is False
+
+    def test_connection_error_is_swallowed_before_timeout(self):
+        from ha_update_manager import _poll_os_online
+
+        attempts = [0]
+
+        async def flaky_connect(host, port):
+            attempts[0] += 1
+            if attempts[0] < 2:
+                raise OSError("timeout")
+
+            class FakeWriter:
+                def close(self):
+                    pass
+
+                async def wait_closed(self):
+                    pass
+
+            return object(), FakeWriter()
+
+        result = asyncio.run(
+            _poll_os_online(
+                "ha.local",
+                8123,
+                timeout_seconds=30,
+                interval=5,
+                _sleep=_noop_sleep,
+                _connect=flaky_connect,
+            )
+        )
+        assert result is True
+
+
+# ── _poll_addon_version ────────────────────────────────────────────────────────
+class TestPollAddonVersion:
+    def test_returns_true_when_version_and_state_match(self):
+        from ha_update_manager import _poll_addon_version
+        import json
+        from utils.ssh_client import FakeSSHClient
+
+        payload = json.dumps({"data": {"version": "3.0.0", "state": "started"}})
+        ssh = FakeSSHClient(command_results={"ha apps info": (0, payload, "")})
+        result = asyncio.run(
+            _poll_addon_version(
+                "my_addon",
+                "3.0.0",
+                ssh,
+                timeout_seconds=60,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is True
+
+    def test_returns_false_when_state_not_started(self):
+        from ha_update_manager import _poll_addon_version
+        import json
+        from utils.ssh_client import FakeSSHClient
+
+        payload = json.dumps({"data": {"version": "3.0.0", "state": "updating"}})
+        ssh = FakeSSHClient(command_results={"ha apps info": (0, payload, "")})
+        result = asyncio.run(
+            _poll_addon_version(
+                "my_addon",
+                "3.0.0",
+                ssh,
+                timeout_seconds=0,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is False
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import _poll_addon_version
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha apps info": (0, "not-json", "")})
+        result = asyncio.run(
+            _poll_addon_version(
+                "my_addon",
+                "3.0.0",
+                ssh,
+                timeout_seconds=0,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is False
+
+    def test_exception_covered_and_retried_until_timeout(self):
+        from ha_update_manager import _poll_addon_version
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha apps info": (0, "not-json", "")})
+        result = asyncio.run(
+            _poll_addon_version(
+                "my_addon",
+                "3.0.0",
+                ssh,
+                timeout_seconds=10,
+                interval=10,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is False
+
+
+# ── _send_post_update_card ────────────────────────────────────────────────────
+class TestSendPostUpdateCard:
+    def _make_update(self, component: str = "core"):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.home_assistant_{component}_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def test_sends_to_notifier_on_success(self):
+        from ha_update_manager import _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update(), notifier, True, "ok", "all clear"
+            )
+        )
+        assert len(notifier.sent) == 1
+        assert "succeeded" in notifier.sent[0]["subject"]
+
+    def test_sends_to_notifier_on_failure(self):
+        from ha_update_manager import _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        asyncio.run(
+            _send_post_update_card(self._make_update(), notifier, False, "", "")
+        )
+        assert "timed out" in notifier.sent[0]["subject"]
+
+    def test_payload_contains_component_and_versions(self):
+        from ha_update_manager import _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update("os"), notifier, True, "valid", "ok"
+            )
+        )
+        payload = notifier.sent[0]["payload"]
+        assert payload["component"] == "os"
+        assert payload["installed_version"] == "2026.6.0"
+        assert payload["latest_version"] == "2026.7.0"
+        assert payload["success"] is True
+
+    def test_payload_includes_config_check_output(self):
+        from ha_update_manager import _send_post_update_card
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        asyncio.run(
+            _send_post_update_card(
+                self._make_update(), notifier, True, "all good", "no issues"
+            )
+        )
+        assert notifier.sent[0]["payload"]["config_check_output"] == "all good"
+        assert notifier.sent[0]["payload"]["log_triage_summary"] == "no issues"
+
+
+# ── execute_core_update ────────────────────────────────────────────────────────
+class TestExecuteCoreUpdate:
+    def _make_update(self):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def _make_gate_notifier(self, approve: bool = True):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        return FakeAutonomyGate(approval_result=approve), FakeNotifier(approve=approve)
+
+    def _patch_backup(self, slug: str = "slug1"):
+        """Context manager that stubs ha_agent_advanced backup functions."""
+        import ha_agent_advanced
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            called = []
+            recorded = []
+
+            async def mock_backup(ssh_client=None):
+                called.append(slug)
+                return slug
+
+            def mock_record(s):
+                recorded.append(s)
+
+            orig_b = ha_agent_advanced.execute_remote_backup
+            orig_r = ha_agent_advanced.record_backup_slug
+            ha_agent_advanced.execute_remote_backup = mock_backup
+            ha_agent_advanced.record_backup_slug = mock_record
+            try:
+                yield called, recorded
+            finally:
+                ha_agent_advanced.execute_remote_backup = orig_b
+                ha_agent_advanced.record_backup_slug = orig_r
+
+        return _ctx()
+
+    def test_calls_backup_before_update(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core check": (0, "Config valid", "")})
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup() as (called_backup, recorded):
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert called_backup, "backup should have been triggered"
+        assert recorded == ["slug1"]
+        assert result is True
+
+    def test_sends_post_update_card_on_success(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core check": (0, "Config valid", "")})
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["success"] is True
+
+    def test_sends_post_update_card_on_timeout(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll_fail(version, client, timeout_seconds=480):
+            return False
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                )
+            )
+
+        assert result is False
+        assert notifier.sent[0]["payload"]["success"] is False
+
+    def test_update_command_is_issued(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert any("ha core update" in cmd for cmd in ssh.commands_run)
+
+    def test_stderr_from_update_command_is_logged(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core update": (0, "", "some warning"),
+                "ha core check": (0, "ok", ""),
+            }
+        )
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert result is True  # stderr warning doesn't fail the update
+
+    def test_config_check_exception_is_swallowed(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        # FakeSSHClient with check=True raises on ha core check — simulate by raising in run
+        class ErrorOnCheckSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                self.commands_run.append(command)
+                if "ha core check" in command:
+                    raise RuntimeError("SSH connection lost")
+                return 0, "", ""
+
+        ssh = ErrorOnCheckSSH()
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert (
+            result is True
+        )  # exception is swallowed, update still reported as success
+
+    def test_log_triage_runs_when_logs_returned(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from ha_log_monitor import LogEvaluation
+
+        evaluation_json = LogEvaluation(
+            is_actionable=False,
+            root_cause_summary="No issues found",
+            confidence_score=0.1,
+        ).model_dump_json()
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core check": (0, "valid", ""),
+                "ha core logs": (
+                    0,
+                    "INFO: HA started successfully\nINFO: All good",
+                    "",
+                ),
+            }
+        )
+        gate, notifier = self._make_gate_notifier()
+        llm = FakeLLMClient(evaluation_json)
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    llm_client=llm,
+                    _poll=fake_poll,
+                )
+            )
+
+        assert result is True
+        assert notifier.sent[0]["payload"]["log_triage_summary"] == "No issues found"
+
+    def test_log_triage_exception_is_swallowed(self):
+        from ha_update_manager import execute_core_update
+        from utils.ssh_client import FakeSSHClient
+
+        # SSH raises on the logs command → covers the outer except branch
+        class LogsRaisingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                self.commands_run.append(command)
+                if "ha core logs" in command:
+                    raise RuntimeError("logs unavailable")
+                return 0, "ok", ""
+
+        ssh = LogsRaisingSSH()
+        gate, notifier = self._make_gate_notifier()
+
+        async def fake_poll(version, client, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_core_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert result is True  # triage failure is swallowed
+
+
+# ── execute_os_update ────────────────────────────────────────────────────────
+class TestExecuteOsUpdate:
+    def _make_update(self):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component="os",
+            entity_id="update.home_assistant_os_update",
+            installed_version="14.0",
+            latest_version="15.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def _patch_backup(self, slug: str = "slug2"):
+        import ha_agent_advanced
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            async def mock_backup(ssh_client=None):
+                return slug
+
+            orig_b = ha_agent_advanced.execute_remote_backup
+            orig_r = ha_agent_advanced.record_backup_slug
+            ha_agent_advanced.execute_remote_backup = mock_backup
+            ha_agent_advanced.record_backup_slug = lambda s: None
+            try:
+                yield
+            finally:
+                ha_agent_advanced.execute_remote_backup = orig_b
+                ha_agent_advanced.record_backup_slug = orig_r
+
+        return _ctx()
+
+    def test_calls_backup_and_issues_os_update(self):
+        from ha_update_manager import execute_os_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(host, port, timeout_seconds=480):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert result is True
+        assert any("ha os update" in cmd for cmd in ssh.commands_run)
+        assert notifier.sent[0]["payload"]["success"] is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import execute_os_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll_fail(host, port, timeout_seconds=480):
+            return False
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                )
+            )
+
+        assert result is False
+        assert notifier.sent[0]["payload"]["success"] is False
+
+
+# ── execute_addon_update ────────────────────────────────────────────────────────
+class TestExecuteAddonUpdate:
+    def _make_update(self, slug: str = "my_addon"):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=slug,
+            entity_id=f"update.{slug}_update",
+            installed_version="2.0.0",
+            latest_version="3.0.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def _patch_backup(self, slug: str = "slug3"):
+        import ha_agent_advanced
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            async def mock_backup(ssh_client=None):
+                return slug
+
+            orig_b = ha_agent_advanced.execute_remote_backup
+            orig_r = ha_agent_advanced.record_backup_slug
+            ha_agent_advanced.execute_remote_backup = mock_backup
+            ha_agent_advanced.record_backup_slug = lambda s: None
+            try:
+                yield
+            finally:
+                ha_agent_advanced.execute_remote_backup = orig_b
+                ha_agent_advanced.record_backup_slug = orig_r
+
+        return _ctx()
+
+    def test_calls_backup_and_issues_curl(self):
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update("my_addon"), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert result is True
+        assert any(
+            "supervisor/store/addons/my_addon/update" in cmd for cmd in ssh.commands_run
+        )
+        assert notifier.sent[0]["payload"]["success"] is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll_fail(slug, version, client, timeout_seconds=180):
+            return False
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                )
+            )
+
+        assert result is False
+        assert notifier.sent[0]["payload"]["success"] is False
+
+    def test_curl_slug_uses_component_name(self):
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            return True
+
+        with self._patch_backup():
+            asyncio.run(
+                execute_addon_update(
+                    self._make_update("special_addon"),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                )
+            )
+
+        curl_cmds = [cmd for cmd in ssh.commands_run if "supervisor/store" in cmd]
+        assert len(curl_cmds) == 1
+        assert "special_addon" in curl_cmds[0]
+
+    def test_curl_failure_logged_but_poll_continues(self):
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={"supervisor/store": (1, "", "curl error")})
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            return (
+                False  # poll fails regardless; just testing the curl-fail branch is hit
+            )
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update("my_addon"), ssh, notifier, gate, _poll=fake_poll
+                )
+            )
+
+        assert result is False  # poll timed out, but curl-fail branch was exercised
+
+
+# ── execute_update dispatch ────────────────────────────────────────────────────
+class TestExecuteUpdate:
+    def _make_update(self, component: str):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.{component}_update",
+            installed_version="1.0",
+            latest_version="2.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def test_dispatches_core_to_execute_core_update(self):
+        from ha_update_manager import execute_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from unittest.mock import patch, AsyncMock
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        called = []
+
+        async def fake_core(update, ssh, notifier, gate, llm_client=None):
+            called.append("core")
+            return True
+
+        with patch("ha_update_manager.execute_core_update", fake_core):
+            asyncio.run(execute_update(self._make_update("core"), ssh, notifier, gate))
+
+        assert called == ["core"]
+
+    def test_dispatches_os_to_execute_os_update(self):
+        from ha_update_manager import execute_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from unittest.mock import patch
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        called = []
+
+        async def fake_os(update, ssh, notifier, gate, ha_host=None, ha_port=None):
+            called.append("os")
+            return True
+
+        with patch("ha_update_manager.execute_os_update", fake_os):
+            asyncio.run(execute_update(self._make_update("os"), ssh, notifier, gate))
+
+        assert called == ["os"]
+
+    def test_dispatches_addon_to_execute_addon_update(self):
+        from ha_update_manager import execute_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from unittest.mock import patch
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        called = []
+
+        async def fake_addon(update, ssh, notifier, gate):
+            called.append("addon")
+            return True
+
+        with patch("ha_update_manager.execute_addon_update", fake_addon):
+            asyncio.run(
+                execute_update(self._make_update("my_addon"), ssh, notifier, gate)
+            )
+
+        assert called == ["addon"]
