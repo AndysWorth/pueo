@@ -70,6 +70,9 @@ HA_UPDATE_CHECK_INTERVAL_HOURS: float = float(
 HA_UPDATE_NOTIFY_ON_AVAILABLE: bool = bool(
     _agent.get("update_notify_on_available", True)
 )
+HA_UPDATE_RELEASE_NOTES_CACHE_DIR: str = _agent.get(
+    "update_release_notes_cache_dir", ".cache/ha_release_notes/"
+)
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})

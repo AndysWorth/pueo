@@ -53,7 +53,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 31   | Backup Offloading                                                    | ✅ Done (2026-07-24) |
 | 32   | Retention Policy & Cleanup                                           | ✅ Done (2026-07-27) |
 | 33   | HARestClient + HARestClientProtocol; update entity polling; --mode update-check | ✅ Done (2026-07-27) |
-| 34   | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema | ☐ TODO |
+| 34   | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema | ✅ Done (2026-07-27) |
 | 35   | HITL update approval card: per-component, advisory breaking-changes section | ☐ TODO |
 | 36   | Safe update execution (Core, OS, add-ons) + post-update validation   | ☐ TODO |
 | 37   | Pueo self-check after Core update: command catalog smoke-test, LLM cross-reference | ☐ TODO |
