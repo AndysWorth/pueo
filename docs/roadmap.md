@@ -52,7 +52,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 
 ## Remaining Work
 
-**Execution order:** 4.6 → 4.7 → 5 → 6 → 2 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
+**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
 
 ---
 
@@ -111,43 +111,6 @@ Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
-### Milestone 2 — Local RAG & Knowledge Layer
-
-**Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
-
-**Delivered in Phase 15 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
-
-**Tasks:**
-- Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)
-- Weekly scrapers for: HA core release notes (breaking changes section), HACS component changelogs
-- `query_knowledge` tool registered in the tool registry; returns top-K ranked chunks with source metadata
-- `community_cases` ChromaDB collection created here (empty until Milestone 9 / Phase 17 delivers cases)
-- Weekly refresh via macOS `launchd` plist
-
-**Validation gate:** Agent correctly cites a specific HA breaking change from the local vector DB, zero WAN calls.
-
-Full spec: [plan/rag-tool.md](plan/rag-tool.md)
-
----
-
-### Milestone 5 — Agent Quality & Evaluation
-
-**Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
-
-**Tasks:**
-- `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
-- Minimum 10 scenarios covering: malformed YAML, missing required key, deprecated integration format, valid config (true negative), CRITICAL traceback log line, INFO line (true negative), ambiguous WARNING
-- `evals/run_evals.py` — loads each scenario, runs it through the real Ollama inference pipeline, scores results, prints a summary table, saves scores to `evals/baseline.json` on first run, compares against baseline on subsequent runs
-- Scoring metrics: `is_valid` accuracy, severity accuracy, issue keyword recall, fix YAML parse success rate, mean inference latency
-- `/project:run-evals` slash command — runs `python evals/run_evals.py` and summarises results
-- Optional CI job — runs evals against Ollama if available, gated so it does not block PR merges
-
-**Validation gate:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
-
-Full spec: [plan/evals.md](plan/evals.md)
-
----
-
 ### Milestone 6 — Tool-Calling Agent Loop
 
 **Objective:** Replace the linear `gather→analyze→act` pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call at each step, iterates until it reaches a confident fix or exhausts its budget, and can investigate unknown failure modes rather than only pre-scripted ones.
@@ -163,6 +126,45 @@ Full spec: [plan/evals.md](plan/evals.md)
 **Validation gate:** Score on `evals/run_evals.py` does not drop vs the M5 baseline; `apply_fix` safety audit passes; both HA and NetAlertX healing pipelines use the loop.
 
 Full spec: [plan/tool-loop.md](plan/tool-loop.md)
+
+---
+
+### Milestone 2 — Local RAG & Knowledge Layer
+
+**Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
+
+**Delivered in Phase 15 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
+
+**Tasks:**
+- Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)
+- Weekly scrapers for: HA core release notes (breaking changes section), HACS component changelogs
+- `query_knowledge` tool registered in the tool registry; returns top-K ranked chunks with source metadata
+- `community_cases` ChromaDB collection created here (empty until Milestone 9 / Phase 19 delivers cases)
+- Weekly refresh via macOS `launchd` plist
+
+**Validation gate:** Agent correctly cites a specific HA breaking change from the local vector DB, zero WAN calls.
+
+Full spec: [plan/rag-tool.md](plan/rag-tool.md)
+
+---
+
+### Milestone 5 — Agent Quality & Evaluation
+
+**Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
+
+**Delivered in Phase 16 (after the tool loop and RAG layer are in place).** Having both makes the eval scenarios more meaningful — the loop exercises real tool-calling behaviour and RAG provides the knowledge context the agent will have in production.
+
+**Tasks:**
+- `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
+- Minimum 10 scenarios covering: malformed YAML, missing required key, deprecated integration format, valid config (true negative), CRITICAL traceback log line, INFO line (true negative), ambiguous WARNING
+- `evals/run_evals.py` — loads each scenario, runs it through the real Ollama inference pipeline, scores results, prints a summary table, saves scores to `evals/baseline.json` on first run, compares against baseline on subsequent runs
+- Scoring metrics: `is_valid` accuracy, severity accuracy, issue keyword recall, fix YAML parse success rate, mean inference latency
+- `/project:run-evals` slash command — runs `python evals/run_evals.py` and summarises results
+- Optional CI job — runs evals against Ollama if available, gated so it does not block PR merges
+
+**Validation gate:** Running `python evals/run_evals.py` produces a score table against ≥ 10 scenarios; a deliberate prompt regression visibly drops the score; baseline is committed and tracked in git.
+
+Full spec: [plan/evals.md](plan/evals.md)
 
 ---
 
