@@ -1554,9 +1554,7 @@ class TestEnforceHaRetention:
 
         class FailOnRemove(FakeSSHClient):
             async def run(self, cmd, check=False):
-                if "remove" in cmd:
-                    raise OSError("SSH connection lost")
-                return await super().run(cmd, check=check)
+                raise OSError("SSH connection lost")
 
         asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=FailOnRemove()))
 
@@ -1949,12 +1947,6 @@ class TestRunUpdateCheck:
             async def get_states(self, prefix=None):
                 raise ConnectionError("connection refused")
 
-            async def get_state(self, entity_id):
-                raise ConnectionError("connection refused")
-
-            async def call_service(self, domain, service, payload):
-                raise ConnectionError("connection refused")
-
         updates = asyncio.run(run_update_check(ha_rest_client=ErrorClient()))
         assert updates == []
         out = capsys.readouterr().out
@@ -1981,9 +1973,6 @@ class TestRunUpdateCheck:
         class BrokenSSH:
             async def read_file(self, path):
                 raise OSError("sftp error")
-
-            async def run_command(self, cmd):
-                return ""
 
         # Cache dir with no release notes so the loop skips analysis after the
         # SSH failure — we just need to cover the except branch.
@@ -2127,22 +2116,18 @@ class TestFetchReleaseNotesCached:
         assert (tmp_path / "2026.7.0.txt").read_text() == "Release notes for 2026.7.0"
 
     def test_cache_hit_skips_fetcher(self, tmp_path):
+        from unittest.mock import AsyncMock
+
         cached = tmp_path / "2026.7.0.txt"
         cached.write_text("Cached")
-        fetch_called = []
-
-        async def should_not_call(version: str) -> str:
-            fetch_called.append(version)
-            return "Should not be called"
+        mock_fetcher = AsyncMock()
 
         from ha_update_manager import fetch_release_notes_cached
 
         asyncio.run(
-            fetch_release_notes_cached(
-                "2026.7.0", str(tmp_path), _fetcher=should_not_call
-            )
+            fetch_release_notes_cached("2026.7.0", str(tmp_path), _fetcher=mock_fetcher)
         )
-        assert fetch_called == []
+        mock_fetcher.assert_not_called()
 
     def test_creates_cache_dir_if_missing(self, tmp_path):
         nested = tmp_path / "a" / "b" / "c"
