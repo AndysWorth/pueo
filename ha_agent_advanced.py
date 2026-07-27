@@ -22,6 +22,8 @@ from config import (
     HA_DISK_CRITICAL_GB,
     BACKUP_OFFLOAD_ENABLED,
     BACKUP_LOCAL_DIR,
+    BACKUP_RETAIN_ON_HA,
+    BACKUP_RETAIN_LOCAL_DAYS,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
@@ -330,6 +332,116 @@ async def offload_backup_to_local(
         log.warning("backup_offload_failed", slug=slug, error=str(e))
 
 
+async def enforce_ha_retention(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """Delete oldest HA backups beyond BACKUP_RETAIN_ON_HA; only slugs confirmed location='both'."""
+    with sqlite3.connect(DB_PATH) as conn:
+        ha_rows = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE deleted_from_ha_at IS NULL ORDER BY timestamp DESC"
+        ).fetchall()
+
+    ha_count = len(ha_rows)
+    if ha_count <= BACKUP_RETAIN_ON_HA:
+        return
+
+    most_recent_slug = ha_rows[0][0]
+    to_delete_count = ha_count - BACKUP_RETAIN_ON_HA
+
+    with sqlite3.connect(DB_PATH) as conn:
+        candidates = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE deleted_from_ha_at IS NULL AND location = 'both'"
+            " AND backup_slug != ? ORDER BY timestamp ASC",
+            (most_recent_slug,),
+        ).fetchall()
+
+    to_delete = [r[0] for r in candidates[:to_delete_count]]
+    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    for slug in to_delete:
+        try:
+            await client.run(f"ha backups remove {slug}", check=True)
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE backup_registry SET deleted_from_ha_at = ? WHERE backup_slug = ?",
+                    (time.time(), slug),
+                )
+                conn.commit()
+            log.info("backup_deleted_from_ha", slug=slug)
+        except Exception as e:
+            log.warning("backup_delete_ha_failed", slug=slug, error=str(e))
+
+
+def purge_local_backups() -> None:
+    """Delete local .tar copies older than BACKUP_RETAIN_LOCAL_DAYS; update inventory."""
+    local_dir = Path(BACKUP_LOCAL_DIR)
+    if not local_dir.exists():
+        return
+    cutoff = time.time() - (BACKUP_RETAIN_LOCAL_DAYS * 86400)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        newest = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE offloaded_at IS NOT NULL ORDER BY offloaded_at DESC LIMIT 1"
+        ).fetchone()
+        newest_slug = newest[0] if newest else None
+
+        if newest_slug:
+            rows = conn.execute(
+                "SELECT backup_slug, deleted_from_ha_at FROM backup_registry"
+                " WHERE offloaded_at IS NOT NULL AND offloaded_at < ?"
+                " AND backup_slug != ?",
+                (cutoff, newest_slug),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT backup_slug, deleted_from_ha_at FROM backup_registry"
+                " WHERE offloaded_at IS NOT NULL AND offloaded_at < ?",
+                (cutoff,),
+            ).fetchall()
+
+    for slug, deleted_from_ha_at in rows:
+        local_path = local_dir / f"{slug}.tar"
+        if local_path.exists():
+            local_path.unlink()
+            log.info("local_backup_purged", slug=slug)
+        if deleted_from_ha_at is not None:
+            log.warning("backup_gone_from_everywhere", slug=slug)
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET location = 'ha' WHERE backup_slug = ?",
+                (slug,),
+            )
+            conn.commit()
+
+
+def print_backup_status() -> None:
+    """Print a human-readable inventory table of all known backups."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT backup_slug, size_bytes, timestamp, location, deleted_from_ha_at, offloaded_at"
+            " FROM backup_registry ORDER BY timestamp DESC"
+        ).fetchall()
+
+    now = time.time()
+    header = f"{'SLUG':<20}  {'SIZE':>10}  {'AGE':>8}  {'HA':>4}  {'PUEO':>6}"
+    print(header)
+    print("-" * len(header))
+    for slug, size_bytes, ts, location, deleted_from_ha_at, offloaded_at in rows:
+        age_secs = now - (ts or now)
+        age_days = age_secs / 86400
+        age_str = f"{age_days:.0f}d" if age_days >= 1 else f"{age_days * 24:.0f}h"
+        size_mb = (size_bytes or 0) / (1024 * 1024)
+        ha_mark = "✗" if deleted_from_ha_at else "✓"
+        pueo_mark = "✓" if location in ("both", "pueo") else "✗"
+        print(
+            f"{slug:<20}  {size_mb:>8.1f}MB  {age_str:>8}  {ha_mark:>4}  {pueo_mark:>6}"
+        )
+    if not rows:
+        print("  (no backups recorded)")
+
+
 @async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_preflight_check(
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -417,6 +529,8 @@ async def main(
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)
         record_backup_slug(backup_slug)
         await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
+        await enforce_ha_retention(ssh_client=ssh_client)
+        purge_local_backups()
 
         record_state_memory(
             config_hash,

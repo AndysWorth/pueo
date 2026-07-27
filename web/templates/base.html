@@ -44,7 +44,11 @@
   </head>
   <body>
     <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
-        height="32">&nbsp;Pueo — HITL Approval Queue</h1>
+        height="32">&nbsp;Pueo</h1>
+    <nav style="margin-bottom:1.25rem;display:flex;gap:1rem;font-size:0.9rem;">
+      <a href="/" style="color:#333;text-decoration:none;font-weight:600;">Approval Queue</a>
+      <a href="/backups" style="color:#333;text-decoration:none;font-weight:600;">Backup Inventory</a>
+    </nav>
     {% block content %}{% endblock %}
   </body>
 </html>

@@ -1206,6 +1206,7 @@ class TestSandboxPipeline:
 
         path = str(tmp_path / "sbx_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         monkeypatch.setattr(
             ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
         )
@@ -1448,3 +1449,241 @@ class TestLogMonitorTriage:
             tail_remote_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
         )
         assert len(llm_not_actionable.calls) == 1
+
+
+# ── Retention policy (item 32) ────────────────────────────────────────────────────
+
+
+class TestEnforceHaRetention:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert(self, db_path, slug, location, ts, deleted_from_ha_at=None):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location, deleted_from_ha_at)"
+                " VALUES (?, ?, 'ACTIVE', 0, ?, ?)",
+                (ts, slug, location, deleted_from_ha_at),
+            )
+            conn.commit()
+
+    def test_no_deletion_when_at_limit(self, db_path, monkeypatch):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 2)
+        self._insert(db_path, "slug-a", "both", 1000)
+        self._insert(db_path, "slug-b", "both", 2000)
+        ssh = FakeSSHClient()
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        assert ssh.commands_run == []
+
+    def test_deletes_oldest_when_over_limit(self, db_path, monkeypatch):
+        import asyncio
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 2)
+        self._insert(db_path, "slug-old", "both", 1000)
+        self._insert(db_path, "slug-mid", "both", 2000)
+        self._insert(db_path, "slug-new", "both", 3000)
+        ssh = FakeSSHClient(command_results={"ha backups remove slug-old": (0, "", "")})
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT deleted_from_ha_at FROM backup_registry WHERE backup_slug = 'slug-old'"
+            ).fetchone()
+        assert row[0] is not None
+
+    def test_never_deletes_most_recent(self, db_path, monkeypatch):
+        import asyncio
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        self._insert(db_path, "slug-old", "both", 1000)
+        self._insert(db_path, "slug-newest", "both", 9999)
+        ssh = FakeSSHClient(command_results={"ha backups remove slug-old": (0, "", "")})
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT deleted_from_ha_at FROM backup_registry"
+                " WHERE backup_slug = 'slug-newest'"
+            ).fetchone()
+        assert row[0] is None
+
+    def test_skips_ha_only_slugs(self, db_path, monkeypatch):
+        import asyncio
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        self._insert(db_path, "slug-ha-only", "ha", 1000)
+        self._insert(db_path, "slug-new", "both", 2000)
+        ssh = FakeSSHClient()
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT deleted_from_ha_at FROM backup_registry"
+                " WHERE backup_slug = 'slug-ha-only'"
+            ).fetchone()
+        assert row[0] is None
+        assert ssh.commands_run == []
+
+    def test_ssh_error_on_delete_logs_warning_no_raise(self, db_path, monkeypatch):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        self._insert(db_path, "slug-fail", "both", 1000)
+        self._insert(db_path, "slug-keep", "both", 2000)
+
+        class FailOnRemove(FakeSSHClient):
+            async def run(self, cmd, check=False):
+                if "remove" in cmd:
+                    raise OSError("SSH connection lost")
+                return await super().run(cmd, check=check)
+
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=FailOnRemove()))
+
+
+class TestPurgeLocalBackups:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert(self, db_path, slug, offloaded_at):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location, offloaded_at)"
+                " VALUES (?, ?, 'ACTIVE', 0, 'both', ?)",
+                (int(offloaded_at), slug, offloaded_at),
+            )
+            conn.commit()
+
+    def test_old_file_deleted_and_inventory_updated(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import time
+        import sqlite3
+        import ha_agent_advanced
+
+        old_ts = time.time() - (40 * 86400)
+        new_ts = time.time() - (1 * 86400)
+        self._insert(db_path, "slug-old", old_ts)
+        self._insert(db_path, "slug-new", new_ts)
+
+        local_dir = tmp_path / "backups"
+        local_dir.mkdir()
+        (local_dir / "slug-old.tar").write_bytes(b"data")
+        (local_dir / "slug-new.tar").write_bytes(b"data")
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_LOCAL_DAYS", 30)
+
+        ha_agent_advanced.purge_local_backups()
+
+        assert not (local_dir / "slug-old.tar").exists()
+        assert (local_dir / "slug-new.tar").exists()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = 'slug-old'"
+            ).fetchone()
+        assert row[0] == "ha"
+
+    def test_most_recent_not_purged(self, db_path, monkeypatch, tmp_path):
+        import time
+        import ha_agent_advanced
+
+        old_ts = time.time() - (60 * 86400)
+        self._insert(db_path, "only-slug", old_ts)
+
+        local_dir = tmp_path / "backups"
+        local_dir.mkdir()
+        (local_dir / "only-slug.tar").write_bytes(b"data")
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_LOCAL_DAYS", 30)
+
+        ha_agent_advanced.purge_local_backups()
+        assert (local_dir / "only-slug.tar").exists()
+
+    def test_noop_when_dir_missing(self, db_path, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "nonexistent")
+        )
+        ha_agent_advanced.purge_local_backups()
+
+    def test_recent_files_not_deleted(self, db_path, monkeypatch, tmp_path):
+        import time
+        import ha_agent_advanced
+
+        recent_ts = time.time() - (5 * 86400)
+        self._insert(db_path, "slug-recent", recent_ts)
+
+        local_dir = tmp_path / "backups"
+        local_dir.mkdir()
+        (local_dir / "slug-recent.tar").write_bytes(b"data")
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_LOCAL_DAYS", 30)
+
+        ha_agent_advanced.purge_local_backups()
+        assert (local_dir / "slug-recent.tar").exists()
+
+
+class TestPrintBackupStatus:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_empty_prints_no_backups(self, db_path, capsys):
+        import ha_agent_advanced
+
+        ha_agent_advanced.print_backup_status()
+        out = capsys.readouterr().out
+        assert "no backups" in out.lower()
+
+    def test_shows_slug_and_marks(self, db_path, capsys):
+        import sqlite3
+        import ha_agent_advanced
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location, offloaded_at)"
+                " VALUES (?, 'abc123', 'ACTIVE', 10485760, 'both', ?)",
+                (int(__import__("time").time()), __import__("time").time()),
+            )
+            conn.commit()
+
+        ha_agent_advanced.print_backup_status()
+        out = capsys.readouterr().out
+        assert "abc123" in out
+        assert "✓" in out

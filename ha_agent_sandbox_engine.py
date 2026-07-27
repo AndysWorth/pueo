@@ -40,7 +40,11 @@ from utils.ssh_client import AsyncSSHClient
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix
-from ha_agent_advanced import offload_backup_to_local
+from ha_agent_advanced import (
+    offload_backup_to_local,
+    enforce_ha_retention,
+    purge_local_backups,
+)
 
 log = get_logger("ha_agent_sandbox_engine")
 
@@ -431,6 +435,8 @@ async def main(
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)
         record_backup_slug(backup_slug)
         await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
+        await enforce_ha_retention(ssh_client=ssh_client)
+        purge_local_backups()
 
         # 2. Deploy fix into sandbox and execute runtime checks
         passed_sandbox = await deploy_and_test_in_sandbox(

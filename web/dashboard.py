@@ -1,6 +1,7 @@
 """HITL web dashboard — queue approval/rejection of pending repair actions."""
 
 import json
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
-from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR
+from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
 
 app = FastAPI(title="Pueo HITL Dashboard")
 app.mount(
@@ -114,6 +115,48 @@ async def reject(nid: str) -> RedirectResponse:
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         (watch_dir / f"{nid}.rejected").touch()
     return RedirectResponse(url="/", status_code=303)
+
+
+def _load_backup_inventory() -> list[dict]:
+    """Return backup_registry rows ordered newest-first for the dashboard tab."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT backup_slug, size_bytes, timestamp, location,"
+                " deleted_from_ha_at, offloaded_at"
+                " FROM backup_registry ORDER BY timestamp DESC"
+            ).fetchall()
+    except Exception:
+        return []
+
+    now = time.time()
+    result = []
+    for slug, size_bytes, ts, location, deleted_from_ha_at, offloaded_at in rows:
+        age_secs = now - (ts or now)
+        age_days = age_secs / 86400
+        age_str = f"{age_days:.0f}d" if age_days >= 1 else f"{age_days * 24:.0f}h"
+        result.append(
+            {
+                "slug": slug,
+                "size_mb": round((size_bytes or 0) / (1024 * 1024), 1),
+                "age": age_str,
+                "on_ha": deleted_from_ha_at is None,
+                "on_pueo": location in ("both", "pueo"),
+                "offloaded_at": offloaded_at,
+                "deleted_from_ha_at": deleted_from_ha_at,
+            }
+        )
+    return result
+
+
+@app.get("/backups", response_class=HTMLResponse)
+async def backups(request: Request) -> HTMLResponse:
+    inventory = _load_backup_inventory()
+    return templates.TemplateResponse(
+        request,
+        "backups.html",
+        {"inventory": inventory},
+    )
 
 
 def run_dashboard() -> None:
