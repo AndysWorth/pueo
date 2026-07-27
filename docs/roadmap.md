@@ -40,9 +40,9 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
 | Phase 12: HA Update Manager                        | ❌ Not started           | 33–37  |
 | Phase 13: HA Notification Intelligence             | ❌ Not started           | 38–41  |
-| Phase 14: Evals                                    | ❌ Not started           | 42–43  |
-| Phase 15: Tool-Calling Agent Loop                  | ❌ Not started           | 44–50  |
-| Phase 16: RAG Knowledge Layer                      | ❌ Not started           | 51–54  |
+| Phase 14: Tool-Calling Agent Loop                  | ❌ Not started           | 42–48  |
+| Phase 15: RAG Knowledge Layer                      | ❌ Not started           | 49–52  |
+| Phase 16: Evals                                    | ❌ Not started           | 53–54  |
 | Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
 | Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |
 | Phase 19: Federated Case Library                   | ❌ Not started           | 62–64  |
@@ -115,7 +115,7 @@ Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
 **Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
 
-**Delivered in Phase 14 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 13 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
+**Delivered in Phase 15 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
 
 **Tasks:**
 - Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)

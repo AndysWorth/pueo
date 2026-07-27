@@ -22,7 +22,7 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 | Role | Description |
 |------|-------------|
 | Contribute | Submit local episodes via a PR to `pueo-cases`; user reviews the redacted YAML before submitting |
-| Consume | Weekly pull of merged cases → embed → upsert into `community_cases` ChromaDB collection (created in Phase 16 but empty until now) |
+| Consume | Weekly pull of merged cases → embed → upsert into `community_cases` ChromaDB collection (created in Phase 15 but empty until now) |
 
 ---
 
@@ -36,7 +36,7 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 
 ---
 
-### Submission Flow (item 53)
+### Submission Flow (item 62)
 
 1. User selects episode from dashboard episodes tab
 2. Pueo renders the anonymized YAML (from `--mode export-episodes` logic) with editable redaction fields
@@ -46,16 +46,16 @@ Each Pueo instance only learns from the failures in its own home. HA failures fo
 
 ---
 
-### Ingest Flow (item 54)
+### Ingest Flow (item 63)
 
-- Weekly `launchd` job: `python main.py --mode refresh-knowledge` (extends existing RAG refresh from Phase 16)
+- Weekly `launchd` job: `python main.py --mode refresh-knowledge` (extends existing RAG refresh from Phase 15)
 - Pull merged PRs from `pueo-cases` since last ingest timestamp
 - Parse each YAML → embed → upsert into `community_cases` with metadata: `source_pr`, `ingest_date`, `trigger_type`
 - Log ingest count; surface in `--mode backup-status` style summary
 
 ---
 
-### Eval Scenario Generation (item 55)
+### Eval Scenario Generation (item 64)
 
 For each ingested case, generate a scenario file:
 ```yaml

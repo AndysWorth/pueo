@@ -61,19 +61,19 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ☐ TODO |
 | 40   | HITL notification cards + dismissal service call; --mode notifications | ☐ TODO |
 | 41   | Notifications tab in HITL dashboard: pending, history, filters       | ☐ TODO |
-| 42   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ☐ TODO |
-| 43   | Evals — /project:run-evals slash command + optional CI job           | ☐ TODO |
-| 44   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ☐ TODO |
-| 45   | Tool execution: read_config, read_logs, run_ha_command, read_file, query_netalertx, apply_fix, verify_fix, finish_repair | ☐ TODO |
-| 46   | AgentLoop controller: budget accounting, tool dispatch, termination detection | ☐ TODO |
-| 47   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
-| 48   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
-| 49   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ☐ TODO |
-| 50   | Eval regression check against Phase 14 baseline                      | ☐ TODO |
-| 51   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
-| 52   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
-| 53   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
-| 54   | Weekly refresh via macOS launchd plist; vector store maintenance     | ☐ TODO |
+| 42   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ☐ TODO |
+| 43   | Tool execution: read_config, read_logs, run_ha_command, read_file, query_netalertx, apply_fix, verify_fix, finish_repair | ☐ TODO |
+| 44   | AgentLoop controller: budget accounting, tool dispatch, termination detection | ☐ TODO |
+| 45   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
+| 46   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
+| 47   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ☐ TODO |
+| 48   | Eval regression check against Phase 16 baseline                      | ☐ TODO |
+| 49   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
+| 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
+| 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
+| 52   | Weekly refresh via macOS launchd plist; vector store maintenance     | ☐ TODO |
+| 53   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ☐ TODO |
+| 54   | Evals — /project:run-evals slash command + optional CI job           | ☐ TODO |
 | 55   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
 | 56   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
 | 57   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
@@ -233,44 +233,44 @@ Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`
 
 ---
 
-### Phase 14 — Evals (2 items)
-Items 42–43. Makes regressions visible: unit tests verify code correctness, evals verify agent intelligence. Synthetic YAML scenario library run through the real Ollama pipeline; scored and baselined in git.
+### Phase 14 — Tool-Calling Agent Loop (7 items)
+Items 42–48. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Requires Phase 16 baseline to validate no regression.
 
 | Items | Concern |
 |-------|---------|
-| 42 | Scenario library (≥10 YAML files) + run_evals.py + baseline.json scoring |
-| 43 | /project:run-evals slash command + optional gated CI job |
-
-→ [plan/evals.md](plan/evals.md)
-
----
-
-### Phase 15 — Tool-Calling Agent Loop (7 items)
-Items 44–50. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Requires Phase 14 baseline to validate no regression.
-
-| Items | Concern |
-|-------|---------|
-| 44–45 | Tool registry Pydantic schemas + execution implementations |
-| 46 | AgentLoop controller |
-| 47–48 | HA sandbox engine + NetAlertX healer refactors |
-| 49 | Safety audit |
-| 50 | Eval regression check |
+| 42–43 | Tool registry Pydantic schemas + execution implementations |
+| 44 | AgentLoop controller |
+| 45–46 | HA sandbox engine + NetAlertX healer refactors |
+| 47 | Safety audit |
+| 48 | Eval regression check |
 
 → [plan/tool-loop.md](plan/tool-loop.md)
 
 ---
 
-### Phase 16 — RAG Knowledge Layer (4 items)
-Items 51–54. Keeps the agent knowledgeable about HA breaking changes without WAN calls during fix cycles. ChromaDB + `nomic-embed-text` via Ollama; weekly scrapers for HA release notes and HACS changelogs; `query_knowledge` tool registered in the loop (slot reserved from item 44). Requires Phase 15 complete.
+### Phase 15 — RAG Knowledge Layer (4 items)
+Items 49–52. Keeps the agent knowledgeable about HA breaking changes without WAN calls during fix cycles. ChromaDB + `nomic-embed-text` via Ollama; weekly scrapers for HA release notes and HACS changelogs; `query_knowledge` tool registered in the loop (slot reserved from item 42). Requires Phase 14 complete.
 
 | Items | Concern |
 |-------|---------|
-| 51 | ChromaDB setup + embedding client wrapper |
-| 52 | HA release notes scraper |
-| 53 | HACS changelog scraper + query_knowledge tool |
-| 54 | Weekly launchd refresh + vector store maintenance |
+| 49 | ChromaDB setup + embedding client wrapper |
+| 50 | HA release notes scraper |
+| 51 | HACS changelog scraper + query_knowledge tool |
+| 52 | Weekly launchd refresh + vector store maintenance |
 
 → [plan/rag-tool.md](plan/rag-tool.md)
+
+---
+
+### Phase 16 — Evals (2 items)
+Items 53–54. Makes regressions visible: unit tests verify code correctness, evals verify agent intelligence. Synthetic YAML scenario library run through the real Ollama pipeline; scored and baselined in git.
+
+| Items | Concern |
+|-------|---------|
+| 53 | Scenario library (≥10 YAML files) + run_evals.py + baseline.json scoring |
+| 54 | /project:run-evals slash command + optional gated CI job |
+
+→ [plan/evals.md](plan/evals.md)
 
 ---
 
@@ -302,7 +302,7 @@ Items 59–61. Every successful repair cycle serializes a structured `RepairEpis
 ---
 
 ### Phase 19 — Federated Case Library (3 items)
-Items 62–64. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 14 eval loop.
+Items 62–64. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
 
 | Items | Concern |
 |-------|---------|

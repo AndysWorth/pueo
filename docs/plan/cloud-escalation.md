@@ -30,7 +30,7 @@ Cloud escalation is explicitly opt-in, user-approved, and per-incident. It does 
 - Summary of what the local model tried (tool call sequence from `AgentLoopResult.steps`)
 - Termination reason (`exhausted` / `timeout` / `fix_failed`) and step count
 - Estimated cost (token count estimate × current Claude pricing, computed before API call)
-- Scope: which tools Claude will have access to (same registry as local loop, including `query_knowledge` if Phase 16 is installed)
+- Scope: which tools Claude will have access to (same registry as local loop, including `query_knowledge` if Phase 15 is installed)
 - Approve / Reject / Approve with budget cap override
 
 **Billing guard:**

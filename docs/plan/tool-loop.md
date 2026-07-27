@@ -84,13 +84,13 @@ AgentLoopResult(
 
 | Item | Description |
 |------|-------------|
-| 44 | Tool registry + Pydantic schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` |
-| 45 | Tool execution implementations for all tools in the table above |
-| 46 | `AgentLoop` controller: budget accounting, tool dispatch, termination detection |
-| 47 | HA sandbox engine refactor: replace linear pipeline with `AgentLoop.run()` |
-| 48 | NetAlertX healer refactor: same |
-| 49 | Safety audit: backup invariant in `apply_fix`; `run_ha_command` allowlist; `apply_fix` once-per-loop |
-| 50 | Eval regression check: run `evals/run_evals.py` against refactored pipeline; score must not drop vs item-42 baseline |
+| 42 | Tool registry + Pydantic schemas: `ToolDefinition`, `ToolCall`, `ToolResult`, `AgentStep` |
+| 43 | Tool execution implementations for all tools in the table above |
+| 44 | `AgentLoop` controller: budget accounting, tool dispatch, termination detection |
+| 45 | HA sandbox engine refactor: replace linear pipeline with `AgentLoop.run()` |
+| 46 | NetAlertX healer refactor: same |
+| 47 | Safety audit: backup invariant in `apply_fix`; `run_ha_command` allowlist; `apply_fix` once-per-loop |
+| 48 | Eval regression check: run `evals/run_evals.py` against refactored pipeline; score must not drop vs item-53 baseline |
 
 ---
 
@@ -100,7 +100,7 @@ AgentLoopResult(
 - `read_file` enforces an allowlist of permitted remote directories (`/config/`, `/backup/`)
 - The backup invariant lives inside `apply_fix`, not at the loop level — the loop cannot bypass it
 - `AutonomyGate.require_approval()` is called inside `apply_fix` before the backup trigger, matching current ordering in `ha_agent_sandbox_engine.py`
-- The `query_knowledge` tool (Milestone 2 / Phase 16) is registered here but implemented later; the registry slot is reserved from item 44
+- The `query_knowledge` tool (Milestone 2 / Phase 15) is registered here but implemented later; the registry slot is reserved from item 42
 
 ---
 
@@ -109,5 +109,5 @@ AgentLoopResult(
 - `AgentLoop.run()` replaces the linear pipeline in `ha_agent_sandbox_engine.py` and `netalertx/healer.py`
 - All tools are unit-tested with `FakeSSHClient` / `FakeLLMClient`; no real SSH or Ollama calls in the unit suite
 - `apply_fix` still enforces backup-first; safety audit signed off
-- Eval regression check passes (score does not drop vs Phase 14 / item-42 baseline)
+- Eval regression check passes (score does not drop vs Phase 16 / item-53 baseline)
 - ADR 006 committed

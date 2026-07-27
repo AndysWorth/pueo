@@ -1,6 +1,6 @@
 # Agent Quality & Evaluation
 
-Part of the [Roadmap](../roadmap.md) · Milestone 5.
+Part of the [Roadmap](../roadmap.md) · Milestone 5 · Phase 16.
 
 ---
 
@@ -23,8 +23,8 @@ Part of the [Roadmap](../roadmap.md) · Milestone 5.
 
 | Item | Description |
 |------|-------------|
-| 42 | `evals/scenarios/` with ≥10 YAML scenario files; `evals/run_evals.py` scoring pipeline; `evals/baseline.json` saved on first run and compared on subsequent runs |
-| 43 | `/project:run-evals` slash command (`.claude/commands/run-evals.md`); optional gated CI workflow job |
+| 53 | `evals/scenarios/` with ≥10 YAML scenario files; `evals/run_evals.py` scoring pipeline; `evals/baseline.json` saved on first run and compared on subsequent runs |
+| 54 | `/project:run-evals` slash command (`.claude/commands/run-evals.md`); optional gated CI workflow job |
 
 ---
 
