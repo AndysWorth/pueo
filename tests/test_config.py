@@ -649,3 +649,18 @@ class TestHAUpdateManagerConfig:
         assert config.HA_API_PORT == 9000
         assert config.HA_UPDATE_CHECK_INTERVAL_HOURS == 6.0
         assert config.HA_UPDATE_NOTIFY_ON_AVAILABLE is False
+
+    def test_update_release_notes_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR == ".cache/ha_release_notes/"
+
+    def test_update_release_notes_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"update_release_notes_cache_dir": "/tmp/ha_notes/"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR == "/tmp/ha_notes/"

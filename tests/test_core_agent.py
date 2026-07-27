@@ -1959,3 +1959,283 @@ class TestRunUpdateCheck:
         assert updates == []
         out = capsys.readouterr().out
         assert "Error" in out
+
+
+# ── UpdateReadinessReport schema ─────────────────────────────────────────────────
+class TestUpdateReadinessReport:
+    def test_valid_construction(self):
+        from ha_update_manager import UpdateReadinessReport
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=True,
+            breaking_changes=["Template syntax changed"],
+            affected_config_keys=["template"],
+            pueo_command_risks=[],
+            recommendation="Review template changes before updating.",
+        )
+        assert report.target_version == "2026.7.0"
+        assert report.safe_to_update is True
+        assert len(report.breaking_changes) == 1
+
+    def test_empty_lists_valid(self):
+        from ha_update_manager import UpdateReadinessReport
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation="No breaking changes found.",
+        )
+        assert report.breaking_changes == []
+        assert report.pueo_command_risks == []
+
+    def test_missing_required_field_raises(self):
+        import pytest
+        from pydantic import ValidationError
+        from ha_update_manager import UpdateReadinessReport
+
+        with pytest.raises(ValidationError):
+            UpdateReadinessReport(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="ok",
+                # missing target_version
+            )
+
+    def test_json_round_trip(self):
+        from ha_update_manager import UpdateReadinessReport
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=False,
+            breaking_changes=["CLI rename: ha addons -> ha apps"],
+            affected_config_keys=[],
+            pueo_command_risks=["ha apps info <slug>"],
+            recommendation="CLI command renamed; Pueo self-check required.",
+        )
+        json_str = report.model_dump_json()
+        restored = UpdateReadinessReport.model_validate_json(json_str)
+        assert restored.target_version == report.target_version
+        assert restored.pueo_command_risks == report.pueo_command_risks
+
+
+# ── fetch_release_notes_cached ───────────────────────────────────────────────────
+class TestFetchReleaseNotesCached:
+    def test_returns_cached_content_when_file_exists(self, tmp_path):
+        cached = tmp_path / "2026.7.0.txt"
+        cached.write_text("Cached release notes content")
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(fetch_release_notes_cached("2026.7.0", str(tmp_path)))
+        assert result == "Cached release notes content"
+
+    def test_fetches_and_caches_when_file_missing(self, tmp_path):
+        async def fake_fetcher(version: str) -> str:
+            return f"Release notes for {version}"
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(
+            fetch_release_notes_cached("2026.7.0", str(tmp_path), _fetcher=fake_fetcher)
+        )
+        assert result == "Release notes for 2026.7.0"
+        assert (tmp_path / "2026.7.0.txt").exists()
+        assert (tmp_path / "2026.7.0.txt").read_text() == "Release notes for 2026.7.0"
+
+    def test_cache_hit_skips_fetcher(self, tmp_path):
+        cached = tmp_path / "2026.7.0.txt"
+        cached.write_text("Cached")
+        fetch_called = []
+
+        async def should_not_call(version: str) -> str:
+            fetch_called.append(version)
+            return "Should not be called"
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        asyncio.run(
+            fetch_release_notes_cached(
+                "2026.7.0", str(tmp_path), _fetcher=should_not_call
+            )
+        )
+        assert fetch_called == []
+
+    def test_creates_cache_dir_if_missing(self, tmp_path):
+        nested = tmp_path / "a" / "b" / "c"
+
+        async def fake_fetcher(version: str) -> str:
+            return "notes"
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        asyncio.run(
+            fetch_release_notes_cached("2026.7.0", str(nested), _fetcher=fake_fetcher)
+        )
+        assert (nested / "2026.7.0.txt").exists()
+
+
+# ── analyze_breaking_changes ─────────────────────────────────────────────────────
+class TestAnalyzeBreakingChanges:
+    @staticmethod
+    def _make_core_update():
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.6.0",
+            latest_version="2026.7.0",
+            update_available=True,
+            release_url="https://github.com/home-assistant/core/releases/tag/2026.7.0",
+            release_summary="Bug fixes and improvements",
+            in_progress=False,
+        )
+
+    @staticmethod
+    def _fake_llm(
+        safe_to_update: bool = True,
+        breaking_changes: list | None = None,
+        pueo_command_risks: list | None = None,
+    ):
+        from ha_update_manager import UpdateReadinessReport
+        from utils.ollama_client import FakeLLMClient
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=safe_to_update,
+            breaking_changes=breaking_changes or [],
+            affected_config_keys=[],
+            pueo_command_risks=pueo_command_risks or [],
+            recommendation="No breaking changes.",
+        )
+        return FakeLLMClient(report.model_dump_json())
+
+    def test_returns_readiness_report(self):
+        from ha_update_manager import analyze_breaking_changes
+
+        update = self._make_core_update()
+        llm = self._fake_llm()
+        report = asyncio.run(
+            analyze_breaking_changes(update, "homeassistant: ~", "release notes", llm)
+        )
+        assert report.target_version == "2026.7.0"
+        assert report.safe_to_update is True
+
+    def test_llm_called_with_version_info(self):
+        from ha_update_manager import analyze_breaking_changes
+
+        update = self._make_core_update()
+        llm = self._fake_llm()
+        asyncio.run(analyze_breaking_changes(update, "config: {}", "notes", llm))
+        assert len(llm.calls) == 1
+        messages = llm.calls[0]["messages"]
+        user_content = messages[-1]["content"]
+        assert "2026.7.0" in user_content
+        assert "2026.6.0" in user_content
+
+    def test_breaking_changes_propagated(self):
+        from ha_update_manager import analyze_breaking_changes
+
+        update = self._make_core_update()
+        llm = self._fake_llm(
+            safe_to_update=False,
+            breaking_changes=["Template syntax changed"],
+            pueo_command_risks=["ha apps list renamed"],
+        )
+        report = asyncio.run(analyze_breaking_changes(update, "", "release notes", llm))
+        assert report.safe_to_update is False
+        assert "Template syntax changed" in report.breaking_changes
+        assert len(report.pueo_command_risks) == 1
+
+
+# ── run_update_check + analysis integration ───────────────────────────────────────
+class TestRunUpdateCheckWithAnalysis:
+    @staticmethod
+    def _fake_rest(with_core_update: bool = True):
+        from utils.ha_rest_client import FakeHARestClient
+
+        states = []
+        if with_core_update:
+            states.append(
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                        "release_url": "https://github.com/home-assistant/core/releases/tag/2026.7.0",
+                    },
+                }
+            )
+        return FakeHARestClient(states=states)
+
+    def test_analysis_runs_for_core_update(self, tmp_path, capsys):
+        from ha_update_manager import UpdateReadinessReport, run_update_check
+        from utils.ollama_client import FakeLLMClient
+
+        # Pre-populate the cache so no WAN fetch is needed.
+        (tmp_path / "2026.7.0.txt").write_text("Release notes text")
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation="No breaking changes found.",
+        )
+        llm = FakeLLMClient(report.model_dump_json())
+
+        updates = asyncio.run(
+            run_update_check(
+                ha_rest_client=self._fake_rest(),
+                llm_client=llm,
+                cache_dir=str(tmp_path),
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert len(updates) == 1
+        assert "Breaking Change Analysis" in out
+
+    def test_no_analysis_when_no_core_update(self, tmp_path, capsys):
+        from ha_update_manager import run_update_check
+        from utils.ollama_client import FakeLLMClient
+
+        llm = FakeLLMClient("{}")
+        updates = asyncio.run(
+            run_update_check(
+                ha_rest_client=self._fake_rest(with_core_update=False),
+                llm_client=llm,
+                cache_dir=str(tmp_path),
+            )
+        )
+        assert updates == []
+        assert llm.calls == []
+
+    def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
+        from ha_update_manager import run_update_check
+        from utils.ollama_client import FakeLLMClient
+        from unittest.mock import AsyncMock, patch
+
+        llm = FakeLLMClient("{}")
+        with patch(
+            "ha_update_manager.fetch_release_notes_cached",
+            new=AsyncMock(side_effect=Exception("GitHub unavailable")),
+        ):
+            asyncio.run(
+                run_update_check(
+                    ha_rest_client=self._fake_rest(),
+                    llm_client=llm,
+                    cache_dir=str(tmp_path),
+                )
+            )
+        assert llm.calls == []
+        out = capsys.readouterr().out
+        assert "Warning" in out
