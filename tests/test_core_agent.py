@@ -4355,23 +4355,41 @@ class TestPollForNotifications:
 
         return fake_sleep
 
+    @staticmethod
+    def _make_llm_client():
+        from ha_notification_manager import _NotificationLLMOutput
+        from utils.ollama_client import FakeLLMClient
+
+        out = _NotificationLLMOutput(
+            human_explanation="Test explanation.",
+            recommended_action="Check it.",
+            requires_hitl=True,
+        )
+        return FakeLLMClient(out.model_dump_json())
+
     def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
 
         entity = self._make_notification_entity(
             "http_login", "Login attempt", "Bad creds"
         )
         rest = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest, notifier=notifier, db_path=db_path
+                    ha_rest_client=rest,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    db_path=db_path,
                 )
             )
 
@@ -4379,6 +4397,7 @@ class TestPollForNotifications:
         assert notifier.sent[0]["payload"]["notification_id"] == "http_login"
         assert notifier.sent[0]["payload"]["category"] == "security"
         assert notifier.sent[0]["payload"]["severity"] == "HIGH"
+        assert notifier.sent[0]["payload"]["human_explanation"] == "Test explanation."
 
     def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
@@ -4438,10 +4457,43 @@ class TestPollForNotifications:
         from ha_log_monitor import poll_for_notifications
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
 
         entity = self._make_notification_entity(
             "some_integration_abc", message="Something failed"
         )
+        rest = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        llm = self._make_llm_client()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=rest,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    db_path=db_path,
+                )
+            )
+
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["category"] == "other"
+        assert notifier.sent[0]["payload"]["severity"] == "MEDIUM"
+
+    def test_enrichment_failure_skips_notification(self, db_path, monkeypatch):
+        """If enrich_and_analyze_notification raises, the notification is skipped."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        class ExplodingLLM:
+            async def chat(self, model, messages, options, format):
+                raise RuntimeError("LLM exploded")
+
+        entity = self._make_notification_entity("http_login", "Login", "Bad creds")
         rest = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4449,10 +4501,460 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest, notifier=notifier, db_path=db_path
+                    ha_rest_client=rest,
+                    notifier=notifier,
+                    llm_client=ExplodingLLM(),
+                    db_path=db_path,
                 )
             )
 
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["category"] == "other"
-        assert notifier.sent[0]["payload"]["severity"] == "MEDIUM"
+        assert len(notifier.sent) == 0
+
+    def test_hitl_sent_at_recorded_after_notification(self, db_path, monkeypatch):
+        """mark_notification_hitl_sent is called after the notifier send."""
+        import asyncio as asyncio_mod
+        import sqlite3
+        from ha_log_monitor import poll_for_notifications
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        entity = self._make_notification_entity(
+            "invalid_config", "Config error", "Bad YAML"
+        )
+        rest = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        llm = self._make_llm_client()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_rest_client=rest,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    db_path=db_path,
+                )
+            )
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                ("invalid_config",),
+            ).fetchone()
+        assert row[0] is not None
+
+
+# ── ha_notification_manager — extract_ip_from_message ────────────────────────────
+
+
+class TestExtractIpFromMessage:
+    def test_extracts_ip_after_from(self):
+        from ha_notification_manager import extract_ip_from_message
+
+        ip = extract_ip_from_message("Invalid login attempt from 192.168.1.42")
+        assert ip == "192.168.1.42"
+
+    def test_returns_none_when_no_ip(self):
+        from ha_notification_manager import extract_ip_from_message
+
+        assert extract_ip_from_message("Bad credentials supplied") is None
+
+    def test_returns_none_for_empty_string(self):
+        from ha_notification_manager import extract_ip_from_message
+
+        assert extract_ip_from_message("") is None
+
+    def test_extracts_first_ip_when_multiple(self):
+        from ha_notification_manager import extract_ip_from_message
+
+        ip = extract_ip_from_message("Login from 10.0.0.1 and also from 10.0.0.2")
+        assert ip == "10.0.0.1"
+
+    def test_ignores_ip_not_preceded_by_from(self):
+        from ha_notification_manager import extract_ip_from_message
+
+        assert extract_ip_from_message("Source: 192.168.1.1 connected") is None
+
+
+# ── ha_notification_manager — enrich_http_login ──────────────────────────────────
+
+
+class TestEnrichHttpLogin:
+    def test_netalertx_match_sets_known_device(self):
+        from ha_notification_manager import enrich_http_login
+
+        class FakeNAX:
+            async def get_devices(self):
+                return [{"devLastIP": "192.168.1.42", "devName": "Andy's Phone"}]
+
+        ctx = asyncio.run(enrich_http_login("192.168.1.42", netalertx_client=FakeNAX()))
+        assert ctx["netalertx_name"] == "Andy's Phone"
+        assert ctx["is_known_device"] is True
+
+    def test_ws_match_sets_known_device(self):
+        from ha_notification_manager import enrich_http_login
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "dev1",
+                    "name": "Andy's Phone",
+                    "name_by_user": "Andy's Phone",
+                    "connections": [["ip", "192.168.1.42"]],
+                }
+            ]
+        )
+        ctx = asyncio.run(enrich_http_login("192.168.1.42", ws_client=ws))
+        assert ctx["ha_device_name"] == "Andy's Phone"
+        assert ctx["is_known_device"] is True
+        assert ws.calls == ["get_device_registry"]
+
+    def test_no_match_is_unknown_device(self):
+        from ha_notification_manager import enrich_http_login
+
+        class FakeNAX:
+            async def get_devices(self):
+                return [{"devLastIP": "10.0.0.1", "devName": "Other Device"}]
+
+        ctx = asyncio.run(
+            enrich_http_login(
+                "192.168.1.99",
+                netalertx_client=FakeNAX(),
+            )
+        )
+        assert ctx["is_known_device"] is False
+        assert ctx["netalertx_name"] is None
+
+    def test_netalertx_failure_continues(self):
+        from ha_notification_manager import enrich_http_login
+
+        class ExplodingNAX:
+            async def get_devices(self):
+                raise RuntimeError("NetAlertX down")
+
+        ctx = asyncio.run(
+            enrich_http_login("192.168.1.1", netalertx_client=ExplodingNAX())
+        )
+        assert ctx["netalertx_name"] is None
+
+    def test_ws_failure_continues(self):
+        from ha_notification_manager import enrich_http_login
+
+        class ExplodingWS:
+            async def get_device_registry(self):
+                raise RuntimeError("WS down")
+
+        ctx = asyncio.run(enrich_http_login("192.168.1.1", ws_client=ExplodingWS()))
+        assert ctx["ha_device_name"] is None
+
+    def test_source_ip_always_in_context(self):
+        from ha_notification_manager import enrich_http_login
+
+        ctx = asyncio.run(enrich_http_login("1.2.3.4"))
+        assert ctx["source_ip"] == "1.2.3.4"
+
+    def test_ws_prefers_name_by_user_over_name(self):
+        from ha_notification_manager import enrich_http_login
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "dev1",
+                    "name": "Generic Name",
+                    "name_by_user": "My Custom Name",
+                    "connections": [["ip", "192.168.1.5"]],
+                }
+            ]
+        )
+        ctx = asyncio.run(enrich_http_login("192.168.1.5", ws_client=ws))
+        assert ctx["ha_device_name"] == "My Custom Name"
+
+    def test_ws_falls_back_to_name_when_no_name_by_user(self):
+        from ha_notification_manager import enrich_http_login
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "dev1",
+                    "name": "Fallback Name",
+                    "name_by_user": None,
+                    "connections": [["ip", "192.168.1.6"]],
+                }
+            ]
+        )
+        ctx = asyncio.run(enrich_http_login("192.168.1.6", ws_client=ws))
+        assert ctx["ha_device_name"] == "Fallback Name"
+
+
+# ── ha_notification_manager — analyze_notification ───────────────────────────────
+
+
+class TestAnalyzeNotification:
+    @staticmethod
+    def _make_llm_client(requires_hitl: bool = True):
+        from ha_notification_manager import _NotificationLLMOutput
+        from utils.ollama_client import FakeLLMClient
+
+        out = _NotificationLLMOutput(
+            human_explanation="Someone tried to log in.",
+            recommended_action="Change your password.",
+            requires_hitl=requires_hitl,
+        )
+        return FakeLLMClient(out.model_dump_json())
+
+    def test_returns_notification_analysis(self):
+        from ha_notification_manager import NotificationAnalysis, analyze_notification
+
+        result = asyncio.run(
+            analyze_notification(
+                "http_login",
+                "Login attempt",
+                "Bad creds from 192.168.1.1",
+                {"source_ip": "192.168.1.1", "is_known_device": False},
+                "",
+                llm_client=self._make_llm_client(),
+                category="security",
+                severity="CRITICAL",
+            )
+        )
+        assert isinstance(result, NotificationAnalysis)
+        assert result.notification_id == "http_login"
+        assert result.category == "security"
+        assert result.severity == "CRITICAL"
+        assert result.human_explanation == "Someone tried to log in."
+        assert result.requires_hitl is True
+
+    def test_passes_config_content_truncated(self):
+        from ha_notification_manager import _NotificationLLMOutput, analyze_notification
+        from utils.ollama_client import FakeLLMClient
+
+        llm = FakeLLMClient(
+            _NotificationLLMOutput(
+                human_explanation="Config broken.",
+                recommended_action="Fix it.",
+                requires_hitl=True,
+            ).model_dump_json()
+        )
+        result = asyncio.run(
+            analyze_notification(
+                "invalid_config",
+                None,
+                "Error in sensor platform",
+                {},
+                "homeassistant:\n  name: Home\n",
+                llm_client=llm,
+                category="config_error",
+                severity="HIGH",
+            )
+        )
+        assert result.original_message == "Error in sensor platform"
+        assert result.original_title is None
+        assert len(llm.calls) == 1
+        user_msg = llm.calls[0]["messages"][1]["content"]
+        assert "configuration.yaml" in user_msg
+
+    def test_enriched_context_in_payload(self):
+        from ha_notification_manager import analyze_notification
+
+        ctx = {"source_ip": "10.0.0.1", "is_known_device": True}
+        result = asyncio.run(
+            analyze_notification(
+                "http_login", None, "msg", ctx, "", llm_client=self._make_llm_client()
+            )
+        )
+        assert result.enriched_context == ctx
+
+    def test_requires_hitl_false_propagates(self):
+        from ha_notification_manager import analyze_notification
+
+        result = asyncio.run(
+            analyze_notification(
+                "other",
+                None,
+                "msg",
+                {},
+                "",
+                llm_client=self._make_llm_client(requires_hitl=False),
+            )
+        )
+        assert result.requires_hitl is False
+
+
+# ── ha_notification_manager — enrich_and_analyze_notification ────────────────────
+
+
+class TestEnrichAndAnalyzeNotification:
+    @staticmethod
+    def _make_llm_client(requires_hitl: bool = True):
+        from ha_notification_manager import _NotificationLLMOutput
+        from utils.ollama_client import FakeLLMClient
+
+        out = _NotificationLLMOutput(
+            human_explanation="Explanation.",
+            recommended_action="Action.",
+            requires_hitl=requires_hitl,
+        )
+        return FakeLLMClient(out.model_dump_json())
+
+    def test_http_login_unknown_ip_escalated_to_critical(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+
+        class NeverMatchNAX:
+            async def get_devices(self):
+                return []
+
+        result = asyncio.run(
+            enrich_and_analyze_notification(
+                "http_login",
+                "Login attempt",
+                "Invalid auth from 192.168.1.99",
+                llm_client=self._make_llm_client(),
+                netalertx_client=NeverMatchNAX(),
+            )
+        )
+        assert result.severity == "CRITICAL"
+        assert result.enriched_context["source_ip"] == "192.168.1.99"
+        assert result.enriched_context["is_known_device"] is False
+
+    def test_http_login_known_ip_stays_high(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+
+        class MatchingNAX:
+            async def get_devices(self):
+                return [{"devLastIP": "192.168.1.42", "devName": "Laptop"}]
+
+        result = asyncio.run(
+            enrich_and_analyze_notification(
+                "http_login",
+                "Login attempt",
+                "Invalid auth from 192.168.1.42",
+                llm_client=self._make_llm_client(),
+                netalertx_client=MatchingNAX(),
+            )
+        )
+        assert result.severity == "HIGH"
+        assert result.enriched_context["netalertx_name"] == "Laptop"
+
+    def test_http_login_no_ip_in_message_stays_high(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+
+        result = asyncio.run(
+            enrich_and_analyze_notification(
+                "http_login",
+                "Login attempt",
+                "Bad credentials supplied",
+                llm_client=self._make_llm_client(),
+            )
+        )
+        assert result.severity == "HIGH"
+        assert result.enriched_context == {}
+
+    def test_invalid_config_includes_config_content_in_llm(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        llm = self._make_llm_client()
+        asyncio.run(
+            enrich_and_analyze_notification(
+                "invalid_config",
+                None,
+                "Configuration error",
+                ssh_client=ssh,
+                llm_client=llm,
+            )
+        )
+        assert len(llm.calls) == 1
+        user_msg = llm.calls[0]["messages"][1]["content"]
+        assert "configuration.yaml" in user_msg
+
+    def test_invalid_config_ssh_failure_continues(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+
+        class ExplodingSSH:
+            async def read_file(self, path):
+                raise RuntimeError("SSH down")
+
+            async def write_file(self, path, content):
+                raise RuntimeError("SSH down")
+
+            async def download_file(self, remote, local):
+                raise RuntimeError("SSH down")
+
+            async def run(self, cmd, check=False):
+                raise RuntimeError("SSH down")
+
+            def stream_lines(self, cmd):
+                raise RuntimeError("SSH down")
+
+        result = asyncio.run(
+            enrich_and_analyze_notification(
+                "invalid_config",
+                None,
+                "Config error",
+                ssh_client=ExplodingSSH(),
+                llm_client=self._make_llm_client(),
+            )
+        )
+        assert result.notification_id == "invalid_config"
+
+    def test_other_notification_no_enrichment(self):
+        from ha_notification_manager import enrich_and_analyze_notification
+
+        result = asyncio.run(
+            enrich_and_analyze_notification(
+                "integration_error",
+                "Integration failed",
+                "Component X failed to load",
+                llm_client=self._make_llm_client(),
+            )
+        )
+        assert result.category == "other"
+        assert result.severity == "MEDIUM"
+        assert result.enriched_context == {}
+
+
+# ── utils/ha_ws_client — FakeHAWebSocketClient ───────────────────────────────────
+
+
+class TestFakeHAWebSocketClient:
+    def test_returns_configured_devices(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        devices = [{"id": "dev1", "name": "Test", "connections": [["ip", "1.2.3.4"]]}]
+        ws = FakeHAWebSocketClient(devices=devices)
+        result = asyncio.run(ws.get_device_registry())
+        assert result == devices
+
+    def test_empty_by_default(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.get_device_registry())
+        assert result == []
+
+    def test_records_calls(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        asyncio.run(ws.get_device_registry())
+        asyncio.run(ws.get_device_registry())
+        assert ws.calls == ["get_device_registry", "get_device_registry"]
+
+    def test_returns_independent_copy(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        devices = [{"id": "dev1"}]
+        ws = FakeHAWebSocketClient(devices=devices)
+        result = asyncio.run(ws.get_device_registry())
+        result.append({"id": "dev2"})
+        assert len(asyncio.run(ws.get_device_registry())) == 1
