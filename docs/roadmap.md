@@ -14,7 +14,7 @@ Strategic capabilities in delivery order.
 | 4. Closed-loop autonomous healing             | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
 | 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
 | 4.6. HA Update Manager                        | ✅ Complete (2026-07-27) | `utils/ha_rest_client.py`                  |
-| 4.7. HA Notification Intelligence             | ❌ Not started           | `utils/ha_ws_client.py`, `web/dashboard.py`|
+| 4.7. HA Notification Intelligence             | ✅ Complete (2026-07-27) | `utils/ha_ws_client.py`, `web/dashboard.py`|
 | 5. Agent quality & evaluation                 | ❌ Not started           | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ❌ Not started           | `utils/agent_loop.py`                      |
 | 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
@@ -39,7 +39,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27     |
 | Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
 | Phase 12: HA Update Manager                        | ✅ Complete (2026-07-27) | 33–37  |
-| Phase 13: HA Notification Intelligence             | ❌ Not started           | 38–41  |
+| Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41  |
 | Phase 14: Tool-Calling Agent Loop                  | ❌ Not started           | 42–48  |
 | Phase 15: RAG Knowledge Layer                      | ❌ Not started           | 49–52  |
 | Phase 16: Evals                                    | ❌ Not started           | 53–54  |

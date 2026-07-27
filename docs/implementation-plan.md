@@ -219,7 +219,7 @@ Items 33–37. Detects available Core, OS, and add-on updates via `update.*` RES
 
 ---
 
-### Phase 13 — HA Notification Intelligence (4 items)
+### Phase 13 — HA Notification Intelligence (4 items) ✅ Complete (2026-07-27)
 Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`) as enriched HITL cards with plain-English explanations, IP device enrichment, and recommended actions. Uses `HARestClient` from item 33. `http_login` notifications enriched via reverse DNS + NetAlertX + HA device registry; unknown-source logins escalated to CRITICAL.
 
 | Items | Concern |
