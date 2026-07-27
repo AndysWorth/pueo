@@ -1317,3 +1317,262 @@ class TestDeferredStatusRecognition:
             elapsed_seconds=0,
         )
         assert r.status == "DEFERRED"
+
+
+# ── Notifications tab ────────────────────────────────────────────────────────
+
+
+class TestNotificationsDashboard:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+
+        path = str(tmp_path / "notif_test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    @pytest.fixture
+    def watch_dir(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+
+        d = tmp_path / "watch"
+        d.mkdir()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(d))
+        return d
+
+    def _insert_notification(
+        self,
+        db_path: str,
+        notification_id: str,
+        category: str = "security",
+        severity: str = "HIGH",
+        first_seen_at: float = 1000.0,
+        dismissed_at: float | None = None,
+        hitl_sent_at: float | None = None,
+    ) -> None:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO notification_history
+                    (notification_id, first_seen_at, last_seen_at, category, severity,
+                     hitl_sent_at, dismissed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    notification_id,
+                    first_seen_at,
+                    first_seen_at,
+                    category,
+                    severity,
+                    hitl_sent_at,
+                    dismissed_at,
+                ),
+            )
+
+    def test_notifications_route_returns_200(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/notifications")
+        assert resp.status_code == 200
+
+    def test_empty_state_shows_no_pending_message(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "no pending notifications" in html.lower()
+
+    def test_nav_has_notifications_link(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "/notifications" in html
+
+    def test_pending_notification_shown_in_pending_section(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login", severity="CRITICAL")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "http_login" in html
+        assert "CRITICAL" in html
+
+    def test_dismissed_notification_not_in_pending(self, db_path, watch_dir):
+        import time
+
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "old_login", dismissed_at=time.time() - 100)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "No pending notifications" in html
+
+    def test_dismissed_notification_appears_in_history(self, db_path, watch_dir):
+        import time
+
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "past_login", dismissed_at=time.time() - 200)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "past_login" in html
+
+    def test_enrichment_data_from_card_json_shown(self, db_path, watch_dir):
+        import json
+
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login", hitl_sent_at=1000.0)
+        (watch_dir / "notif_http_login.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": "notif_http_login",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {
+                        "human_explanation": "Someone tried to log in from 1.2.3.4.",
+                        "recommended_action": "Check your firewall.",
+                        "enriched_context": {
+                            "source_ip": "1.2.3.4",
+                            "is_known_device": False,
+                        },
+                        "original_message": "Invalid auth from 1.2.3.4",
+                        "original_title": "Failed Login",
+                    },
+                    "sent_at": 1000,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "Someone tried to log in from 1.2.3.4" in html
+        assert "Check your firewall" in html
+
+    def test_dismiss_button_shown_when_card_file_exists(self, db_path, watch_dir):
+        import json
+
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login", hitl_sent_at=1000.0)
+        (watch_dir / "notif_http_login.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": "notif_http_login",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {"ha_notification_id": "http_login"},
+                    "sent_at": 1000,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "Dismiss in HA" in html
+
+    def test_dismiss_button_absent_when_no_card_file(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "Dismiss in HA" not in html
+
+    def test_category_filter_hides_other_categories(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login", category="security")
+        self._insert_notification(
+            db_path, "invalid_config", category="config_error", first_seen_at=2000.0
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications?category=security").text
+        assert "http_login" in html
+        assert "invalid_config" not in html
+
+    def test_severity_filter_hides_other_severities(self, db_path, watch_dir):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login", severity="CRITICAL")
+        self._insert_notification(
+            db_path, "low_notif", severity="LOW", first_seen_at=2000.0
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications?severity=LOW").text
+        assert "low_notif" in html
+        assert "http_login" not in html
+
+    def test_history_section_shows_all_notifications(self, db_path, watch_dir):
+        import time
+
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_notification(db_path, "http_login")
+        self._insert_notification(
+            db_path,
+            "invalid_config",
+            category="config_error",
+            first_seen_at=2000.0,
+            dismissed_at=time.time(),
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/notifications").text
+        assert "http_login" in html
+        assert "invalid_config" in html
+
+    def test_load_notification_dashboard_data_empty_db(self, db_path, watch_dir):
+        from web.dashboard import _load_notification_dashboard_data
+
+        pending, history = _load_notification_dashboard_data(watch_dir)
+        assert pending == []
+        assert history == []
+
+    def test_load_notification_dashboard_data_enriches_from_card(
+        self, db_path, watch_dir
+    ):
+        import json
+
+        from web.dashboard import _load_notification_dashboard_data
+
+        self._insert_notification(db_path, "http_login")
+        (watch_dir / "notif_http_login.json").write_text(
+            json.dumps(
+                {
+                    "payload": {
+                        "human_explanation": "explanation here",
+                        "original_message": "raw msg",
+                    }
+                }
+            )
+        )
+        pending, history = _load_notification_dashboard_data(watch_dir)
+        assert len(pending) == 1
+        assert pending[0]["human_explanation"] == "explanation here"
+        assert pending[0]["original_message"] == "raw msg"
+
+    def test_sort_by_category(self, db_path, watch_dir):
+        from web.dashboard import _load_notification_dashboard_data
+
+        self._insert_notification(db_path, "zzz_notif", category="security")
+        self._insert_notification(
+            db_path, "aaa_notif", category="config_error", first_seen_at=2000.0
+        )
+        _, history = _load_notification_dashboard_data(watch_dir, sort_by="category")
+        categories = [r["category"] for r in history]
+        assert categories == sorted(categories)
