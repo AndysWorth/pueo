@@ -585,3 +585,67 @@ class TestResourceSensingConfig:
 
         assert config.BACKUP_RETAIN_ON_HA == 5
         assert config.BACKUP_RETAIN_LOCAL_DAYS == 14
+
+
+class TestHAUpdateManagerConfig:
+    def test_ha_api_port_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_API_PORT == 8123
+
+    def test_ha_api_port_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"home_assistant": {"api_port": 8124}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_API_PORT == 8124
+
+    def test_update_check_interval_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_CHECK_INTERVAL_HOURS == 0.0
+
+    def test_update_check_interval_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"update_check_interval_hours": 12}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_CHECK_INTERVAL_HOURS == 12.0
+
+    def test_update_notify_on_available_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_NOTIFY_ON_AVAILABLE is True
+
+    def test_update_notify_on_available_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"update_notify_on_available": False}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_UPDATE_NOTIFY_ON_AVAILABLE is False
+
+    def test_update_config_keys_loaded_together(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_port": 9000},
+                    "agent": {
+                        "update_check_interval_hours": 6,
+                        "update_notify_on_available": False,
+                    },
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_API_PORT == 9000
+        assert config.HA_UPDATE_CHECK_INTERVAL_HOURS == 6.0
+        assert config.HA_UPDATE_NOTIFY_ON_AVAILABLE is False

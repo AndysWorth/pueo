@@ -9,27 +9,31 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from config import (
+    HA_API_PORT,
+    HA_API_TOKEN,
+    HA_DISK_CRITICAL_GB,
+    HA_DISK_WARN_GB,
     HA_HOST,
+    HA_MEM_WARN_MB,
+    HA_UPDATE_CHECK_INTERVAL_HOURS,
+    HA_UPDATE_NOTIFY_ON_AVAILABLE,
     HA_USER,
-    SSH_KEY_PATH,
-    OLLAMA_MODEL,
-    CONFIDENCE_THRESHOLD,
-    SELF_HEALING_ENABLED,
-    SSH_RETRY_BASE_DELAY,
-    DEBOUNCE_WINDOW_SECONDS,
-    REPAIR_COOLDOWN_SECONDS,
-    MAX_REPAIRS_PER_HOUR,
     MAX_PROMPT_TOKENS,
+    MAX_REPAIRS_PER_HOUR,
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
+    OLLAMA_MODEL,
     AUTONOMY_LEVEL,
+    CONFIDENCE_THRESHOLD,
+    DEBOUNCE_WINDOW_SECONDS,
+    REPAIR_COOLDOWN_SECONDS,
     RESOURCE_POLL_INTERVAL_SECONDS,
-    HA_DISK_WARN_GB,
-    HA_DISK_CRITICAL_GB,
-    HA_MEM_WARN_MB,
+    SELF_HEALING_ENABLED,
+    SSH_KEY_PATH,
+    SSH_RETRY_BASE_DELAY,
 )
-from interfaces import LLMClientProtocol, SSHClientProtocol
+from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
@@ -38,6 +42,7 @@ from utils.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
+from utils.ha_rest_client import HARestClient, get_update_status
 from utils.resource import ResourcePoller
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
@@ -207,6 +212,56 @@ async def tail_remote_log_stream(
         raise
 
 
+async def poll_for_updates(
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    notifier: Optional[NotifierProtocol] = None,
+) -> None:
+    """Periodically checks for available HA updates and fires a HITL notification."""
+    interval = HA_UPDATE_CHECK_INTERVAL_HOURS * 3600
+    _client: HARestClientProtocol = ha_rest_client or HARestClient(
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    # Track which entity_ids have already triggered a notification so we don't repeat
+    _notified: set[str] = set()
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            updates = await get_update_status(_client)
+        except Exception as exc:
+            log.warning("update_poll_failed", error=str(exc))
+            continue
+
+        for u in updates:
+            if u.update_available and u.entity_id not in _notified:
+                log.info(
+                    "update_available",
+                    component=u.component,
+                    installed=u.installed_version,
+                    latest=u.latest_version,
+                )
+                if HA_UPDATE_NOTIFY_ON_AVAILABLE:
+                    await _notifier.send(
+                        subject=f"Pueo: Update available — {u.component} {u.latest_version}",
+                        body=(
+                            f"{u.component}: {u.installed_version} → {u.latest_version}"
+                        ),
+                        payload={
+                            "component": u.component,
+                            "entity_id": u.entity_id,
+                            "installed_version": u.installed_version,
+                            "latest_version": u.latest_version,
+                            "release_url": u.release_url,
+                            "release_summary": u.release_summary,
+                        },
+                    )
+                _notified.add(u.entity_id)
+            elif not u.update_available:
+                # Clear the flag once the update entity goes back to "off"
+                _notified.discard(u.entity_id)
+
+
 async def trigger_remediation_pipeline() -> None:
     """Invokes the Sandbox & Swap Engine with a fresh correlation ID for this repair cycle."""
     cid = str(uuid.uuid4())
@@ -228,6 +283,7 @@ async def main(
     llm_client: Optional[LLMClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> None:
     setup_logging()
     _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
@@ -242,6 +298,10 @@ async def main(
             mem_warn_mb=HA_MEM_WARN_MB,
         ).run()
     )
+    if HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and HA_API_TOKEN:
+        asyncio.create_task(
+            poll_for_updates(ha_rest_client=ha_rest_client, notifier=_notifier)
+        )
     await tail_remote_log_stream(
         ssh_client=_ssh,
         llm_client=llm_client,

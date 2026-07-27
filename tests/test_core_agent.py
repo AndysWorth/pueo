@@ -1687,3 +1687,275 @@ class TestPrintBackupStatus:
         out = capsys.readouterr().out
         assert "abc123" in out
         assert "✓" in out
+
+
+# ── HARestClient / UpdateStatus ──────────────────────────────────────────────────
+class TestUpdateStatus:
+    def test_update_available_when_state_on(self):
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.home_assistant_core_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "2026.6.0",
+                "latest_version": "2026.7.0",
+                "release_url": "https://github.com/home-assistant/core/releases/tag/2026.7.0",
+                "release_summary": "Bug fixes",
+                "in_progress": False,
+            },
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "core"
+        assert status.update_available is True
+        assert status.installed_version == "2026.6.0"
+        assert status.latest_version == "2026.7.0"
+        assert status.release_url is not None
+
+    def test_no_update_when_state_off(self):
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.home_assistant_os_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "14.2",
+                "latest_version": "14.2",
+            },
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "os"
+        assert status.update_available is False
+
+    def test_addon_component_name_derived(self):
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.my_cool_addon_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "1.0",
+                "latest_version": "1.1",
+            },
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "my_cool_addon"
+        assert status.update_available is True
+
+    def test_supervisor_component_mapped(self):
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.home_assistant_supervisor_update",
+            "state": "off",
+            "attributes": {},
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "supervisor"
+
+
+class TestFakeHARestClient:
+    def test_get_states_returns_all(self):
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(
+            states=[
+                {"entity_id": "update.core_update", "state": "on", "attributes": {}},
+                {"entity_id": "light.living_room", "state": "on", "attributes": {}},
+            ]
+        )
+        result = asyncio.run(fake.get_states())
+        assert len(result) == 2
+
+    def test_get_states_filters_by_prefix(self):
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(
+            states=[
+                {"entity_id": "update.core_update", "state": "on", "attributes": {}},
+                {"entity_id": "light.living_room", "state": "on", "attributes": {}},
+            ]
+        )
+        result = asyncio.run(fake.get_states(prefix="update."))
+        assert len(result) == 1
+        assert result[0]["entity_id"] == "update.core_update"
+
+    def test_get_state_returns_matching_entity(self):
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(
+            states=[
+                {"entity_id": "update.core_update", "state": "on", "attributes": {}}
+            ]
+        )
+        result = asyncio.run(fake.get_state("update.core_update"))
+        assert result["entity_id"] == "update.core_update"
+
+    def test_get_state_raises_for_missing_entity(self):
+        import httpx
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(states=[])
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(fake.get_state("update.nonexistent"))
+
+    def test_call_service_records_call(self):
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient()
+        asyncio.run(
+            fake.call_service("update", "install", {"entity_id": "update.core_update"})
+        )
+        assert len(fake.service_calls) == 1
+        domain, service, payload = fake.service_calls[0]
+        assert domain == "update"
+        assert service == "install"
+        assert payload["entity_id"] == "update.core_update"
+
+
+class TestGetUpdateStatus:
+    def test_returns_update_status_list(self):
+        from utils.ha_rest_client import FakeHARestClient, get_update_status
+
+        fake = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                },
+                {
+                    "entity_id": "update.home_assistant_os_update",
+                    "state": "off",
+                    "attributes": {
+                        "installed_version": "14.2",
+                        "latest_version": "14.2",
+                    },
+                },
+            ]
+        )
+        updates = asyncio.run(get_update_status(fake))
+        assert len(updates) == 2
+        core = next(u for u in updates if u.component == "core")
+        assert core.update_available is True
+        os_upd = next(u for u in updates if u.component == "os")
+        assert os_upd.update_available is False
+
+    def test_returns_empty_when_no_update_entities(self):
+        from utils.ha_rest_client import FakeHARestClient, get_update_status
+
+        fake = FakeHARestClient(
+            states=[{"entity_id": "light.living_room", "state": "on", "attributes": {}}]
+        )
+        updates = asyncio.run(get_update_status(fake))
+        assert updates == []
+
+
+# ── ha_update_manager ────────────────────────────────────────────────────────────
+class TestFormatUpdateTable:
+    def test_empty_list_returns_message(self):
+        from ha_update_manager import _format_update_table
+
+        result = _format_update_table([])
+        assert "No update entities found" in result
+
+    def test_shows_component_and_versions(self):
+        from ha_update_manager import _format_update_table
+        from utils.ha_rest_client import UpdateStatus
+
+        updates = [
+            UpdateStatus(
+                component="core",
+                entity_id="update.home_assistant_core_update",
+                installed_version="2026.6.0",
+                latest_version="2026.7.0",
+                update_available=True,
+                release_url=None,
+                release_summary=None,
+                in_progress=False,
+            )
+        ]
+        result = _format_update_table(updates)
+        assert "core" in result
+        assert "2026.6.0" in result
+        assert "2026.7.0" in result
+        assert "YES" in result
+
+    def test_no_update_shows_no(self):
+        from ha_update_manager import _format_update_table
+        from utils.ha_rest_client import UpdateStatus
+
+        updates = [
+            UpdateStatus(
+                component="os",
+                entity_id="update.home_assistant_os_update",
+                installed_version="14.2",
+                latest_version="14.2",
+                update_available=False,
+                release_url=None,
+                release_summary=None,
+                in_progress=False,
+            )
+        ]
+        result = _format_update_table(updates)
+        assert "no" in result
+        assert "YES" not in result
+
+
+class TestRunUpdateCheck:
+    def test_returns_updates_with_fake_client(self):
+        from ha_update_manager import run_update_check
+        from utils.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                }
+            ]
+        )
+        updates = asyncio.run(run_update_check(ha_rest_client=fake))
+        assert len(updates) == 1
+        assert updates[0].component == "core"
+
+    def test_returns_empty_when_no_token_and_no_client(self, isolated_config, capsys):
+        import importlib
+        import sys
+        import yaml
+
+        isolated_config.write_text(yaml.dump({"home_assistant": {"api_token": ""}}))
+        importlib.reload(sys.modules["config"])
+        import ha_update_manager
+
+        importlib.reload(ha_update_manager)
+
+        updates = asyncio.run(ha_update_manager.run_update_check(ha_rest_client=None))
+        assert updates == []
+        out = capsys.readouterr().out
+        assert "api_token" in out or "HA_API_TOKEN" in out
+
+    def test_returns_empty_on_client_error(self, capsys):
+        from ha_update_manager import run_update_check
+
+        class ErrorClient:
+            async def get_states(self, prefix=None):
+                raise ConnectionError("connection refused")
+
+            async def get_state(self, entity_id):
+                raise ConnectionError("connection refused")
+
+            async def call_service(self, domain, service, payload):
+                raise ConnectionError("connection refused")
+
+        updates = asyncio.run(run_update_check(ha_rest_client=ErrorClient()))
+        assert updates == []
+        out = capsys.readouterr().out
+        assert "Error" in out

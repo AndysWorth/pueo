@@ -30,6 +30,7 @@ HA_KNOWN_VERSION: str = _ha.get("known_version", "")
 HA_USER: str = _ha.get("user", "root")
 SSH_KEY_PATH: str = os.path.expanduser(_ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
 HA_API_TOKEN: str = _ha.get("api_token", "")
+HA_API_PORT: int = int(_ha.get("api_port", 8123))
 CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
 
 OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
@@ -61,6 +62,14 @@ BACKUP_OFFLOAD_ENABLED: bool = bool(_agent.get("backup_offload_enabled", True))
 BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", "./backups/")
 BACKUP_RETAIN_ON_HA: int = int(_agent.get("backup_retain_on_ha", 2))
 BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
+
+# HA Update Manager
+HA_UPDATE_CHECK_INTERVAL_HOURS: float = float(
+    _agent.get("update_check_interval_hours", 0.0)
+)
+HA_UPDATE_NOTIFY_ON_AVAILABLE: bool = bool(
+    _agent.get("update_notify_on_available", True)
+)
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
