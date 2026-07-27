@@ -35,7 +35,13 @@ from config import (
     SSH_KEY_PATH,
     SSH_RETRY_BASE_DELAY,
 )
-from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
+from interfaces import (
+    HARestClientProtocol,
+    HAWebSocketClientProtocol,
+    LLMClientProtocol,
+    NetAlertXClientProtocol,
+    SSHClientProtocol,
+)
 from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
@@ -267,16 +273,29 @@ async def poll_for_updates(
 async def poll_for_notifications(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
+    netalertx_client: Optional[NetAlertXClientProtocol] = None,
     db_path: str = DB_PATH,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires HITL alerts."""
-    from ha_notification_manager import classify_notification, record_notification_seen
+    from ha_notification_manager import (
+        classify_notification,
+        enrich_and_analyze_notification,
+        mark_notification_hitl_sent,
+        record_notification_seen,
+    )
 
     interval = HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60
     _client: HARestClientProtocol = ha_rest_client or HARestClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    _llm: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+    _ssh: SSHClientProtocol = ssh_client or AsyncSSHClient(
+        HA_HOST, HA_USER, SSH_KEY_PATH
+    )  # pragma: no cover
 
     while True:
         await asyncio.sleep(interval)
@@ -297,23 +316,38 @@ async def poll_for_notifications(
             is_new = record_notification_seen(nid, category, severity, db_path=db_path)
 
             if is_new:
+                try:
+                    analysis = await enrich_and_analyze_notification(
+                        nid,
+                        title,
+                        message,
+                        ssh_client=_ssh,
+                        llm_client=_llm,
+                        netalertx_client=netalertx_client,
+                        ws_client=ha_ws_client,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "notification_enrichment_failed",
+                        notification_id=nid,
+                        error=str(exc),
+                    )
+                    continue
+
                 log.info(
                     "new_notification_detected",
                     notification_id=nid,
-                    category=category,
-                    severity=severity,
+                    category=analysis.category,
+                    severity=analysis.severity,
                 )
                 await _notifier.send(
-                    subject=f"Pueo: HA notification — {title or nid} [{severity}]",
-                    body=message,
-                    payload={
-                        "notification_id": nid,
-                        "title": title,
-                        "message": message,
-                        "category": category,
-                        "severity": severity,
-                    },
+                    subject=(
+                        f"Pueo: HA notification — {title or nid} [{analysis.severity}]"
+                    ),
+                    body=analysis.human_explanation or message,
+                    payload=analysis.model_dump(),
                 )
+                mark_notification_hitl_sent(nid, db_path=db_path)
 
 
 async def trigger_remediation_pipeline() -> None:
@@ -338,6 +372,7 @@ async def main(
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
 ) -> None:
     setup_logging()
     _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
@@ -358,7 +393,13 @@ async def main(
         )
     if HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and HA_API_TOKEN:
         asyncio.create_task(
-            poll_for_notifications(ha_rest_client=ha_rest_client, notifier=_notifier)
+            poll_for_notifications(
+                ha_rest_client=ha_rest_client,
+                notifier=_notifier,
+                llm_client=llm_client,
+                ssh_client=_ssh,
+                ha_ws_client=ha_ws_client,
+            )
         )
     await tail_remote_log_stream(
         ssh_client=_ssh,
