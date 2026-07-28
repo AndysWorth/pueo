@@ -248,7 +248,7 @@ Items 42–48. Replaces the linear pipeline with an iterative agent loop using O
 
 ---
 
-### Phase 15 — RAG Knowledge Layer (4 items)
+### Phase 15 — RAG Knowledge Layer (4 items) ✅ Complete (2026-07-28)
 Items 49–52. Keeps the agent knowledgeable about HA breaking changes without WAN calls during fix cycles. ChromaDB + `nomic-embed-text` via Ollama; weekly scrapers for HA release notes and HACS changelogs; `query_knowledge` tool registered in the loop (slot reserved from item 42). Requires Phase 14 complete.
 
 | Items | Concern |
