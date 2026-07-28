@@ -126,8 +126,10 @@ def main() -> None:
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.print_backup_status()
     elif args.mode == "update-check":
+        import ha_agent_advanced
         import ha_update_manager
 
+        ha_agent_advanced.init_local_database()
         asyncio.run(ha_update_manager.run_update_check())
     elif args.mode == "notifications":
         import ha_agent_advanced
