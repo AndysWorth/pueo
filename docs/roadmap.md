@@ -15,7 +15,7 @@ Strategic capabilities in delivery order.
 | 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
 | 4.6. HA Update Manager                        | ✅ Complete (2026-07-27) | `utils/ha_rest_client.py`                  |
 | 4.7. HA Notification Intelligence             | ✅ Complete (2026-07-27) | `utils/ha_ws_client.py`, `web/dashboard.py`|
-| 5. Agent quality & evaluation                 | ❌ Not started           | `evals/`                                   |
+| 5. Agent quality & evaluation                 | ✅ Complete (2026-07-28) | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
 | 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
