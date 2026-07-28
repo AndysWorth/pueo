@@ -128,7 +128,10 @@ class _OllamaEmbeddingFunction:  # pragma: no cover
         self._model = model
         self._endpoint = endpoint
 
-    def __call__(self, input: list[str]) -> list[list[float]]:  # type: ignore[override]
+    def name(self) -> str:
+        return f"ollama-{self._model}"
+
+    def _embed(self, input: list[str]) -> list[list[float]]:
         import ollama
 
         client = ollama.Client(host=self._endpoint)
@@ -136,3 +139,12 @@ class _OllamaEmbeddingFunction:  # pragma: no cover
             client.embeddings(model=self._model, prompt=text)["embedding"]
             for text in input
         ]
+
+    def __call__(self, input: list[str]) -> list[list[float]]:  # type: ignore[override]
+        return self._embed(input)
+
+    def embed_documents(self, input: list[str]) -> list[list[float]]:
+        return self._embed(input)
+
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        return self._embed(input)
