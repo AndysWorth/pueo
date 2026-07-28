@@ -6583,3 +6583,58 @@ class TestAgentLoop:
         # After reset, the flag should have been cleared at the start of the run.
         # We verify indirectly: the loop completed successfully (no cap error).
         assert not executor._apply_fix_used  # reset was called
+
+
+class TestRunRagRefresh:
+    def test_calls_both_scrapers(self, tmp_path, monkeypatch, capsys):
+        from utils.knowledge_store import FakeKnowledgeStore
+        import main as main_module
+
+        store = FakeKnowledgeStore()
+        monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path))
+        main_module.run_rag_refresh(store)
+        captured = capsys.readouterr().out
+        assert "rag-refresh" in captured
+        assert "HA release note file" in captured
+        assert "HACS changelog" in captured
+
+    def test_embeds_ha_release_notes(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        import main as main_module
+
+        notes_dir = tmp_path / "ha_notes"
+        notes_dir.mkdir()
+        (notes_dir / "2024.1.txt").write_text(
+            "# Home Assistant 2024.1\n## Breaking changes\nRemoved old_key from config."
+        )
+        store = FakeKnowledgeStore()
+        monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(notes_dir))
+        main_module.run_rag_refresh(store)
+        results = store.query("removed old_key", top_k=5)
+        assert len(results) > 0
+        assert results[0].collection == "ha_release_notes"
+
+    def test_embeds_hacs_changelogs(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        import main as main_module
+
+        hacs_dir = tmp_path / "hacs"
+        hacs_dir.mkdir()
+        (hacs_dir / "myintegration.md").write_text(
+            "## 1.2.0\nAdded new feature.\n## 1.1.0\nFixed bug."
+        )
+        store = FakeKnowledgeStore()
+        monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path))
+        # Patch embed_cached_changelogs to use our tmp hacs dir
+        import utils.hacs_scraper as hacs_mod
+
+        orig = hacs_mod.embed_cached_changelogs
+
+        def patched_embed(cache_dir: str, s):
+            return orig(str(hacs_dir), s)
+
+        monkeypatch.setattr(hacs_mod, "embed_cached_changelogs", patched_embed)
+        main_module.run_rag_refresh(store)
+        results = store.query("new feature", top_k=5)
+        assert len(results) > 0
+        assert results[0].collection == "hacs_changelogs"

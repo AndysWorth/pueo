@@ -8,6 +8,22 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from interfaces import KnowledgeStoreClientProtocol
+
+
+def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
+    import config
+    from utils.ha_release_notes_scraper import scrape_cached_release_notes
+    from utils.hacs_scraper import embed_cached_changelogs
+
+    n_ha = scrape_cached_release_notes(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store)
+    n_hacs = embed_cached_changelogs(".cache/hacs_changelogs/", store)
+    print(
+        f"rag-refresh: embedded {n_ha} HA release note file(s), {n_hacs} HACS changelog(s)"
+    )
 
 
 def main() -> None:
@@ -119,22 +135,14 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_notification_manager.run_notifications())
-    elif args.mode == "rag-refresh":
+    elif args.mode == "rag-refresh":  # pragma: no cover
         import config
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.hacs_scraper import embed_cached_changelogs
         from utils.knowledge_store import ChromaKnowledgeStore
 
         store = ChromaKnowledgeStore(
             config.CHROMADB_PATH, config.RAG_EMBED_MODEL, config.OLLAMA_ENDPOINT
         )
-        n_ha = scrape_cached_release_notes(
-            config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store
-        )
-        n_hacs = embed_cached_changelogs(".cache/hacs_changelogs/", store)
-        print(
-            f"rag-refresh: embedded {n_ha} HA release note file(s), {n_hacs} HACS changelog(s)"
-        )
+        run_rag_refresh(store)
     elif args.mode == "dashboard":
         from web.dashboard import run_dashboard
 
