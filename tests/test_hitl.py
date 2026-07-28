@@ -973,5 +973,91 @@ class TestAutonomyGate:
         assert len(notifier.sent) == 0
         assert CONFIG_REMOTE_PATH in ssh.written_files
 
+    # ── queue_for_approval ───────────────────────────────────────────────────────
+
+    def test_queue_for_approval_level1_returns_false_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=1)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.HIGH)
+        )
+        assert result is False
+        assert len(notifier.sent) == 0
+
+    def test_queue_for_approval_level4_returns_true_without_notifying_for_high(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.HIGH)
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_queue_for_approval_level3_returns_true_for_low_without_notifying(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.LOW)
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_queue_for_approval_level2_sends_notification_and_returns_false(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=2)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval(
+                "subject",
+                "body",
+                {"notification_id": "abc"},
+                notifier,
+                RiskLevel.HIGH,
+            )
+        )
+        assert result is False
+        assert len(notifier.sent) == 1
+
+    def test_queue_for_approval_level3_sends_notification_for_high(self):
+        from utils.autonomy import AutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = AutonomyGate(level=3)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval(
+                "subject",
+                "body",
+                {"notification_id": "xyz"},
+                notifier,
+                RiskLevel.HIGH,
+            )
+        )
+        assert result is False
+        assert len(notifier.sent) == 1
+
+    def test_fake_gate_should_ask_preference_reflects_auto_execute(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        assert (
+            FakeAutonomyGate(auto_execute_result=True).should_ask_preference("ctx")
+            is False
+        )
+        assert (
+            FakeAutonomyGate(auto_execute_result=False).should_ask_preference("ctx")
+            is True
+        )
+
 
 # ── netalertx.* config keys ─────────────────────────────────────────────────────

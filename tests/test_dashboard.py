@@ -16,6 +16,15 @@ from pydantic import ValidationError
 _REPO_ROOT = Path(__file__).parent.parent
 
 
+def _make_async_return(value):
+    """Return an async callable that resolves to ``value``."""
+
+    async def _inner(*args, **kwargs):
+        return value
+
+    return _inner
+
+
 def _make_installer_db(tmp_path, monkeypatch):
     """Create and migrate a test SQLite DB, patch DB_PATH in installer module."""
     import ha_agent_advanced
@@ -341,6 +350,153 @@ class TestDashboardRoutes:
         client.post(f"/approve/{nid}", follow_redirects=False)
         assert (tmp_path / f"{nid}.rejected").exists()
         assert not (tmp_path / f"{nid}.approved").exists()
+
+    # -- _execute_queued_fix internals -------------------------------------------
+
+    def test_execute_queued_fix_success_writes_approved(self, tmp_path, monkeypatch):
+        """Success path: backup → sandbox passes → commit → .approved written."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_agent_sandbox_engine
+        import ha_agent_advanced
+
+        nid = "fix-internal-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"fix": "pending"}
+        json_path.write_text(_json.dumps(data))
+
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "execute_remote_backup",
+            _make_async_return("slug1"),
+        )
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "offload_backup_to_local", _make_async_return(None)
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "enforce_ha_retention", _make_async_return(None)
+        )
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", lambda: None)
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "deploy_and_test_in_sandbox",
+            _make_async_return(True),
+        )
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "commit_atomic_swap", _make_async_return(None)
+        )
+
+        import asyncio
+        import utils.ssh_client as ssh_mod
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        asyncio.run(
+            dashboard._execute_queued_fix(
+                nid,
+                "homeassistant:\n  name: Home\n",
+                "test fix",
+                data,
+                json_path,
+                tmp_path,
+            )
+        )
+        assert (tmp_path / f"{nid}.approved").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+        assert saved["fix_backup_slug"] == "slug1"
+
+    def test_execute_queued_fix_sandbox_failure_writes_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """When sandbox test fails, .rejected is written and no commit happens."""
+        import json as _json
+        import asyncio
+        import web.dashboard as dashboard
+        import ha_agent_sandbox_engine
+        import ha_agent_advanced
+
+        nid = "fix-internal-2"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {}
+        json_path.write_text(_json.dumps(data))
+
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "execute_remote_backup",
+            _make_async_return("slug2"),
+        )
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "offload_backup_to_local", _make_async_return(None)
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "enforce_ha_retention", _make_async_return(None)
+        )
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", lambda: None)
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "deploy_and_test_in_sandbox",
+            _make_async_return(False),
+        )
+        import utils.ssh_client as ssh_mod
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        asyncio.run(
+            dashboard._execute_queued_fix(
+                nid, "bad yaml", "desc", data, json_path, tmp_path
+            )
+        )
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+
+    def test_execute_queued_fix_exception_writes_rejected(self, tmp_path, monkeypatch):
+        """An exception during backup causes .rejected to be written with fix_error."""
+        import json as _json
+        import asyncio
+        import web.dashboard as dashboard
+        import ha_agent_sandbox_engine
+
+        nid = "fix-internal-3"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {}
+        json_path.write_text(_json.dumps(data))
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("backup exploded")
+
+        monkeypatch.setattr(ha_agent_sandbox_engine, "execute_remote_backup", _fail)
+        import utils.ssh_client as ssh_mod
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        asyncio.run(
+            dashboard._execute_queued_fix(
+                nid, "yaml", "desc", data, json_path, tmp_path
+            )
+        )
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "backup exploded" in saved["fix_error"]
+
+    def test_load_backup_inventory_returns_empty_on_db_error(self, monkeypatch):
+        """_load_backup_inventory returns [] when the database is missing."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "DB_PATH", "/nonexistent/path/db.sqlite")
+        result = dashboard._load_backup_inventory()
+        assert result == []
 
     def test_run_dashboard_calls_uvicorn(self, monkeypatch):
         import web.dashboard as dashboard
@@ -1284,6 +1440,26 @@ class TestDismissNotificationRoute:
         )
         assert response.status_code == 303
         assert not (tmp_path / "notif_none.approved").exists()
+
+    def test_dismiss_ha_service_exception_is_swallowed(self, tmp_path, monkeypatch):
+        """If the HA service call raises, the notification is still marked approved."""
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_notification_card(tmp_path, "notif_exc", "http_login")
+
+        class _FailingRest:
+            async def call_service(self, *a, **kw):
+                raise RuntimeError("HA unreachable")
+
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: _FailingRest()
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/dismiss-notification/notif_exc", follow_redirects=False)
+        assert (tmp_path / "notif_exc.approved").exists()
 
     def test_dismiss_already_resolved_is_noop(self, tmp_path, monkeypatch):
         import utils.ha_rest_client
