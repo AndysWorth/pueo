@@ -78,6 +78,10 @@ HA_UPDATE_RELEASE_NOTES_CACHE_DIR: str = _agent.get(
 HA_NOTIFICATION_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("notification_poll_interval_minutes", 5)
 )
+
+# Tool-calling agent loop
+AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 20))
+AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0))
 HA_NOTIFICATION_ENRICH_AUTH_FAILURES: bool = bool(
     _agent.get("notification_enrich_auth_failures", True)
 )

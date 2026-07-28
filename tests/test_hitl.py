@@ -310,36 +310,59 @@ class TestHitlPipelineGate:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import ha_agent_sandbox_engine
+        import ha_agent_advanced
 
         path = str(tmp_path / "hitl_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
         return path
 
     @pytest.fixture
     def llm_critical(self):
-        from utils.ollama_client import FakeLLMClient
-        from ha_agent_sandbox_engine import DiagnosticsReport
+        from utils.ollama_client import FakeToolCallingLLMClient
 
-        r = DiagnosticsReport(
-            is_valid=False,
-            severity="CRITICAL",
-            identified_issues=["critical YAML error"],
-            recommended_fix_yaml=_FIXED_CONFIG,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _FIXED_CONFIG,
+                                    "description": "Fix CRITICAL YAML error in configuration",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        return FakeLLMClient(r.model_dump_json())
 
     @pytest.fixture
     def llm_low_fix(self):
-        from utils.ollama_client import FakeLLMClient
-        from ha_agent_sandbox_engine import DiagnosticsReport
+        from utils.ollama_client import FakeToolCallingLLMClient
 
-        r = DiagnosticsReport(
-            is_valid=False,
-            severity="LOW",
-            identified_issues=["wrong port"],
-            recommended_fix_yaml=_FIXED_CONFIG,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _FIXED_CONFIG,
+                                    "description": "Fix deprecated config key",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        return FakeLLMClient(r.model_dump_json())
 
     def test_critical_issue_sends_notification(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
@@ -373,6 +396,7 @@ class TestHitlPipelineGate:
                 ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
+        assert "apply_fix" in notifier.sent[0]["subject"]
         assert "CRITICAL" in notifier.sent[0]["subject"]
 
     def test_approval_proceeds_to_backup(self, ssh_ok, llm_critical, db_path):
@@ -425,7 +449,7 @@ class TestHitlPipelineGate:
         with sqlite3_mod.connect(db_path) as conn:
             action = conn.execute("SELECT action_taken FROM state_history").fetchone()
         assert action is not None
-        assert "rejected" in action[0].lower()
+        assert "fix" in action[0].lower()
 
     def test_low_severity_no_notification_sent(self, ssh_ok, llm_low_fix, db_path):
         from utils.notify import FakeNotifier
@@ -789,12 +813,24 @@ class TestAutonomyGate:
 
     # ── done criteria — level 1: no SSH writes ───────────────────────────────────
 
-    def test_level1_sandbox_pipeline_produces_no_ssh_writes(self):
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_sandbox_engine
+        import ha_agent_advanced
+
+        path = str(tmp_path / "autonomy_gate_test.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
+        return path
+
+    def test_level1_sandbox_pipeline_produces_no_ssh_writes(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
-        from ha_agent_sandbox_engine import DiagnosticsReport
+        from utils.ollama_client import FakeToolCallingLLMClient
         import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
@@ -808,13 +844,22 @@ class TestAutonomyGate:
                 "cp": (0, "", ""),
             },
         )
-        llm = FakeLLMClient(
-            DiagnosticsReport(
-                is_valid=False,
-                severity="WARNING",
-                identified_issues=["deprecated key"],
-                recommended_fix_yaml=_FIXED_CONFIG,
-            ).model_dump_json()
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _FIXED_CONFIG,
+                                    "description": "Fix deprecated key",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
         gate = AutonomyGate(level=1)
         notifier = FakeNotifier(approve=True)
@@ -826,14 +871,13 @@ class TestAutonomyGate:
         )
         assert ssh.written_files == {}
 
-    # ── done criteria — level 4: full pipeline for WARNING, pauses for CRITICAL ──
+    # ── done criteria — level 4: full pipeline for apply_fix ─────────────────────
 
-    def test_level4_warning_severity_runs_without_hitl(self):
+    def test_level4_warning_severity_runs_without_hitl(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
-        from ha_agent_sandbox_engine import DiagnosticsReport
+        from utils.ollama_client import FakeToolCallingLLMClient
         import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
@@ -847,13 +891,22 @@ class TestAutonomyGate:
                 "cp": (0, "", ""),
             },
         )
-        llm = FakeLLMClient(
-            DiagnosticsReport(
-                is_valid=False,
-                severity="WARNING",
-                identified_issues=["deprecated key"],
-                recommended_fix_yaml=_FIXED_CONFIG,
-            ).model_dump_json()
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _FIXED_CONFIG,
+                                    "description": "Fix deprecated key",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=True)
@@ -866,12 +919,12 @@ class TestAutonomyGate:
         assert len(notifier.sent) == 0
         assert any("ha backup new" in cmd for cmd in ssh.commands_run)
 
-    def test_level4_critical_severity_pauses_for_approval(self):
+    def test_level4_apply_fix_commits_config_without_hitl(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
-        from ha_agent_sandbox_engine import DiagnosticsReport
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from config import CONFIG_REMOTE_PATH
         import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
@@ -885,13 +938,22 @@ class TestAutonomyGate:
                 "cp": (0, "", ""),
             },
         )
-        llm = FakeLLMClient(
-            DiagnosticsReport(
-                is_valid=False,
-                severity="CRITICAL",
-                identified_issues=["critical error"],
-                recommended_fix_yaml=_FIXED_CONFIG,
-            ).model_dump_json()
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _FIXED_CONFIG,
+                                    "description": "Fix config error",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=True)
@@ -901,7 +963,8 @@ class TestAutonomyGate:
                 ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
             )
         )
-        assert len(notifier.sent) == 1
+        assert len(notifier.sent) == 0
+        assert CONFIG_REMOTE_PATH in ssh.written_files
 
 
 # ── netalertx.* config keys ─────────────────────────────────────────────────────

@@ -32,6 +32,37 @@ class OllamaClient:
             )
         )
 
+    async def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        options: dict | None = None,
+    ) -> dict:
+        resp = await asyncio.to_thread(
+            lambda: self._client.chat(
+                model=model,
+                messages=messages,
+                tools=tools,
+                options=options or {"temperature": 0.0},
+            )
+        )
+        msg = resp.message
+        result: dict = {"role": "assistant", "content": msg.content or ""}
+        if msg.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": (
+                            dict(tc.function.arguments) if tc.function.arguments else {}
+                        ),
+                    }
+                }
+                for tc in msg.tool_calls
+            ]
+        return result
+
 
 class FakeLLMClient:
     """Returns a pre-configured JSON response for tests — no Ollama required."""
@@ -49,3 +80,54 @@ class FakeLLMClient:
     ) -> dict:
         self.calls.append({"model": model, "messages": messages})
         return {"message": {"content": self._response_json}}
+
+    async def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        options: dict | None = None,
+    ) -> dict:
+        self.calls.append({"model": model, "messages": messages})
+        return {"role": "assistant", "content": ""}
+
+
+class FakeToolCallingLLMClient:
+    """Simulates tool-call sequences for AgentLoop tests — no Ollama required.
+
+    call_sequence: list of response dicts. Each dict is either:
+    - {"tool_calls": [{"function": {"name": "...", "arguments": {...}}}]}
+      The loop will execute those tools and continue.
+    - {"content": "some text"}
+      The loop treats this as a natural termination (no tool calls).
+    When the sequence is exhausted, returns an empty-content message.
+    """
+
+    def __init__(self, call_sequence: list[dict]) -> None:
+        self._sequence = call_sequence
+        self._index = 0
+        self.calls: list[dict] = []
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        options: dict,
+        format: dict,
+    ) -> dict:
+        self.calls.append({"model": model, "messages": messages})
+        return {"message": {"content": "{}"}}
+
+    async def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        options: dict | None = None,
+    ) -> dict:
+        self.calls.append({"model": model, "messages": messages})
+        if self._index >= len(self._sequence):
+            return {"role": "assistant", "content": ""}
+        resp = dict(self._sequence[self._index])
+        self._index += 1
+        return {"role": "assistant", **resp}

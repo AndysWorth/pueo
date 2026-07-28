@@ -61,13 +61,13 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 39   | Notification enrichment: reverse DNS, NetAlertX lookup, HA device registry; HAWebSocketClient | ✅ Done (2026-07-27) |
 | 40   | HITL notification cards + dismissal service call; --mode notifications | ✅ Done (2026-07-27) |
 | 41   | Notifications tab in HITL dashboard: pending, history, filters       | ✅ Done (2026-07-27) |
-| 42   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ☐ TODO |
-| 43   | Tool execution: read_config, read_logs, run_ha_command, read_file, query_netalertx, apply_fix, verify_fix, finish_repair | ☐ TODO |
-| 44   | AgentLoop controller: budget accounting, tool dispatch, termination detection | ☐ TODO |
-| 45   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
-| 46   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ☐ TODO |
-| 47   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ☐ TODO |
-| 48   | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios; confirm apply_fix enforces backup-first; confirm run_ha_command rejects off-allowlist commands | ☐ TODO |
+| 42   | Tool registry: ToolDefinition, ToolCall, ToolResult, AgentStep Pydantic schemas | ✅ Done (2026-07-28) |
+| 43   | Tool execution: read_config, read_logs, run_ha_command, read_file, query_netalertx, apply_fix, verify_fix, finish_repair | ✅ Done (2026-07-28) |
+| 44   | AgentLoop controller: budget accounting, tool dispatch, termination detection | ✅ Done (2026-07-28) |
+| 45   | HA sandbox engine refactor: replace linear pipeline with AgentLoop.run() | ✅ Done (2026-07-28) |
+| 46   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ✅ Done (2026-07-28) |
+| 47   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ✅ Done (2026-07-28) |
+| 48   | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios; confirm apply_fix enforces backup-first; confirm run_ha_command rejects off-allowlist commands | ✅ Done (2026-07-28) |
 | 49   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
 | 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
 | 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
@@ -233,7 +233,7 @@ Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`
 
 ---
 
-### Phase 14 — Tool-Calling Agent Loop (7 items)
+### Phase 14 — Tool-Calling Agent Loop (7 items) ✅ Complete (2026-07-28)
 Items 42–48. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Phase 16 (Evals) follows and establishes the tool loop's first performance baseline.
 
 | Items | Concern |

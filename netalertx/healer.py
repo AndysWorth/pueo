@@ -1,10 +1,9 @@
-"""NetAlertX autonomy-gated healing — item 18.
+"""NetAlertX autonomy-gated healing — items 18 and 46.
 
-Dispatches repair actions for each diagnostic category, gated by AutonomyGate:
-  Level 1 (Report Only)  — notify; no writes or restarts
-  Level 2 (Suggest)      — require approval for every action
-  Level 3 (Guided)       — auto-execute MEDIUM risk; approval for HIGH
-  Level 4 (Autonomous)   — auto-execute HIGH risk; restarts without HITL
+heal() dispatches repair actions by category (linear pipeline, backward-compatible).
+heal_with_loop() replaces the linear pipeline with AgentLoop for iterative
+tool-calling repair (item 46). When an LLM client is provided in production,
+one_shot_diagnose.py calls heal_with_loop() instead of heal().
 
 Version change detection persists last-seen NetAlertX version in netalertx_state
 (migrated in _migrate_v4).  A version bump gates all automated actions at levels 1–3.
@@ -22,6 +21,7 @@ from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
     NETALERTX_LOG_CONTAINER_NAME,
+    OLLAMA_MODEL,
 )
 from netalertx.config_validator import (
     _SNAKE_TO_CAMEL,
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient
     from netalertx.config_validator import ConfigIssue
     from netalertx.diagnosis import NetAlertXDiagnostic
-    from interfaces import SSHClientProtocol
+    from interfaces import LLMClientProtocol, SSHClientProtocol
     from utils.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
@@ -80,7 +80,11 @@ def _extract_conf_overrides(recommended_fix: str) -> dict[str, str]:
 
 
 class NetAlertXHealer:
-    """Autonomy-gated healer for NetAlertX diagnostics."""
+    """Autonomy-gated healer for NetAlertX diagnostics.
+
+    heal() uses the original linear category-dispatch pipeline.
+    heal_with_loop() replaces it with an AgentLoop (item 46).
+    """
 
     def __init__(
         self,
@@ -160,7 +164,66 @@ class NetAlertXHealer:
         return approved
 
     # ------------------------------------------------------------------
-    # Main entry point
+    # AgentLoop-based healing — item 46
+    # ------------------------------------------------------------------
+
+    async def heal_with_loop(
+        self,
+        diagnostic: "NetAlertXDiagnostic",
+        llm_client: "LLMClientProtocol",
+    ) -> None:
+        """Replace the linear category-dispatch with an iterative AgentLoop.
+
+        The model investigates via query_netalertx / read_logs, then calls
+        the appropriate fix tool (restart_netalertx, rewrite_netalertx_conf,
+        or apply_fix for HA config changes) before finishing.
+        """
+        from utils.agent_loop import AgentLoop
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import build_netalertx_tool_registry
+
+        executor = ToolExecutor(
+            ha_ssh_client=self._ha_ssh,
+            gate=self._gate,
+            notifier=self._notifier,
+            nax_ssh_client=self._ssh,
+            netalertx_api_client=self._api,
+            netalertx_container_name=self._container,
+        )
+        registry = build_netalertx_tool_registry()
+        loop = AgentLoop(
+            llm_client=llm_client,
+            tool_executor=executor,
+            tool_registry=registry,
+            model=OLLAMA_MODEL,
+        )
+
+        initial_context = (
+            "You are diagnosing and repairing a NetAlertX network monitoring issue.\n\n"
+            f"Diagnosis:\n"
+            f"  Issue: {diagnostic.issue}\n"
+            f"  Severity: {diagnostic.severity}\n"
+            f"  Category: {diagnostic.category}\n"
+            f"  Recommended fix: {diagnostic.recommended_fix}\n"
+            f"  Affected version: {diagnostic.affected_netalertx_version}\n\n"
+            "Investigate using query_netalertx and read_logs, then apply the appropriate fix. "
+            "Call finish_repair when done."
+        )
+
+        log.info(
+            "netalertx_heal_loop_start",
+            category=diagnostic.category,
+            severity=diagnostic.severity,
+        )
+        result = await loop.run(initial_context)
+        log.info(
+            "netalertx_heal_loop_complete",
+            outcome=result.outcome,
+            steps=len(result.steps),
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry point (linear pipeline — backward-compatible)
     # ------------------------------------------------------------------
 
     async def heal(self, diagnostic: "NetAlertXDiagnostic") -> None:

@@ -296,4 +296,7 @@ async def run_diagnose(
                 api_client=_api,
                 notifier=_notifier,
             )
-        await _healer.heal(diagnostic)
+        # Use the AgentLoop-based repair path (item 46).
+        from utils.ollama_client import OllamaClient
+
+        await _healer.heal_with_loop(diagnostic, llm_client=OllamaClient())

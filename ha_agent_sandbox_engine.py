@@ -391,96 +391,62 @@ async def main(
         set_correlation_id(str(uuid.uuid4()))
     init_local_database()
 
+    _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     _notifier: NotifierProtocol = notifier or get_notifier(
         NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
     )
     _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL)
+    _llm = llm_client or OllamaClient()
 
-    yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
-    report, llm_trace = await analyze_config_locally(
-        yaml_content, llm_client=llm_client
+    yaml_content, config_hash = await fetch_remote_config(ssh_client=_ssh)
+
+    from utils.agent_loop import AgentLoop
+    from utils.tool_executor import ToolExecutor
+    from utils.tool_registry import build_ha_tool_registry
+
+    executor = ToolExecutor(
+        ha_ssh_client=_ssh,
+        gate=_gate,
+        notifier=_notifier,
+    )
+    registry = build_ha_tool_registry()
+    loop = AgentLoop(
+        llm_client=_llm,
+        tool_executor=executor,
+        tool_registry=registry,
     )
 
-    if not report.is_valid and report.recommended_fix_yaml:
-        log.warning("issue_flagged", severity=report.severity)
+    initial_context = (
+        "Analyze the following Home Assistant configuration.yaml for issues. "
+        "If you find problems, investigate further and apply a fix. "
+        "If the config looks correct, call finish_repair with action_taken='no_fix_needed'.\n\n"
+        f"Current configuration.yaml:\n```yaml\n{yaml_content}\n```"
+    )
+    result = await loop.run(initial_context)
 
-        # 0. Validate YAML content before touching the remote system
-        validation = validate_proposed_fix(yaml_content, report.recommended_fix_yaml)
-        if not validation.is_safe:
-            log.error(
-                "proposed_fix_rejected",
-                reasons=validation.reasons,
-            )
-            record_state_memory(
-                config_hash,
-                False,
-                report.identified_issues,
-                f"Fix rejected by content validator: {'; '.join(validation.reasons)}",
-            )
-            return
+    action = {
+        "success": "Repaired via agent loop",
+        "exhausted": "Agent loop exhausted budget without resolution",
+        "timeout": "Agent loop timed out",
+        "fix_failed": "Agent loop attempted fix but sandbox test failed",
+    }.get(result.outcome, result.outcome)
 
-        # 0b. Autonomy gate — request approval before any production config write
-        risk = RiskLevel.CRITICAL if report.severity == "CRITICAL" else RiskLevel.HIGH
-        nid = get_correlation_id() or str(uuid.uuid4())
-        log.info("autonomy_gate_check", severity=report.severity, risk=risk.name)
-        approved = await _gate.require_approval(
-            subject=f"Pueo HITL: {report.severity} repair requires approval",
-            body="\n".join(report.identified_issues),
-            payload={
-                "notification_id": nid,
-                "severity": report.severity,
-                "issues": report.identified_issues,
-                "correlation_id": get_correlation_id(),
-                "diagnosis": report.model_dump(),
-                "evidence_raw": {"yaml_snippet": yaml_content[:2000]},
-                "llm_trace": llm_trace.as_dict(),
-            },
-            notifier=_notifier,
-            risk=risk,
-        )
-        if not approved:
-            log.warning("autonomy_gate_rejected", notification_id=nid)
-            record_state_memory(
-                config_hash,
-                False,
-                report.identified_issues,
-                "Repair rejected via autonomy gate.",
-            )
-            return
-        log.info("autonomy_gate_approved", notification_id=nid)
-
-        # 1. Enforce strict backup baseline
-        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
-        record_backup_slug(backup_slug)
-        await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
-        await enforce_ha_retention(ssh_client=ssh_client)
-        purge_local_backups()
-
-        # 2. Deploy fix into sandbox and execute runtime checks
-        passed_sandbox = await deploy_and_test_in_sandbox(
-            report.recommended_fix_yaml, ssh_client=ssh_client
-        )
-
-        if passed_sandbox:
-            # 3. Commit only if sandbox testing completes with absolute success
-            await commit_atomic_swap(report.recommended_fix_yaml, ssh_client=ssh_client)
-            record_state_memory(
-                config_hash,
-                False,
-                report.identified_issues,
-                f"Patched via Sandbox; Backup: {backup_slug}",
-            )
-        else:
-            log.warning("atomic_swap_aborted")
-            record_state_memory(
-                config_hash,
-                False,
-                report.identified_issues,
-                "Patch aborted; Sandbox test failed.",
-            )
-    else:
-        log.info("config_valid")
-        record_state_memory(config_hash, True, ["None"], "No Action Taken.")
+    issues = (
+        [result.episode_stub.get("summary", "")]
+        if result.episode_stub
+        else ["No summary available"]
+    )
+    is_healthy = (
+        result.outcome == "success"
+        and result.episode_stub
+        and (result.episode_stub.get("action_taken") in ("fixed", "no_fix_needed"))
+    )
+    record_state_memory(
+        config_hash,
+        bool(is_healthy),
+        issues,
+        action,
+    )
 
 
 if __name__ == "__main__":
