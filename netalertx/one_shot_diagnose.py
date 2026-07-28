@@ -14,6 +14,7 @@ from config import (
     AUTONOMY_LEVEL,
     HA_HOST,
     HA_USER,
+    NETALERTX_ADDON_REPOSITORY_URL,
     NETALERTX_ADDON_SLUG,
     NETALERTX_API_PORT,
     NETALERTX_API_TOKEN,
@@ -31,6 +32,7 @@ from config import (
 from netalertx.config_validator import ConfigIssue, validate_app_conf
 from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
+from netalertx.installer import _parse_slug_from_store, _write_addon_slug_to_config
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
 from utils.logging import get_logger
 
@@ -215,6 +217,16 @@ async def run_diagnose(
 
     # 4. Config validation — read via SFTP from the host addon config directory.
     # On HA OS, add-on config files are at /addon_configs/<slug>/config/app.conf.
+    if not _slug:
+        # Attempt slug auto-discovery before flagging as an error.
+        # This recovers existing installs where setup completed without writing the slug.
+        _, addons_out, _ = await _ha_ssh.run("ha store addons")
+        discovered = _parse_slug_from_store(addons_out, NETALERTX_ADDON_REPOSITORY_URL)
+        if discovered:
+            _slug = discovered
+            if _write_addon_slug_to_config(discovered):
+                log.info("netalertx_diagnose_slug_discovered", slug=discovered)
+
     if not _slug:
         config_issues: list[ConfigIssue] = [
             ConfigIssue(

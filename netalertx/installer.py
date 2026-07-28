@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sqlite3
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -111,6 +113,35 @@ def _write_install_state(db_path: str, state: str, details: dict, cid: str) -> N
             )
         conn.commit()
     log.info("install_state_updated", state=state, correlation_id=cid)
+
+
+# ── config write-back ────────────────────────────────────────────────────────
+
+
+def _write_addon_slug_to_config(slug: str) -> bool:
+    """Write addon_slug into config.yaml using a targeted line replacement.
+
+    Preserves all other content and comments. Returns True when the file was
+    updated, False when config.yaml does not exist or the key was not found.
+    """
+    config_path = Path(
+        os.environ.get("PUEO_CONFIG", Path(__file__).parent.parent / "config.yaml")
+    )
+    if not config_path.exists():
+        return False
+
+    text = config_path.read_text()
+    new_text, n = re.subn(
+        r"^(\s*addon_slug\s*:\s*).*$",
+        rf'\g<1>"{slug}"',
+        text,
+        flags=re.MULTILINE,
+    )
+    if not n:
+        return False
+
+    config_path.write_text(new_text)
+    return True
 
 
 # ── step helpers ──────────────────────────────────────────────────────────────
@@ -1079,6 +1110,9 @@ async def _step8_create_webhook_automation(
         log.info("step8_automation_exists", path=automations_path, correlation_id=cid)
         _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
         _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
+        slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
+        if slug and _write_addon_slug_to_config(slug):
+            log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
         return True
 
     # Backup before write
@@ -1158,6 +1192,9 @@ async def _step8_create_webhook_automation(
 
     _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
     _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
+    slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
+    if slug and _write_addon_slug_to_config(slug):
+        log.info("step8_slug_written_to_config", slug=slug, correlation_id=cid)
     log.info("step8_complete", correlation_id=cid)
     return True
 
