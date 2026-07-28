@@ -2021,7 +2021,9 @@ class TestFormatUpdateTable:
 class TestRunUpdateCheck:
     def test_returns_updates_with_fake_client(self):
         from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
 
         fake = FakeHARestClient(
             states=[
@@ -2035,7 +2037,13 @@ class TestRunUpdateCheck:
                 }
             ]
         )
-        updates = asyncio.run(run_update_check(ha_rest_client=fake))
+        updates = asyncio.run(
+            run_update_check(
+                ha_rest_client=fake,
+                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
+                notifier=FakeNotifier(approve=False),
+            )
+        )
         assert len(updates) == 1
         assert updates[0].component == "core"
 
@@ -2070,7 +2078,9 @@ class TestRunUpdateCheck:
     def test_ssh_read_file_error_is_skipped(self, tmp_path, capsys):
         """SSH config fetch failure logs a warning but does not abort analysis."""
         from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
 
         fake_rest = FakeHARestClient(
             states=[
@@ -2096,6 +2106,8 @@ class TestRunUpdateCheck:
                 ha_rest_client=fake_rest,
                 ssh_client=BrokenSSH(),
                 cache_dir=str(tmp_path),
+                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
+                notifier=FakeNotifier(approve=False),
             )
         )
         assert len(updates) == 1
@@ -2104,7 +2116,9 @@ class TestRunUpdateCheck:
         """analyze_breaking_changes failure prints a warning and returns all updates."""
         import unittest.mock as mock
         from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
 
         fake_rest = FakeHARestClient(
             states=[
@@ -2135,6 +2149,10 @@ class TestRunUpdateCheck:
                 run_update_check(
                     ha_rest_client=fake_rest,
                     cache_dir=str(notes_dir),
+                    gate=FakeAutonomyGate(
+                        auto_execute_result=False, approval_result=False
+                    ),
+                    notifier=FakeNotifier(approve=False),
                 )
             )
 
@@ -2355,6 +2373,8 @@ class TestRunUpdateCheckWithAnalysis:
 
     def test_analysis_runs_for_core_update(self, tmp_path, capsys):
         from ha_update_manager import UpdateReadinessReport, run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
         # Pre-populate the cache so no WAN fetch is needed.
@@ -2375,6 +2395,8 @@ class TestRunUpdateCheckWithAnalysis:
                 ha_rest_client=self._fake_rest(),
                 llm_client=llm,
                 cache_dir=str(tmp_path),
+                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
+                notifier=FakeNotifier(approve=False),
             )
         )
 
@@ -2399,6 +2421,8 @@ class TestRunUpdateCheckWithAnalysis:
 
     def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
         from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
         from unittest.mock import AsyncMock, patch
 
@@ -2412,11 +2436,117 @@ class TestRunUpdateCheckWithAnalysis:
                     ha_rest_client=self._fake_rest(),
                     llm_client=llm,
                     cache_dir=str(tmp_path),
+                    gate=FakeAutonomyGate(
+                        auto_execute_result=False, approval_result=False
+                    ),
+                    notifier=FakeNotifier(approve=False),
                 )
             )
         assert llm.calls == []
         out = capsys.readouterr().out
         assert "Warning" in out
+
+    def test_hitl_card_sent_for_core_update(self, tmp_path):
+        """A HITL approval card is dispatched when a Core update is detected."""
+        from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+
+        asyncio.run(
+            run_update_check(
+                ha_rest_client=self._fake_rest(),
+                cache_dir=str(tmp_path),
+                gate=gate,
+                notifier=notifier,
+            )
+        )
+
+        assert len(gate.require_approval_calls) == 1
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
+
+    def test_hitl_approval_triggers_execute_update(self, tmp_path):
+        """When the HITL card is approved, execute_update is called."""
+        import unittest.mock as mock
+        from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+
+        class MinimalSSH:
+            async def read_file(self, path):
+                return ""
+
+        with mock.patch(
+            "ha_update_manager.execute_update",
+            new=mock.AsyncMock(return_value=True),
+        ) as mock_exec:
+            asyncio.run(
+                run_update_check(
+                    ha_rest_client=self._fake_rest(),
+                    ssh_client=MinimalSSH(),
+                    cache_dir=str(tmp_path),
+                    gate=gate,
+                    notifier=notifier,
+                )
+            )
+
+        assert mock_exec.call_count == 1
+
+    def test_hitl_rejection_skips_execute_update(self, tmp_path):
+        """When the HITL card is rejected, execute_update is not called."""
+        import unittest.mock as mock
+        from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+
+        with mock.patch(
+            "ha_update_manager.execute_update",
+            new=mock.AsyncMock(return_value=True),
+        ) as mock_exec:
+            asyncio.run(
+                run_update_check(
+                    ha_rest_client=self._fake_rest(),
+                    cache_dir=str(tmp_path),
+                    gate=gate,
+                    notifier=notifier,
+                )
+            )
+
+        assert mock_exec.call_count == 0
+
+    def test_hitl_approval_without_ssh_skips_execute(self, tmp_path):
+        """When approved but no ssh_client is provided, execute_update is not called."""
+        import unittest.mock as mock
+        from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+
+        with mock.patch(
+            "ha_update_manager.execute_update",
+            new=mock.AsyncMock(return_value=True),
+        ) as mock_exec:
+            asyncio.run(
+                run_update_check(
+                    ha_rest_client=self._fake_rest(),
+                    ssh_client=None,
+                    cache_dir=str(tmp_path),
+                    gate=gate,
+                    notifier=notifier,
+                )
+            )
+
+        assert mock_exec.call_count == 0
 
 
 # ── request_update_approval ───────────────────────────────────────────────────────

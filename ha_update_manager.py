@@ -12,12 +12,16 @@ import httpx
 from pydantic import BaseModel
 
 from config import (
+    AUTONOMY_LEVEL,
     HA_API_PORT,
     HA_API_TOKEN,
     HA_DISK_WARN_GB,
     HA_HOST,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
     MAX_PROMPT_TOKENS,
+    NOTIFIER,
+    NOTIFY_URL,
+    NOTIFY_WATCH_DIR,
     OLLAMA_MODEL,
 )
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
@@ -264,8 +268,10 @@ async def run_update_check(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     cache_dir: Optional[str] = None,
+    gate: Optional["AutonomyGate | FakeAutonomyGate"] = None,
+    notifier: Optional["NotifierProtocol"] = None,
 ) -> list[UpdateStatus]:
-    """One-shot: print update status table and advisory breaking-change analysis."""
+    """One-shot: print update status table, advisory breaking-change analysis, and HITL cards."""
     if not ha_rest_client and not HA_API_TOKEN:
         log.error(
             "update_check_no_token",
@@ -297,7 +303,8 @@ async def run_update_check(
             if u.release_url:
                 print(f"  {u.component}: {u.release_url}")
 
-    # Breaking-change analysis for any Core update.
+    # Breaking-change analysis for any Core update; collect reports for HITL cards.
+    reports: dict[str, UpdateReadinessReport] = {}
     core_updates = [u for u in available if u.component == "core"]
     for core_update in core_updates:
         config_yaml_content = ""
@@ -332,6 +339,7 @@ async def run_update_check(
             report = await analyze_breaking_changes(
                 core_update, config_yaml_content, release_notes, llm_client
             )
+            reports[core_update.component] = report
             print(_format_readiness_report(report))
             log.info(
                 "breaking_change_analysis_complete",
@@ -342,6 +350,26 @@ async def run_update_check(
         except Exception as exc:
             log.error("breaking_change_analysis_failed", error=str(exc))
             print(f"\nWarning: breaking-change analysis failed: {exc}")
+
+    # HITL approval cards — Core/OS always require approval; add-ons defer to autonomy level.
+    from utils.autonomy import AutonomyGate
+    from utils.notify import get_notifier
+
+    _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+
+    for update in available:
+        readiness = reports.get(update.component)
+        approved = await request_update_approval(update, _gate, _notifier, readiness)
+        if approved:
+            if ssh_client is not None:
+                await execute_update(update, ssh_client, _notifier, _gate, llm_client)
+            else:
+                log.warning(
+                    "update_approved_no_ssh",
+                    component=update.component,
+                    detail="Approved but no SSH client available — skipping execution",
+                )
 
     return updates
 
