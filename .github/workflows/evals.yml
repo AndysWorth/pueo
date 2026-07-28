@@ -20,7 +20,6 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        working-directory: pueo
         run: pip install -r requirements-dev.txt
 
       - name: Start Ollama
@@ -33,7 +32,6 @@ jobs:
 
       - name: Run evals
         continue-on-error: true
-        working-directory: pueo
         run: python evals/run_evals.py
         env:
           PUEO_CONFIG: ""
