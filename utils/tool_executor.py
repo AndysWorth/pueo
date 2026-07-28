@@ -15,7 +15,7 @@ from utils.logging import get_correlation_id, get_logger
 from utils.tool_registry import ToolCall, ToolResult
 
 if TYPE_CHECKING:
-    from interfaces import SSHClientProtocol
+    from interfaces import KnowledgeStoreClientProtocol, SSHClientProtocol
     from netalertx.api_client import NetAlertXAPIClient
     from utils.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
@@ -53,6 +53,7 @@ class ToolExecutor:
         nax_ssh_client: Optional["SSHClientProtocol"] = None,
         netalertx_api_client: Optional["NetAlertXAPIClient"] = None,
         netalertx_container_name: str = "netalertx",
+        knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     ) -> None:
         self._ha_ssh = ha_ssh_client
         self._nax_ssh = nax_ssh_client
@@ -60,6 +61,7 @@ class ToolExecutor:
         self._notifier = notifier
         self._api = netalertx_api_client
         self._container = netalertx_container_name
+        self._knowledge_store = knowledge_store
         self._apply_fix_used = False
 
     def reset(self) -> None:
@@ -95,12 +97,7 @@ class ToolExecutor:
                     output=args.get("summary", "Repair complete"),
                 )
             if name == "query_knowledge":
-                return ToolResult(
-                    tool_name="query_knowledge",
-                    success=False,
-                    output="",
-                    error="query_knowledge not yet implemented (Phase 15)",
-                )
+                return await self._query_knowledge(args.get("query", ""))
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
@@ -179,6 +176,26 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="read_file", success=False, output="", error=str(exc)
             )
+
+    async def _query_knowledge(self, query: str) -> ToolResult:
+        if self._knowledge_store is None:
+            return ToolResult(
+                tool_name="query_knowledge",
+                success=False,
+                output="",
+                error="Knowledge store not configured (run --mode rag-refresh first)",
+            )
+        from config import RAG_TOP_K
+
+        chunks = self._knowledge_store.query(query, top_k=RAG_TOP_K)
+        if not chunks:
+            return ToolResult(
+                tool_name="query_knowledge",
+                success=True,
+                output="No relevant knowledge found.",
+            )
+        output = "\n\n".join(f"[{c.collection} | {c.source}]\n{c.text}" for c in chunks)
+        return ToolResult(tool_name="query_knowledge", success=True, output=output)
 
     async def _apply_fix(self, yaml_content: str, description: str) -> ToolResult:
         if self._apply_fix_used:

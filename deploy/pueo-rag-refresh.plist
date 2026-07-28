@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd plist — weekly RAG knowledge-base refresh (item 52).
+
+  Install:
+    cp deploy/pueo-rag-refresh.plist ~/Library/LaunchAgents/io.pueo.rag-refresh.plist
+    launchctl load ~/Library/LaunchAgents/io.pueo.rag-refresh.plist
+
+  To run immediately:
+    launchctl start io.pueo.rag-refresh
+
+  Runs every Sunday at 03:00 local time.
+  Reads cached HA release notes and HACS changelogs and upserts them to ChromaDB.
+  Adjust WorkingDirectory and ProgramArguments to match your installation path.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.pueo.rag-refresh</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>main.py</string>
+    <string>--mode</string>
+    <string>rag-refresh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/path/to/pueo</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>0</integer>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/pueo-rag-refresh.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/pueo-rag-refresh.err</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

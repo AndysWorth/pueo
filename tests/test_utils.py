@@ -1301,6 +1301,342 @@ class TestExecuteRemoteBackupDiskCheck:
         assert slug == "fresh-slug"
 
 
+# ── RAG knowledge store (item 49) ─────────────────────────────────────────────────
+
+
+class TestKnowledgeChunk:
+    def test_valid_construction(self):
+        from utils.knowledge_store import KnowledgeChunk
+
+        chunk = KnowledgeChunk(
+            text="some text", source="ha/2024.1", collection="ha_release_notes"
+        )
+        assert chunk.text == "some text"
+        assert chunk.score == 0.0
+        assert chunk.metadata == {}
+
+    def test_construction_with_all_fields(self):
+        from utils.knowledge_store import KnowledgeChunk
+
+        chunk = KnowledgeChunk(
+            text="breaking change",
+            source="ha/2024.1",
+            collection="ha_release_notes",
+            score=0.9,
+            metadata={"version": "2024.1"},
+        )
+        assert chunk.score == 0.9
+        assert chunk.metadata["version"] == "2024.1"
+
+
+class TestFakeKnowledgeStore:
+    def test_upsert_and_query_basic(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2024.1-0"],
+            documents=["breaking change in template syntax"],
+            metadatas=[{"source": "ha_release_notes/2024.1", "version": "2024.1"}],
+        )
+        results = store.query("breaking change", top_k=5)
+        assert len(results) == 1
+        assert results[0].collection == "ha_release_notes"
+        assert results[0].source == "ha_release_notes/2024.1"
+
+    def test_upsert_deduplicates_by_id(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2024.1-0"],
+            documents=["original text"],
+            metadatas=[{"source": "ha/2024.1"}],
+        )
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2024.1-0"],
+            documents=["updated text"],
+            metadatas=[{"source": "ha/2024.1"}],
+        )
+        results = store.query("updated", top_k=5)
+        assert len(results) == 1
+        assert results[0].text == "updated text"
+
+    def test_query_returns_empty_for_no_match(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-x-0"],
+            documents=["some yaml change"],
+            metadatas=[{"source": "ha/x"}],
+        )
+        results = store.query("completely different topic", top_k=5)
+        assert results == []
+
+    def test_query_respects_top_k(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=[f"ha-x-{i}" for i in range(10)],
+            documents=[f"breaking change number {i}" for i in range(10)],
+            metadatas=[{"source": f"ha/x/{i}"} for i in range(10)],
+        )
+        results = store.query("breaking change", top_k=3)
+        assert len(results) == 3
+
+    def test_query_with_collection_filter(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-0"],
+            documents=["ha breaking change"],
+            metadatas=[{"source": "ha/2024.1"}],
+        )
+        store.upsert(
+            "hacs_changelogs",
+            ids=["hacs-0"],
+            documents=["hacs breaking change"],
+            metadatas=[{"source": "hacs/myint"}],
+        )
+        results = store.query(
+            "breaking change", top_k=5, collections=["ha_release_notes"]
+        )
+        assert all(r.collection == "ha_release_notes" for r in results)
+        assert len(results) == 1
+
+    def test_query_unknown_collection_returns_empty(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        results = store.query("anything", top_k=5, collections=["nonexistent"])
+        assert results == []
+
+
+# ── HA release notes scraper (item 50) ────────────────────────────────────────────
+
+
+class TestParseBreakingChanges:
+    def test_extracts_section_with_break_keyword(self):
+        from utils.ha_release_notes_scraper import parse_breaking_changes
+
+        notes = "# 2024.1\n\nSome intro text.\n## Breaking Changes\n- Template syntax changed\n## Other\n- Bug fix"
+        result = parse_breaking_changes(notes)
+        assert any("Template syntax changed" in c for c in result)
+
+    def test_extracts_section_with_deprecated_keyword(self):
+        from utils.ha_release_notes_scraper import parse_breaking_changes
+
+        notes = "## What's New\nFoo\n## Deprecated\nOld API removed"
+        result = parse_breaking_changes(notes)
+        assert any("Old API removed" in c for c in result)
+
+    def test_falls_back_to_first_chunk_when_no_match(self):
+        from utils.ha_release_notes_scraper import parse_breaking_changes
+
+        notes = "No relevant sections here at all."
+        result = parse_breaking_changes(notes)
+        assert len(result) == 1
+        assert "No relevant sections" in result[0]
+
+    def test_truncates_long_sections(self):
+        from utils.ha_release_notes_scraper import parse_breaking_changes
+
+        notes = "## Breaking Changes\n" + "x" * 3000
+        result = parse_breaking_changes(notes)
+        assert all(len(c) <= 2000 for c in result)
+
+
+class TestChunkReleaseNotes:
+    def test_returns_ids_docs_metas(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        ids, docs, metas = chunk_release_notes(
+            "## Breaking Changes\nfoo changed", "2024.1"
+        )
+        assert len(ids) == len(docs) == len(metas)
+        assert all(id_.startswith("ha-2024.1-") for id_ in ids)
+        assert all(m["version"] == "2024.1" for m in metas)
+
+    def test_ids_are_unique(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        notes = "## Breaking\nfoo\n## Removed\nbar\n## Renamed\nbaz"
+        ids, _, _ = chunk_release_notes(notes, "2024.2")
+        assert len(ids) == len(set(ids))
+
+
+class TestScrapeCachedReleaseNotes:
+    def test_returns_zero_for_missing_dir(self):
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        result = scrape_cached_release_notes("/nonexistent/path", store)
+        assert result == 0
+
+    def test_processes_txt_files(self, tmp_path):
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "ha_notes"
+        cache.mkdir()
+        (cache / "2024.1.txt").write_text("## Breaking Changes\ntemplate changed")
+        (cache / "2024.2.txt").write_text("## Breaking Changes\nautomation changed")
+
+        store = FakeKnowledgeStore()
+        result = scrape_cached_release_notes(str(cache), store)
+        assert result == 2
+        assert len(store.query("template", top_k=5)) > 0
+
+    def test_skips_non_txt_files(self, tmp_path):
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "ha_notes"
+        cache.mkdir()
+        (cache / "README.md").write_text("## Breaking Changes\nsome change")
+
+        store = FakeKnowledgeStore()
+        result = scrape_cached_release_notes(str(cache), store)
+        assert result == 0
+
+    def test_skips_unreadable_file(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "ha_notes"
+        cache.mkdir()
+        bad_file = cache / "2024.1.txt"
+        bad_file.write_text("## Breaking Changes\ntext")
+
+        original_read_text = Path.read_text
+
+        def _raising_read_text(self, *args, **kwargs):
+            if self.name.endswith(".txt"):
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _raising_read_text)
+
+        store = FakeKnowledgeStore()
+        result = scrape_cached_release_notes(str(cache), store)
+        assert result == 0
+
+
+# ── HACS changelog scraper (item 51) ──────────────────────────────────────────────
+
+
+class TestParseChangelog:
+    def test_splits_by_section_header(self):
+        from utils.hacs_scraper import parse_changelog
+
+        text = "## 1.0.0\nFirst release\n## 0.9.0\nBeta"
+        result = parse_changelog(text)
+        assert len(result) == 2
+        assert "First release" in result[0]
+
+    def test_returns_empty_for_blank_input(self):
+        from utils.hacs_scraper import parse_changelog
+
+        result = parse_changelog("")
+        assert result == []
+
+    def test_truncates_long_sections(self):
+        from utils.hacs_scraper import parse_changelog
+
+        text = "## 1.0.0\n" + "a" * 3000
+        result = parse_changelog(text)
+        assert all(len(c) <= 2000 for c in result)
+
+
+class TestChunkChangelog:
+    def test_returns_ids_docs_metas(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        ids, docs, metas = chunk_changelog(
+            "## 1.0.0\nchange one\n## 0.9.0\nchange two", "myint"
+        )
+        assert len(ids) == len(docs) == len(metas) == 2
+        assert all(id_.startswith("hacs-myint-") for id_ in ids)
+        assert all(m["slug"] == "myint" for m in metas)
+
+    def test_returns_empty_for_blank_changelog(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        ids, docs, metas = chunk_changelog("", "myint")
+        assert ids == [] and docs == [] and metas == []
+
+
+class TestEmbedCachedChangelogs:
+    def test_returns_zero_for_missing_dir(self):
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_changelogs("/nonexistent/path", store)
+        assert result == 0
+
+    def test_processes_md_files(self, tmp_path):
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "hacs"
+        cache.mkdir()
+        (cache / "myintegration.md").write_text(
+            "## 1.0.0\nFixed bug\n## 0.9.0\nAdded feature"
+        )
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_changelogs(str(cache), store)
+        assert result == 1
+        assert len(store.query("Fixed bug", top_k=5)) > 0
+
+    def test_skips_non_md_files(self, tmp_path):
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "hacs"
+        cache.mkdir()
+        (cache / "notes.txt").write_text("## 1.0.0\nchange")
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_changelogs(str(cache), store)
+        assert result == 0
+
+    def test_skips_unreadable_file(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "hacs"
+        cache.mkdir()
+        bad_file = cache / "myint.md"
+        bad_file.write_text("## 1.0.0\nFixed bug")
+
+        original_read_text = Path.read_text
+
+        def _raising_read_text(self, *args, **kwargs):
+            if self.name.endswith(".md"):
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _raising_read_text)
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_changelogs(str(cache), store)
+        assert result == 0
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"

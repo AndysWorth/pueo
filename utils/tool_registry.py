@@ -227,10 +227,9 @@ FINISH_REPAIR = ToolDefinition(
     },
 )
 
-# Reserved slot — Phase 15 (RAG knowledge layer)
 QUERY_KNOWLEDGE = ToolDefinition(
     name="query_knowledge",
-    description="[Phase 15] Query the local RAG knowledge base for HA breaking changes.",
+    description="Query the local RAG knowledge base for HA breaking changes and HACS changelogs.",
     parameters={
         "type": "object",
         "properties": {

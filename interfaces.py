@@ -1,4 +1,4 @@
-"""Protocol interfaces for SSH, LLM, and HA REST clients."""
+"""Protocol interfaces for SSH, LLM, HA REST, and knowledge store clients."""
 
 from typing import Any, AsyncIterator, Protocol
 
@@ -47,3 +47,20 @@ class HAWebSocketClientProtocol(Protocol):
 
 class NetAlertXClientProtocol(Protocol):
     async def get_devices(self) -> list[dict]: ...
+
+
+class KnowledgeStoreClientProtocol(Protocol):
+    def upsert(
+        self,
+        collection: str,
+        ids: list[str],
+        documents: list[str],
+        metadatas: list[dict],
+    ) -> None: ...
+
+    def query(
+        self,
+        query_text: str,
+        top_k: int,
+        collections: list[str] | None = None,
+    ) -> list[Any]: ...

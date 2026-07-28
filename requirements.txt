@@ -1,5 +1,6 @@
 aiomqtt
 asyncssh
+chromadb
 fastapi
 httpx
 jinja2

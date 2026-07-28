@@ -26,6 +26,7 @@ def main() -> None:
             "  backup-status       print backup inventory table (slug, size, age, HA, Pueo)\n"
             "  update-check        one-shot update availability check (requires api_token)\n"
             "  notifications       one-shot: triage HA persistent notifications and send HITL cards\n"
+            "  rag-refresh         embed cached HA release notes and HACS changelogs into ChromaDB\n"
             "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
         ),
     )
@@ -48,6 +49,7 @@ def main() -> None:
             "backup-status",
             "update-check",
             "notifications",
+            "rag-refresh",
             "dashboard",
         ],
         default="monitor",
@@ -117,6 +119,22 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_notification_manager.run_notifications())
+    elif args.mode == "rag-refresh":
+        import config
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import ChromaKnowledgeStore
+
+        store = ChromaKnowledgeStore(
+            config.CHROMADB_PATH, config.RAG_EMBED_MODEL, config.OLLAMA_ENDPOINT
+        )
+        n_ha = scrape_cached_release_notes(
+            config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store
+        )
+        n_hacs = embed_cached_changelogs(".cache/hacs_changelogs/", store)
+        print(
+            f"rag-refresh: embedded {n_ha} HA release note file(s), {n_hacs} HACS changelog(s)"
+        )
     elif args.mode == "dashboard":
         from web.dashboard import run_dashboard
 

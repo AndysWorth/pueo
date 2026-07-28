@@ -5612,10 +5612,10 @@ class TestToolExecutor:
         assert result.success
         assert result.tool_name == "finish_repair"
 
-    def test_query_knowledge_returns_not_implemented(self):
+    def test_query_knowledge_no_store_returns_error(self):
         from utils.tool_registry import ToolCall
 
-        executor = self._make_executor()
+        executor = self._make_executor()  # no knowledge_store injected
         result = asyncio.run(
             executor.execute(
                 ToolCall(
@@ -5624,7 +5624,7 @@ class TestToolExecutor:
             )
         )
         assert not result.success
-        assert "Phase 15" in result.error
+        assert "not configured" in result.error
 
     def test_apply_fix_once_per_loop_cap(self):
         """apply_fix rejected on second call within the same loop run."""
@@ -5669,6 +5669,713 @@ class TestToolExecutor:
         )
         assert not result.success
         assert "not configured" in result.error
+
+    # -- read_logs ---------------------------------------------------------------
+
+    def test_read_logs_success(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha core logs": (0, "log line 1\nlog line 2", "")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="read_logs", arguments={"lines": 50}))
+        )
+        assert result.success
+        assert "log line" in result.output
+
+    def test_read_logs_ssh_failure(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        class _RaisingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                raise RuntimeError("SSH broken")
+
+        executor = self._make_executor(ssh=_RaisingSSH())
+        result = asyncio.run(executor.execute(ToolCall(name="read_logs", arguments={})))
+        assert not result.success
+        assert "SSH broken" in result.error
+
+    def test_read_logs_default_lines(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(command_results={"ha core logs": (0, "output", "")})
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(executor.execute(ToolCall(name="read_logs", arguments={})))
+        assert result.success
+
+    # -- run_ha_command exception path -------------------------------------------
+
+    def test_run_ha_command_ssh_exception(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        class _RaisingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                raise ConnectionError("connection dropped")
+
+        executor = self._make_executor(ssh=_RaisingSSH())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="run_ha_command", arguments={"command": "ha core check"})
+            )
+        )
+        assert not result.success
+        assert "connection dropped" in result.error
+
+    # -- read_file exception path ------------------------------------------------
+
+    def test_read_file_ssh_exception(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        class _RaisingSSH(FakeSSHClient):
+            async def read_file(self, path):
+                raise PermissionError("denied")
+
+        executor = self._make_executor(ssh=_RaisingSSH())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="read_file", arguments={"path": "/config/secrets.yaml"})
+            )
+        )
+        assert not result.success
+        assert "denied" in result.error
+
+    # -- verify_fix --------------------------------------------------------------
+
+    def test_verify_fix_success(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha core check": (0, "Configuration is valid!", "")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
+        assert result.success
+        assert "passed" in result.output
+
+    def test_verify_fix_failure(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha core check": (1, "", "Invalid YAML on line 5")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
+        assert not result.success
+        assert "ha core check failed" in result.error
+
+    def test_verify_fix_ssh_exception(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        class _RaisingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                raise TimeoutError("SSH timed out")
+
+        executor = self._make_executor(ssh=_RaisingSSH())
+        result = asyncio.run(executor.execute(ToolCall(name="verify_fix")))
+        assert not result.success
+        assert "timed out" in result.error
+
+    # -- query_netalertx with api client -----------------------------------------
+
+    def test_query_netalertx_health_with_client(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FakeNAXApi:
+            async def get_about(self):
+                return {"status": "ok", "version": "26.7.1"}
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                pass
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_FakeNAXApi(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_netalertx", arguments={"query_type": "health"})
+            )
+        )
+        assert result.success
+        assert "ok" in result.output
+
+    def test_query_netalertx_devices(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FakeNAXApi:
+            async def get_about(self):
+                return {}
+
+            async def get_devices(self):
+                return [{"mac": "AA:BB:CC:DD:EE:FF", "name": "my-device"}]
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                pass
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_FakeNAXApi(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_netalertx", arguments={"query_type": "devices"})
+            )
+        )
+        assert result.success
+        assert "my-device" in result.output
+
+    def test_query_netalertx_events(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FakeNAXApi:
+            async def get_about(self):
+                return {}
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return [{"type": "new_device", "mac": "AA:BB:CC:DD:EE:FF"}]
+
+            async def trigger_scan(self):
+                pass
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_FakeNAXApi(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_netalertx", arguments={"query_type": "events"})
+            )
+        )
+        assert result.success
+
+    def test_query_netalertx_unknown_type(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FakeNAXApi:
+            async def get_about(self):
+                return {}
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                pass
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_FakeNAXApi(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_netalertx", arguments={"query_type": "unknown"})
+            )
+        )
+        assert not result.success
+        assert "Unknown query_type" in result.error
+
+    def test_query_netalertx_api_exception(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _ErrorNAXApi:
+            async def get_about(self):
+                raise RuntimeError("API down")
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                pass
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_ErrorNAXApi(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_netalertx", arguments={"query_type": "health"})
+            )
+        )
+        assert not result.success
+        assert "API down" in result.error
+
+    # -- restart_netalertx -------------------------------------------------------
+
+    def test_restart_netalertx_success(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(command_results={"docker restart": (0, "netalertx\n", "")})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert result.success
+
+    def test_restart_netalertx_with_api_scan_trigger(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FakeNAXApi:
+            scan_triggered = False
+
+            async def get_about(self):
+                return {}
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                _FakeNAXApi.scan_triggered = True
+
+        ssh = FakeSSHClient(command_results={"docker restart": (0, "restarted", "")})
+        api = _FakeNAXApi()
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=api,
+        )
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert result.success
+        assert _FakeNAXApi.scan_triggered
+
+    def test_restart_netalertx_ssh_exception(self):
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        class _RaisingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                raise OSError("SSH failed")
+
+        executor = self._make_executor(ssh=_RaisingSSH())
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert not result.success
+        assert "SSH failed" in result.error
+
+    # -- rewrite_netalertx_conf --------------------------------------------------
+
+    def test_rewrite_netalertx_conf_success(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        # All required keys present so validator passes
+        initial_conf = (
+            "MQTT_BROKER='homeassistant.local'\n"
+            "MQTT_PORT=1883\n"
+            "HA_URL='http://homeassistant.local:8123'\n"
+            "HA_BEARER_TOKEN='mytoken'\n"
+            "SCAN_SUBNETS=['192.168.1.0/24']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS='MQTT,ARPSCAN'\n"
+            "MQTT_ACTIVE=0\n"
+        )
+        ssh = FakeSSHClient(file_contents={"/data/app.conf": initial_conf})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"MQTT_ACTIVE": "1"}},
+                )
+            )
+        )
+        assert result.success
+        assert "updated" in result.output
+
+    def test_rewrite_netalertx_conf_validation_blocks_bad_overrides(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        # Missing TIMEZONE and LOADED_PLUGINS — validator will block
+        initial_conf = "SCAN_SUBNETS=[]\nMQTT_ACTIVE=0\n"
+        ssh = FakeSSHClient(file_contents={"/data/app.conf": initial_conf})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"SCAN_SUBNETS": "[]"}},
+                )
+            )
+        )
+        assert not result.success
+        assert "invalid" in result.error.lower()
+
+    # -- unknown tool and top-level exception ------------------------------------
+
+    def test_unknown_tool_name(self):
+        from utils.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(executor.execute(ToolCall(name="does_not_exist_at_all")))
+        assert not result.success
+        assert "Unknown tool" in result.error
+
+    def test_execute_catches_unexpected_exception(self):
+        from utils.tool_registry import ToolCall
+
+        class _BrokenSSH:
+            async def read_file(self, path):
+                raise RuntimeError("Unexpected critical error")
+
+            async def write_file(self, path, content):
+                pass
+
+            async def download_file(self, remote_path, local_path):
+                pass
+
+            async def run(self, command, check=False):
+                raise RuntimeError("Unexpected critical error")
+
+            def stream_lines(self, command):
+                return iter([])
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=_BrokenSSH(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="read_config", arguments={"path": "/config/configuration.yaml"}
+                )
+            )
+        )
+        assert not result.success
+
+    # -- apply_fix backup failure ------------------------------------------------
+
+    def test_apply_fix_backup_failure(self, monkeypatch):
+        """apply_fix returns error when execute_remote_backup raises."""
+        import ha_agent_sandbox_engine
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        executor = self._make_executor(ssh=ssh)
+
+        # Make approval succeed
+        import utils.tool_executor as tex
+
+        async def _always_approve(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(executor._gate, "require_approval", _always_approve)
+
+        # Make backup fail
+        async def _fail_backup(*args, **kwargs):
+            raise RuntimeError("backup storage full")
+
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "execute_remote_backup", _fail_backup
+        )
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="apply_fix",
+                    arguments={
+                        "yaml_content": "homeassistant:\n  name: Home\n",
+                        "description": "fix",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "Backup failed" in result.error
+
+    # -- restart_netalertx scan trigger exception (best-effort) -----------------
+
+    def test_restart_netalertx_scan_trigger_exception_is_swallowed(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FailingScanApi:
+            async def get_about(self):
+                return {}
+
+            async def get_devices(self):
+                return []
+
+            async def get_events(self):
+                return []
+
+            async def trigger_scan(self):
+                raise RuntimeError("scan endpoint unavailable")
+
+        ssh = FakeSSHClient(command_results={"docker restart": (0, "restarted", "")})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            netalertx_api_client=_FailingScanApi(),
+        )
+        # scan trigger raises but is best-effort — overall result should still succeed
+        result = asyncio.run(executor.execute(ToolCall(name="restart_netalertx")))
+        assert result.success
+
+    # -- rewrite_netalertx_conf with no existing config file --------------------
+
+    def test_rewrite_netalertx_conf_missing_file_starts_fresh(self):
+        """If app.conf doesn't exist, _rewrite_netalertx_conf starts from empty."""
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        # FakeSSHClient with no file_contents raises FileNotFoundError
+        ssh = FakeSSHClient()
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        # Result may succeed or fail depending on whether the empty config passes
+        # validation — the key invariant is that no exception propagates.
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"SCAN_SUBNETS": "['192.168.1.0/24']"}},
+                )
+            )
+        )
+        assert isinstance(result.success, bool)
+
+    def test_rewrite_netalertx_conf_write_failure(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _FailWrite(FakeSSHClient):
+            async def write_file(self, path, content):
+                raise OSError("disk full")
+
+        initial_conf = (
+            "MQTT_BROKER='homeassistant.local'\n"
+            "MQTT_PORT=1883\n"
+            "HA_URL='http://homeassistant.local:8123'\n"
+            "HA_BEARER_TOKEN='mytoken'\n"
+            "SCAN_SUBNETS=['192.168.1.0/24']\n"
+            "TIMEZONE='UTC'\n"
+            "LOADED_PLUGINS='MQTT,ARPSCAN'\n"
+        )
+        ssh = _FailWrite(file_contents={"/data/app.conf": initial_conf})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="rewrite_netalertx_conf",
+                    arguments={"overrides": {"MQTT_ACTIVE": "1"}},
+                )
+            )
+        )
+        assert not result.success
+        assert "disk full" in result.error
+
+    # -- execute() outer exception handler ---------------------------------------
+
+    def test_execute_outer_exception_handler(self):
+        """An exception escaping a tool method is caught by execute()'s outer handler."""
+        from utils.autonomy import FakeAutonomyGate
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        class _RaisingStore(FakeKnowledgeStore):
+            def query(self, query_text, top_k, collections=None):
+                raise RuntimeError("store exploded")
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            knowledge_store=_RaisingStore(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_knowledge", arguments={"query": "foo"})
+            )
+        )
+        assert not result.success
+
+    # -- apply_fix with read failure on original config --------------------------
+
+    def test_apply_fix_original_config_read_failure(self):
+        from utils.tool_registry import ToolCall
+
+        # FakeSSHClient with no file_contents raises FileNotFoundError for any path
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="apply_fix",
+                    arguments={"yaml_content": "key: value", "description": "test fix"},
+                )
+            )
+        )
+        assert not result.success
+        assert "Could not read original config" in result.error
+
+    # -- query_knowledge ---------------------------------------------------------
+
+    def test_query_knowledge_with_store_returns_results(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2024.1-0"],
+            documents=["Template syntax breaking change in 2024.1"],
+            metadatas=[{"source": "ha_release_notes/2024.1"}],
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            knowledge_store=store,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="query_knowledge", arguments={"query": "template syntax"})
+            )
+        )
+        assert result.success
+        assert "Template syntax" in result.output
+
+    def test_query_knowledge_with_store_no_results(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        store = FakeKnowledgeStore()
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            knowledge_store=store,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="query_knowledge", arguments={"query": "something obscure"}
+                )
+            )
+        )
+        assert result.success
+        assert "No relevant knowledge" in result.output
 
 
 # ── AgentLoop — item 44 ─────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ home_assistant:
 ollama:
   model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
+  # embed_model: "nomic-embed-text"   # Embedding model for RAG knowledge store (requires `ollama pull nomic-embed-text`)
 
 netalertx:
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
@@ -70,3 +71,5 @@ agent:
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
   agent_max_tool_calls: 20            # Hard cap on tool invocations per agent loop run
   agent_max_wall_seconds: 120.0       # Wall-clock timeout for the entire agent loop (seconds)
+  # chromadb_path: "./chromadb/"      # Local ChromaDB vector store directory (RAG knowledge layer)
+  # rag_top_k: 5                      # Number of knowledge chunks returned per query_knowledge call
