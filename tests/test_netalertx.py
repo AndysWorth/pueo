@@ -5098,6 +5098,20 @@ class TestNetAlertXDiagnostic:
 class TestNetAlertXHealer:
     """Tests for netalertx/healer.py — all four autonomy levels + version bump."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_sandbox_db_path(self, tmp_path, monkeypatch):
+        """Redirect ha_agent_sandbox_engine.DB_PATH to a temp file.
+
+        record_backup_slug() in ha_agent_sandbox_engine uses the module-level
+        DB_PATH directly, so without this patch it writes to the real
+        ha_agent_state.db during test runs.
+        """
+        import ha_agent_sandbox_engine
+
+        db = str(tmp_path / "sandbox_test.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        ha_agent_sandbox_engine.init_local_database()
+
     # -----------------------------------------------------------------------
     # helpers
     # -----------------------------------------------------------------------
@@ -5918,6 +5932,20 @@ class TestNetAlertXMaintenanceValidator:
 
 class TestNetAlertXMaintenanceHealer:
     """Tests for heal_maintenance_issues in healer.py (item 19)."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_sandbox_db_path(self, tmp_path, monkeypatch):
+        """Redirect ha_agent_sandbox_engine.DB_PATH to a temp file.
+
+        record_backup_slug() in ha_agent_sandbox_engine uses the module-level
+        DB_PATH directly, so without this patch it writes to the real
+        ha_agent_state.db during test runs.
+        """
+        import ha_agent_sandbox_engine
+
+        db = str(tmp_path / "sandbox_test.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        ha_agent_sandbox_engine.init_local_database()
 
     def _make_issue(self, field: str, message: str = "test", severity: str = "MEDIUM"):
         from netalertx.config_validator import ConfigIssue
