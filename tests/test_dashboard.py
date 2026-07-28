@@ -739,32 +739,37 @@ class TestLLMTrace:
         assert isinstance(evidence, dict)
         assert "addon_info" in evidence
 
-    def test_hitl_payload_contains_llm_trace(self):
+    def test_hitl_payload_contains_notification_id(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.ollama_client import FakeToolCallingLLMClient
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from ha_agent_core import DiagnosticsReport
         import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
         _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
-        report = DiagnosticsReport(
-            is_valid=False,
-            severity="HIGH",
-            identified_issues=["server_port should be 8124"],
-            recommended_fix_yaml=_fix,
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _fix,
+                                    "description": "Fix server_port from 8123 to 8124",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        llm = FakeLLMClient(report.model_dump_json())
         ssh = FakeSSHClient(
             file_contents={"/config/configuration.yaml": _orig},
-            command_results={
-                "ha core check": (0, "OK", ""),
-                "ha backup new": (0, '{"slug": "abc123"}', ""),
-                "ha core restart": (0, "", ""),
-            },
+            command_results={"ha core check": (0, "OK", "")},
         )
         notifier = FakeNotifier(approve=False)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -775,36 +780,41 @@ class TestLLMTrace:
         )
         assert len(notifier.sent) == 1
         payload = notifier.sent[0]["payload"]
-        assert "llm_trace" in payload
-        assert "model" in payload["llm_trace"]
-        assert "raw_response" in payload["llm_trace"]
+        assert "notification_id" in payload
+        assert "severity" in payload
+        assert "correlation_id" in payload
 
-    def test_hitl_payload_contains_diagnosis(self):
+    def test_hitl_payload_contains_description_and_severity(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.ollama_client import FakeToolCallingLLMClient
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from ha_agent_core import DiagnosticsReport
         import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
         _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
-        report = DiagnosticsReport(
-            is_valid=False,
-            severity="HIGH",
-            identified_issues=["server_port should be 8124"],
-            recommended_fix_yaml=_fix,
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "apply_fix",
+                                "arguments": {
+                                    "yaml_content": _fix,
+                                    "description": "Fix server_port from 8123 to 8124",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        llm = FakeLLMClient(report.model_dump_json())
         ssh = FakeSSHClient(
             file_contents={"/config/configuration.yaml": _orig},
-            command_results={
-                "ha core check": (0, "OK", ""),
-                "ha backup new": (0, '{"slug": "abc123"}', ""),
-                "ha core restart": (0, "", ""),
-            },
+            command_results={"ha core check": (0, "OK", "")},
         )
         notifier = FakeNotifier(approve=False)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -814,8 +824,8 @@ class TestLLMTrace:
             )
         )
         payload = notifier.sent[0]["payload"]
-        assert "diagnosis" in payload
-        assert payload["diagnosis"]["severity"] == "HIGH"
+        assert payload["severity"] == "HIGH"
+        assert "Fix server_port" in payload["description"]
 
     def test_exception_branch_returns_sentinel_trace(self):
         import asyncio

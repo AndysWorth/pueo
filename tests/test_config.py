@@ -694,3 +694,31 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.HA_NOTIFICATION_ENRICH_AUTH_FAILURES is False
+
+    def test_agent_max_tool_calls_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_TOOL_CALLS == 20
+
+    def test_agent_max_tool_calls_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"agent_max_tool_calls": 10}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_TOOL_CALLS == 10
+
+    def test_agent_max_wall_seconds_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_WALL_SECONDS == 120.0
+
+    def test_agent_max_wall_seconds_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"agent_max_wall_seconds": 60.0}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_WALL_SECONDS == 60.0

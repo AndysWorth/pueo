@@ -1,7 +1,7 @@
 # ADR 006 — Tool-calling agent loop over linear pipeline
 
 ## Status
-Proposed
+Accepted
 
 ## Context
 

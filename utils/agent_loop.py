@@ -1,0 +1,206 @@
+"""Agent loop controller — item 44.
+
+AgentLoop drives iterative tool-calling with Ollama's tools API.
+The model investigates and acts until it calls finish_repair, exhausts its
+budget, or the wall-clock timeout fires.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import TYPE_CHECKING, Any, Optional
+
+from config import AGENT_MAX_TOOL_CALLS, AGENT_MAX_WALL_SECONDS, OLLAMA_MODEL
+from utils.logging import get_logger
+from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+
+if TYPE_CHECKING:
+    from interfaces import LLMClientProtocol
+    from utils.tool_executor import ToolExecutor
+    from utils.tool_registry import ToolRegistry
+
+log = get_logger("agent_loop")
+
+_AGENT_LOOP_SYSTEM_PROMPT = """\
+You are Pueo, an autonomous Home Assistant repair agent.
+Investigate the problem using the tools provided. When you have enough
+information, apply a fix if one is needed, then call finish_repair.
+Use tools one at a time. Never call apply_fix more than once per session.
+"""
+
+
+class AgentLoop:
+    """Iterative tool-calling loop with budget and wall-clock timeout.
+
+    Parameters
+    ----------
+    llm_client:
+        Any object implementing LLMClientProtocol (OllamaClient in production,
+        FakeToolCallingLLMClient in tests).
+    tool_executor:
+        ToolExecutor instance pre-loaded with SSH clients / gate / notifier.
+    tool_registry:
+        ToolRegistry containing the tools to expose to the model.
+    model:
+        Ollama model name (defaults to OLLAMA_MODEL from config).
+    system_prompt:
+        Override the default system prompt.
+    max_tool_calls:
+        Hard cap on tool invocations per run (defaults to AGENT_MAX_TOOL_CALLS).
+    max_wall_seconds:
+        Wall-clock timeout in seconds (defaults to AGENT_MAX_WALL_SECONDS).
+    """
+
+    def __init__(
+        self,
+        llm_client: "LLMClientProtocol",
+        tool_executor: "ToolExecutor",
+        tool_registry: "ToolRegistry",
+        model: str = OLLAMA_MODEL,
+        system_prompt: str = _AGENT_LOOP_SYSTEM_PROMPT,
+        max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
+        max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
+    ) -> None:
+        self._llm = llm_client
+        self._executor = tool_executor
+        self._registry = tool_registry
+        self._model = model
+        self._system_prompt = system_prompt
+        self._max_tool_calls = max_tool_calls
+        self._max_wall_seconds = max_wall_seconds
+
+    async def run(self, initial_context: str) -> AgentLoopResult:
+        """Run the agent loop and return a result describing what happened.
+
+        The loop drives the model with the tool registry until one of:
+        - finish_repair is called → outcome "success"
+        - tool call budget exhausted → outcome "exhausted"
+        - wall clock exceeded → outcome "timeout"
+        - apply_fix returned failure → outcome "fix_failed"
+        """
+        self._executor.reset()
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": initial_context},
+        ]
+        tools = self._registry.get_ollama_tools()
+        steps: list[AgentStep] = []
+        tool_call_count = 0
+        start_time = time.monotonic()
+        outcome: str = "exhausted"
+        episode_stub: Optional[dict] = None
+
+        try:
+            result = await asyncio.wait_for(
+                self._loop_body(messages, tools, steps, tool_call_count, start_time),
+                timeout=self._max_wall_seconds,
+            )
+            outcome, episode_stub = result
+        except asyncio.TimeoutError:
+            log.warning(
+                "agent_loop_timeout",
+                wall_seconds=self._max_wall_seconds,
+                steps=len(steps),
+            )
+            outcome = "timeout"
+
+        log.info(
+            "agent_loop_complete",
+            outcome=outcome,
+            steps=len(steps),
+            elapsed=round(time.monotonic() - start_time, 2),
+        )
+        return AgentLoopResult(
+            outcome=outcome,  # type: ignore[arg-type]
+            steps=steps,
+            episode_stub=episode_stub,
+        )
+
+    async def _loop_body(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        steps: list[AgentStep],
+        tool_call_count: int,
+        start_time: float,
+    ) -> tuple[str, Optional[dict]]:
+        episode_stub: Optional[dict] = None
+
+        while tool_call_count < self._max_tool_calls:
+            response = await self._llm.chat_with_tools(
+                model=self._model,
+                messages=messages,
+                tools=tools,
+            )
+
+            tool_calls_raw = response.get("tool_calls")
+            if not tool_calls_raw:
+                # Model returned content with no tool calls — treat as natural stop.
+                log.info(
+                    "agent_loop_no_tool_calls",
+                    content=response.get("content", "")[:120],
+                )
+                return "exhausted", episode_stub
+
+            # Append the assistant message (with tool_calls) to history.
+            messages.append(response)
+
+            for tc_raw in tool_calls_raw:
+                if tool_call_count >= self._max_tool_calls:
+                    log.warning("agent_loop_budget_exhausted", count=tool_call_count)
+                    return "exhausted", episode_stub
+
+                fn = tc_raw.get("function", {})
+                tool_call = ToolCall(
+                    name=fn.get("name", ""),
+                    arguments=fn.get("arguments", {}),
+                )
+                ts = time.monotonic() - start_time
+                tool_result: ToolResult = await self._executor.execute(tool_call)
+                tool_call_count += 1
+
+                steps.append(
+                    AgentStep(
+                        step_number=tool_call_count,
+                        tool_call=tool_call,
+                        tool_result=tool_result,
+                        timestamp=ts,
+                    )
+                )
+
+                # Feed tool result back to the conversation.
+                result_text = (
+                    tool_result.output
+                    if tool_result.success
+                    else f"Error: {tool_result.error}"
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": result_text,
+                        "name": tool_call.name,
+                    }
+                )
+
+                log.info(
+                    "agent_loop_step",
+                    step=tool_call_count,
+                    tool=tool_call.name,
+                    success=tool_result.success,
+                )
+
+                if tool_call.name == "finish_repair":
+                    episode_stub = {
+                        "summary": tool_call.arguments.get("summary", ""),
+                        "action_taken": tool_call.arguments.get("action_taken", ""),
+                        "steps": tool_call_count,
+                    }
+                    return "success", episode_stub
+
+                if tool_call.name == "apply_fix" and not tool_result.success:
+                    return "fix_failed", episode_stub
+
+        log.warning("agent_loop_budget_exhausted", count=tool_call_count)
+        return "exhausted", episode_stub

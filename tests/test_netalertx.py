@@ -6220,12 +6220,15 @@ class TestNetAlertXOneShotDiagnose:
             return self._devices
 
     class _FakeHealer:
-        """Records heal() calls without executing any real actions."""
+        """Records heal() and heal_with_loop() calls without executing any real actions."""
 
         def __init__(self):
             self.heal_calls = []
 
         async def heal(self, diagnostic):
+            self.heal_calls.append(diagnostic)
+
+        async def heal_with_loop(self, diagnostic, llm_client=None):
             self.heal_calls.append(diagnostic)
 
     @staticmethod

@@ -24,6 +24,14 @@ class LLMClientProtocol(Protocol):
         format: dict,
     ) -> Any: ...
 
+    async def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        options: dict | None = None,
+    ) -> dict: ...
+
 
 class HARestClientProtocol(Protocol):
     async def get_states(self, prefix: str | None = None) -> list[dict]: ...
