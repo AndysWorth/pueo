@@ -373,9 +373,13 @@ async def run_notifications(
     """
     from config import HA_API_PORT, HA_API_TOKEN, HA_HOST, NOTIFY_WATCH_DIR
     from utils.ha_rest_client import HARestClient
+    from utils.ha_ws_client import HAWebSocketClient
     from utils.notify import FileNotifier
 
     rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _ws: HAWebSocketClientProtocol = ws_client or HAWebSocketClient(  # pragma: no cover
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     card_notifier: "NotifierProtocol" = notifier or FileNotifier(  # pragma: no cover
@@ -383,20 +387,17 @@ async def run_notifications(
     )
 
     try:
-        entities = await rest.get_states(prefix="persistent_notification.")
+        notifications = await _ws.get_persistent_notifications()
     except Exception as exc:
         log.error("notification_poll_failed", error=str(exc))
         print(f"Error polling notifications: {exc}")
         return 0
 
     new_count = 0
-    for entity in entities:
-        attrs = entity.get("attributes", {})
-        ha_nid: str = attrs.get("notification_id") or entity.get(
-            "entity_id", ""
-        ).removeprefix("persistent_notification.")
-        title: Optional[str] = attrs.get("title")
-        message: str = attrs.get("message", "")
+    for notif in notifications:
+        ha_nid: str = notif.get("notification_id", "")
+        title: Optional[str] = notif.get("title")
+        message: str = notif.get("message", "")
 
         category, severity = classify_notification(ha_nid)
         record_notification_seen(ha_nid, category, severity, db_path)

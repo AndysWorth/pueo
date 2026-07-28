@@ -43,6 +43,7 @@ class HARestClientProtocol(Protocol):
 
 class HAWebSocketClientProtocol(Protocol):
     async def get_device_registry(self) -> list[dict]: ...
+    async def get_persistent_notifications(self) -> list[dict]: ...
 
 
 class NetAlertXClientProtocol(Protocol):
