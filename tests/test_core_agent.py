@@ -5130,6 +5130,22 @@ class TestFakeHAWebSocketClient:
         result.append({"id": "dev2"})
         assert len(asyncio.run(ws.get_device_registry())) == 1
 
+    def test_get_persistent_notifications_returns_configured(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        notifs = [{"notification_id": "http_login", "message": "Bad login"}]
+        ws = FakeHAWebSocketClient(notifications=notifs)
+        result = asyncio.run(ws.get_persistent_notifications())
+        assert result == notifs
+        assert ws.calls == ["get_persistent_notifications"]
+
+    def test_get_persistent_notifications_empty_by_default(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.get_persistent_notifications())
+        assert result == []
+
 
 # ── ha_notification_manager — _format_notification_subject ───────────────────────
 
@@ -5265,26 +5281,23 @@ class TestRunNotifications:
 
     def test_sends_card_for_new_notification(self, db_path):
         from ha_notification_manager import run_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
-        rest = FakeHARestClient(
-            states=[
+        ws = FakeHAWebSocketClient(
+            notifications=[
                 {
-                    "entity_id": "persistent_notification.http_login",
-                    "state": "notifying",
-                    "attributes": {
-                        "notification_id": "http_login",
-                        "title": "Login attempt",
-                        "message": "Invalid login from 1.2.3.4",
-                    },
+                    "notification_id": "http_login",
+                    "title": "Login attempt",
+                    "message": "Invalid login from 1.2.3.4",
+                    "status": "unread",
                 }
             ]
         )
         notifier = FakeNotifier()
         count = asyncio.run(
             run_notifications(
-                ha_rest_client=rest,
+                ws_client=ws,
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
@@ -5302,29 +5315,26 @@ class TestRunNotifications:
             record_notification_seen,
             run_notifications,
         )
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         mark_notification_hitl_sent("http_login", db_path=db_path)
 
-        rest = FakeHARestClient(
-            states=[
+        ws = FakeHAWebSocketClient(
+            notifications=[
                 {
-                    "entity_id": "persistent_notification.http_login",
-                    "state": "notifying",
-                    "attributes": {
-                        "notification_id": "http_login",
-                        "title": None,
-                        "message": "Invalid login from 1.2.3.4",
-                    },
+                    "notification_id": "http_login",
+                    "title": None,
+                    "message": "Invalid login from 1.2.3.4",
+                    "status": "unread",
                 }
             ]
         )
         notifier = FakeNotifier()
         count = asyncio.run(
             run_notifications(
-                ha_rest_client=rest,
+                ws_client=ws,
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
@@ -5335,14 +5345,14 @@ class TestRunNotifications:
 
     def test_no_entities_returns_zero(self, db_path):
         from ha_notification_manager import run_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
-        rest = FakeHARestClient(states=[])
+        ws = FakeHAWebSocketClient(notifications=[])
         notifier = FakeNotifier()
         count = asyncio.run(
             run_notifications(
-                ha_rest_client=rest,
+                ws_client=ws,
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
@@ -5354,20 +5364,17 @@ class TestRunNotifications:
         from ha_notification_manager import run_notifications
         from utils.notify import FakeNotifier
 
-        class FailingRestClient:
-            async def get_states(self, prefix=None):
+        class FailingWSClient:
+            async def get_device_registry(self):
                 raise RuntimeError("connection refused")
 
-            async def get_state(self, entity_id):
-                raise RuntimeError("connection refused")
-
-            async def call_service(self, domain, service, payload):
+            async def get_persistent_notifications(self):
                 raise RuntimeError("connection refused")
 
         notifier = FakeNotifier()
         count = asyncio.run(
             run_notifications(
-                ha_rest_client=FailingRestClient(),
+                ws_client=FailingWSClient(),
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
@@ -5377,26 +5384,23 @@ class TestRunNotifications:
 
     def test_card_id_uses_notif_prefix(self, db_path):
         from ha_notification_manager import run_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
-        rest = FakeHARestClient(
-            states=[
+        ws = FakeHAWebSocketClient(
+            notifications=[
                 {
-                    "entity_id": "persistent_notification.invalid_config",
-                    "state": "notifying",
-                    "attributes": {
-                        "notification_id": "invalid_config",
-                        "title": "Config Error",
-                        "message": "YAML parse error",
-                    },
+                    "notification_id": "invalid_config",
+                    "title": "Config Error",
+                    "message": "YAML parse error",
+                    "status": "unread",
                 }
             ]
         )
         notifier = FakeNotifier()
         asyncio.run(
             run_notifications(
-                ha_rest_client=rest,
+                ws_client=ws,
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
@@ -5409,30 +5413,27 @@ class TestRunNotifications:
 
         import ha_notification_manager
         from ha_notification_manager import run_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         monkeypatch.setattr(
             socket, "gethostbyaddr", lambda ip: (_ for _ in ()).throw(socket.herror())
         )
 
-        rest = FakeHARestClient(
-            states=[
+        ws = FakeHAWebSocketClient(
+            notifications=[
                 {
-                    "entity_id": "persistent_notification.http_login",
-                    "state": "notifying",
-                    "attributes": {
-                        "notification_id": "http_login",
-                        "title": None,
-                        "message": "Invalid login from 8.8.8.8",
-                    },
+                    "notification_id": "http_login",
+                    "title": None,
+                    "message": "Invalid login from 8.8.8.8",
+                    "status": "unread",
                 }
             ]
         )
         notifier = FakeNotifier()
         asyncio.run(
             run_notifications(
-                ha_rest_client=rest,
+                ws_client=ws,
                 llm_client=self._make_llm_client(),
                 notifier=notifier,
                 db_path=db_path,
