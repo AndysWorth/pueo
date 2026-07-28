@@ -9,7 +9,7 @@ Strategic capabilities in delivery order.
 | Milestone                                     | Status                  | Code Location                              |
 | --------------------------------------------- | ----------------------- | ------------------------------------------ |
 | 1. Read-only ingestion & diagnostics          | ✅ Complete              | `ha_agent_core.py`                         |
-| 2. Local RAG & knowledge ingestion            | ❌ Not started           | `rag/`                                     |
+| 2. Local RAG & knowledge ingestion            | ✅ Complete (2026-07-28) | `utils/knowledge_store.py`, `utils/ha_release_notes_scraper.py`, `utils/hacs_scraper.py` |
 | 3. Safe execution / shadow mode               | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
 | 4. Closed-loop autonomous healing             | ✅ Complete              | `ha_agent_sandbox_engine.py`               |
 | 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
@@ -41,7 +41,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 12: HA Update Manager                        | ✅ Complete (2026-07-27) | 33–37  |
 | Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41  |
 | Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
-| Phase 15: RAG Knowledge Layer                      | ❌ Not started           | 49–52  |
+| Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
 | Phase 16: Evals                                    | ❌ Not started           | 53–54  |
 | Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
 | Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |

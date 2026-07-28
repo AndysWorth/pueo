@@ -35,6 +35,7 @@ CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
 
 OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
 OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")
+RAG_EMBED_MODEL: str = _ollama.get("embed_model", "nomic-embed-text")
 
 DB_PATH: str = _agent.get("db_path", "ha_agent_state.db")
 CONFIDENCE_THRESHOLD: float = float(_agent.get("log_confidence_threshold", 0.7))
@@ -78,6 +79,10 @@ HA_UPDATE_RELEASE_NOTES_CACHE_DIR: str = _agent.get(
 HA_NOTIFICATION_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("notification_poll_interval_minutes", 5)
 )
+
+# RAG knowledge layer
+CHROMADB_PATH: str = _agent.get("chromadb_path", "./chromadb/")
+RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
 
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 20))

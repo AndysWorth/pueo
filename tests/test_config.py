@@ -722,3 +722,46 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.AGENT_MAX_WALL_SECONDS == 60.0
+
+    def test_chromadb_path_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHROMADB_PATH == "./chromadb/"
+
+    def test_chromadb_path_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"chromadb_path": "/data/chroma"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHROMADB_PATH == "/data/chroma"
+
+    def test_rag_top_k_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_TOP_K == 5
+
+    def test_rag_top_k_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"rag_top_k": 10}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_TOP_K == 10
+
+    def test_rag_embed_model_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_EMBED_MODEL == "nomic-embed-text"
+
+    def test_rag_embed_model_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"ollama": {"embed_model": "mxbai-embed-large"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_EMBED_MODEL == "mxbai-embed-large"

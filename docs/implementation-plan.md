@@ -68,10 +68,10 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 46   | NetAlertX healer refactor: replace linear pipeline with AgentLoop.run() | ✅ Done (2026-07-28) |
 | 47   | Safety audit: apply_fix backup invariant; run_ha_command allowlist; once-per-loop cap | ✅ Done (2026-07-28) |
 | 48   | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios; confirm apply_fix enforces backup-first; confirm run_ha_command rejects off-allowlist commands | ✅ Done (2026-07-28) |
-| 49   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ☐ TODO |
-| 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ☐ TODO |
-| 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ☐ TODO |
-| 52   | Weekly refresh via macOS launchd plist; vector store maintenance     | ☐ TODO |
+| 49   | ChromaDB setup + nomic-embed-text embedding; collection schema and client wrapper | ✅ Done (2026-07-28) |
+| 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ✅ Done (2026-07-28) |
+| 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ✅ Done (2026-07-28) |
+| 52   | Weekly refresh via macOS launchd plist; vector store maintenance     | ✅ Done (2026-07-28) |
 | 53   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ☐ TODO |
 | 54   | Evals — /project:run-evals slash command + optional CI job           | ☐ TODO |
 | 55   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
