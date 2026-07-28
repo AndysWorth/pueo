@@ -47,8 +47,14 @@ htmlcov/
 .coverage
 .coverage.*
 coverage.xml
+coverage.json
 *.cover
 *.py,cover
+
+# ==========================================
+# Runtime caches
+# ==========================================
+.cache/
 nosetests.xml
 pylintrc
 .htmlcov/
