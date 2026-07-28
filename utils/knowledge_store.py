@@ -109,7 +109,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
             dists = (res.get("distances") or [[]])[0]
             for doc, meta, dist in zip(docs, metas, dists):
                 results.append(
-                    KnowledgeChunk(
+                    KnowledgeChunk(  # type: ignore[arg-type]
                         text=doc,
                         source=meta.get("source", ""),
                         collection=col,
