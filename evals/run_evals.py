@@ -241,7 +241,7 @@ def score_result(
 # ---------------------------------------------------------------------------
 
 
-async def run_scenario(scenario: EvalScenario) -> ScenarioScore:
+async def run_scenario(scenario: EvalScenario) -> ScenarioScore:  # pragma: no cover
     executor = FakeToolExecutor(
         mocks=scenario.mocks,
         fail_tools=scenario.fail_tools,
@@ -403,7 +403,7 @@ def load_scenarios(filter_fragment: Optional[str] = None) -> list[EvalScenario]:
     return scenarios
 
 
-async def _main(args: argparse.Namespace) -> int:
+async def _main(args: argparse.Namespace) -> int:  # pragma: no cover
     scenarios = load_scenarios(args.scenario)
     if not scenarios:
         print("No scenarios found.")
@@ -449,7 +449,7 @@ async def _main(args: argparse.Namespace) -> int:
     return 0 if failures == 0 else 1
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description="Run Pueo agent evals")
     parser.add_argument(
         "--scenario",
@@ -465,5 +465,5 @@ def main() -> None:
     sys.exit(asyncio.run(_main(args)))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

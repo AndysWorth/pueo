@@ -503,3 +503,159 @@ class TestBaseline:
 
         monkeypatch.setattr(harness, "BASELINE_FILE", tmp_path / "nonexistent.json")
         assert load_baseline() is None
+
+
+# ---------------------------------------------------------------------------
+# Report helpers: _bool_cell, _delta, print_report
+# ---------------------------------------------------------------------------
+
+
+class TestReportHelpers:
+    def test_bool_cell_true(self):
+        from evals.run_evals import _bool_cell
+
+        assert _bool_cell(True) == "✓"
+
+    def test_bool_cell_false(self):
+        from evals.run_evals import _bool_cell
+
+        assert _bool_cell(False) == "✗"
+
+    def test_delta_positive(self):
+        from evals.run_evals import _delta
+
+        result = _delta(1.0, 0.5)
+        assert "▲" in result
+        assert "0.500" in result
+
+    def test_delta_negative(self):
+        from evals.run_evals import _delta
+
+        result = _delta(0.5, 1.0)
+        assert "▼" in result
+        assert "0.500" in result
+
+    def test_delta_equal(self):
+        from evals.run_evals import _delta
+
+        assert _delta(1.0, 1.0) == ""
+
+    def test_delta_below_threshold(self):
+        from evals.run_evals import _delta
+
+        assert _delta(1.0, 1.0009) == ""
+
+
+class TestPrintReport:
+    def _make_score(
+        self,
+        name: str = "test_scenario",
+        outcome: str = "success",
+        outcome_pass: bool = True,
+        tool_recall: float = 1.0,
+        safety_pass: bool = True,
+        fix_parse_pass: bool = True,
+        efficiency_pass: bool = True,
+        tool_call_count: int = 3,
+        total_time: float = 2.5,
+    ):
+        from evals.run_evals import ScenarioScore
+
+        return ScenarioScore(
+            scenario_name=name,
+            outcome_pass=outcome_pass,
+            tool_recall=tool_recall,
+            safety_pass=safety_pass,
+            fix_parse_pass=fix_parse_pass,
+            efficiency_pass=efficiency_pass,
+            tool_call_count=tool_call_count,
+            total_time=total_time,
+            outcome=outcome,
+            expected_outcome="success",
+        )
+
+    def test_print_report_no_baseline(self, capsys):
+        from evals.run_evals import print_report
+
+        scores = [self._make_score(), self._make_score(name="other_scenario")]
+        print_report(scores, None)
+        out = capsys.readouterr().out
+        assert "test_scenario" in out
+        assert "Aggregate" in out
+        assert "Outcome accuracy" in out
+
+    def test_print_report_with_baseline_shows_delta(self, capsys):
+        from evals.run_evals import print_report
+
+        scores = [self._make_score(tool_recall=0.9)]
+        baseline = {
+            "generated": "2026-01-01T00:00:00Z",
+            "scores": {
+                "test_scenario": {
+                    "tool_recall": 0.5,
+                    "outcome_pass": True,
+                    "safety_pass": True,
+                    "fix_parse_pass": True,
+                    "efficiency_pass": True,
+                    "tool_call_count": 3,
+                    "total_time": 2.5,
+                }
+            },
+        }
+        print_report(scores, baseline)
+        out = capsys.readouterr().out
+        assert "▲" in out  # delta shown for improved recall
+
+    def test_print_report_empty_scores(self, capsys):
+        from evals.run_evals import print_report
+
+        print_report([], None)
+        out = capsys.readouterr().out
+        assert "Aggregate" in out
+
+    def test_print_report_failure_case(self, capsys):
+        from evals.run_evals import print_report
+
+        scores = [
+            self._make_score(outcome="exhausted", outcome_pass=False, tool_call_count=0)
+        ]
+        print_report(scores, None)
+        out = capsys.readouterr().out
+        assert "✗" in out
+
+    def test_print_report_baseline_key_missing(self, capsys):
+        from evals.run_evals import print_report
+
+        scores = [self._make_score(name="new_scenario")]
+        baseline = {
+            "generated": "2026-01-01T00:00:00Z",
+            "scores": {
+                "different_scenario": {
+                    "tool_recall": 0.5,
+                    "outcome_pass": True,
+                    "safety_pass": True,
+                    "fix_parse_pass": True,
+                    "efficiency_pass": True,
+                    "tool_call_count": 3,
+                    "total_time": 2.5,
+                }
+            },
+        }
+        print_report(scores, baseline)
+        out = capsys.readouterr().out
+        assert "Aggregate" in out
+
+    def test_print_report_baseline_entries_have_no_keys(self, capsys):
+        from evals.run_evals import print_report
+
+        # Baseline entries exist but are empty dicts — _agg_delta's baseline_vals list
+        # will be empty for every key, exercising the `if not baseline_vals: return ""`
+        # branch inside _agg_delta.
+        scores = [self._make_score()]
+        baseline = {
+            "generated": "2026-01-01T00:00:00Z",
+            "scores": {"some_scenario": {}},
+        }
+        print_report(scores, baseline)
+        out = capsys.readouterr().out
+        assert "Aggregate" in out
