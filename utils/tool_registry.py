@@ -26,6 +26,7 @@ class ToolResult(BaseModel):
     success: bool
     output: str
     error: str | None = None
+    awaiting_approval: bool = False
 
 
 class AgentStep(BaseModel):
@@ -35,7 +36,9 @@ class AgentStep(BaseModel):
     timestamp: float
 
 
-AgentLoopOutcome = Literal["success", "exhausted", "timeout", "fix_failed"]
+AgentLoopOutcome = Literal[
+    "success", "exhausted", "timeout", "fix_failed", "awaiting_approval"
+]
 
 
 class AgentLoopResult(BaseModel):

@@ -5504,6 +5504,41 @@ class TestToolRegistrySchemas:
         restored = ToolResult.model_validate_json(orig.model_dump_json())
         assert restored == orig
 
+    def test_tool_result_awaiting_approval_defaults_false(self):
+        from utils.tool_registry import ToolResult
+
+        r = ToolResult(tool_name="apply_fix", success=False, output="queued")
+        assert r.awaiting_approval is False
+
+    def test_tool_result_awaiting_approval_set(self):
+        from utils.tool_registry import ToolResult
+
+        r = ToolResult(
+            tool_name="apply_fix",
+            success=False,
+            output="queued",
+            awaiting_approval=True,
+        )
+        assert r.awaiting_approval is True
+
+    def test_tool_result_awaiting_approval_round_trip(self):
+        from utils.tool_registry import ToolResult
+
+        orig = ToolResult(
+            tool_name="apply_fix",
+            success=False,
+            output="queued",
+            awaiting_approval=True,
+        )
+        restored = ToolResult.model_validate_json(orig.model_dump_json())
+        assert restored.awaiting_approval is True
+
+    def test_agent_loop_outcome_includes_awaiting_approval(self):
+        from utils.tool_registry import AgentLoopResult
+
+        r = AgentLoopResult(outcome="awaiting_approval", steps=[])
+        assert r.outcome == "awaiting_approval"
+
     def test_agent_step_valid(self):
         from utils.tool_registry import AgentStep, ToolCall, ToolResult
 
@@ -6277,13 +6312,11 @@ class TestToolExecutor:
         )
         executor = self._make_executor(ssh=ssh)
 
-        # Make approval succeed
-        import utils.tool_executor as tex
-
+        # Make queue_for_approval return True (auto-execute) so the backup runs
         async def _always_approve(*args, **kwargs):
             return True
 
-        monkeypatch.setattr(executor._gate, "require_approval", _always_approve)
+        monkeypatch.setattr(executor._gate, "queue_for_approval", _always_approve)
 
         # Make backup fail
         async def _fail_backup(*args, **kwargs):
@@ -6482,6 +6515,113 @@ class TestToolExecutor:
         )
         assert result.success
         assert "Template syntax" in result.output
+
+    # -- apply_fix HITL non-blocking queuing path --------------------------------
+
+    def test_apply_fix_hitl_queuing_returns_awaiting_approval(self):
+        """When gate.queue_for_approval returns False, apply_fix returns awaiting_approval."""
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        notifier = FakeNotifier(approve=True)
+        executor = ToolExecutor(ha_ssh_client=ssh, gate=gate, notifier=notifier)
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="apply_fix",
+                    arguments={
+                        "yaml_content": "homeassistant:\n  name: Home\n",
+                        "description": "add missing key",
+                    },
+                )
+            )
+        )
+        assert result.awaiting_approval is True
+        assert not result.success
+        # HITL notification should have been sent with the fix embedded
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert "pending_fix_yaml" in payload
+        assert payload["pending_fix_yaml"] == "homeassistant:\n  name: Home\n"
+
+    def test_apply_fix_hitl_queuing_sets_apply_fix_used_flag(self):
+        """Queuing for HITL sets _apply_fix_used so double-queuing is blocked."""
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+            }
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(approve=True),
+        )
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="apply_fix",
+                    arguments={
+                        "yaml_content": "homeassistant:\n  name: Home\n",
+                        "description": "fix",
+                    },
+                )
+            )
+        )
+        assert executor._apply_fix_used
+
+    def test_fake_autonomy_gate_queue_for_approval_auto_execute(self):
+        """FakeAutonomyGate.queue_for_approval returns True when auto_execute_result=True."""
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval(
+                subject="test",
+                body="body",
+                payload={},
+                notifier=notifier,
+                risk=RiskLevel.HIGH,
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_fake_autonomy_gate_queue_for_approval_sends_notification(self):
+        """FakeAutonomyGate.queue_for_approval sends notification and returns False when not auto."""
+        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.notify import FakeNotifier
+
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval(
+                subject="test",
+                body="body",
+                payload={"notification_id": "abc"},
+                notifier=notifier,
+                risk=RiskLevel.HIGH,
+            )
+        )
+        assert result is False
+        assert len(notifier.sent) == 1
 
     def test_query_knowledge_with_store_no_results(self):
         from utils.autonomy import FakeAutonomyGate
@@ -6775,6 +6915,58 @@ class TestAgentLoop:
         # After reset, the flag should have been cleared at the start of the run.
         # We verify indirectly: the loop completed successfully (no cap error).
         assert not executor._apply_fix_used  # reset was called
+
+    def test_awaiting_approval_result_exits_loop(self):
+        """AgentLoop exits with 'awaiting_approval' when a tool returns awaiting_approval=True."""
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import (
+            ToolCall,
+            ToolDefinition,
+            ToolRegistry,
+            ToolResult,
+        )
+
+        reg = ToolRegistry()
+        for name in ("apply_fix", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+
+        class _HITLExecutor(ToolExecutor):
+            async def execute(self, tool_call: ToolCall) -> ToolResult:
+                if tool_call.name == "apply_fix":
+                    return ToolResult(
+                        tool_name="apply_fix",
+                        success=False,
+                        output="queued",
+                        awaiting_approval=True,
+                    )
+                return await super().execute(tool_call)
+
+        executor = _HITLExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(
+                [{"tool_calls": [{"function": {"name": "apply_fix", "arguments": {}}}]}]
+            ),
+            tool_executor=executor,
+            tool_registry=reg,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "awaiting_approval"
+        assert len(result.steps) == 1
 
 
 class TestRunRagRefresh:

@@ -232,7 +232,7 @@ class ToolExecutor:
         from utils.autonomy import RiskLevel
 
         nid = get_correlation_id() or str(uuid.uuid4())
-        approved = await self._gate.require_approval(
+        approved = await self._gate.queue_for_approval(
             subject=f"Pueo HITL: apply_fix — {description}",
             body=f"Proposed fix:\n{yaml_content[:500]}",
             payload={
@@ -240,17 +240,22 @@ class ToolExecutor:
                 "severity": "HIGH",
                 "description": description,
                 "correlation_id": nid,
+                "pending_fix_yaml": yaml_content,
+                "pending_fix_description": description,
             },
             notifier=self._notifier,
             risk=RiskLevel.HIGH,
         )
         if not approved:
-            log.warning("apply_fix_gate_rejected")
+            # Fix is queued for human review; the agent loop exits so the
+            # dashboard can execute the fix when the human approves.
+            self._apply_fix_used = True
+            log.info("apply_fix_queued_for_hitl", nid=nid)
             return ToolResult(
                 tool_name="apply_fix",
                 success=False,
-                output="",
-                error="Rejected via autonomy gate",
+                output=f"Fix queued for HITL approval (id={nid}); agent loop exiting",
+                awaiting_approval=True,
             )
 
         # Backup invariant: backup before every write

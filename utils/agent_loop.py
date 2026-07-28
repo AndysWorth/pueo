@@ -239,6 +239,9 @@ class AgentLoop:
                     }
                     return "success", episode_stub
 
+                if tool_result.awaiting_approval:
+                    return "awaiting_approval", episode_stub
+
                 if tool_call.name == "apply_fix" and not tool_result.success:
                     return "fix_failed", episode_stub
 

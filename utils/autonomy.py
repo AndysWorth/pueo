@@ -89,6 +89,33 @@ class AutonomyGate:
         log.info("hitl_approval_received", approved=approved, subject=subject)
         return approved
 
+    async def queue_for_approval(
+        self,
+        subject: str,
+        body: str,
+        payload: dict,
+        notifier: "NotifierProtocol",
+        risk: RiskLevel,
+    ) -> bool:
+        """Non-blocking approval check for use inside the agent loop.
+
+        Sends the HITL notification and returns immediately — True if
+        auto-execute is permitted at the current level, False if the action
+        has been queued for human review.  The caller is responsible for
+        exiting the agent loop when False is returned so the dashboard can
+        execute the action when the human eventually approves.
+        """
+        if self._level == AutonomyLevel.REPORT_ONLY:
+            return False
+        if self._level == AutonomyLevel.AUTONOMOUS and risk != RiskLevel.CRITICAL:
+            return True
+        if self._level == AutonomyLevel.GUIDED and risk == RiskLevel.LOW:
+            return True
+        nid = payload.get("notification_id", str(uuid.uuid4()))
+        log.info("hitl_queued_for_approval", subject=subject, risk=risk.name, nid=nid)
+        await notifier.send(subject, body, payload)
+        return False
+
 
 class FakeAutonomyGate:
     """Test double: configurable auto-execute and approval behaviour.
@@ -132,3 +159,20 @@ class FakeAutonomyGate:
         nid = payload.get("notification_id", str(uuid.uuid4()))
         await notifier.send(subject, body, payload)
         return await notifier.wait_for_approval(nid)
+
+    async def queue_for_approval(
+        self,
+        subject: str,
+        body: str,
+        payload: dict,
+        notifier: "NotifierProtocol",
+        risk: RiskLevel,
+    ) -> bool:
+        self.require_approval_calls.append(
+            {"subject": subject, "risk": risk, "body": body}
+        )
+        if self._auto_execute:
+            return True
+        nid = payload.get("notification_id", str(uuid.uuid4()))
+        await notifier.send(subject, body, payload)
+        return False
