@@ -350,7 +350,7 @@ class ToolExecutor:
             if self._api is not None:
                 try:
                     await self._api.trigger_scan()
-                except Exception:
+                except Exception:  # nosec B110 — scan trigger is best-effort
                     pass
             return ToolResult(
                 tool_name="restart_netalertx",
