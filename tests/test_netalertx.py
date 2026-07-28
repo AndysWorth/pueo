@@ -6929,3 +6929,324 @@ class TestNetAlertXOneShotDiagnose:
             len(healer.heal_calls) == 1
         ), "Healer must be called so it can handle HITL blocking via require_approval"
         assert healer.heal_calls[0].issue == "Scan is stale"
+
+
+# ── _write_addon_slug_to_config unit tests ────────────────────────────────────
+
+
+class TestWriteAddonSlugToConfig:
+    def test_writes_slug_to_empty_value(self, tmp_path, monkeypatch):
+        from netalertx.installer import _write_addon_slug_to_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text('netalertx:\n  addon_slug: ""\n  other: value\n')
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg))
+
+        result = _write_addon_slug_to_config("abc123_netalertx_fa")
+
+        assert result is True
+        text = cfg.read_text()
+        assert 'addon_slug: "abc123_netalertx_fa"' in text
+        assert "other: value" in text
+
+    def test_overwrites_existing_slug(self, tmp_path, monkeypatch):
+        from netalertx.installer import _write_addon_slug_to_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text('netalertx:\n  addon_slug: "old_slug"\n')
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg))
+
+        _write_addon_slug_to_config("new_slug")
+
+        assert 'addon_slug: "new_slug"' in cfg.read_text()
+
+    def test_returns_false_when_no_config_file(self, tmp_path, monkeypatch):
+        from netalertx.installer import _write_addon_slug_to_config
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "missing.yaml"))
+
+        assert _write_addon_slug_to_config("some_slug") is False
+
+    def test_returns_false_when_key_absent(self, tmp_path, monkeypatch):
+        from netalertx.installer import _write_addon_slug_to_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("netalertx:\n  host: localhost\n")
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg))
+
+        assert _write_addon_slug_to_config("slug") is False
+
+    def test_preserves_inline_comments(self, tmp_path, monkeypatch):
+        from netalertx.installer import _write_addon_slug_to_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "netalertx:\n"
+            '  addon_slug: ""  # Leave blank to auto-resolve\n'
+            "  host: ha.local\n"
+        )
+        monkeypatch.setenv("PUEO_CONFIG", str(cfg))
+
+        _write_addon_slug_to_config("netalertx_fa")
+
+        text = cfg.read_text()
+        assert 'addon_slug: "netalertx_fa"' in text
+        assert "host: ha.local" in text
+
+
+# ── step 8 slug write-back tests ──────────────────────────────────────────────
+
+
+class TestStep8SlugWriteback:
+    """Step 8 writes the resolved addon slug to config.yaml on FULLY_OPERATIONAL."""
+
+    def _gate_auto(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True, approval_result=True)
+
+    def _notifier(self):
+        from utils.notify import FileNotifier
+
+        return FileNotifier("/tmp/test_hitl")
+
+    def _http_with_mqtt(self):
+        import httpx
+
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+
+    def _make_full_ssh(self, automations=""):
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "netalertx_fa"
+        data_path = f"/addon_configs/{slug}"
+        conf_path = f"{data_path}/config/app.conf"
+        return FakeSSHClient(
+            file_contents={
+                conf_path: "MQTT_BROKER = 'localhost'\n",
+                "/config/configuration.yaml": "homeassistant:\n  time_zone: UTC\n",
+                "/config/automations.yaml": automations,
+            },
+            command_results={
+                "ha core check": (0, "", ""),
+                "ha backup new": (0, "slug: abcdef01\n", ""),
+                f"ha apps info {slug}": (0, "state: started\n", ""),
+                f"ha apps restart {slug}": (0, "", ""),
+                "curl": (0, "", ""),
+            },
+        )
+
+    def test_normal_path_writes_slug(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        written = []
+        monkeypatch.setattr(
+            "netalertx.installer._write_addon_slug_to_config",
+            lambda s: written.append(s) or True,
+        )
+
+        ssh = self._make_full_ssh(automations="")
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": "netalertx_fa", "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+
+        assert "netalertx_fa" in written
+
+    def test_idempotent_path_writes_slug(self, tmp_path, monkeypatch):
+        """When automation already exists (idempotent early return), slug is still written."""
+        import asyncio
+
+        from netalertx.installer import run_steps_5_to_8
+
+        async def poll_true(*a, **k):
+            return True
+
+        monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
+        monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
+
+        written = []
+        monkeypatch.setattr(
+            "netalertx.installer._write_addon_slug_to_config",
+            lambda s: written.append(s) or True,
+        )
+
+        existing = (
+            "- id: netalertx_event_handler\n"
+            "  trigger:\n    - platform: webhook\n      webhook_id: netalertx_event\n"
+        )
+        ssh = self._make_full_ssh(automations=existing)
+        db = _make_installer_db_at_state(
+            tmp_path,
+            monkeypatch,
+            "HA_MQTT_INTEGRATION_VERIFIED",
+            {"addon_slug": "netalertx_fa", "scan_interface": "eth0"},
+        )
+
+        asyncio.run(
+            run_steps_5_to_8(
+                ssh,
+                self._gate_auto(),
+                self._notifier(),
+                db_path=db,
+                http_client=self._http_with_mqtt(),
+            )
+        )
+
+        assert "netalertx_fa" in written
+
+
+# ── diagnose slug auto-recovery tests ─────────────────────────────────────────
+
+
+class TestOneShotDiagnoseSlugAutoRecovery:
+    """run_diagnose discovers and writes the slug when addon_slug is empty."""
+
+    class _FakeAPIClient:
+        def __init__(self):
+            pass
+
+        async def get_about(self):
+            return {"version": "v26.7.1"}
+
+        async def get_devices(self):
+            return []
+
+        async def get_events(self):
+            return []
+
+        async def get_health(self):
+            return {}
+
+    class _FakeHealer:
+        def __init__(self):
+            self.heal_calls = []
+
+        async def heal_with_loop(self, diag, llm_client=None):
+            self.heal_calls.append(diag)
+
+    @staticmethod
+    async def _false_probe(host, **_):
+        return False
+
+    def test_slug_discovered_via_ha_store_addons(self, monkeypatch):
+        """When addon_slug is empty, ha store addons output is parsed and slug is used."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        store_output = (
+            "slug: netalertx_fa\n"
+            "name: NetAlertX\n"
+            "repository: https://github.com/alexbelgium/hassio-addons\n"
+        )
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/addon_configs/netalertx_fa/config/app.conf": (
+                    "MQTT_BROKER='localhost'\nMQTT_PORT=1883\n"
+                    "HA_URL='http://homeassistant.local:8123'\n"
+                    "HA_BEARER_TOKEN='tok'\n"
+                    "SCAN_SUBNETS=['192.168.1.0/24   eth0']\n"
+                    "TIMEZONE='UTC'\nLOADED_PLUGINS=['MQTT','ARPSCAN']\n"
+                )
+            },
+            command_results={
+                "ha apps info core_mosquitto": (0, "state: started\n", ""),
+                "ha store addons": (0, store_output, ""),
+            },
+        )
+
+        written_slugs = []
+        monkeypatch.setattr(
+            "netalertx.one_shot_diagnose._parse_slug_from_store",
+            lambda out, url: "netalertx_fa",
+        )
+        monkeypatch.setattr(
+            "netalertx.one_shot_diagnose._write_addon_slug_to_config",
+            lambda s: written_slugs.append(s) or True,
+        )
+
+        llm = FakeLLMClient("{}")
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=ha_ssh,
+                api_client=self._FakeAPIClient(),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="",
+                mqtt_probe_fn=self._false_probe,
+            )
+        )
+
+        assert "netalertx_fa" in written_slugs
+
+    def test_slug_discovery_fails_flags_high_issue(self, monkeypatch):
+        """When ha store addons returns no slug, HIGH config issue is flagged."""
+        import asyncio
+
+        from utils.ollama_client import FakeLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.diagnosis import NetAlertXDiagnostic
+        from netalertx.one_shot_diagnose import run_diagnose
+
+        diag = NetAlertXDiagnostic(
+            issue="addon_slug not configured",
+            severity="HIGH",
+            category="config",
+            recommended_fix="Set netalertx.addon_slug in config.yaml.",
+            affected_netalertx_version="unknown",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+
+        monkeypatch.setattr(
+            "netalertx.one_shot_diagnose._parse_slug_from_store",
+            lambda out, url: "",
+        )
+
+        ha_ssh = FakeSSHClient(
+            command_results={
+                "ha apps info core_mosquitto": (0, "state: started\n", ""),
+                "ha store addons": (0, "", ""),
+            }
+        )
+
+        asyncio.run(
+            run_diagnose(
+                ssh_client=FakeSSHClient(),
+                ha_ssh_client=ha_ssh,
+                api_client=self._FakeAPIClient(),
+                llm_client=llm,
+                healer=self._FakeHealer(),
+                addon_slug="",
+                mqtt_probe_fn=self._false_probe,
+            )
+        )
+
+        assert len(llm.calls) == 1
+        assert "addon_slug" in llm.calls[0]["messages"][-1]["content"]
