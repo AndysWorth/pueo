@@ -8,6 +8,7 @@ budget, or the wall-clock timeout fires.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -21,6 +22,32 @@ if TYPE_CHECKING:
     from utils.tool_registry import ToolRegistry
 
 log = get_logger("agent_loop")
+
+
+def _parse_content_as_tool_call(
+    content: str, known_names: set[str]
+) -> list[dict] | None:
+    """Fallback for models that put tool calls in content instead of tool_calls.
+
+    Some models (e.g. qwen2.5-coder:7b) respond with a JSON object like
+    {"name": "read_config", "arguments": {}} in the content field rather than
+    a proper tool_calls list.  If the content parses as a single tool call
+    whose name is in the known registry, synthesise a tool_calls entry so the
+    loop can dispatch it normally.  Returns None for ordinary text content.
+    """
+    stripped = (content or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    name = parsed.get("name", "")
+    args = parsed.get("arguments")
+    if name in known_names and isinstance(args, dict):
+        return [{"function": {"name": name, "arguments": args}}]
+    return None
+
 
 _AGENT_LOOP_SYSTEM_PROMPT = """\
 You are Pueo, an autonomous Home Assistant repair agent.
@@ -137,12 +164,25 @@ class AgentLoop:
 
             tool_calls_raw = response.get("tool_calls")
             if not tool_calls_raw:
-                # Model returned content with no tool calls — treat as natural stop.
-                log.info(
-                    "agent_loop_no_tool_calls",
-                    content=response.get("content", "")[:120],
-                )
-                return "exhausted", episode_stub
+                content = response.get("content", "")
+                known = {t["function"]["name"] for t in tools}
+                fallback = _parse_content_as_tool_call(content, known)
+                if fallback:
+                    # Model embedded the tool call in content instead of
+                    # tool_calls (a known qwen2.5-coder quirk).  Patch the
+                    # response so the rest of the loop works normally.
+                    log.info(
+                        "agent_loop_content_tool_call_fallback",
+                        content=content[:120],
+                    )
+                    response["tool_calls"] = fallback
+                    tool_calls_raw = fallback
+                else:
+                    log.info(
+                        "agent_loop_no_tool_calls",
+                        content=content[:120],
+                    )
+                    return "exhausted", episode_stub
 
             # Append the assistant message (with tool_calls) to history.
             messages.append(response)

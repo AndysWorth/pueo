@@ -6533,6 +6533,67 @@ class TestAgentLoop:
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
 
+    # ── content-fallback tests ────────────────────────────────────────────
+
+    def test_parse_content_as_tool_call_valid(self):
+        """JSON content matching a known tool name is parsed into tool_calls."""
+        from utils.agent_loop import _parse_content_as_tool_call
+
+        known = {"read_config", "finish_repair"}
+        content = '{"name": "read_config", "arguments": {"path": "/config/configuration.yaml"}}'
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "read_config"
+        assert result[0]["function"]["arguments"] == {
+            "path": "/config/configuration.yaml"
+        }
+
+    def test_parse_content_as_tool_call_unknown_tool_returns_none(self):
+        """Tool name not in known set is ignored (avoids false positives)."""
+        from utils.agent_loop import _parse_content_as_tool_call
+
+        known = {"read_config"}
+        content = '{"name": "rm_rf", "arguments": {}}'
+        assert _parse_content_as_tool_call(content, known) is None
+
+    def test_parse_content_as_tool_call_plain_text_returns_none(self):
+        """Ordinary text content is not mis-parsed as a tool call."""
+        from utils.agent_loop import _parse_content_as_tool_call
+
+        known = {"read_config", "finish_repair"}
+        assert _parse_content_as_tool_call("Config looks fine.", known) is None
+        assert _parse_content_as_tool_call("", known) is None
+        assert _parse_content_as_tool_call("{bad json}", known) is None
+
+    def test_content_fallback_dispatches_tool_call(self):
+        """Loop executes a tool call embedded in message content (qwen quirk)."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        # First response: tool call in content field, no tool_calls key.
+        # Second response: proper finish_repair tool_calls.
+        content_call = {
+            "content": '{"name": "read_config", "arguments": {"path": "/config/configuration.yaml"}}'
+        }
+        finish_call = {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_repair",
+                        "arguments": {
+                            "summary": "all good",
+                            "action_taken": "no_fix_needed",
+                        },
+                    }
+                }
+            ]
+        }
+        loop = self._make_loop(call_sequence=[content_call, finish_call])
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+        assert len(result.steps) == 2
+        assert result.steps[0].tool_call.name == "read_config"
+        assert result.steps[1].tool_call.name == "finish_repair"
+
     def test_executor_reset_called_on_run(self):
         """AgentLoop.run() must reset the executor so apply_fix cap resets."""
         from utils.agent_loop import AgentLoop
