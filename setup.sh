@@ -28,8 +28,9 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     echo "  (no flags)   Interactive setup: install dependencies, create .venv,"
     echo "               and write config.yaml. Safe to re-run at any time."
     echo
-    echo "  --clean      Remove .venv, config.yaml, ha_agent_state.db, and hitl/"
-    echo "               before running setup. Use this to start from scratch."
+    echo "  --clean      Remove .venv, config.yaml, ha_agent_state.db, hitl/,"
+    echo "               .cache/, backups/, chromadb/, and pueo.log before running"
+    echo "               setup. Use this to start completely from scratch."
     echo
     echo "  -h, --help   Show this help message."
     exit 0
@@ -38,9 +39,9 @@ fi
 if [[ "${1:-}" == "--clean" ]]; then
     echo -e "\n${YELLOW}⚠  Clean mode — removing generated files before setup${NC}"
     rm -rf .venv
-    rm -f config.yaml ha_agent_state.db
-    rm -rf hitl/
-    ok "Removed .venv, config.yaml, ha_agent_state.db, hitl/"
+    rm -f config.yaml ha_agent_state.db pueo.log
+    rm -rf hitl/ .cache/ backups/ chromadb/
+    ok "Removed .venv, config.yaml, ha_agent_state.db, hitl/, .cache/, backups/, chromadb/, pueo.log"
 fi
 
 echo -e "\n🦉  ${BOLD}Pueo Setup${NC}"
