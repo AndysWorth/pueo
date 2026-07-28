@@ -109,12 +109,12 @@ class ChromaKnowledgeStore:  # pragma: no cover
             dists = (res.get("distances") or [[]])[0]
             for doc, meta, dist in zip(docs, metas, dists):
                 results.append(
-                    KnowledgeChunk(  # type: ignore[arg-type]
+                    KnowledgeChunk(
                         text=doc,
-                        source=meta.get("source", ""),
+                        source=meta.get("source", ""),  # type: ignore[arg-type]
                         collection=col,
                         score=max(0.0, 1.0 - dist),
-                        metadata=meta,
+                        metadata=meta,  # type: ignore[arg-type]
                     )
                 )
         results.sort(key=lambda c: c.score, reverse=True)
