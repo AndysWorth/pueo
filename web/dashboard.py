@@ -106,8 +106,65 @@ async def approve(nid: str) -> RedirectResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        pending_yaml = data.get("payload", {}).get("pending_fix_yaml")
+        if pending_yaml:
+            description = data.get("payload", {}).get("pending_fix_description", "")
+            await _execute_queued_fix(
+                nid, pending_yaml, description, data, json_path, watch_dir
+            )
+            return RedirectResponse(url="/", status_code=303)
         (watch_dir / f"{nid}.approved").touch()
     return RedirectResponse(url="/", status_code=303)
+
+
+async def _execute_queued_fix(
+    nid: str,
+    yaml_content: str,
+    description: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Run the backup → sandbox → atomic-swap pipeline for a queued HITL fix."""
+    from ha_agent_advanced import (
+        enforce_ha_retention,
+        offload_backup_to_local,
+        purge_local_backups,
+    )
+    from ha_agent_sandbox_engine import (
+        commit_atomic_swap,
+        deploy_and_test_in_sandbox,
+        execute_remote_backup,
+        record_backup_slug,
+    )
+    from utils.ssh_client import AsyncSSHClient
+
+    ssh = AsyncSSHClient()
+    try:
+        slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(slug)
+        await offload_backup_to_local(slug, ssh_client=ssh)
+        await enforce_ha_retention(ssh_client=ssh)
+        purge_local_backups()
+
+        passed = await deploy_and_test_in_sandbox(yaml_content, ssh_client=ssh)
+        if not passed:
+            data["fix_error"] = "Sandbox test failed; production not modified"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+            return
+
+        await commit_atomic_swap(yaml_content, ssh_client=ssh)
+        data["fix_applied"] = True
+        data["fix_backup_slug"] = slug
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
 
 
 @app.post("/reject/{nid}")

@@ -260,6 +260,88 @@ class TestDashboardRoutes:
         response = client.post("/approve/no-such-id", follow_redirects=False)
         assert response.status_code == 303
 
+    def test_approve_with_pending_fix_yaml_calls_execute_queued_fix(
+        self, tmp_path, monkeypatch
+    ):
+        """Approving a HITL card that carries pending_fix_yaml runs _execute_queued_fix."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        nid = "fix-req-1"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Pueo HITL: apply_fix",
+                    "body": "Proposed fix:\nhomeassistant:\n  name: Home\n",
+                    "payload": {
+                        "severity": "HIGH",
+                        "pending_fix_yaml": "homeassistant:\n  name: Home\n",
+                        "pending_fix_description": "add missing name key",
+                    },
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+        executed: list[dict] = []
+
+        async def _fake_execute_queued_fix(nid_, yaml_, desc_, data_, jpath_, wdir_):
+            executed.append({"nid": nid_, "yaml": yaml_, "desc": desc_})
+            (wdir_ / f"{nid_}.approved").touch()
+
+        monkeypatch.setattr(dashboard, "_execute_queued_fix", _fake_execute_queued_fix)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(f"/approve/{nid}", follow_redirects=False)
+        assert response.status_code == 303
+        assert len(executed) == 1
+        assert executed[0]["yaml"] == "homeassistant:\n  name: Home\n"
+        assert executed[0]["desc"] == "add missing name key"
+        assert (tmp_path / f"{nid}.approved").exists()
+
+    def test_approve_with_pending_fix_yaml_sandbox_failure_rejects(
+        self, tmp_path, monkeypatch
+    ):
+        """If _execute_queued_fix writes .rejected, the notification is rejected."""
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        nid = "fix-req-2"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Pueo HITL: apply_fix",
+                    "body": "fix",
+                    "payload": {
+                        "severity": "HIGH",
+                        "pending_fix_yaml": "bad yaml",
+                        "pending_fix_description": "broken fix",
+                    },
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+        async def _fake_execute_failed(nid_, yaml_, desc_, data_, jpath_, wdir_):
+            (wdir_ / f"{nid_}.rejected").touch()
+
+        monkeypatch.setattr(dashboard, "_execute_queued_fix", _fake_execute_failed)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post(f"/approve/{nid}", follow_redirects=False)
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+
     def test_run_dashboard_calls_uvicorn(self, monkeypatch):
         import web.dashboard as dashboard
 

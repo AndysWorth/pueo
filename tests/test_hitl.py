@@ -399,7 +399,10 @@ class TestHitlPipelineGate:
         assert "apply_fix" in notifier.sent[0]["subject"]
         assert "CRITICAL" in notifier.sent[0]["subject"]
 
-    def test_approval_proceeds_to_backup(self, ssh_ok, llm_critical, db_path):
+    def test_approval_queues_fix_with_payload(self, ssh_ok, llm_critical, db_path):
+        """When HITL is needed, apply_fix queues the notification with the YAML payload
+        and the agent loop exits immediately — backup runs in the dashboard on approval.
+        """
         from utils.notify import FakeNotifier
         from utils.autonomy import FakeAutonomyGate
 
@@ -413,7 +416,10 @@ class TestHitlPipelineGate:
                 ssh_client=ssh_ok, llm_client=llm_critical, notifier=notifier, gate=gate
             )
         )
-        assert any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
+        # HITL notification should have been sent with fix embedded — no backup yet
+        assert len(notifier.sent) == 1
+        assert "pending_fix_yaml" in notifier.sent[0]["payload"]
+        assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
     def test_rejection_aborts_backup(self, ssh_ok, llm_critical, db_path):
         from utils.notify import FakeNotifier
@@ -449,7 +455,8 @@ class TestHitlPipelineGate:
         with sqlite3_mod.connect(db_path) as conn:
             action = conn.execute("SELECT action_taken FROM state_history").fetchone()
         assert action is not None
-        assert "fix" in action[0].lower()
+        # Loop exits with awaiting_approval when HITL is needed — fix runs in dashboard
+        assert action[0] == "awaiting_approval"
 
     def test_low_severity_no_notification_sent(self, ssh_ok, llm_low_fix, db_path):
         from utils.notify import FakeNotifier
