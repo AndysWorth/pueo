@@ -79,7 +79,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
         self._client = chromadb.PersistentClient(path=path)
         ef = _OllamaEmbeddingFunction(embed_model, ollama_endpoint)
         self._cols = {
-            name: self._client.get_or_create_collection(name, embedding_function=ef)
+            name: self._client.get_or_create_collection(name, embedding_function=ef)  # type: ignore[arg-type]
             for name in COLLECTIONS
         }
 
@@ -90,7 +90,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
         documents: list[str],
         metadatas: list[dict],
     ) -> None:
-        self._cols[collection].upsert(ids=ids, documents=documents, metadatas=metadatas)
+        self._cols[collection].upsert(ids=ids, documents=documents, metadatas=metadatas)  # type: ignore[arg-type]
 
     def query(
         self,
@@ -104,9 +104,9 @@ class ChromaKnowledgeStore:  # pragma: no cover
             if col not in self._cols:
                 continue
             res = self._cols[col].query(query_texts=[query_text], n_results=top_k)
-            docs = res.get("documents", [[]])[0]
-            metas = res.get("metadatas", [[]])[0]
-            dists = res.get("distances", [[]])[0]
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            dists = (res.get("distances") or [[]])[0]
             for doc, meta, dist in zip(docs, metas, dists):
                 results.append(
                     KnowledgeChunk(
