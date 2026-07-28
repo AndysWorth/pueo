@@ -1,5 +1,95 @@
 {
-  "_comment": "Placeholder — run `python evals/run_evals.py` to generate real baseline scores",
-  "generated": null,
-  "scores": {}
+  "generated": "2026-07-28T18:43:57Z",
+  "scores": {
+    "missing_homeassistant_key": {
+      "outcome_pass": false,
+      "tool_recall": 0.3333,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 2,
+      "total_time": 5.416
+    },
+    "malformed_yaml_syntax": {
+      "outcome_pass": false,
+      "tool_recall": 0.3333,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 9.136
+    },
+    "deprecated_integration_format": {
+      "outcome_pass": false,
+      "tool_recall": 0.3333,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 9.869
+    },
+    "valid_config_true_negative": {
+      "outcome_pass": true,
+      "tool_recall": 1.0,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 3,
+      "total_time": 2.827
+    },
+    "critical_traceback_in_logs": {
+      "outcome_pass": false,
+      "tool_recall": 0.3333,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 3.82
+    },
+    "info_log_true_negative": {
+      "outcome_pass": true,
+      "tool_recall": 0.5,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 1.343
+    },
+    "ambiguous_warning_log": {
+      "outcome_pass": false,
+      "tool_recall": 0.5,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 4.479
+    },
+    "netalertx_health_failure": {
+      "outcome_pass": false,
+      "tool_recall": 0.5,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 7.153
+    },
+    "fix_apply_failure": {
+      "outcome_pass": false,
+      "tool_recall": 0.5,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 1,
+      "total_time": 10.611
+    },
+    "netalertx_healing_sequence": {
+      "outcome_pass": true,
+      "tool_recall": 1.0,
+      "safety_pass": true,
+      "fix_parse_pass": true,
+      "efficiency_pass": true,
+      "tool_call_count": 3,
+      "total_time": 5.874
+    }
+  }
 }
