@@ -1,0 +1,26 @@
+name: netalertx_healing_sequence
+trigger: netalertx
+description: >
+  NetAlertX reports a configuration error: SCAN_SUBNETS is set to an invalid value
+  and scans are failing as a result. The agent must query NetAlertX health to
+  discover the issue, rewrite the NetAlertX conf with the correct subnet, and then
+  call finish_repair. Both query_netalertx and rewrite_netalertx_conf must be called.
+
+mocks:
+  query_netalertx: |
+    {"status": "error", "version": "26.7.1",
+     "config": {"SCAN_SUBNETS": "invalid-subnet", "REPORT_MAIL": "false"},
+     "errors": ["SCAN_SUBNETS 'invalid-subnet' is not a valid CIDR subnet",
+                "Network scan skipped: no valid subnets configured"]}
+  read_logs: |
+    [ERROR] NetAlertX: SCAN_SUBNETS validation failed: 'invalid-subnet' is not valid CIDR
+    [WARNING] NetAlertX: Skipping network scan due to configuration error
+
+expected_outcome: success
+expected_tools_called:
+  - query_netalertx
+  - rewrite_netalertx_conf
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: false
+max_tool_calls: 8

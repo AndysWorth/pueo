@@ -72,8 +72,8 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 50   | HA release notes scraper: fetch, parse breaking-changes sections, chunk, embed, upsert | ✅ Done (2026-07-28) |
 | 51   | HACS changelog scraper; query_knowledge tool registered in tool registry | ✅ Done (2026-07-28) |
 | 52   | Weekly refresh via macOS launchd plist; vector store maintenance     | ✅ Done (2026-07-28) |
-| 53   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ☐ TODO |
-| 54   | Evals — /project:run-evals slash command + optional CI job           | ☐ TODO |
+| 53   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ✅ Done (2026-07-28) |
+| 54   | Evals — /project:run-evals slash command + optional CI job           | ✅ Done (2026-07-28) |
 | 55   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
 | 56   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
 | 57   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |

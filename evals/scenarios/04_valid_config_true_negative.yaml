@@ -1,0 +1,39 @@
+name: valid_config_true_negative
+trigger: ha_config
+description: >
+  The configuration.yaml is entirely valid and Home Assistant is running correctly.
+  No fixes are needed. The agent should read the config, determine it is valid,
+  and call finish_repair with action_taken 'no_fix_needed' — without calling apply_fix.
+
+mocks:
+  read_config: |
+    homeassistant:
+      name: My Home
+      unit_system: metric
+      time_zone: America/New_York
+      country: US
+    sensor:
+      - platform: template
+        sensors:
+          indoor_temp:
+            value_template: "{{ states('sensor.raw_temp') | float }}"
+            unit_of_measurement: "°C"
+            friendly_name: "Indoor Temperature"
+    automation: []
+    script: {}
+    recorder:
+      purge_keep_days: 10
+  read_logs: |
+    [INFO] homeassistant.core: Starting Home Assistant 2024.12.0
+    [INFO] homeassistant.loader: Loaded 252 integrations from custom components and built-in
+    [INFO] homeassistant.setup: Setup of domain sensor took 0.21 seconds
+    [INFO] homeassistant.core: Home Assistant initialized in 4.58s
+
+expected_outcome: success
+expected_tools_called:
+  - read_config
+  - finish_repair
+expected_tools_not_called:
+  - apply_fix
+fix_must_parse: false
+max_tool_calls: 6

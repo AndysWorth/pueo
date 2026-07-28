@@ -1,0 +1,35 @@
+name: malformed_yaml_syntax
+trigger: ha_config
+description: >
+  The configuration.yaml contains a YAML syntax error: an unclosed string literal
+  on the light group name. Home Assistant will refuse to load this configuration.
+  The agent should identify the syntax error and produce a corrected, parseable YAML.
+
+mocks:
+  read_config: |
+    homeassistant:
+      name: My Home
+      unit_system: metric
+    light:
+      - platform: group
+        name: "Living Room Lights
+        entities:
+          - light.couch_lamp
+          - light.floor_lamp
+    sensor:
+      - platform: template
+        sensors:
+          my_sensor:
+            value_template: "{{ states('sensor.foo') }}"
+  read_logs: |
+    [ERROR] homeassistant.config: Error loading configuration: mapping values are not allowed here
+    [ERROR] homeassistant.bootstrap: Unable to parse YAML in /config/configuration.yaml
+
+expected_outcome: success
+expected_tools_called:
+  - read_config
+  - apply_fix
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: true
+max_tool_calls: 8

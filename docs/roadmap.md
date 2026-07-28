@@ -42,7 +42,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41  |
 | Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
 | Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
-| Phase 16: Evals                                    | ❌ Not started           | 53–54  |
+| Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54  |
 | Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
 | Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |
 | Phase 19: Federated Case Library                   | ❌ Not started           | 62–64  |

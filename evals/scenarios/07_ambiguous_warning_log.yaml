@@ -1,0 +1,30 @@
+name: ambiguous_warning_log
+trigger: ha_log
+description: >
+  Recent logs contain a WARNING about using SQLite on a low-memory system.
+  This is a performance advisory, not a configuration error — Home Assistant
+  continues to operate normally. The agent should investigate, conclude no config
+  change is warranted, and call finish_repair without applying a fix.
+
+mocks:
+  read_logs: |
+    [WARNING] homeassistant.components.recorder: The recorder is using a SQLite database on a system
+    with low free memory (total: 2.0 GiB). For better performance on systems with many entities,
+    consider switching to a PostgreSQL database. This warning will appear at every startup.
+    [INFO] homeassistant.components.recorder: Database is ready
+    [INFO] homeassistant.core: Home Assistant initialized in 6.12s
+  read_config: |
+    homeassistant:
+      name: My Home
+    recorder:
+      purge_keep_days: 10
+      commit_interval: 5
+
+expected_outcome: success
+expected_tools_called:
+  - read_logs
+  - finish_repair
+expected_tools_not_called:
+  - apply_fix
+fix_must_parse: false
+max_tool_calls: 6
