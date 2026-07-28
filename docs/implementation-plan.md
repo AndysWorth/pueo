@@ -262,7 +262,7 @@ Items 49–52. Keeps the agent knowledgeable about HA breaking changes without W
 
 ---
 
-### Phase 16 — Evals (2 items)
+### Phase 16 — Evals (2 items) ✅ Complete (2026-07-28)
 Items 53–54. Makes regressions visible: unit tests verify code correctness, evals verify agent intelligence. Synthetic YAML scenario library run through the real Ollama pipeline; scored and baselined in git.
 
 | Items | Concern |
@@ -317,14 +317,14 @@ Items 62–64. Pool anonymized repair episodes in a public `pueo-cases` GitHub r
 ### Phase 20 — Self-Improving Code Proposals *(stretch goal, 6 items)*
 Items 65–70. When Pueo identifies a capability gap, it proposes a Python diff, validates it in a sandboxed temp directory against CI, and surfaces a HITL card to open a PR. Approved changes become reusable tools. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are block-listed from diffs. Requires Milestones 7 and 9 complete.
 
-| Items | Concern |
-|-------|---------|
-| 65 | read_source + propose_patch tools |
-| 66 | sandbox_code tool: subprocess sandbox, no-network, pytest runner |
-| 67 | Code proposal HITL card: diff viewer, test output, approve/reject |
-| 68 | open_pr tool |
-| 69 | Security review: sandbox escape vectors + block list |
-| 70 | ADR 007 |
+| Items | Concern                                                           |
+| ----- | ----------------------------------------------------------------- |
+| 65    | read_source + propose_patch tools                                 |
+| 66    | sandbox_code tool: subprocess sandbox, no-network, pytest runner  |
+| 67    | Code proposal HITL card: diff viewer, test output, approve/reject |
+| 68    | open_pr tool                                                      |
+| 69    | Security review: sandbox escape vectors + block list              |
+| 70    | ADR 007                                                           |
 
 → [plan/code-proposals.md](plan/code-proposals.md)
 
