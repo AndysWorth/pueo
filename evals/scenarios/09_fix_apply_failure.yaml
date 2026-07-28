@@ -1,0 +1,28 @@
+name: fix_apply_failure
+trigger: ha_config
+description: >
+  The configuration has a missing homeassistant: block (same as scenario 01),
+  but when the agent calls apply_fix, the sandbox validation returns a failure —
+  simulating a case where the proposed fix itself is rejected. The expected loop
+  outcome is 'fix_failed', not 'success'.
+
+mocks:
+  read_config: |
+    sensor:
+      - platform: template
+        sensors:
+          my_sensor:
+            value_template: "{{ states('sensor.foo') }}"
+  read_logs: |
+    [ERROR] homeassistant.bootstrap: Failed to validate configuration
+
+fail_tools:
+  - apply_fix
+
+expected_outcome: fix_failed
+expected_tools_called:
+  - read_config
+  - apply_fix
+expected_tools_not_called: []
+fix_must_parse: false
+max_tool_calls: 8

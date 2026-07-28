@@ -1,0 +1,28 @@
+name: info_log_true_negative
+trigger: ha_log
+description: >
+  Recent HA logs contain only routine INFO messages — normal startup and operation.
+  There are no errors or warnings. The agent should determine no action is needed
+  and call finish_repair quickly without calling apply_fix or running commands.
+
+mocks:
+  read_logs: |
+    [INFO] homeassistant.core: Starting Home Assistant 2024.12.0
+    [INFO] homeassistant.loader: Loaded 252 integrations
+    [INFO] homeassistant.setup: Setup of domain sensor took 0.21 seconds
+    [INFO] homeassistant.setup: Setup of domain light took 0.14 seconds
+    [INFO] homeassistant.setup: Setup of domain automation took 0.08 seconds
+    [INFO] homeassistant.core: Home Assistant initialized in 4.58s
+    [INFO] homeassistant.components.recorder: Database is ready
+  read_config: |
+    homeassistant:
+      name: My Home
+
+expected_outcome: success
+expected_tools_called:
+  - read_logs
+  - finish_repair
+expected_tools_not_called:
+  - apply_fix
+fix_must_parse: false
+max_tool_calls: 5

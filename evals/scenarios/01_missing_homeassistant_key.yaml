@@ -1,0 +1,29 @@
+name: missing_homeassistant_key
+trigger: ha_config
+description: >
+  The configuration.yaml is missing the required homeassistant: block entirely.
+  Without this block, Home Assistant cannot start. The agent should detect the
+  missing key and apply a fix that includes a minimal homeassistant: section.
+
+mocks:
+  read_config: |
+    sensor:
+      - platform: template
+        sensors:
+          indoor_temp:
+            value_template: "{{ states('sensor.raw_temp') | float }}"
+            unit_of_measurement: "°C"
+    automation: []
+    script: {}
+  read_logs: |
+    [WARNING] homeassistant.config: Required key 'homeassistant' not found in configuration
+    [ERROR] homeassistant.bootstrap: Failed to validate configuration
+
+expected_outcome: success
+expected_tools_called:
+  - read_config
+  - apply_fix
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: true
+max_tool_calls: 8

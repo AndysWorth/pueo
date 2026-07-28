@@ -1,0 +1,41 @@
+name: critical_traceback_in_logs
+trigger: ha_log
+description: >
+  Recent HA logs contain a CRITICAL traceback indicating a service call failure.
+  The automation references a non-existent entity. The agent should read the logs,
+  investigate the config, apply a fix to the broken automation, and call finish_repair.
+
+mocks:
+  read_logs: |
+    [CRITICAL] homeassistant.core: Error executing service call: Traceback (most recent call last):
+      File "/usr/src/homeassistant/homeassistant/core.py", line 1834
+        await handler(target, service_call)
+      File "/usr/src/homeassistant/homeassistant/components/automation/__init__.py", line 412
+        raise HomeAssistantError(str(err)) from err
+    homeassistant.exceptions.HomeAssistantError: Error while executing automation morning_lights:
+    Service light.turn_on for light.nonexistent_lamp does not exist
+    [ERROR] homeassistant.components.automation: Failed to call service for automation morning_lights
+  read_config: |
+    homeassistant:
+      name: My Home
+    automation:
+      - id: morning_lights
+        alias: Morning Lights
+        trigger:
+          - platform: time
+            at: "07:00:00"
+        action:
+          - service: light.turn_on
+            target:
+              entity_id: light.nonexistent_lamp
+            data:
+              brightness_pct: 80
+
+expected_outcome: success
+expected_tools_called:
+  - read_logs
+  - apply_fix
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: true
+max_tool_calls: 10

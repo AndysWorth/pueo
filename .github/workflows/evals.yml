@@ -1,0 +1,39 @@
+name: Evals (optional)
+
+# Runs eval scenarios against Ollama if available.
+# Never blocks PR merges — all steps continue-on-error.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: pueo
+        run: pip install -r requirements-dev.txt
+
+      - name: Start Ollama
+        continue-on-error: true
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+          ollama pull qwen2.5-coder:7b
+
+      - name: Run evals
+        continue-on-error: true
+        working-directory: pueo
+        run: python evals/run_evals.py
+        env:
+          PUEO_CONFIG: ""

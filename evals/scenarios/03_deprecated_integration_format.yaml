@@ -1,0 +1,35 @@
+name: deprecated_integration_format
+trigger: ha_config
+description: >
+  The configuration uses the deprecated platform-dict syntax for sensors
+  (sensor: {platform: template, sensors: ...}) instead of the required list format.
+  This syntax was removed in Home Assistant 2024.x. The agent should detect the
+  deprecated format and rewrite it as a valid list-style sensor definition.
+
+mocks:
+  read_config: |
+    homeassistant:
+      name: My Home
+    sensor:
+      platform: template
+      sensors:
+        indoor_temp:
+          value_template: "{{ states('sensor.raw_temp') | float }}"
+          unit_of_measurement: "°C"
+          friendly_name: "Indoor Temperature"
+        outdoor_temp:
+          value_template: "{{ states('sensor.outside_temp') | float }}"
+          unit_of_measurement: "°C"
+          friendly_name: "Outdoor Temperature"
+  read_logs: |
+    [ERROR] homeassistant.components.sensor: The 'sensor' entity config format has changed.
+    [ERROR] homeassistant.setup: Integration sensor failed to set up: Invalid config
+
+expected_outcome: success
+expected_tools_called:
+  - read_config
+  - apply_fix
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: true
+max_tool_calls: 8
