@@ -73,10 +73,16 @@ class FakeKnowledgeStore:
 class ChromaKnowledgeStore:  # pragma: no cover
     """Production ChromaDB-backed knowledge store with Ollama embeddings."""
 
-    def __init__(self, path: str, embed_model: str, ollama_endpoint: str) -> None:
+    def __init__(
+        self,
+        path: str,
+        embed_model: str,
+        ollama_endpoint: str,
+        chroma_client=None,
+    ) -> None:
         import chromadb
 
-        self._client = chromadb.PersistentClient(path=path)
+        self._client = chroma_client or chromadb.PersistentClient(path=path)
         ef = _OllamaEmbeddingFunction(embed_model, ollama_endpoint)
         self._cols = {
             name: self._client.get_or_create_collection(name, embedding_function=ef)  # type: ignore[arg-type]
