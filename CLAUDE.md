@@ -105,20 +105,30 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 ## Testing
 
-When adding or modifying any feature, add corresponding tests in the same session — do not defer them. Tests live in `tests/test_core.py`, grouped by class matching their module.
+When adding or modifying any feature, add corresponding tests in the same session — do not defer them. Tests live in `tests/`, grouped by subsystem. Three tiers:
+
+| Tier | Location | Needs | When to run |
+|---|---|---|---|
+| Unit | `tests/` | Nothing | Every push (CI enforced) |
+| Seam | `tests/integration/` (non-ollama) | Nothing | Locally, on demand |
+| Eval | `tests/integration/test_evals.py` | Ollama running | Locally, on demand |
 
 **Rules:**
 - Every new Pydantic schema gets three tests: valid construction, invalid/missing fields, JSON round-trip
 - Every new `config.py` key gets a test in `TestConfigDefaults` using the `isolated_config` fixture
 - Every new pure-logic function (path derivation, regex, threshold comparison) gets a test
-- SSH and Ollama calls are never mocked in the unit suite — those are integration concerns; see `tests/CLAUDE.md`
+- SSH and Ollama calls are never mocked in the unit suite — those are integration/eval concerns
 - Use `/project:write-tests <target>` to generate tests for a specific function or module
+
+See `tests/CLAUDE.md` for full commands and the three-tier structure.
 
 The Stop hook (`/.claude/hooks/stop.sh`) will remind you at session end if Python files were modified without touching `tests/`.
 
 ## CI
 
-`.github/workflows/test.yml` runs on Python 3.12, 3.13, 3.14 against `main`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov --cov-fail-under=90`.
+`.github/workflows/test.yml` runs on Python 3.12, 3.13, 3.14 against `main`. Gates: `black`, `flake8` (errors only), `mypy`, `bandit`, `pytest --cov --cov-fail-under=90 --ignore=tests/integration`.
+
+`tests/integration/` is never run on GitHub — it contains seam tests (cross-module state flows) and eval tests (real Ollama inference) that require local services.
 
 ## Development Procedure
 
@@ -152,7 +162,7 @@ Every code change follows this procedure in order. Never commit directly to `mai
     flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
     mypy --ignore-missing-imports .
     bandit -r . -x ./tests,./.venv
-    pytest --cov --cov-fail-under=90
+    pytest --cov --cov-fail-under=90 --ignore=tests/integration
     ```
 13. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
 14. If implementing a named plan item: CI passing = done, open the PR. If ad-hoc: confirm with the user that the change is complete before opening the PR.

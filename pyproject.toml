@@ -1,4 +1,5 @@
 [tool.pytest.ini_options]
 markers = [
     "live_ha: requires a live Home Assistant instance over SSH",
+    "ollama: requires a local Ollama instance (runs real LLM inference)",
 ]
