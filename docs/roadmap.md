@@ -17,6 +17,7 @@ Strategic capabilities in delivery order.
 | 4.7. HA Notification Intelligence             | ✅ Complete (2026-07-27) | `utils/ha_ws_client.py`, `web/dashboard.py`|
 | 5. Agent quality & evaluation                 | ✅ Complete (2026-07-28) | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
+| 6.5. Supervisor + Active Dashboard            | ❌ Not started           | `main.py`, `web/dashboard.py`              |
 | 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
 | 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
@@ -43,16 +44,58 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
 | Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
 | Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54  |
-| Phase 17: HITL Cloud Escalation                    | ❌ Not started           | 55–58  |
-| Phase 18: Repair Episode Recording                 | ❌ Not started           | 59–61  |
-| Phase 19: Federated Case Library                   | ❌ Not started           | 62–64  |
-| Phase 20: Code Proposals *(stretch)*               | ❌ Not started           | 65–70  |
+| Phase 17: Supervisor + Active Dashboard            | ❌ Not started           | 55–64  |
+| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 65–68  |
+| Phase 19: Repair Episode Recording                 | ❌ Not started           | 69–71  |
+| Phase 20: Federated Case Library                   | ❌ Not started           | 72–74  |
+| Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 75–80  |
 
 ---
 
 ## Remaining Work
 
-**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
+**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → **6.5** → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
+
+---
+
+### Milestone 6.5 — Supervisor + Active Dashboard
+
+**Objective:** Replace the collection of disconnected one-shot and daemon commands with a single
+`python main.py` entry point. A unified asyncio supervisor process runs all monitoring loops
+concurrently alongside the FastAPI dashboard. The dashboard becomes the face of Pueo: real-time
+status overview driven by Server-Sent Events, live event timeline with drill-down, configuration
+editor with live-apply, loop pause/resume controls, and direct execution of HITL-approved actions.
+A launchd plist keeps Pueo alive across reboots and restarts.
+
+**Why here:** An operational audit (2026-07-29) revealed that in practice only `--mode dashboard`
+stays running — and it is passive. Approved HITL actions don't execute. No monitoring loops run.
+Disk hit CRITICAL with no alert. The supervisor closes this gap: one command starts everything,
+and the dashboard handles both display and action dispatch.
+
+**Key design choices:**
+- Single asyncio process (not subprocess-per-mode): the dashboard dispatches approved actions
+  by calling handler functions directly in-process, which requires shared address space
+- `LoopSupervisor` wraps each monitoring task with exception catching and exponential-backoff
+  restart (2s → 5 min cap); a crashed loop emits a `loop_error` SSE event and restarts
+- SSE (`GET /events`) pushes loop status, HITL cards, resource state, and timeline events to
+  the browser; no WebSocket needed (server-to-client only)
+- Config live-apply: runtime params (`autonomy_level`, thresholds, intervals) take effect
+  immediately; connection params (`HA_HOST`, SSH key) write to config.yaml and prompt restart
+- HITL card dispatch: `card_type` field on every card routes approval to the matching handler
+  (`_execute_queued_update`, `_execute_netalertx_heal`, etc.) rather than writing a file
+  that nobody listens for
+- launchd plist: 127.0.0.1-only, no auth, starts at login, restarts on crash
+
+**Tasks (Phase 17, items 55–64):** Supervisor process → card-type dispatch → update executor →
+NetAlertX/resource executors → dashboard overview tab (SSE) → event timeline with drill-down →
+configuration editor → loop control → launchd install → `--mode audit` self-diagnostics.
+
+**Validation gate:** `python main.py` starts all loops and serves the dashboard; approving the
+pending HA Core update card executes the update in-process; changing `autonomy_level` in the
+settings tab takes effect on the next autonomy gate decision; pausing the log monitor stops
+triage; launchd restarts Pueo after `killall python`; `--mode audit` generates a gap report.
+
+Full spec: [plan/supervisor.md](plan/supervisor.md)
 
 ---
 

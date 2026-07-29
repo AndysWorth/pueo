@@ -1,4 +1,9 @@
 # ==========================================
+# 🔍 Audit Reports (local only — never committed)
+# ==========================================
+audits/
+
+# ==========================================
 # 🐳 Docker & Container Runtime Environment
 # ==========================================
 # Ignore local Docker compose overrides or local dev setups
