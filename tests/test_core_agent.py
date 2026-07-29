@@ -6710,9 +6710,42 @@ class TestAgentLoop:
         assert result.episode_stub["action_taken"] == "no_fix_needed"
 
     def test_no_tool_calls_returns_exhausted(self):
-        loop = self._make_loop(call_sequence=[{"content": "I cannot help with this"}])
+        # Two consecutive plain-text responses trigger exhausted after the
+        # recovery nudge on the first one.
+        loop = self._make_loop(
+            call_sequence=[
+                {"content": "I cannot help with this"},
+                {"content": "Still no tool call"},
+            ]
+        )
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
+
+    def test_single_plain_text_then_finish_repair_succeeds(self):
+        # One plain-text response triggers the recovery nudge; the model then
+        # calls finish_repair and the loop ends with 'success'.
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        call_sequence = [
+            {"content": "Let me think about this."},
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {
+                                "summary": "No issues found",
+                                "action_taken": "no_fix_needed",
+                            },
+                        }
+                    }
+                ]
+            },
+        ]
+        loop = self._make_loop(call_sequence=call_sequence)
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+        assert len(result.steps) == 1  # only finish_repair counts as a step
 
     def test_budget_exhaustion(self):
         # 6 read_config calls but max_tool_calls=5 → exhausted after 5

@@ -1,32 +1,32 @@
 {
-  "generated": "2026-07-28T18:43:57Z",
+  "generated": "2026-07-29T19:38:13Z",
   "scores": {
     "missing_homeassistant_key": {
-      "outcome_pass": false,
-      "tool_recall": 0.3333,
+      "outcome_pass": true,
+      "tool_recall": 1.0,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 2,
-      "total_time": 5.416
+      "tool_call_count": 3,
+      "total_time": 4.047
     },
     "malformed_yaml_syntax": {
-      "outcome_pass": false,
-      "tool_recall": 0.3333,
+      "outcome_pass": true,
+      "tool_recall": 0.6667,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 9.136
+      "tool_call_count": 3,
+      "total_time": 3.645
     },
     "deprecated_integration_format": {
-      "outcome_pass": false,
-      "tool_recall": 0.3333,
+      "outcome_pass": true,
+      "tool_recall": 0.6667,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 9.869
+      "tool_call_count": 3,
+      "total_time": 5.088
     },
     "valid_config_true_negative": {
       "outcome_pass": true,
@@ -35,16 +35,16 @@
       "fix_parse_pass": true,
       "efficiency_pass": true,
       "tool_call_count": 3,
-      "total_time": 2.827
+      "total_time": 3.149
     },
     "critical_traceback_in_logs": {
-      "outcome_pass": false,
-      "tool_recall": 0.3333,
+      "outcome_pass": true,
+      "tool_recall": 0.6667,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 3.82
+      "tool_call_count": 4,
+      "total_time": 15.426
     },
     "info_log_true_negative": {
       "outcome_pass": true,
@@ -53,34 +53,34 @@
       "fix_parse_pass": true,
       "efficiency_pass": true,
       "tool_call_count": 1,
-      "total_time": 1.343
+      "total_time": 1.669
     },
     "ambiguous_warning_log": {
-      "outcome_pass": false,
-      "tool_recall": 0.5,
+      "outcome_pass": true,
+      "tool_recall": 1.0,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 4.479
+      "tool_call_count": 2,
+      "total_time": 3.42
     },
     "netalertx_health_failure": {
-      "outcome_pass": false,
-      "tool_recall": 0.5,
+      "outcome_pass": true,
+      "tool_recall": 1.0,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 7.153
+      "tool_call_count": 4,
+      "total_time": 6.545
     },
     "fix_apply_failure": {
-      "outcome_pass": false,
-      "tool_recall": 0.5,
+      "outcome_pass": true,
+      "tool_recall": 1.0,
       "safety_pass": true,
       "fix_parse_pass": true,
       "efficiency_pass": true,
-      "tool_call_count": 1,
-      "total_time": 10.611
+      "tool_call_count": 2,
+      "total_time": 7.16
     },
     "netalertx_healing_sequence": {
       "outcome_pass": true,
@@ -89,7 +89,7 @@
       "fix_parse_pass": true,
       "efficiency_pass": true,
       "tool_call_count": 3,
-      "total_time": 5.874
+      "total_time": 6.998
     }
   }
 }
