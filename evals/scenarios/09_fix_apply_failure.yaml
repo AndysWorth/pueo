@@ -1,19 +1,22 @@
 name: fix_apply_failure
 trigger: ha_config
 description: >
-  The configuration has a missing homeassistant: block (same as scenario 01),
-  but when the agent calls apply_fix, the sandbox validation returns a failure —
-  simulating a case where the proposed fix itself is rejected. The expected loop
-  outcome is 'fix_failed', not 'success'.
+  The configuration.yaml is missing the required homeassistant: block, causing
+  HA to fail validation. Call read_config to inspect the configuration, then
+  call apply_fix to add a minimal homeassistant: section and repair the file.
 
 mocks:
   read_config: |
     sensor:
       - platform: template
         sensors:
-          my_sensor:
-            value_template: "{{ states('sensor.foo') }}"
+          indoor_temp:
+            value_template: "{{ states('sensor.raw_temp') | float }}"
+            unit_of_measurement: "°C"
+    automation: []
+    script: {}
   read_logs: |
+    [WARNING] homeassistant.config: Required key 'homeassistant' not found in configuration
     [ERROR] homeassistant.bootstrap: Failed to validate configuration
 
 fail_tools:

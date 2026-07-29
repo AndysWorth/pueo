@@ -160,6 +160,7 @@ class AgentLoop:
         start_time: float,
     ) -> tuple[str, Optional[dict]]:
         episode_stub: Optional[dict] = None
+        no_tool_streak = 0  # consecutive plain-text responses with no tool calls
 
         while tool_call_count < self._max_tool_calls:
             response = await self._llm.chat_with_tools(
@@ -185,11 +186,33 @@ class AgentLoop:
                     response["content"] = ""  # prevent raw JSON from confusing history
                     tool_calls_raw = fallback
                 else:
+                    no_tool_streak += 1
+                    if no_tool_streak >= 2:
+                        log.info(
+                            "agent_loop_no_tool_calls",
+                            content=content[:120],
+                        )
+                        return "exhausted", episode_stub
+                    # Single plain-text response — inject a recovery nudge and
+                    # retry rather than giving up immediately.
                     log.info(
-                        "agent_loop_no_tool_calls",
+                        "agent_loop_no_tool_calls_nudge",
                         content=content[:120],
                     )
-                    return "exhausted", episode_stub
+                    messages.append({"role": "assistant", "content": content or ""})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You MUST call a tool now. "
+                                "If your investigation is complete, call finish_repair "
+                                "with a summary. Do not return plain text."
+                            ),
+                        }
+                    )
+                    continue
+
+            no_tool_streak = 0  # reset: we received tool calls this iteration
 
             # Append the assistant message (with tool_calls) to history.
             messages.append(response)

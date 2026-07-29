@@ -2,9 +2,9 @@ name: netalertx_health_failure
 trigger: netalertx
 description: >
   NetAlertX health check is returning errors: the database connection has failed
-  and network scans are timing out. The agent should query NetAlertX health,
-  diagnose the problem, and attempt to restart the NetAlertX container to restore
-  normal operation before calling finish_repair.
+  and network scans are timing out. Call query_netalertx to read the current
+  health status, then call restart_netalertx to reset the container, then call
+  finish_repair with a summary of what was found and what action was taken.
 
 mocks:
   query_netalertx: |
@@ -15,10 +15,13 @@ mocks:
     [ERROR] NetAlertX: Failed to connect to SQLite database /data/app.db
     [ERROR] NetAlertX: Network scan failed: connection timeout
     [WARNING] NetAlertX: Container restart may be required to reset database locks
+  restart_netalertx: |
+    NetAlertX container restarted successfully. Database lock cleared. Network rescan scheduled.
 
 expected_outcome: success
 expected_tools_called:
   - query_netalertx
+  - restart_netalertx
   - finish_repair
 expected_tools_not_called: []
 fix_must_parse: false
