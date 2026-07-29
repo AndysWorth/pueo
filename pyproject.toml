@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+markers = [
+    "live_ha: requires a live Home Assistant instance over SSH",
+]

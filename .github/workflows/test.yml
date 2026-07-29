@@ -62,7 +62,7 @@ jobs:
         # Mock environments can be declared here if needed
         HA_TEST_URL: "http://localhost:8123"
       run: |
-        pytest --cov=./ --cov-report=xml --cov-fail-under=90
+        pytest --cov=./ --cov-report=xml --cov-fail-under=90 --ignore=tests/integration
 
     # 9. Upload coverage to Codecov (aggregates across all Python versions)
     - name: Upload Coverage to Codecov

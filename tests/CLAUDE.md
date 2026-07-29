@@ -47,3 +47,20 @@ Class-scoped fixtures (defined as `@pytest.fixture` methods inside a test class)
 ## What is not tested here
 - SSH transport layer (`asyncssh` calls) — needs integration test against real HA
 - Live Ollama inference — needs integration test against local Ollama
+
+## Two-tier structure
+
+`tests/` (this directory) — **unit tests only**. Run by CI on every push:
+```bash
+pytest --cov=./ --cov-fail-under=90 --ignore=tests/integration
+```
+
+`tests/integration/` — **integration and seam tests**. Run locally on demand:
+```bash
+pytest tests/integration/ -m "not live_ha" -v        # no live HA needed
+HA_HOST=homeassistant.local pytest tests/integration/ -m live_ha -v
+```
+
+Integration tests are **never run on GitHub**. They cover cross-module state flows (e.g. manager functions writing to SQLite → dashboard reading it) and code paths that are 0% covered in the unit suite (e.g. `ha_log_monitor.tail_remote_log_stream` actionable path, `poll_for_notifications` loop body, `NetAlertXHealthMonitor.run()`).
+
+Tests marked `live_ha` are skipped unless the `HA_HOST` environment variable is set.
