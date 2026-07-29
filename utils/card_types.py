@@ -1,0 +1,6 @@
+"""HITL card type constants used by callers and the dashboard dispatch table."""
+
+CARD_TYPE_REPAIR = "repair"
+CARD_TYPE_UPDATE = "update"
+CARD_TYPE_NETALERTX_HEAL = "netalertx_heal"
+CARD_TYPE_RESOURCE_ACTION = "resource_action"

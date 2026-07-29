@@ -231,12 +231,15 @@ class ToolExecutor:
 
         from utils.autonomy import RiskLevel
 
+        from utils.card_types import CARD_TYPE_REPAIR
+
         nid = get_correlation_id() or str(uuid.uuid4())
         approved = await self._gate.queue_for_approval(
             subject=f"Pueo HITL: apply_fix — {description}",
             body=f"Proposed fix:\n{yaml_content[:500]}",
             payload={
                 "notification_id": nid,
+                "card_type": CARD_TYPE_REPAIR,
                 "severity": "HIGH",
                 "description": description,
                 "correlation_id": nid,

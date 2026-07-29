@@ -6,6 +6,7 @@ Pueo entry point. Reads config.yaml and dispatches to the chosen agent mode.
 import argparse
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,13 +27,93 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     )
 
 
+async def supervisor_main(config_path: Path) -> None:
+    """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
+    import config as cfg
+    import ha_agent_advanced
+    import uvicorn
+    from ha_log_monitor import (
+        poll_for_notifications,
+        poll_for_updates,
+        tail_remote_log_stream,
+    )
+    from utils.notify import get_notifier
+    from utils.resource import ResourcePoller
+    from utils.ssh_client import AsyncSSHClient
+    from utils.supervisor import LoopSupervisor, event_bus
+    from web.dashboard import app as dashboard_app
+
+    ha_agent_advanced.init_local_database()
+
+    notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
+    supervisor = LoopSupervisor(bus=event_bus)
+
+    # HA log monitor loop (SSH tail + AI triage)
+    supervisor.start(
+        "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)
+    )
+
+    # Resource polling loop — create a fresh poller on each supervisor restart
+    supervisor.start(
+        "resource_poll",
+        lambda: ResourcePoller(
+            ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
+            notifier=notifier,
+            interval_seconds=cfg.RESOURCE_POLL_INTERVAL_SECONDS,
+            disk_warn_gb=cfg.HA_DISK_WARN_GB,
+            disk_critical_gb=cfg.HA_DISK_CRITICAL_GB,
+            mem_warn_mb=cfg.HA_MEM_WARN_MB,
+        ).run(),
+    )
+
+    # Update check loop (only if interval > 0 and token is configured)
+    if cfg.HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and cfg.HA_API_TOKEN:
+        supervisor.start("update_check", lambda: poll_for_updates(notifier=notifier))
+
+    # Notification polling loop (only if interval > 0 and token is configured)
+    if cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
+        supervisor.start(
+            "notification_poll",
+            lambda: poll_for_notifications(notifier=notifier),
+        )
+
+    # NetAlertX log monitor (only if host is configured — non-empty means NetAlertX active)
+    if cfg.NETALERTX_HOST:
+        from netalertx.log_monitor import tail_netalertx_log_stream
+
+        supervisor.start(
+            "netalertx",
+            lambda: tail_netalertx_log_stream(notifier=notifier),
+        )
+
+    # Register signal handlers for clean shutdown
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, supervisor.cancel_all)
+
+    # Run uvicorn as an asyncio coroutine alongside the supervised loops
+    uvi_config = uvicorn.Config(
+        dashboard_app,
+        host="127.0.0.1",
+        port=cfg.DASHBOARD_PORT,
+        log_level="warning",
+    )
+    server = uvicorn.Server(uvi_config)
+    print(f"Pueo supervisor → dashboard at http://127.0.0.1:{cfg.DASHBOARD_PORT}")
+    await server.serve()
+
+    # serve() returned — cancel all loops on clean exit
+    supervisor.cancel_all()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Pueo — Home Assistant guardian agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "modes:\n"
-            "  monitor             live SSH log tail with AI triage (default, daemon mode)\n"
+            "  supervisor          all loops + dashboard in one process (default)\n"
+            "  monitor             live SSH log tail with AI triage (single-loop daemon)\n"
             "  diagnose            one-shot config fetch and analysis\n"
             "  advanced            diagnose + SQLite memory + backup triggering\n"
             "  repair              full sandbox-test-then-atomic-swap repair cycle\n"
@@ -55,6 +136,7 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         choices=[
+            "supervisor",
             "monitor",
             "diagnose",
             "advanced",
@@ -68,8 +150,8 @@ def main() -> None:
             "rag-refresh",
             "dashboard",
         ],
-        default="monitor",
-        help="agent mode (default: monitor)",
+        default="supervisor",
+        help="agent mode (default: supervisor)",
     )
     args = parser.parse_args()
 
@@ -86,7 +168,9 @@ def main() -> None:
 
     setup_logging(console_text=(args.mode in ("netalertx-setup", "netalertx-diagnose")))
 
-    if args.mode == "monitor":
+    if args.mode == "supervisor":
+        asyncio.run(supervisor_main(config_path))
+    elif args.mode == "monitor":
         import ha_log_monitor
 
         asyncio.run(ha_log_monitor.main())

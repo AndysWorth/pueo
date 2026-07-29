@@ -1637,6 +1637,132 @@ class TestEmbedCachedChangelogs:
         assert result == 0
 
 
+# ── LoopSupervisor ────────────────────────────────────────────────────────────────
+
+
+class TestLoopSupervisor:
+    def test_starts_loop_and_runs(self):
+        """Supervisor creates a task; coro runs at least once."""
+
+        async def _run():
+            ran: list[int] = []
+
+            async def coro():
+                ran.append(1)
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            await asyncio.sleep(0.05)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+            assert len(ran) >= 1
+
+        asyncio.run(_run())
+
+    def test_crashed_task_restarts(self):
+        """An exception in the coro increments error_count and the coro is retried."""
+
+        async def _run():
+            calls: list[int] = []
+
+            async def flaky_coro():
+                calls.append(1)
+                if len(calls) == 1:
+                    raise RuntimeError("first call fails")
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", flaky_coro)
+            await asyncio.sleep(0.15)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+            status = sup.get_statuses()[0]
+            assert status.error_count >= 1
+            assert len(calls) >= 2
+
+        asyncio.run(_run())
+
+    def test_cancel_all_stops_tasks(self):
+        """cancel_all() causes all supervised tasks to finish cleanly."""
+
+        async def _run():
+            async def coro():
+                await asyncio.sleep(999)
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            await asyncio.sleep(0.02)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+            # Tasks finish after cancellation (supervisor catches CancelledError and returns)
+            assert all(t.done() for t in sup._tasks.values())
+
+        asyncio.run(_run())
+
+    def test_event_bus_receives_loop_status(self):
+        """Running loop emits a loop_status event to the bus."""
+
+        async def _run():
+            async def coro():
+                pass
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            await asyncio.sleep(0.05)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+            events = []
+            while not bus.empty():
+                events.append(bus.get_nowait())
+            assert any(e["event_type"] == "loop_status" for e in events)
+            assert any(e["loop"] == "t" for e in events)
+
+        asyncio.run(_run())
+
+    def test_disabled_loop_not_started_when_never_called(self):
+        """Loops not started by caller have no tasks in supervisor."""
+        from utils.supervisor import LoopSupervisor
+
+        bus: asyncio.Queue = asyncio.Queue()
+        sup = LoopSupervisor(bus=bus)
+        assert len(sup._tasks) == 0
+        assert len(sup.get_statuses()) == 0
+
+    def test_last_error_recorded_on_crash(self):
+        """Error message is recorded in LoopStatus after coro raises."""
+
+        async def _run():
+            async def bad_coro():
+                raise ValueError("sentinel error")
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", bad_coro)
+            await asyncio.sleep(0.05)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+            status = sup.get_statuses()[0]
+            assert "sentinel error" in status.last_error
+
+        asyncio.run(_run())
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
