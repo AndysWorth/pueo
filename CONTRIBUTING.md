@@ -123,6 +123,14 @@ pytest --cov=./ --cov-report=term-missing --cov-fail-under=80
 
 ---
 
+## Audit reports
+
+The `audits/` directory (gitignored) is for operational state snapshots and diagnostic reports gathered from a live Pueo + HA instance. Save reports there when you want to track what a real deployment looked like at a point in time without publishing potentially sensitive state to the public repo.
+
+A future Pueo feature (`--mode audit`) will produce these reports automatically and surface a structured diff of gaps between the intended and actual operational state. Insights from real audit reports inform improvements that will be contributed back to the main repository via the normal PR process.
+
+---
+
 ## Reporting issues
 
 Use the GitHub issue templates:

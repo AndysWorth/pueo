@@ -10,7 +10,7 @@ Pick up the next incomplete item at the start of a new session: find it in the S
 
 Plan detail files use a **Phase Deliverables** table (item number + one-line description) to link items to spec text. Do not introduce new "Feature N" labels — reference items by number.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
@@ -74,22 +74,32 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 52   | Weekly refresh via macOS launchd plist; vector store maintenance     | ✅ Done (2026-07-28) |
 | 53   | Evals — scenario library (≥10 YAML files) + run_evals.py + baseline.json | ✅ Done (2026-07-28) |
 | 54   | Evals — /project:run-evals slash command + optional CI job           | ✅ Done (2026-07-28) |
-| 55   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
-| 56   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
-| 57   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
-| 58   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
-| 59   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
-| 60   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
-| 61   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
-| 62   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
-| 63   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
-| 64   | Eval scenario generation from each ingested community case           | ☐ TODO |
-| 65   | read_source + propose_patch tools; diff generation prompt engineering | ☐ TODO |
-| 66   | sandbox_code tool: subprocess sandbox, no-network isolation, pytest runner, lint gate | ☐ TODO |
-| 67   | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject | ☐ TODO |
-| 68   | open_pr tool: gh pr create integration, PR body template             | ☐ TODO |
-| 69   | Security review: sandbox escape vectors, allowlist, safety-critical file block list | ☐ TODO |
-| 70   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
+| 55   | Supervisor process: asyncio task launcher; LoopSupervisor with health tracking, backoff restart | ☐ TODO |
+| 56   | Card-type dispatch: utils/card_types.py; card_type field on all HITL cards; dispatch table in approve() | ☐ TODO |
+| 57   | Update executor: _execute_queued_update() in dashboard; refactor execute_update() as callable | ☐ TODO |
+| 58   | NetAlertX + resource action executors; in-progress spinner state in dashboard | ☐ TODO |
+| 59   | Dashboard home: overview tab with loop health rows, HA state card, resource gauges; SSE /events endpoint | ☐ TODO |
+| 60   | Live event timeline: timeline_events SQLite table (migration v6); SSE push; drill-down detail view | ☐ TODO |
+| 61   | Configuration editor: settings tab; live-apply for runtime params; config.yaml write; restart prompt for connection params | ☐ TODO |
+| 62   | Loop control from dashboard: pause/resume/run-now per loop via POST endpoints | ☐ TODO |
+| 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ☐ TODO |
+| 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ☐ TODO |
+| 65   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
+| 66   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
+| 67   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
+| 68   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
+| 69   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
+| 70   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
+| 71   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
+| 72   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
+| 73   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
+| 74   | Eval scenario generation from each ingested community case           | ☐ TODO |
+| 75   | read_source + propose_patch tools; diff generation prompt engineering | ☐ TODO |
+| 76   | sandbox_code tool: subprocess sandbox, no-network isolation, pytest runner, lint gate | ☐ TODO |
+| 77   | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject | ☐ TODO |
+| 78   | open_pr tool: gh pr create integration, PR body template             | ☐ TODO |
+| 79   | Security review: sandbox escape vectors, allowlist, safety-critical file block list | ☐ TODO |
+| 80   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
 
 ---
 
@@ -274,57 +284,82 @@ Items 53–54. Makes regressions visible: unit tests verify code correctness, ev
 
 ---
 
-### Phase 17 — HITL Cloud Escalation (4 items)
-Items 55–58. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+### Phase 17 — Supervisor + Active Dashboard (10 items)
+Items 55–64. Replaces the collection of disconnected one-shot and daemon commands with a
+single `python main.py` supervisor process. All monitoring loops run as asyncio tasks
+alongside the FastAPI dashboard. The dashboard becomes the face of Pueo: real-time status
+overview, live event timeline, configuration editor, loop control, and direct execution of
+HITL-approved actions. A launchd plist keeps Pueo alive across reboots. Prerequisite:
+Phase 16 (Evals) complete.
 
 | Items | Concern |
 |-------|---------|
-| 55 | ClaudeAPIClient + tool adapter |
-| 56 | Escalation HITL card |
-| 57 | Cloud response pipeline via shared tool execution layer |
-| 58 | Billing guard + cloud_spend SQLite table |
+| 55 | Supervisor process: LoopSupervisor with asyncio task launcher, health tracking, backoff restart |
+| 56 | Card-type dispatch: utils/card_types.py; card_type on all HITL cards; dispatch table in approve() |
+| 57 | Update executor in dashboard; refactor execute_update() as standalone callable |
+| 58 | NetAlertX + resource action executors; in-progress spinner state |
+| 59 | Dashboard overview tab: loop health rows, HA state card, resource gauges; SSE /events |
+| 60 | Live event timeline: timeline_events DB table (migration v6); drill-down detail view |
+| 61 | Configuration editor: settings tab; live-apply runtime params; write config.yaml |
+| 62 | Loop control from dashboard: pause/resume/run-now per loop |
+| 63 | launchd service: plist template; setup.sh install step; dashboard service controls |
+| 64 | --mode audit: Pueo self-diagnostics report saved to audits/ |
+
+→ [plan/supervisor.md](plan/supervisor.md)
+
+---
+
+### Phase 18 — HITL Cloud Escalation (4 items)
+Items 65–68. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+
+| Items | Concern |
+|-------|---------|
+| 65 | ClaudeAPIClient + tool adapter |
+| 66 | Escalation HITL card |
+| 67 | Cloud response pipeline via shared tool execution layer |
+| 68 | Billing guard + cloud_spend SQLite table |
 
 → [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
 ---
 
-### Phase 18 — Repair Episode Recording (3 items)
-Items 59–61. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 19 (Federated Case Library).
+### Phase 19 — Repair Episode Recording (3 items)
+Items 69–71. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 20 (Federated Case Library).
 
 | Items | Concern |
 |-------|---------|
-| 59 | repair_episodes migration + RepairEpisode dataclass |
-| 60 | Serialization hook at finish_repair in AgentLoop |
-| 61 | --mode export-episodes CLI + episodes dashboard tab |
+| 69 | repair_episodes migration + RepairEpisode dataclass |
+| 70 | Serialization hook at finish_repair in AgentLoop |
+| 71 | --mode export-episodes CLI + episodes dashboard tab |
 
 → [plan/repair-episodes.md](plan/repair-episodes.md)
 
 ---
 
-### Phase 19 — Federated Case Library (3 items)
-Items 62–64. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
+### Phase 20 — Federated Case Library (3 items)
+Items 72–74. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
 
 | Items | Concern |
 |-------|---------|
-| 62 | Case submission flow (dashboard → gh pr create) |
-| 63 | Case ingest (weekly pull → embed → community_cases ChromaDB) |
-| 64 | Eval scenario generation from ingested cases |
+| 72 | Case submission flow (dashboard → gh pr create) |
+| 73 | Case ingest (weekly pull → embed → community_cases ChromaDB) |
+| 74 | Eval scenario generation from ingested cases |
 
 → [plan/federated-cases.md](plan/federated-cases.md)
 
 ---
 
-### Phase 20 — Self-Improving Code Proposals *(stretch goal, 6 items)*
-Items 65–70. When Pueo identifies a capability gap, it proposes a Python diff, validates it in a sandboxed temp directory against CI, and surfaces a HITL card to open a PR. Approved changes become reusable tools. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are block-listed from diffs. Requires Milestones 7 and 9 complete.
+### Phase 21 — Self-Improving Code Proposals *(stretch goal, 6 items)*
+Items 75–80. When Pueo identifies a capability gap, it proposes a Python diff, validates it in a sandboxed temp directory against CI, and surfaces a HITL card to open a PR. Approved changes become reusable tools. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are block-listed from diffs. Requires Milestones 7 and 9 complete.
 
 | Items | Concern                                                           |
 | ----- | ----------------------------------------------------------------- |
-| 65    | read_source + propose_patch tools                                 |
-| 66    | sandbox_code tool: subprocess sandbox, no-network, pytest runner  |
-| 67    | Code proposal HITL card: diff viewer, test output, approve/reject |
-| 68    | open_pr tool                                                      |
-| 69    | Security review: sandbox escape vectors + block list              |
-| 70    | ADR 007                                                           |
+| 75    | read_source + propose_patch tools                                 |
+| 76    | sandbox_code tool: subprocess sandbox, no-network, pytest runner  |
+| 77    | Code proposal HITL card: diff viewer, test output, approve/reject |
+| 78    | open_pr tool                                                      |
+| 79    | Security review: sandbox escape vectors + block list              |
+| 80    | ADR 007                                                           |
 
 → [plan/code-proposals.md](plan/code-proposals.md)
 
