@@ -48,19 +48,48 @@ Class-scoped fixtures (defined as `@pytest.fixture` methods inside a test class)
 - SSH transport layer (`asyncssh` calls) — needs integration test against real HA
 - Live Ollama inference — needs integration test against local Ollama
 
-## Two-tier structure
+## Three-tier structure
 
-`tests/` (this directory) — **unit tests only**. Run by CI on every push:
+### Tier 1 — Unit tests (`tests/`) — runs on every CI push
 ```bash
 pytest --cov=./ --cov-fail-under=90 --ignore=tests/integration
 ```
+No external services. All SSH and Ollama calls use fakes. 90% coverage gate enforced.
 
-`tests/integration/` — **integration and seam tests**. Run locally on demand:
+### Tier 2 — Seam tests (`tests/integration/`, no Ollama) — run locally on demand
 ```bash
-pytest tests/integration/ -m "not live_ha" -v        # no live HA needed
-HA_HOST=homeassistant.local pytest tests/integration/ -m live_ha -v
+pytest tests/integration/ -m "not live_ha and not ollama" -v
+```
+Verify cross-module state flows (manager functions write SQLite → dashboard reads it) and
+code paths that are 0% covered in the unit suite. No external services needed.
+
+### Tier 3 — Eval tests (`tests/integration/test_evals.py`, real Ollama) — run locally on demand
+```bash
+pytest tests/integration/ -m ollama -v
+```
+Each scenario in `evals/scenarios/` runs through real Ollama inference with
+`FakeToolExecutor` intercepting tool calls. Tests verify safety (apply_fix ≤ 1×) and
+outcome accuracy. Each scenario takes 5–120 seconds — expect a full run to take several
+minutes.
+
+Skipped automatically when Ollama is not reachable. Start Ollama first: `ollama serve`.
+
+**To run seam tests and evals together in one command:**
+```bash
+pytest tests/integration/ -m "not live_ha" -v
 ```
 
-Integration tests are **never run on GitHub**. They cover cross-module state flows (e.g. manager functions writing to SQLite → dashboard reading it) and code paths that are 0% covered in the unit suite (e.g. `ha_log_monitor.tail_remote_log_stream` actionable path, `poll_for_notifications` loop body, `NetAlertXHealthMonitor.run()`).
+**For the full scored report with baseline delta comparison, use the standalone harness:**
+```bash
+python evals/run_evals.py
+python evals/run_evals.py --scenario 01    # single scenario by name fragment
+python evals/run_evals.py --save-baseline  # overwrite baseline.json
+```
 
-Tests marked `live_ha` are skipped unless the `HA_HOST` environment variable is set.
+### Live-HA smoke tests (`tests/integration/test_live_ha.py`)
+```bash
+HA_HOST=homeassistant.local pytest tests/integration/ -m live_ha -v
+```
+Skipped unless `HA_HOST` is set. Read-only SSH commands against a real HA instance.
+
+**Nothing in `tests/integration/` is ever run on GitHub CI.**
