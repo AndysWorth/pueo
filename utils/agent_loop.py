@@ -50,10 +50,16 @@ def _parse_content_as_tool_call(
 
 
 _AGENT_LOOP_SYSTEM_PROMPT = """\
-You are Pueo, an autonomous Home Assistant repair agent.
-Investigate the problem using the tools provided. When you have enough
-information, apply a fix if one is needed, then call finish_repair.
-Use tools one at a time. Never call apply_fix more than once per session.
+You are Pueo, an autonomous Home Assistant repair agent running in a tool-calling loop.
+
+MANDATORY RULES — follow exactly:
+1. Always respond by calling a tool. Never return plain text — that ends the session.
+2. Always end the session by calling finish_repair. This is required every time.
+3. After each tool result, immediately call the next tool. Keep going until you finish.
+4. Only call apply_fix once per session and only after reading the relevant config or logs.
+5. If no fix is needed, call finish_repair with action_taken='no_fix_needed'.
+
+TYPICAL FLOW: read_config / read_logs → (apply_fix if broken) → finish_repair
 """
 
 
@@ -176,6 +182,7 @@ class AgentLoop:
                         content=content[:120],
                     )
                     response["tool_calls"] = fallback
+                    response["content"] = ""  # prevent raw JSON from confusing history
                     tool_calls_raw = fallback
                 else:
                     log.info(
@@ -244,6 +251,11 @@ class AgentLoop:
 
                 if tool_call.name == "apply_fix" and not tool_result.success:
                     return "fix_failed", episode_stub
+
+            # All tool calls in this response processed; prompt the model to continue.
+            messages.append(
+                {"role": "user", "content": "Continue. Call the next tool."}
+            )
 
         log.warning("agent_loop_budget_exhausted", count=tool_call_count)
         return "exhausted", episode_stub

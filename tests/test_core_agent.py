@@ -6968,6 +6968,151 @@ class TestAgentLoop:
         assert result.outcome == "awaiting_approval"
         assert len(result.steps) == 1
 
+    def test_continuation_nudge_injected_after_tool_result(self):
+        """A 'Continue' user message is injected into history after each tool result."""
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolDefinition, ToolRegistry
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        client = FakeToolCallingLLMClient(
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_config",
+                                "arguments": {"path": "/config/configuration.yaml"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "ok",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        loop = AgentLoop(
+            llm_client=client,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+                notifier=FakeNotifier(approve=True),
+            ),
+            tool_registry=reg,
+            max_tool_calls=5,
+        )
+        asyncio.run(loop.run("Check config"))
+
+        # FakeToolCallingLLMClient stores a reference (not a snapshot) to the messages
+        # list, so calls[0]["messages"] reflects the final state after the run.
+        # Verify a 'Continue' user nudge was injected somewhere in the history.
+        all_messages = client.calls[0]["messages"]
+        nudges = [
+            m
+            for m in all_messages
+            if m.get("role") == "user" and "Continue" in m.get("content", "")
+        ]
+        assert len(nudges) == 1
+
+    def test_content_fallback_clears_content_field(self):
+        """When content fallback fires, the assistant message stored in history has content=''."""
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolDefinition, ToolRegistry
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        client = FakeToolCallingLLMClient(
+            call_sequence=[
+                # Turn 1: tool call embedded in content (qwen2.5-coder quirk)
+                {
+                    "content": '{"name": "read_config", "arguments": {"path": "/config/configuration.yaml"}}'
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "ok",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        loop = AgentLoop(
+            llm_client=client,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+                notifier=FakeNotifier(approve=True),
+            ),
+            tool_registry=reg,
+            max_tool_calls=5,
+        )
+        asyncio.run(loop.run("Check config"))
+
+        # FakeToolCallingLLMClient stores a reference (not a snapshot) to the messages
+        # list, so calls[0]["messages"] reflects the final state after the run.
+        # Find the assistant message produced by the content-fallback path (read_config)
+        # and verify its content field was cleared.
+        all_messages = client.calls[0]["messages"]
+        read_config_assistants = [
+            m
+            for m in all_messages
+            if m.get("role") == "assistant"
+            and m.get("tool_calls")
+            and m["tool_calls"][0]["function"]["name"] == "read_config"
+        ]
+        assert len(read_config_assistants) == 1
+        assert read_config_assistants[0].get("content") == ""
+
+    def test_system_prompt_requires_finish_repair(self):
+        """Default system prompt explicitly mandates finish_repair and prohibits plain text."""
+        from utils.agent_loop import _AGENT_LOOP_SYSTEM_PROMPT
+
+        prompt_lower = _AGENT_LOOP_SYSTEM_PROMPT.lower()
+        assert "finish_repair" in _AGENT_LOOP_SYSTEM_PROMPT
+        assert "mandatory" in prompt_lower or "required" in prompt_lower
+        assert "plain text" in prompt_lower or "never return" in prompt_lower
+
 
 class TestRunRagRefresh:
     def test_calls_both_scrapers(self, tmp_path, monkeypatch, capsys):
