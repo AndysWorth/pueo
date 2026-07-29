@@ -101,6 +101,69 @@ This repo includes a `.claude/settings.json` that configures Claude Code's permi
 
 ---
 
+## Testing
+
+Tests are organized in three tiers. Run from the `pueo/` directory with the virtualenv active.
+
+### Tier 1 — Unit tests (no external services)
+
+```bash
+pytest --cov=./ --cov-fail-under=90 --ignore=tests/integration
+```
+
+Uses `FakeSSHClient` and `FakeLLMClient` throughout — no SSH connection or Ollama required. This is the same command GitHub CI runs on every push and PR.
+
+### Tier 2 — Seam tests (no external services)
+
+```bash
+pytest tests/integration/ -m "not live_ha and not ollama" -v
+```
+
+Verifies cross-module state flows (e.g. manager functions write SQLite → dashboard reads it). No external services needed.
+
+### Tier 3 — Eval tests (requires local Ollama)
+
+Each scenario in `evals/scenarios/` runs through real Ollama inference. Start Ollama first (`ollama serve`), then:
+
+```bash
+pytest tests/integration/ -m ollama -v
+```
+
+Tests are skipped automatically if Ollama is not reachable. Expect a full run to take several minutes.
+
+For the scored report with baseline delta comparison, use the standalone harness:
+
+```bash
+python evals/run_evals.py
+python evals/run_evals.py --scenario 01    # single scenario by name fragment
+python evals/run_evals.py --save-baseline  # overwrite baseline.json
+```
+
+To run seam tests and evals together:
+
+```bash
+pytest tests/integration/ -m "not live_ha" -v
+```
+
+### Live HA smoke tests (requires a real HA instance)
+
+```bash
+HA_HOST=homeassistant.local pytest tests/integration/ -m live_ha -v
+```
+
+Skipped unless `HA_HOST` is set. Read-only SSH commands against a real HA instance.
+
+### GitHub CI
+
+| Workflow | Trigger | What runs |
+|---|---|---|
+| `test.yml` | Every push and PR to `main` | Tier 1 unit tests on Python 3.12, 3.13, 3.14; black, flake8, mypy, bandit, Codecov upload |
+| `evals.yml` | Manual (`workflow_dispatch` only) | Tier 3 evals via `evals/run_evals.py`; never blocks merges |
+
+Tier 2 and Tier 3 tests are never run automatically on GitHub — run them locally on demand.
+
+---
+
 ## 📄 License
 
 Distributed under the **GNU Lesser General Public License v3.0 (LGPL-3.0)**. Downstream modifications must remain entirely free and open-source. Commercial corporate branding or exclusive trademark enforcement of this code under the name "Pueo" is strictly prohibited under our cultural attribution guidelines.

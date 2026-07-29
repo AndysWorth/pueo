@@ -3,8 +3,6 @@ name: Evals (optional)
 # Runs eval scenarios against Ollama if available.
 # Never blocks PR merges — all steps continue-on-error.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
