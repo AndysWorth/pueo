@@ -127,6 +127,7 @@ def main() -> None:
             "  rag-refresh         embed cached HA release notes and HACS changelogs into ChromaDB\n"
             "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
             "  install-service     install Pueo as a macOS launchd service (auto-start at login)\n"
+            "  audit               self-diagnostics: gap report saved to audits/\n"
         ),
     )
     parser.add_argument(
@@ -152,6 +153,7 @@ def main() -> None:
             "rag-refresh",
             "dashboard",
             "install-service",
+            "audit",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -245,6 +247,12 @@ def main() -> None:
         )
         print("Pueo service installed → com.pueo.agent")
         print(f"Dashboard → http://127.0.0.1:{os.environ.get('DASHBOARD_PORT', 8080)}")
+    elif args.mode == "audit":
+        import ha_agent_advanced
+        from utils.audit import main_audit
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(main_audit())
 
 
 if __name__ == "__main__":

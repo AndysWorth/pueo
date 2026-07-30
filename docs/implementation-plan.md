@@ -83,7 +83,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 61   | Configuration editor: settings tab; live-apply for runtime params; config.yaml write; restart prompt for connection params | ✅ Done (2026-07-30) |
 | 62   | Loop control from dashboard: pause/resume/run-now per loop via POST endpoints | ✅ Done (2026-07-30) |
 | 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ✅ Done (2026-07-30) |
-| 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ☐ TODO |
+| 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ✅ Done (2026-07-30) |
 | 65   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
 | 66   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
 | 67   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
@@ -284,7 +284,7 @@ Items 53–54. Makes regressions visible: unit tests verify code correctness, ev
 
 ---
 
-### Phase 17 — Supervisor + Active Dashboard (10 items)
+### Phase 17 — Supervisor + Active Dashboard (10 items) ✅ Complete (2026-07-30)
 Items 55–64. Replaces the collection of disconnected one-shot and daemon commands with a
 single `python main.py` supervisor process. All monitoring loops run as asyncio tasks
 alongside the FastAPI dashboard. The dashboard becomes the face of Pueo: real-time status
