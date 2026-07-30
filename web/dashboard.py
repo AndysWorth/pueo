@@ -41,6 +41,7 @@ class HITLRequest(BaseModel):
     sent_at: int
     status: str
     elapsed_seconds: int
+    in_progress: bool = False
 
     @field_validator("status")
     @classmethod
@@ -78,6 +79,7 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
                     sent_at=sent_at,
                     status=status,
                     elapsed_seconds=now - sent_at,
+                    in_progress=(watch_dir / f"{nid}.in_progress").exists(),
                 )
             )
         except Exception:  # nosec B112 — intentionally skip malformed JSON
@@ -107,14 +109,57 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
-async def _execute_queued_update_stub(
+async def _execute_queued_update(
     nid: str,
     data: dict,
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Stub for update executor — replaced in full by item 57."""
-    (watch_dir / f"{nid}.approved").touch()
+    """Run the update pipeline for a HITL-approved update card."""
+    import config as _config
+    from ha_update_manager import execute_update
+    from utils.autonomy import AutonomyGate
+    from utils.ha_rest_client import UpdateStatus
+    from utils.notify import get_notifier
+    from utils.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        payload = data.get("payload", {})
+        component = payload.get("component", "")
+        latest_version = payload.get("latest_version", "")
+        update = UpdateStatus(
+            component=component,
+            entity_id=f"update.{component}",
+            installed_version=payload.get("installed_version", ""),
+            latest_version=latest_version,
+            update_available=True,
+            release_url=payload.get("release_url"),
+            release_summary=payload.get("release_summary"),
+            in_progress=False,
+        )
+        ssh = AsyncSSHClient()
+        gate = AutonomyGate(_config.AUTONOMY_LEVEL)
+        notifier = get_notifier(
+            _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+        )
+        success = await execute_update(update, ssh, notifier, gate)
+        if success:
+            data["fix_applied"] = True
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+        else:
+            data["fix_error"] = (
+                f"Update of {component} to {latest_version} did not complete successfully"
+            )
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
 async def _execute_netalertx_heal_stub(
@@ -141,7 +186,7 @@ _CARD_DISPATCH: dict[
     str,
     Any,
 ] = {
-    CARD_TYPE_UPDATE: _execute_queued_update_stub,
+    CARD_TYPE_UPDATE: _execute_queued_update,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal_stub,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action_stub,
 }

@@ -1941,19 +1941,26 @@ class TestCardTypeDispatch:
         asyncio.run(dashboard.approve("legacy1"))
         assert "legacy1" in called
 
-    def test_update_card_routes_to_stub_and_creates_approved(
-        self, watch_dir, monkeypatch
-    ):
-        """CARD_TYPE_UPDATE dispatches to the update stub which creates .approved."""
+    def test_update_card_routes_to_execute_queued_update(self, watch_dir, monkeypatch):
+        """CARD_TYPE_UPDATE dispatches to _execute_queued_update."""
+        from utils.card_types import CARD_TYPE_UPDATE
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        called = []
+
+        async def _fake_update(nid, data, json_path, wd):
+            called.append(nid)
+            (wd / f"{nid}.approved").touch()
+
+        monkeypatch.setitem(dashboard._CARD_DISPATCH, CARD_TYPE_UPDATE, _fake_update)
         self._write_card(
             watch_dir,
             "u1",
             {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
         )
         asyncio.run(dashboard.approve("u1"))
+        assert "u1" in called
         assert (watch_dir / "u1.approved").exists()
 
     def test_netalertx_heal_card_routes_to_stub_and_creates_approved(
@@ -2020,3 +2027,231 @@ class TestCardTypeDispatch:
         from utils.card_types import CARD_TYPE_RESOURCE_ACTION
 
         assert CARD_TYPE_RESOURCE_ACTION == "resource_action"
+
+
+# ── _execute_queued_update (item 57) ─────────────────────────────────────────────
+
+
+class TestExecuteQueuedUpdate:
+    """Tests for the real _execute_queued_update() handler."""
+
+    def _write_update_card(self, watch_dir: Path, nid: str) -> Path:
+        import json as _json
+        import time as _time
+
+        data = {
+            "notification_id": nid,
+            "subject": "Update available: core",
+            "body": "Core 2026.7.4 → 2026.7.5",
+            "payload": {
+                "card_type": "update",
+                "component": "core",
+                "installed_version": "2026.7.4",
+                "latest_version": "2026.7.5",
+                "release_url": "https://example.com/release",
+                "release_summary": "Bug fixes",
+            },
+            "sent_at": int(_time.time()) - 30,
+        }
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(_json.dumps(data))
+        return json_path
+
+    def test_success_path_writes_approved_and_fix_applied(self, tmp_path, monkeypatch):
+        """execute_update returns True → .approved created, fix_applied=True in JSON."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_update_manager
+        import utils.ssh_client as ssh_mod
+        import utils.autonomy as autonomy_mod
+        import utils.notify as notify_mod
+        from utils.ssh_client import FakeSSHClient
+
+        nid = "upd-ok-1"
+        json_path = self._write_update_card(tmp_path, nid)
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        fake_notifier = notify_mod.FakeNotifier(approve=True)
+        monkeypatch.setattr(notify_mod, "get_notifier", lambda *a, **kw: fake_notifier)
+        monkeypatch.setattr(
+            ha_update_manager, "execute_update", _make_async_return(True)
+        )
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_queued_update(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+
+    def test_failure_path_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
+        """execute_update returns False → .rejected created, fix_error in JSON."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_update_manager
+        import utils.ssh_client as ssh_mod
+        import utils.autonomy as autonomy_mod
+        import utils.notify as notify_mod
+        from utils.ssh_client import FakeSSHClient
+
+        nid = "upd-fail-1"
+        json_path = self._write_update_card(tmp_path, nid)
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod,
+            "get_notifier",
+            lambda *a, **kw: notify_mod.FakeNotifier(approve=False),
+        )
+        monkeypatch.setattr(
+            ha_update_manager, "execute_update", _make_async_return(False)
+        )
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_queued_update(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+        assert "core" in saved["fix_error"]
+
+    def test_exception_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
+        """Exception during execute_update → .rejected, fix_error set, no in_progress."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_update_manager
+        import utils.ssh_client as ssh_mod
+        import utils.autonomy as autonomy_mod
+        import utils.notify as notify_mod
+        from utils.ssh_client import FakeSSHClient
+
+        nid = "upd-exc-1"
+        json_path = self._write_update_card(tmp_path, nid)
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod,
+            "get_notifier",
+            lambda *a, **kw: notify_mod.FakeNotifier(approve=False),
+        )
+
+        async def _raise(*a, **kw):
+            raise RuntimeError("SSH timeout")
+
+        monkeypatch.setattr(ha_update_manager, "execute_update", _raise)
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_queued_update(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "SSH timeout" in saved["fix_error"]
+
+    def test_in_progress_file_removed_on_success(self, tmp_path, monkeypatch):
+        """in_progress sentinel is cleaned up even on success."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_update_manager
+        import utils.ssh_client as ssh_mod
+        import utils.autonomy as autonomy_mod
+        import utils.notify as notify_mod
+        from utils.ssh_client import FakeSSHClient
+
+        nid = "upd-cleanup-1"
+        json_path = self._write_update_card(tmp_path, nid)
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod,
+            "get_notifier",
+            lambda *a, **kw: notify_mod.FakeNotifier(approve=True),
+        )
+        monkeypatch.setattr(
+            ha_update_manager, "execute_update", _make_async_return(True)
+        )
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_queued_update(nid, data, json_path, tmp_path))
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+
+    def test_in_progress_state_shows_spinner_in_template(self, tmp_path, monkeypatch):
+        """A card with .in_progress file shows spinner, not Approve/Reject buttons."""
+        import json as _json
+        import time as _time
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd-spin-1"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update: core",
+                    "body": "Update in progress",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "core",
+                        "latest_version": "2026.7.5",
+                    },
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "spinner" in html
+        assert "Action in progress" in html
+        assert "Approve" not in html
+
+    def test_pending_card_without_in_progress_shows_buttons(
+        self, tmp_path, monkeypatch
+    ):
+        """A PENDING card with no .in_progress file still shows Approve/Reject."""
+        import json as _json
+        import time as _time
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        nid = "upd-btn-1"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Update: core",
+                    "body": "Core 2026.7.5 available",
+                    "payload": {
+                        "card_type": "update",
+                        "component": "core",
+                        "latest_version": "2026.7.5",
+                    },
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Approve" in html
+        assert "Action in progress" not in html

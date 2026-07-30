@@ -103,7 +103,10 @@
     </details>
     {% if r.status == "PENDING" %}
     <div class="actions">
-      {% if r.payload.get("is_notification_card") %}
+      {% if r.in_progress %}
+      <span class="spinner" aria-label="In progress"></span>
+      <em class="in-progress-label">Action in progress&hellip;</em>
+      {% elif r.payload.get("is_notification_card") %}
       <form method="POST" action="/dismiss-notification/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Dismiss in HA</button>
       </form>

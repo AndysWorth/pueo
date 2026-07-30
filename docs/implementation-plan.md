@@ -292,18 +292,18 @@ overview, live event timeline, configuration editor, loop control, and direct ex
 HITL-approved actions. A launchd plist keeps Pueo alive across reboots. Prerequisite:
 Phase 16 (Evals) complete.
 
-| Items | Concern |
-|-------|---------|
-| 55 | Supervisor process: LoopSupervisor with asyncio task launcher, health tracking, backoff restart |
-| 56 | Card-type dispatch: utils/card_types.py; card_type on all HITL cards; dispatch table in approve() |
-| 57 | Update executor in dashboard; refactor execute_update() as standalone callable |
-| 58 | NetAlertX + resource action executors; in-progress spinner state |
-| 59 | Dashboard overview tab: loop health rows, HA state card, resource gauges; SSE /events |
-| 60 | Live event timeline: timeline_events DB table (migration v6); drill-down detail view |
-| 61 | Configuration editor: settings tab; live-apply runtime params; write config.yaml |
-| 62 | Loop control from dashboard: pause/resume/run-now per loop |
-| 63 | launchd service: plist template; setup.sh install step; dashboard service controls |
-| 64 | --mode audit: Pueo self-diagnostics report saved to audits/ |
+| Items | Concern                                                                                           |
+| ----- | ------------------------------------------------------------------------------------------------- |
+| 55    | Supervisor process: LoopSupervisor with asyncio task launcher, health tracking, backoff restart   |
+| 56    | Card-type dispatch: utils/card_types.py; card_type on all HITL cards; dispatch table in approve() |
+| 57    | Update executor in dashboard; refactor execute_update() as standalone callable                    |
+| 58    | NetAlertX + resource action executors; in-progress spinner state                                  |
+| 59    | Dashboard overview tab: loop health rows, HA state card, resource gauges; SSE /events             |
+| 60    | Live event timeline: timeline_events DB table (migration v6); drill-down detail view              |
+| 61    | Configuration editor: settings tab; live-apply runtime params; write config.yaml                  |
+| 62    | Loop control from dashboard: pause/resume/run-now per loop                                        |
+| 63    | launchd service: plist template; setup.sh install step; dashboard service controls                |
+| 64    | --mode audit: Pueo self-diagnostics report saved to audits/                                       |
 
 → [plan/supervisor.md](plan/supervisor.md)
 
