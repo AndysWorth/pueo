@@ -3019,3 +3019,290 @@ class TestTimelineRoutes:
                 "SELECT level, source FROM timeline_events WHERE level='CRITICAL'"
             ).fetchall()
         assert any(r[1] == "resource" for r in rows)
+
+
+# ── Configuration editor (item 61) ───────────────────────────────────────────
+
+
+class TestConfigEditor:
+    """Tests for GET /settings and POST /config endpoints."""
+
+    @pytest.fixture()
+    def cfg_path(self, tmp_path, monkeypatch):
+        """Point config._config_path at a fresh temp file for each test."""
+        import config as _config
+
+        p = tmp_path / "config.yaml"
+        monkeypatch.setattr(_config, "_config_path", p)
+        return p
+
+    def test_settings_route_returns_200(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/settings")
+        assert response.status_code == 200
+
+    def test_settings_renders_all_groups(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        for group_name in (
+            "Autonomy",
+            "Monitoring intervals",
+            "Thresholds",
+            "Notifications",
+            "HA Connection",
+        ):
+            assert (
+                group_name in html
+            ), f"group '{group_name}' missing from settings page"
+
+    def test_settings_shows_autonomy_level_param(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "autonomy_level" in html
+        assert "ha_host" in html
+
+    def test_settings_nav_link_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert 'href="/settings"' in html
+
+    def test_valid_int_update_writes_config_yaml(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "autonomy_level", "value": "3"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["restart_required"] is False
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["autonomy_level"] == 3
+
+    def test_valid_int_update_sets_module_attr(self, cfg_path, tmp_path, monkeypatch):
+        import config as _config
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/config", json={"key": "autonomy_level", "value": "4"})
+        assert _config.AUTONOMY_LEVEL == 4
+
+    def test_valid_float_update(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "log_confidence_threshold", "value": "0.85"}
+        )
+        assert response.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert abs(cfg["agent"]["log_confidence_threshold"] - 0.85) < 1e-9
+
+    def test_valid_bool_update_true(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "self_healing_enabled", "value": "true"}
+        )
+        assert response.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["self_healing_enabled"] is True
+
+    def test_valid_bool_update_false(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "hitl_always", "value": "false"})
+        assert response.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["hitl_always"] is False
+
+    def test_valid_string_update(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "notify_url", "value": "https://ntfy.sh/my-topic"}
+        )
+        assert response.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["notify_url"] == "https://ntfy.sh/my-topic"
+
+    def test_connection_param_returns_restart_required(
+        self, cfg_path, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "ha_host", "value": "192.168.1.10"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["restart_required"] is True
+
+    def test_runtime_param_returns_no_restart(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "max_repairs_per_hour", "value": "5"}
+        )
+        assert response.status_code == 200
+        assert response.json()["restart_required"] is False
+
+    def test_unknown_key_returns_400(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "does_not_exist", "value": "1"})
+        assert response.status_code == 400
+
+    def test_below_min_returns_400(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "autonomy_level", "value": "0"})
+        assert response.status_code == 400
+
+    def test_above_max_returns_400(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "autonomy_level", "value": "5"})
+        assert response.status_code == 400
+
+    def test_invalid_int_value_returns_400(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "autonomy_level", "value": "notanumber"}
+        )
+        assert response.status_code == 400
+
+    def test_invalid_option_returns_400(self, cfg_path, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "notifier", "value": "telegram"})
+        assert response.status_code == 400
+
+    def test_valid_option_accepted(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/config", json={"key": "notifier", "value": "ntfy"})
+        assert response.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["notifier"] == "ntfy"
+
+    def test_existing_yaml_keys_preserved(self, cfg_path, tmp_path, monkeypatch):
+        """Writing one key must not erase sibling keys in config.yaml."""
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        cfg_path.write_text(
+            yaml.dump({"agent": {"autonomy_level": 2, "log_level": "DEBUG"}})
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/config", json={"key": "autonomy_level", "value": "3"})
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["autonomy_level"] == 3
+        assert cfg["agent"]["log_level"] == "DEBUG"
+
+    def test_ha_connection_section_written_correctly(
+        self, cfg_path, tmp_path, monkeypatch
+    ):
+        """ha_host writes into home_assistant section, not agent section."""
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/config", json={"key": "ha_host", "value": "10.0.0.5"})
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["home_assistant"]["host"] == "10.0.0.5"
+        assert "agent" not in cfg  # no contamination
+
+    def test_config_update_model_valid(self):
+        from web.dashboard import ConfigUpdateRequest
+
+        req = ConfigUpdateRequest(key="autonomy_level", value="3")
+        assert req.key == "autonomy_level"
+        assert req.value == "3"
+
+    def test_config_update_model_missing_field_raises(self):
+        from pydantic import ValidationError
+        from web.dashboard import ConfigUpdateRequest
+
+        with pytest.raises(ValidationError):
+            ConfigUpdateRequest(key="autonomy_level")  # type: ignore[call-arg]
+
+    def test_editable_params_all_have_required_keys(self):
+        from web.dashboard import _EDITABLE_PARAMS
+
+        required = {
+            "yaml_section",
+            "yaml_key",
+            "config_attr",
+            "val_type",
+            "description",
+            "group",
+        }
+        for name, spec in _EDITABLE_PARAMS.items():
+            missing = required - spec.keys()
+            assert not missing, f"{name} missing keys: {missing}"

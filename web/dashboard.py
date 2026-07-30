@@ -8,8 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
@@ -32,6 +37,168 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["epoch_to_iso"] = lambda ts: (
     datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
 )
+
+
+class ConfigUpdateRequest(BaseModel):
+    key: str
+    value: str
+
+
+_EDITABLE_PARAMS: dict[str, dict] = {
+    # ── Autonomy ──────────────────────────────────────────────────────────────
+    "autonomy_level": {
+        "yaml_section": "agent",
+        "yaml_key": "autonomy_level",
+        "config_attr": "AUTONOMY_LEVEL",
+        "val_type": "int",
+        "description": "1 = report only · 2 = suggest + approve all · 3 = auto LOW, approve rest · 4 = auto LOW/MED/HIGH, approve CRITICAL",
+        "group": "Autonomy",
+        "restart_required": False,
+        "min_val": 1,
+        "max_val": 4,
+    },
+    "self_healing_enabled": {
+        "yaml_section": "agent",
+        "yaml_key": "self_healing_enabled",
+        "config_attr": "SELF_HEALING_ENABLED",
+        "val_type": "bool",
+        "description": "Master switch — disabling stops all autonomous repair actions",
+        "group": "Autonomy",
+        "restart_required": False,
+    },
+    "hitl_always": {
+        "yaml_section": "agent",
+        "yaml_key": "hitl_always",
+        "config_attr": "HITL_ALWAYS",
+        "val_type": "bool",
+        "description": "Force HITL approval for every action regardless of autonomy level",
+        "group": "Autonomy",
+        "restart_required": False,
+    },
+    # ── Monitoring intervals ──────────────────────────────────────────────────
+    "resource_poll_interval_seconds": {
+        "yaml_section": "agent",
+        "yaml_key": "resource_poll_interval_seconds",
+        "config_attr": "RESOURCE_POLL_INTERVAL_SECONDS",
+        "val_type": "float",
+        "description": "How often to check HA disk and memory (seconds; 0 = disabled)",
+        "group": "Monitoring intervals",
+        "restart_required": False,
+        "min_val": 0,
+    },
+    "update_check_interval_hours": {
+        "yaml_section": "agent",
+        "yaml_key": "update_check_interval_hours",
+        "config_attr": "HA_UPDATE_CHECK_INTERVAL_HOURS",
+        "val_type": "float",
+        "description": "How often to check for HA updates (hours; 0 = disabled)",
+        "group": "Monitoring intervals",
+        "restart_required": False,
+        "min_val": 0,
+    },
+    "notification_poll_interval_minutes": {
+        "yaml_section": "agent",
+        "yaml_key": "notification_poll_interval_minutes",
+        "config_attr": "HA_NOTIFICATION_POLL_INTERVAL_MINUTES",
+        "val_type": "float",
+        "description": "How often to poll HA persistent notifications (minutes; 0 = disabled)",
+        "group": "Monitoring intervals",
+        "restart_required": False,
+        "min_val": 0,
+    },
+    # ── Thresholds ────────────────────────────────────────────────────────────
+    "log_confidence_threshold": {
+        "yaml_section": "agent",
+        "yaml_key": "log_confidence_threshold",
+        "config_attr": "CONFIDENCE_THRESHOLD",
+        "val_type": "float",
+        "description": "Minimum LLM confidence score to treat a log line as actionable (0.0–1.0)",
+        "group": "Thresholds",
+        "restart_required": False,
+        "min_val": 0.0,
+        "max_val": 1.0,
+    },
+    "ha_disk_warn_gb": {
+        "yaml_section": "agent",
+        "yaml_key": "ha_disk_warn_gb",
+        "config_attr": "HA_DISK_WARN_GB",
+        "val_type": "float",
+        "description": "HA disk free threshold for WARN alert (GB)",
+        "group": "Thresholds",
+        "restart_required": False,
+        "min_val": 0,
+    },
+    "ha_disk_critical_gb": {
+        "yaml_section": "agent",
+        "yaml_key": "ha_disk_critical_gb",
+        "config_attr": "HA_DISK_CRITICAL_GB",
+        "val_type": "float",
+        "description": "HA disk free threshold for CRITICAL alert — backups blocked below this (GB)",
+        "group": "Thresholds",
+        "restart_required": False,
+        "min_val": 0,
+    },
+    "max_repairs_per_hour": {
+        "yaml_section": "agent",
+        "yaml_key": "max_repairs_per_hour",
+        "config_attr": "MAX_REPAIRS_PER_HOUR",
+        "val_type": "int",
+        "description": "Maximum repair actions allowed per rolling hour",
+        "group": "Thresholds",
+        "restart_required": False,
+        "min_val": 1,
+    },
+    # ── Notifications ─────────────────────────────────────────────────────────
+    "notifier": {
+        "yaml_section": "agent",
+        "yaml_key": "notifier",
+        "config_attr": "NOTIFIER",
+        "val_type": "str",
+        "description": "HITL delivery method",
+        "group": "Notifications",
+        "restart_required": False,
+        "options": ["file", "ntfy", "webhook"],
+    },
+    "notify_url": {
+        "yaml_section": "agent",
+        "yaml_key": "notify_url",
+        "config_attr": "NOTIFY_URL",
+        "val_type": "str",
+        "description": "ntfy topic URL or webhook endpoint (leave blank for file notifier)",
+        "group": "Notifications",
+        "restart_required": False,
+    },
+    # ── HA Connection (restart required) ──────────────────────────────────────
+    "ha_host": {
+        "yaml_section": "home_assistant",
+        "yaml_key": "host",
+        "config_attr": "HA_HOST",
+        "val_type": "str",
+        "description": "Home Assistant hostname or IP address",
+        "group": "HA Connection",
+        "restart_required": True,
+    },
+    "ha_user": {
+        "yaml_section": "home_assistant",
+        "yaml_key": "user",
+        "config_attr": "HA_USER",
+        "val_type": "str",
+        "description": "SSH user on the HA host",
+        "group": "HA Connection",
+        "restart_required": True,
+    },
+    "ha_api_port": {
+        "yaml_section": "home_assistant",
+        "yaml_key": "api_port",
+        "config_attr": "HA_API_PORT",
+        "val_type": "int",
+        "description": "HA REST API port",
+        "group": "HA Connection",
+        "restart_required": True,
+        "min_val": 1,
+        "max_val": 65535,
+    },
+}
 
 
 class HITLRequest(BaseModel):
@@ -735,6 +902,105 @@ async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
         request,
         "timeline_detail.html",
         {"event": event},
+    )
+
+
+def _build_settings_groups() -> list[dict]:
+    """Return params grouped for rendering, with current config values attached."""
+    import config as _config
+
+    groups: dict[str, list[dict]] = {}
+    for key, spec in _EDITABLE_PARAMS.items():
+        group = spec["group"]
+        if group not in groups:
+            groups[group] = []
+        groups[group].append(
+            {
+                "key": key,
+                "value": getattr(_config, spec["config_attr"], ""),
+                **spec,
+            }
+        )
+    return [{"name": name, "params": params} for name, params in groups.items()]
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_tab(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {"groups": _build_settings_groups()},
+    )
+
+
+@app.post("/config")
+async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
+    import config as _config
+    import yaml as _yaml
+
+    spec = _EDITABLE_PARAMS.get(req.key)
+    if not spec:
+        raise HTTPException(status_code=400, detail=f"Unknown config key: {req.key!r}")
+
+    # Cast and validate value
+    try:
+        val_type = spec["val_type"]
+        if val_type == "int":
+            value: Any = int(req.value)
+        elif val_type == "float":
+            value = float(req.value)
+        elif val_type == "bool":
+            value = req.value.lower() in ("true", "1", "yes", "on")
+        else:
+            value = str(req.value)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid value for {req.key}: {exc}"
+        )
+
+    if spec.get("min_val") is not None and value < spec["min_val"]:
+        raise HTTPException(
+            status_code=400, detail=f"{req.key} must be >= {spec['min_val']}"
+        )
+    if spec.get("max_val") is not None and value > spec["max_val"]:
+        raise HTTPException(
+            status_code=400, detail=f"{req.key} must be <= {spec['max_val']}"
+        )
+    if spec.get("options") and str(value) not in spec["options"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.key} must be one of {spec['options']}",
+        )
+
+    # Read → update → write config.yaml
+    cfg_path = _config._config_path
+    cfg: dict = {}
+    if cfg_path.exists():
+        cfg = _yaml.safe_load(cfg_path.read_text()) or {}
+
+    section = spec["yaml_section"]
+    if section not in cfg or not isinstance(cfg[section], dict):
+        cfg[section] = {}
+    cfg[section][spec["yaml_key"]] = value
+    cfg_path.write_text(_yaml.dump(cfg, default_flow_style=False, allow_unicode=True))
+
+    # Update in-memory module attribute (runtime params take effect immediately)
+    setattr(_config, spec["config_attr"], value)
+
+    # Emit SSE event so the browser can flash a confirmation
+    try:
+        from utils.supervisor import publish_event
+
+        publish_event(
+            {"event_type": "config_saved", "key": req.key, "new_value": value}
+        )
+    except (
+        Exception
+    ):  # nosec B110 — SSE bus may not be running in one-shot mode  # pragma: no cover
+        pass  # pragma: no cover
+
+    return JSONResponse(
+        {"ok": True, "restart_required": spec.get("restart_required", False)}
     )
 
 
