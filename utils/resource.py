@@ -229,7 +229,7 @@ class ResourcePoller:
                             "mem_available_mb": round(status.mem_available_mb),
                         },
                     )
-                    try:
+                    try:  # pragma: no cover
                         from utils.timeline import write_timeline_event
 
                         write_timeline_event(

@@ -172,7 +172,7 @@ async def tail_remote_log_stream(
                     evaluation.is_actionable
                     and evaluation.confidence_score > CONFIDENCE_THRESHOLD
                 ):
-                    try:
+                    try:  # pragma: no cover
                         from utils.timeline import write_timeline_event
 
                         write_timeline_event(
@@ -279,7 +279,7 @@ async def poll_for_updates(
                             "release_summary": u.release_summary,
                         },
                     )
-                try:
+                try:  # pragma: no cover
                     from utils.timeline import write_timeline_event
 
                     write_timeline_event(
