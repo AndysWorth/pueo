@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .settings-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; max-width: 720px; }
+  .group-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: #888; margin-bottom: 0.75rem; }
+  .param-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem;
+    align-items: start; padding: 0.6rem 0; border-bottom: 1px solid #f0f0f0; }
+  .param-row:last-child { border-bottom: none; }
+  .param-label { font-size: 0.88rem; font-weight: 600; color: #222; margin-bottom: 0.15rem; }
+  .param-desc { font-size: 0.77rem; color: #888; margin-bottom: 0.35rem; line-height: 1.4; }
+  .param-input-wrap { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  input[type="number"], input[type="text"], select {
+    font-size: 0.85rem; padding: 0.3rem 0.55rem; border: 1px solid #ccc;
+    border-radius: 4px; min-width: 120px; }
+  input[type="range"] { min-width: 140px; }
+  .range-val { font-size: 0.82rem; font-weight: 700; color: #333; min-width: 1.5rem; text-align: center; }
+  .toggle-wrap { display: flex; align-items: center; gap: 0.4rem; }
+  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background: #ccc; border-radius: 22px; transition: 0.25s; }
+  .toggle-slider:before { position: absolute; content: ""; height: 16px; width: 16px;
+    left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.25s; }
+  .toggle input:checked + .toggle-slider { background: #28a745; }
+  .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+  .btn-save { padding: 0.3rem 0.85rem; font-size: 0.82rem; border: none; border-radius: 4px;
+    background: #6366f1; color: #fff; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  .btn-save:hover { background: #4f46e5; }
+  .save-status { font-size: 0.78rem; font-weight: 600; min-width: 4rem; }
+  .save-ok   { color: #28a745; }
+  .save-err  { color: #dc3545; }
+  .restart-banner { display: none; background: #fff3cd; border: 1px solid #ffc107;
+    border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.82rem; color: #856404;
+    margin-top: 1rem; }
+  .restart-badge { font-size: 0.65rem; font-weight: 700; background: #fef3c7; color: #92400e;
+    border: 1px solid #f59e0b; border-radius: 3px; padding: 0.1rem 0.35rem;
+    text-transform: uppercase; letter-spacing: 0.05em; vertical-align: middle; margin-left: 0.35rem; }
+</style>
+
+<div class="settings-grid">
+  {% for group in groups %}
+  <div class="card">
+    <div class="group-title">
+      {{ group.name }}
+      {% if group.name == "HA Connection" %}
+      <span class="restart-badge">restart required</span>
+      {% endif %}
+    </div>
+    {% for p in group.params %}
+    <div class="param-row">
+      <div>
+        <div class="param-label">{{ p.key }}</div>
+        <div class="param-desc">{{ p.description }}</div>
+        <div class="param-input-wrap">
+          {% if p.val_type == "bool" %}
+          <label class="toggle">
+            <input type="checkbox" id="input-{{ p.key }}"
+              {% if p.value %}checked{% endif %}
+              onchange="saveParam('{{ p.key }}', this.checked ? 'true' : 'false')">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-wrap" style="font-size:0.82rem;color:#666;">
+            <span id="toggle-label-{{ p.key }}">{{ "On" if p.value else "Off" }}</span>
+          </span>
+          {% elif p.key == "autonomy_level" %}
+          <input type="range" id="input-{{ p.key }}"
+            min="{{ p.min_val | int }}" max="{{ p.max_val | int }}"
+            value="{{ p.value }}"
+            oninput="document.getElementById('range-val-{{ p.key }}').textContent = this.value">
+          <span class="range-val" id="range-val-{{ p.key }}">{{ p.value }}</span>
+          <button class="btn-save" onclick="saveParam('{{ p.key }}', document.getElementById('input-{{ p.key }}').value)">Save</button>
+          {% elif p.options %}
+          <select id="input-{{ p.key }}">
+            {% for opt in p.options %}
+            <option value="{{ opt }}" {% if p.value == opt %}selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn-save" onclick="saveParam('{{ p.key }}', document.getElementById('input-{{ p.key }}').value)">Save</button>
+          {% elif p.val_type in ("int", "float") %}
+          <input type="number" id="input-{{ p.key }}"
+            value="{{ p.value }}"
+            {% if p.min_val is not none %}min="{{ p.min_val }}"{% endif %}
+            {% if p.max_val is not none %}max="{{ p.max_val }}"{% endif %}
+            {% if p.val_type == "float" %}step="any"{% endif %}
+            style="width:130px;">
+          <button class="btn-save" onclick="saveParam('{{ p.key }}', document.getElementById('input-{{ p.key }}').value)">Save</button>
+          {% else %}
+          <input type="text" id="input-{{ p.key }}"
+            value="{{ p.value }}"
+            style="min-width:220px;">
+          <button class="btn-save" onclick="saveParam('{{ p.key }}', document.getElementById('input-{{ p.key }}').value)">Save</button>
+          {% endif %}
+          <span class="save-status" id="status-{{ p.key }}"></span>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="restart-banner" id="restart-banner">
+  Restart required — connection parameter changed. Restart Pueo for changes to take effect.
+</div>
+
+<script>
+(function () {
+  function saveParam(key, value) {
+    var statusEl = document.getElementById('status-' + key);
+    if (statusEl) { statusEl.textContent = '…'; statusEl.className = 'save-status'; }
+
+    var toggleLabel = document.getElementById('toggle-label-' + key);
+    if (toggleLabel) {
+      toggleLabel.textContent = (value === 'true') ? 'On' : 'Off';
+    }
+
+    fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key, value: String(value) }),
+    })
+    .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+    .then(function (res) {
+      if (!res.ok) {
+        if (statusEl) { statusEl.textContent = res.data.detail || 'error'; statusEl.className = 'save-status save-err'; }
+        return;
+      }
+      if (statusEl) { statusEl.textContent = '✓ saved'; statusEl.className = 'save-status save-ok'; }
+      setTimeout(function () {
+        if (statusEl) { statusEl.textContent = ''; }
+      }, 3000);
+      if (res.data.restart_required) {
+        document.getElementById('restart-banner').style.display = 'block';
+      }
+    })
+    .catch(function () {
+      if (statusEl) { statusEl.textContent = 'error'; statusEl.className = 'save-status save-err'; }
+    });
+  }
+
+  // Expose to inline onclick handlers
+  window.saveParam = saveParam;
+
+  // SSE: flash confirmation when config_saved event arrives
+  if (window.EventSource) {
+    var es = new EventSource('/events');
+    es.onmessage = function (e) {
+      try {
+        var evt = JSON.parse(e.data);
+        if (evt.event_type === 'config_saved') {
+          var statusEl = document.getElementById('status-' + evt.key);
+          if (statusEl && !statusEl.textContent) {
+            statusEl.textContent = '✓ synced';
+            statusEl.className = 'save-status save-ok';
+            setTimeout(function () { statusEl.textContent = ''; }, 2000);
+          }
+        }
+      } catch (_) {}
+    };
+    es.onerror = function () {};
+  }
+})();
+</script>
+{% endblock %}
