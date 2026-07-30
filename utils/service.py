@@ -90,6 +90,26 @@ def restart_service() -> None:
     subprocess.run(["launchctl", "stop", PLIST_LABEL], check=True)  # nosec
 
 
+def stop_service() -> None:
+    """Unload the service without removing the plist; suppresses KeepAlive restart."""
+    if sys.platform != "darwin":  # pragma: no cover
+        raise RuntimeError("launchd service management is macOS only")
+    subprocess.run(  # nosec — launchctl is a fixed macOS system binary
+        ["launchctl", "unload", "-w", str(PLIST_TARGET)],
+        check=False,
+    )
+
+
+def start_service() -> None:
+    """Load (re-enable) the service from the existing plist."""
+    if sys.platform != "darwin":  # pragma: no cover
+        raise RuntimeError("launchd service management is macOS only")
+    subprocess.run(  # nosec — launchctl is a fixed macOS system binary
+        ["launchctl", "load", "-w", str(PLIST_TARGET)],
+        check=True,
+    )
+
+
 def uninstall_service() -> None:
     """Unload the launchd service and remove the plist file."""
     if sys.platform != "darwin":  # pragma: no cover
