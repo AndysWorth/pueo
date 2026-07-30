@@ -1,6 +1,6 @@
 """macOS launchd service management for the Pueo supervisor daemon."""
 
-import subprocess
+import subprocess  # nosec B404 — launchctl is a fixed macOS system binary, no user input
 import sys
 from pathlib import Path
 
@@ -27,7 +27,7 @@ def service_status() -> dict:
         return {"loaded": False, "running": False, "pid": None, "error": "macOS only"}
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec — launchctl is a fixed macOS system binary
             ["launchctl", "list", PLIST_LABEL],
             capture_output=True,
             text=True,
@@ -77,7 +77,7 @@ def install_service(
     PLIST_TARGET.parent.mkdir(parents=True, exist_ok=True)
     PLIST_TARGET.write_text(rendered)
 
-    subprocess.run(
+    subprocess.run(  # nosec — launchctl is a fixed macOS system binary
         ["launchctl", "load", "-w", str(PLIST_TARGET)],
         check=True,
     )
@@ -87,7 +87,7 @@ def restart_service() -> None:
     """Stop the service; KeepAlive causes launchd to restart it automatically."""
     if sys.platform != "darwin":  # pragma: no cover
         raise RuntimeError("launchd service management is macOS only")
-    subprocess.run(["launchctl", "stop", PLIST_LABEL], check=True)
+    subprocess.run(["launchctl", "stop", PLIST_LABEL], check=True)  # nosec
 
 
 def uninstall_service() -> None:
@@ -95,7 +95,7 @@ def uninstall_service() -> None:
     if sys.platform != "darwin":  # pragma: no cover
         raise RuntimeError("launchd service management is macOS only")
     if PLIST_TARGET.exists():
-        subprocess.run(
+        subprocess.run(  # nosec — launchctl is a fixed macOS system binary
             ["launchctl", "unload", "-w", str(PLIST_TARGET)],
             check=False,
         )
