@@ -283,6 +283,15 @@ if $WRITE_CONFIG; then
 
     echo
     echo "  ── NetAlertX ──────────────────────────────────────────────────"
+    echo "  NetAlertX is a network-presence monitor that Pueo can install"
+    echo "  and manage automatically once the Pueo supervisor is running."
+    echo "  If you say yes, Pueo will install and configure it on first start."
+    echo "  You can change this later by editing netalertx.setup_desired in config.yaml."
+    echo
+    read -rp "  Set up NetAlertX automatically when Pueo runs? [Y/n]: " nax_setup_ans
+    NAX_SETUP_DESIRED=false
+    [[ "${nax_setup_ans:-Y}" =~ ^[Yy] ]] && NAX_SETUP_DESIRED=true
+    echo
     echo "  Provide an API token to enable REST API calls from Pueo."
     echo "  All other values default to your HA SSH settings."
     echo
@@ -332,6 +341,7 @@ ollama:
   endpoint: "http://localhost:11434"
 
 netalertx:
+  setup_desired: ${NAX_SETUP_DESIRED}
   api_token: "${NAX_API_TOKEN}"
   # Advanced tuning — edit config.yaml directly to override these defaults:
   # deployment: auto          # auto | addon | docker
@@ -386,42 +396,12 @@ fi
 # ── 5. NetAlertX ──────────────────────────────────────────────────────────────────
 hdr "5. NetAlertX"
 
-# Read db_path from config.yaml; fall back to default
-DB_PATH=$(grep -E '^\s+db_path:' config.yaml 2>/dev/null | awk '{print $2}' | tr -d '"')
-[[ -z "$DB_PATH" ]] && DB_PATH="ha_agent_state.db"
-
-# Check installer state via Python sqlite3 (guaranteed available in .venv)
-NAX_STATE=$(.venv/bin/python -c "
-import sqlite3, os
-db = '${DB_PATH}'
-if not os.path.exists(db):
-    print('NOT_INSTALLED')
-else:
-    try:
-        with sqlite3.connect(db) as c:
-            row = c.execute(
-                'SELECT state FROM netalertx_install_state WHERE id=1'
-            ).fetchone()
-            print(row[0] if row else 'NOT_INSTALLED')
-    except Exception:
-        print('NOT_INSTALLED')
-" 2>/dev/null || echo "NOT_INSTALLED")
-
-if [[ "$NAX_STATE" == "FULLY_OPERATIONAL" ]]; then
-    ok "NetAlertX is already fully set up"
+if [[ "$NAX_SETUP_DESIRED" == "true" ]]; then
+    ok "NetAlertX will be installed and configured automatically when Pueo starts."
+    info "Approve the HITL cards that appear on the dashboard to proceed through each setup step."
 else
-    if [[ "$NAX_STATE" == "NOT_INSTALLED" ]]; then
-        info "NetAlertX has not been set up yet."
-    else
-        info "NetAlertX installer is partially complete (state: ${NAX_STATE})."
-    fi
-    echo
-    read -rp "  Run the NetAlertX installer now? [Y/n]: " run_nax
-    if [[ "${run_nax:-Y}" =~ ^[Yy] ]]; then
-        .venv/bin/python main.py --mode netalertx-setup
-    else
-        info "You can run it later: python main.py --mode netalertx-setup"
-    fi
+    info "NetAlertX setup is disabled."
+    info "To enable: set 'netalertx.setup_desired: true' in config.yaml and restart Pueo."
 fi
 
 # ── 6. launchd service ───────────────────────────────────────────────────────────

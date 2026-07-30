@@ -94,6 +94,7 @@ HA_NOTIFICATION_ENRICH_AUTH_FAILURES: bool = bool(
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 
+NETALERTX_SETUP_DESIRED: bool = bool(_nax.get("setup_desired", False))
 NETALERTX_DEPLOYMENT: str = _nax.get("deployment", "auto")
 NETALERTX_HOST: str = _nax.get("host", _ha.get("host", "homeassistant.local"))
 NETALERTX_API_PORT: int = int(_nax.get("api_port", 20212))

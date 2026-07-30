@@ -90,6 +90,15 @@ def _read_install_state(db_path: str) -> tuple[str, dict]:
     return row[0], details
 
 
+def get_install_state(db_path: str = DB_PATH) -> str:
+    """Return the current install state string, or 'NOT_INSTALLED' if absent or unreadable."""
+    try:
+        state, _ = _read_install_state(db_path)
+        return state
+    except Exception:
+        return "NOT_INSTALLED"
+
+
 def _write_install_state(db_path: str, state: str, details: dict, cid: str) -> None:
     import datetime
 

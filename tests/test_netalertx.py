@@ -425,6 +425,46 @@ def _make_installer_db(tmp_path, monkeypatch):
     return str(db)
 
 
+class TestGetInstallState:
+    def test_returns_not_installed_when_no_db(self, tmp_path):
+        import netalertx.installer as inst
+
+        state = inst.get_install_state(str(tmp_path / "nonexistent.db"))
+        assert state == "NOT_INSTALLED"
+
+    def test_returns_state_from_db(self, tmp_path):
+        import sqlite3
+
+        import ha_agent_advanced
+        import netalertx.installer as inst
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state (id, state, details_json)"
+                " VALUES (1, 'ADDON_RUNNING', '{}')"
+            )
+        assert inst.get_install_state(db) == "ADDON_RUNNING"
+
+    def test_returns_fully_operational(self, tmp_path):
+        import sqlite3
+
+        import ha_agent_advanced
+        import netalertx.installer as inst
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state (id, state, details_json)"
+                " VALUES (1, 'FULLY_OPERATIONAL', '{}')"
+            )
+        assert inst.get_install_state(db) == "FULLY_OPERATIONAL"
+
+
 class TestNetAlertXInstallerSteps1to4:
     # ── helpers ──────────────────────────────────────────────────────────────
 
