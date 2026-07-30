@@ -1963,34 +1963,52 @@ class TestCardTypeDispatch:
         assert "u1" in called
         assert (watch_dir / "u1.approved").exists()
 
-    def test_netalertx_heal_card_routes_to_stub_and_creates_approved(
-        self, watch_dir, monkeypatch
-    ):
-        """CARD_TYPE_NETALERTX_HEAL dispatches to the netalertx heal stub."""
+    def test_netalertx_heal_card_routes_to_executor(self, watch_dir, monkeypatch):
+        """CARD_TYPE_NETALERTX_HEAL dispatches to _execute_netalertx_heal."""
+        from utils.card_types import CARD_TYPE_NETALERTX_HEAL
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        called = []
+
+        async def _fake_heal(nid, data, json_path, wd):
+            called.append(nid)
+            (wd / f"{nid}.approved").touch()
+
+        monkeypatch.setitem(
+            dashboard._CARD_DISPATCH, CARD_TYPE_NETALERTX_HEAL, _fake_heal
+        )
         self._write_card(
             watch_dir,
             "nh1",
             {"card_type": "netalertx_heal", "heal_action": "fix_webhook_fields"},
         )
         asyncio.run(dashboard.approve("nh1"))
+        assert "nh1" in called
         assert (watch_dir / "nh1.approved").exists()
 
-    def test_resource_action_card_routes_to_stub_and_creates_approved(
-        self, watch_dir, monkeypatch
-    ):
-        """CARD_TYPE_RESOURCE_ACTION dispatches to the resource action stub."""
+    def test_resource_action_card_routes_to_executor(self, watch_dir, monkeypatch):
+        """CARD_TYPE_RESOURCE_ACTION dispatches to _execute_resource_action."""
+        from utils.card_types import CARD_TYPE_RESOURCE_ACTION
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        called = []
+
+        async def _fake_resource(nid, data, json_path, wd):
+            called.append(nid)
+            (wd / f"{nid}.approved").touch()
+
+        monkeypatch.setitem(
+            dashboard._CARD_DISPATCH, CARD_TYPE_RESOURCE_ACTION, _fake_resource
+        )
         self._write_card(
             watch_dir,
             "ra1",
             {"card_type": "resource_action", "action": "offload_backups"},
         )
         asyncio.run(dashboard.approve("ra1"))
+        assert "ra1" in called
         assert (watch_dir / "ra1.approved").exists()
 
     def test_unknown_card_type_falls_back_to_approved(self, watch_dir, monkeypatch):
@@ -2255,3 +2273,320 @@ class TestExecuteQueuedUpdate:
         html = client.get("/").text
         assert "Approve" in html
         assert "Action in progress" not in html
+
+
+# ── _execute_netalertx_heal (item 58) ─────────────────────────────────────────
+
+
+class TestExecuteNetalertxHeal:
+    """Tests for the real _execute_netalertx_heal() handler."""
+
+    def _write_heal_card(
+        self, watch_dir: Path, nid: str, heal_action: str = "fix_webhook_fields"
+    ) -> Path:
+        import json as _json
+        import time as _time
+
+        data = {
+            "notification_id": nid,
+            "subject": "Pueo: NetAlertX — fix HA automation webhook fields",
+            "body": "Snake_case webhook fields detected.",
+            "payload": {
+                "card_type": "netalertx_heal",
+                "heal_action": heal_action,
+                "fields": ["trigger_platform"],
+            },
+            "sent_at": int(_time.time()) - 30,
+        }
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(_json.dumps(data))
+        return json_path
+
+    def _patch_healer_deps(self, monkeypatch, run_heal_side_effect=None):
+        """Patch all dependencies of _execute_netalertx_heal."""
+        import netalertx.healer as healer_mod
+        import netalertx.api_client as api_mod
+        import utils.ssh_client as ssh_mod
+        import utils.autonomy as autonomy_mod
+        import utils.notify as notify_mod
+
+        class FakeHealer:
+            async def run_heal(self, action: str) -> None:
+                if run_heal_side_effect is not None:
+                    raise run_heal_side_effect
+                if action == "unknown_action":
+                    raise ValueError(f"Unknown NetAlertX heal action: {action!r}")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+        monkeypatch.setattr(api_mod, "NetAlertXAPIClient", lambda **kw: object())
+        monkeypatch.setattr(
+            autonomy_mod, "AutonomyGate", lambda level: autonomy_mod.FakeAutonomyGate()
+        )
+        monkeypatch.setattr(
+            notify_mod, "get_notifier", lambda *a, **kw: notify_mod.FakeNotifier()
+        )
+        monkeypatch.setattr(healer_mod, "NetAlertXHealer", lambda **kw: FakeHealer())
+
+    def test_success_path_writes_approved_and_fix_applied(self, tmp_path, monkeypatch):
+        """run_heal succeeds → .approved created, fix_applied=True in JSON."""
+        import json as _json
+        import web.dashboard as dashboard
+
+        nid = "nh-ok-1"
+        json_path = self._write_heal_card(tmp_path, nid)
+        self._patch_healer_deps(monkeypatch)
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+
+    def test_exception_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
+        """run_heal raises → .rejected created, fix_error set, no in_progress."""
+        import json as _json
+        import web.dashboard as dashboard
+
+        nid = "nh-exc-1"
+        json_path = self._write_heal_card(tmp_path, nid)
+        self._patch_healer_deps(
+            monkeypatch, run_heal_side_effect=RuntimeError("SSH failed")
+        )
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "SSH failed" in saved["fix_error"]
+
+    def test_unknown_heal_action_writes_rejected(self, tmp_path, monkeypatch):
+        """Unknown heal_action propagates as ValueError → .rejected."""
+        import json as _json
+        import web.dashboard as dashboard
+
+        nid = "nh-unk-1"
+        json_path = self._write_heal_card(tmp_path, nid, heal_action="unknown_action")
+        self._patch_healer_deps(
+            monkeypatch,
+            run_heal_side_effect=ValueError(
+                "Unknown NetAlertX heal action: 'unknown_action'"
+            ),
+        )
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+
+    def test_in_progress_sentinel_removed_on_success(self, tmp_path, monkeypatch):
+        """in_progress file is cleaned up after successful heal."""
+        import json as _json
+        import web.dashboard as dashboard
+
+        nid = "nh-cleanup-1"
+        json_path = self._write_heal_card(tmp_path, nid)
+        self._patch_healer_deps(monkeypatch)
+
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_netalertx_heal(nid, data, json_path, tmp_path))
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+
+
+# ── _execute_resource_action (item 58) ────────────────────────────────────────
+
+
+class TestExecuteResourceAction:
+    """Tests for the real _execute_resource_action() handler."""
+
+    def _write_resource_card(self, watch_dir: Path, nid: str, action: str) -> Path:
+        import json as _json
+        import time as _time
+
+        data = {
+            "notification_id": nid,
+            "subject": "Pueo CRITICAL: HA disk almost full",
+            "body": "Disk free: 1.9 GB — below critical threshold 2.0 GB.",
+            "payload": {
+                "card_type": "resource_action",
+                "action": action,
+                "severity": "CRITICAL",
+                "disk_free_gb": 1.9,
+            },
+            "sent_at": int(_time.time()) - 30,
+        }
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(_json.dumps(data))
+        return json_path
+
+    def _make_db(self, db_path: Path, slugs: list[str]) -> None:
+        """Create a minimal backup_registry with the given slugs (location='ha')."""
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS backup_registry"
+                " (id INTEGER PRIMARY KEY, backup_slug TEXT, location TEXT,"
+                " deleted_from_ha_at REAL, timestamp REAL, status TEXT, size_bytes INTEGER,"
+                " offloaded_at REAL)"
+            )
+            for slug in slugs:
+                conn.execute(
+                    "INSERT INTO backup_registry (backup_slug, location, timestamp, status, size_bytes)"
+                    " VALUES (?, 'ha', ?, 'completed', 1024)",
+                    (slug, __import__("time").time()),
+                )
+            conn.commit()
+
+    def test_offload_backups_calls_offload_and_retention(self, tmp_path, monkeypatch):
+        """offload_backups action: offloads pending slugs then enforces retention."""
+        import json as _json
+        import sqlite3 as _sqlite3
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+
+        db_path = tmp_path / "test.db"
+        self._make_db(db_path, ["slug-a", "slug-b"])
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db_path))
+
+        offloaded = []
+        retention_called = []
+        purge_called = []
+
+        async def _fake_offload(slug, ssh_client=None):
+            offloaded.append(slug)
+
+        async def _fake_retention(ssh_client=None):
+            retention_called.append(True)
+
+        def _fake_purge():
+            purge_called.append(True)
+
+        monkeypatch.setattr(ha_agent_advanced, "offload_backup_to_local", _fake_offload)
+        monkeypatch.setattr(ha_agent_advanced, "enforce_ha_retention", _fake_retention)
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", _fake_purge)
+
+        nid = "ra-offload-1"
+        json_path = self._write_resource_card(tmp_path, nid, "offload_backups")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        assert set(offloaded) == {"slug-a", "slug-b"}
+        assert retention_called
+        assert purge_called
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+
+    def test_enforce_retention_calls_retention_and_purge(self, tmp_path, monkeypatch):
+        """enforce_retention action: calls enforce_ha_retention + purge_local_backups."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        retention_called = []
+        purge_called = []
+
+        async def _fake_retention(ssh_client=None):
+            retention_called.append(True)
+
+        def _fake_purge():
+            purge_called.append(True)
+
+        monkeypatch.setattr(ha_agent_advanced, "enforce_ha_retention", _fake_retention)
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", _fake_purge)
+
+        nid = "ra-ret-1"
+        json_path = self._write_resource_card(tmp_path, nid, "enforce_retention")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        assert retention_called
+        assert purge_called
+        assert (tmp_path / f"{nid}.approved").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+
+    def test_unknown_action_writes_rejected(self, tmp_path, monkeypatch):
+        """Unknown action raises ValueError → .rejected, fix_error set."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ssh_client as ssh_mod
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        nid = "ra-unk-1"
+        json_path = self._write_resource_card(tmp_path, nid, "wipe_everything")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+
+    def test_exception_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
+        """Exception in offload → .rejected, fix_error set, no in_progress."""
+        import json as _json
+        import sqlite3 as _sqlite3
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+
+        db_path = tmp_path / "test.db"
+        self._make_db(db_path, ["slug-x"])
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db_path))
+
+        async def _boom(*a, **kw):
+            raise OSError("SFTP failed")
+
+        monkeypatch.setattr(ha_agent_advanced, "offload_backup_to_local", _boom)
+
+        nid = "ra-exc-1"
+        json_path = self._write_resource_card(tmp_path, nid, "offload_backups")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "SFTP failed" in saved["fix_error"]
+
+    def test_in_progress_sentinel_removed_on_success(self, tmp_path, monkeypatch):
+        """in_progress file cleaned up after successful resource action."""
+        import json as _json
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "enforce_ha_retention", _make_async_return(None)
+        )
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", lambda: None)
+
+        nid = "ra-cleanup-1"
+        json_path = self._write_resource_card(tmp_path, nid, "enforce_retention")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
