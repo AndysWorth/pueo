@@ -126,6 +126,7 @@ def main() -> None:
             "  notifications       one-shot: triage HA persistent notifications and send HITL cards\n"
             "  rag-refresh         embed cached HA release notes and HACS changelogs into ChromaDB\n"
             "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
+            "  install-service     install Pueo as a macOS launchd service (auto-start at login)\n"
         ),
     )
     parser.add_argument(
@@ -150,6 +151,7 @@ def main() -> None:
             "notifications",
             "rag-refresh",
             "dashboard",
+            "install-service",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -234,6 +236,15 @@ def main() -> None:
         from web.dashboard import run_dashboard
 
         run_dashboard()
+    elif args.mode == "install-service":  # pragma: no cover
+        from utils.service import install_service
+
+        install_service(
+            pueo_dir=str(config_path.parent),
+            python_path=sys.executable,
+        )
+        print("Pueo service installed → com.pueo.agent")
+        print(f"Dashboard → http://127.0.0.1:{os.environ.get('DASHBOARD_PORT', 8080)}")
 
 
 if __name__ == "__main__":

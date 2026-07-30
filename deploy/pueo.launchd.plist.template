@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd plist: Pueo supervisor daemon (item 63).
+
+  Install via setup.sh (recommended), or use:
+    python main.py, mode: install-service
+
+  To remove:
+    launchctl unload ~/Library/LaunchAgents/com.pueo.agent.plist
+
+  Placeholders PUEO_DIR and PYTHON_PATH are substituted at install time.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pueo.agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ PYTHON_PATH }}</string>
+    <string>{{ PUEO_DIR }}/main.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{ PUEO_DIR }}</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>{{ PUEO_DIR }}/pueo.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{{ PUEO_DIR }}/pueo.log</string>
+</dict>
+</plist>

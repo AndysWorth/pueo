@@ -100,6 +100,35 @@
   {% endfor %}
 </div>
 
+<div style="max-width:720px;margin-top:1.25rem;">
+  <div class="card">
+    <div class="group-title">Service</div>
+    <div style="margin-bottom:0.6rem;">
+      Status:
+      {% if service.running %}
+      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#d1fae5;color:#065f46;border-radius:4px;font-size:0.78rem;font-weight:700;">Running</span>
+      {% if service.pid %}<span style="font-size:0.78rem;color:#888;margin-left:0.35rem;">PID {{ service.pid }}</span>{% endif %}
+      {% elif service.loaded %}
+      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#fef3c7;color:#92400e;border-radius:4px;font-size:0.78rem;font-weight:700;">Loaded (stopped)</span>
+      {% else %}
+      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#f3f4f6;color:#6b7280;border-radius:4px;font-size:0.78rem;font-weight:700;">Not installed</span>
+      {% endif %}
+    </div>
+    <div style="font-size:0.77rem;color:#888;margin-bottom:0.75rem;">
+      launchd keeps Pueo running at login and restarts it on crash. Binds to 127.0.0.1 only.
+    </div>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+      {% if not service.loaded %}
+      <button class="btn-save" onclick="serviceAction('install')">Install &amp; Start</button>
+      {% else %}
+      <button class="btn-save" onclick="serviceAction('restart')">Restart</button>
+      <button class="btn-save" style="background:#dc3545;" onclick="serviceAction('uninstall')">Uninstall</button>
+      {% endif %}
+    </div>
+    <div id="service-action-msg" style="margin-top:0.5rem;font-size:0.8rem;font-weight:600;"></div>
+  </div>
+</div>
+
 <div class="restart-banner" id="restart-banner">
   Restart required — connection parameter changed. Restart Pueo for changes to take effect.
 </div>
@@ -141,6 +170,25 @@
 
   // Expose to inline onclick handlers
   window.saveParam = saveParam;
+
+  function serviceAction(action) {
+    var msgEl = document.getElementById('service-action-msg');
+    if (msgEl) { msgEl.textContent = action + '…'; msgEl.style.color = '#666'; }
+    fetch('/service/' + action, { method: 'POST' })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        if (!res.ok) {
+          if (msgEl) { msgEl.textContent = res.data.detail || 'error'; msgEl.style.color = '#dc3545'; }
+          return;
+        }
+        if (msgEl) { msgEl.textContent = 'Done — reloading…'; msgEl.style.color = '#28a745'; }
+        setTimeout(function() { location.reload(); }, 1200);
+      })
+      .catch(function() {
+        if (msgEl) { msgEl.textContent = 'error'; msgEl.style.color = '#dc3545'; }
+      });
+  }
+  window.serviceAction = serviceAction;
 
   // SSE: flash confirmation when config_saved event arrives
   if (window.EventSource) {

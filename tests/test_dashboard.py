@@ -3458,3 +3458,384 @@ class TestConfigEditor:
         for name, spec in _EDITABLE_PARAMS.items():
             missing = required - spec.keys()
             assert not missing, f"{name} missing keys: {missing}"
+
+
+# ── launchd service helpers ───────────────────────────────────────────────────────
+
+
+class TestLaunchdPlistTemplate:
+    def test_render_plist_substitutes_all_placeholders(self, tmp_path):
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
+        assert "{{ PUEO_DIR }}" not in rendered
+        assert "{{ PYTHON_PATH }}" not in rendered
+
+    def test_render_plist_inserts_correct_paths(self, tmp_path):
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python3")
+        assert "/opt/pueo" in rendered
+        assert "/opt/pueo/.venv/bin/python3" in rendered
+
+    def test_render_plist_produces_valid_plist(self):
+        import plistlib
+
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        # plistlib.loads handles the DOCTYPE declaration that ElementTree cannot
+        parsed = plistlib.loads(rendered.encode())
+        assert isinstance(parsed, dict)
+
+    def test_render_plist_has_correct_label(self):
+        import plistlib
+
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        plist = plistlib.loads(rendered.encode())
+        assert plist["Label"] == "com.pueo.agent"
+
+    def test_render_plist_has_keep_alive(self):
+        import plistlib
+
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        plist = plistlib.loads(rendered.encode())
+        assert plist.get("KeepAlive") is True
+
+    def test_render_plist_working_directory_matches_pueo_dir(self):
+        import plistlib
+
+        from utils.service import render_plist
+
+        rendered = render_plist("/my/pueo/dir", "/usr/bin/python3")
+        plist = plistlib.loads(rendered.encode())
+        assert plist["WorkingDirectory"] == "/my/pueo/dir"
+
+    def test_render_plist_program_arguments_include_main_py(self):
+        import plistlib
+
+        from utils.service import render_plist
+
+        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
+        plist = plistlib.loads(rendered.encode())
+        args = plist["ProgramArguments"]
+        assert args[0] == "/opt/pueo/.venv/bin/python"
+        assert args[1] == "/opt/pueo/main.py"
+
+
+class TestServiceStatus:
+    def test_service_status_not_loaded_returns_false(self, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        def fake_run(*args, **kwargs):
+            r = subprocess.CompletedProcess(args, 1)
+            r.stdout = ""
+            r.stderr = "Could not find service"
+            return r
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        status = svc.service_status()
+        assert status["loaded"] is False
+        assert status["running"] is False
+        assert status["pid"] is None
+
+    def test_service_status_loaded_running_with_pid(self, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        def fake_run(*args, **kwargs):
+            r = subprocess.CompletedProcess(args, 0)
+            r.stdout = '{\n\t"PID" = 9876;\n\t"Label" = "com.pueo.agent";\n};\n'
+            r.stderr = ""
+            return r
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        status = svc.service_status()
+        assert status["loaded"] is True
+        assert status["running"] is True
+        assert status["pid"] == 9876
+
+    def test_service_status_loaded_stopped_no_pid(self, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        def fake_run(*args, **kwargs):
+            r = subprocess.CompletedProcess(args, 0)
+            r.stdout = '{\n\t"Label" = "com.pueo.agent";\n\t"LastExitStatus" = 0;\n};\n'
+            r.stderr = ""
+            return r
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        status = svc.service_status()
+        assert status["loaded"] is True
+        assert status["running"] is False
+        assert status["pid"] is None
+
+    def test_service_status_non_darwin_returns_not_loaded(self, monkeypatch):
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "linux"})())
+        status = svc.service_status()
+        assert status["loaded"] is False
+        assert "error" in status
+
+    def test_service_status_launchctl_not_found(self, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("launchctl not found")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        status = svc.service_status()
+        assert status["loaded"] is False
+        assert "error" in status
+
+    def test_service_status_invalid_pid_value_handled(self, monkeypatch):
+        """ValueError when PID field is non-numeric must be silently caught."""
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        def fake_run(*args, **kwargs):
+            r = subprocess.CompletedProcess(args, 0)
+            r.stdout = '{\n\t"PID" = not-a-number;\n\t"Label" = "com.pueo.agent";\n};\n'
+            r.stderr = ""
+            return r
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        status = svc.service_status()
+        assert status["loaded"] is True
+        assert status["running"] is False
+        assert status["pid"] is None
+
+
+class TestServiceActions:
+    def test_install_service_writes_plist_and_loads(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        fake_target = tmp_path / "com.pueo.agent.plist"
+        monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
+        monkeypatch.setattr(
+            svc,
+            "sys",
+            type(
+                "_Sys", (), {"platform": "darwin", "executable": "/usr/bin/python3"}
+            )(),
+        )
+
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        svc.install_service(
+            pueo_dir="/opt/pueo", python_path="/opt/pueo/.venv/bin/python"
+        )
+
+        assert fake_target.exists()
+        assert "com.pueo.agent" in fake_target.read_text()
+        assert any("load" in str(cmd) for cmd in runs)
+
+    def test_install_service_uses_defaults_when_args_omitted(
+        self, tmp_path, monkeypatch
+    ):
+        """install_service() with no args resolves pueo_dir from template path."""
+        import subprocess
+
+        from utils import service as svc
+
+        fake_target = tmp_path / "com.pueo.agent.plist"
+        monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
+        monkeypatch.setattr(
+            svc,
+            "sys",
+            type(
+                "_Sys", (), {"platform": "darwin", "executable": "/usr/bin/python3"}
+            )(),
+        )
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        svc.install_service()
+
+        assert fake_target.exists()
+
+    def test_restart_service_calls_launchctl_stop(self, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        svc.restart_service()
+        assert runs and "stop" in runs[0]
+
+    def test_uninstall_service_unloads_and_removes_plist(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from utils import service as svc
+
+        fake_target = tmp_path / "com.pueo.agent.plist"
+        fake_target.write_text("plist content")
+        monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        svc.uninstall_service()
+
+        assert not fake_target.exists()
+        assert any("unload" in str(cmd) for cmd in runs)
+
+    def test_uninstall_service_no_op_when_plist_missing(self, tmp_path, monkeypatch):
+        """uninstall_service does nothing if plist was never installed."""
+        import subprocess
+
+        from utils import service as svc
+
+        fake_target = tmp_path / "com.pueo.agent.plist"
+        monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
+        monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
+
+        runs = []
+        monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: runs.append(cmd))
+        svc.uninstall_service()
+
+        assert len(runs) == 0
+
+
+class TestDashboardServiceEndpoints:
+    def test_get_service_status_returns_dict(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+        client = TestClient(dashboard.app)
+        resp = client.get("/service/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "loaded" in data
+        assert "running" in data
+
+    def test_settings_tab_includes_service_key(self, tmp_path, monkeypatch):
+        """GET /settings renders without error and passes service context."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": True, "running": True, "pid": 1234},
+        )
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert b"Service" in resp.content
+
+    def test_service_install_calls_install_service(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        called = []
+        monkeypatch.setattr(svc, "install_service", lambda **kw: called.append(kw))
+        client = TestClient(dashboard.app)
+        resp = client.post("/service/install")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert len(called) == 1
+
+    def test_service_install_error_returns_500(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "install_service",
+            lambda **kw: (_ for _ in ()).throw(RuntimeError("macOS only")),
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.post("/service/install")
+        assert resp.status_code == 500
+
+    def test_service_restart_calls_restart_service(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        called = []
+        monkeypatch.setattr(svc, "restart_service", lambda: called.append(1))
+        client = TestClient(dashboard.app)
+        resp = client.post("/service/restart")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert len(called) == 1
+
+    def test_service_uninstall_calls_uninstall_service(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        from utils import service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        called = []
+        monkeypatch.setattr(svc, "uninstall_service", lambda: called.append(1))
+        client = TestClient(dashboard.app)
+        resp = client.post("/service/uninstall")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert len(called) == 1
