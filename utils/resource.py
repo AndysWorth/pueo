@@ -82,6 +82,11 @@ def update_resource_status(status: ResourceStatus) -> None:
     _last_resource_status = status
 
 
+def get_resource_status() -> Optional[ResourceStatus]:
+    """Return the last cached resource poll result, or None if not yet polled."""
+    return _last_resource_status
+
+
 def check_disk_not_critical(disk_critical_gb: float) -> None:
     """Raise DiskCriticalError if the cached resource status shows disk below the critical threshold."""
     if _last_resource_status is not None and _last_resource_status.disk_critical:
@@ -122,6 +127,27 @@ class ResourcePoller:
                     self._mem_warn_mb,
                 )
                 update_resource_status(status)
+                try:
+                    from utils.supervisor import publish_event
+
+                    publish_event(
+                        {
+                            "event_type": "resource",
+                            "disk_free_gb": status.disk_free_gb,
+                            "disk_used_pct": (
+                                round(
+                                    100 * status.disk_used_gb / status.disk_total_gb, 1
+                                )
+                                if status.disk_total_gb
+                                else 0
+                            ),
+                            "mem_free_gb": round(status.mem_available_mb / 1024, 2),
+                            "disk_critical": status.disk_critical,
+                            "disk_warn": status.disk_warn,
+                        }
+                    )
+                except Exception:  # nosec B110 — SSE publish is best-effort
+                    pass
                 log.info(
                     "resource_poll",
                     disk_free_gb=status.disk_free_gb,

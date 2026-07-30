@@ -4,17 +4,65 @@ import asyncio
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from utils.logging import get_logger
+
+if TYPE_CHECKING:
+    pass
 
 log = get_logger("supervisor")
 
 _BACKOFF_START = 2.0
 _BACKOFF_CAP = 300.0
 
-# Shared event bus; supervisor writes, SSE endpoint reads.
+# Shared event bus — kept for backward compatibility; SSE subscribers use the fan-out below.
 event_bus: asyncio.Queue = asyncio.Queue(maxsize=1000)
+
+# SSE fan-out: per-connection subscriber queues
+_sse_subscribers: list[asyncio.Queue] = []
+
+# Running supervisor instance (set by main.py supervisor_main; None in standalone dashboard mode)
+_supervisor_instance: "LoopSupervisor | None" = None
+
+
+def publish_event(event: dict) -> None:
+    """Publish an event to the shared bus and all SSE subscriber queues."""
+    try:
+        event_bus.put_nowait(event)
+    except asyncio.QueueFull:
+        pass
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+def subscribe() -> asyncio.Queue:
+    """Create and register a new SSE subscriber queue. Call unsubscribe() in a finally block."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _sse_subscribers.append(q)
+    return q
+
+
+def unsubscribe(q: asyncio.Queue) -> None:
+    """Remove a subscriber queue from the fan-out list."""
+    try:
+        _sse_subscribers.remove(q)
+    except ValueError:
+        pass
+
+
+def set_supervisor_instance(sv: "LoopSupervisor") -> None:
+    """Register the running supervisor so the dashboard can query loop statuses."""
+    global _supervisor_instance
+    _supervisor_instance = sv
+
+
+def get_supervisor_instance() -> "LoopSupervisor | None":
+    """Return the running LoopSupervisor, or None if not in supervisor mode."""
+    return _supervisor_instance
 
 
 @dataclass
@@ -92,21 +140,24 @@ class LoopSupervisor:
 
     def _emit(self, name: str) -> None:
         status = self._handles[name]
-        try:
-            self._bus.put_nowait(
-                {
-                    "event_type": "loop_status",
-                    "loop": name,
-                    "status": status.status,
-                    "error_count": status.error_count,
-                    "last_error": status.last_error,
-                    "last_run": status.last_run,
-                    "next_run": status.next_run,
-                    "paused": status.paused,
-                }
-            )
-        except asyncio.QueueFull:
-            pass  # Drop non-critical status event rather than block
+        event = {
+            "event_type": "loop_status",
+            "loop": name,
+            "status": status.status,
+            "error_count": status.error_count,
+            "last_error": status.last_error,
+            "last_run": status.last_run,
+            "next_run": status.next_run,
+            "paused": status.paused,
+        }
+        # Write to self._bus (may be a test-injected queue distinct from event_bus)
+        if self._bus is not event_bus:
+            try:
+                self._bus.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+        # publish_event handles the module-level bus + all SSE subscriber queues
+        publish_event(event)
 
     def cancel_all(self) -> None:
         """Cancel all supervised tasks (called on SIGTERM/SIGINT)."""

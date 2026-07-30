@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 700px) { .overview-grid { grid-template-columns: 1fr; } }
+  .overview-grid .full-width { grid-column: 1 / -1; }
+  .section-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: #888; margin-bottom: 0.6rem; }
+  .stat-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;
+    font-size: 0.88rem; }
+  .stat-label { color: #666; min-width: 6rem; }
+  .stat-value { color: #222; font-weight: 600; }
+  .gauge-wrap { margin-bottom: 0.6rem; }
+  .gauge-bar-bg { height: 10px; background: #e9ecef; border-radius: 5px; overflow: hidden; margin-top: 3px; }
+  .gauge-bar { height: 10px; border-radius: 5px; transition: width 0.4s ease, background 0.4s ease; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; flex-shrink: 0; }
+  .dot-running    { background: #28a745; }
+  .dot-error      { background: #dc3545; }
+  .dot-restarting { background: #fd7e14; }
+  .dot-paused     { background: #6c757d; }
+  .dot-disabled   { background: #adb5bd; }
+  .dot-starting   { background: #17a2b8; }
+  table.loop-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  table.loop-table th { text-align: left; padding: 0.3rem 0.5rem; color: #888;
+    font-weight: 600; font-size: 0.72rem; text-transform: uppercase; border-bottom: 1px solid #eee; }
+  table.loop-table td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #f0f0f0; color: #333; }
+  table.loop-table tr:last-child td { border-bottom: none; }
+  .pending-badge { display: inline-block; background: #fff3cd; color: #856404;
+    border: 1px solid #ffc107; border-radius: 3px; font-size: 0.75rem; font-weight: 700;
+    padding: 0.15rem 0.5rem; }
+  .no-loops { color: #aaa; font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+</style>
+
+<div class="overview-grid">
+
+  <!-- HA State & Backup -->
+  <div class="card">
+    <div class="section-title">Home Assistant</div>
+    <div class="stat-row">
+      <span class="stat-label">Last backup</span>
+      <span class="stat-value">{{ last_backup.age }}</span>
+      {% if last_backup.slug %}
+      <span style="font-size:0.75rem;color:#aaa;">({{ last_backup.slug[:8] }}…)</span>
+      {% endif %}
+    </div>
+    {% if last_backup.location %}
+    <div class="stat-row">
+      <span class="stat-label">Location</span>
+      <span class="stat-value">{{ last_backup.location }}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Pending Actions -->
+  <div class="card">
+    <div class="section-title">Pending Actions</div>
+    {% if pending_count > 0 %}
+    <div style="display:flex;align-items:center;gap:0.75rem;padding:0.4rem 0;">
+      <span class="pending-badge">{{ pending_count }}</span>
+      <a href="/queue" style="font-size:0.88rem;color:#1a73e8;">View approval queue →</a>
+    </div>
+    {% else %}
+    <p style="color:#888;font-size:0.85rem;padding:0.3rem 0;">No pending approvals — Pueo is watching.</p>
+    {% endif %}
+  </div>
+
+  <!-- Resource Gauges -->
+  <div class="card">
+    <div class="section-title">Resources</div>
+    {% if resource %}
+    <div class="gauge-wrap">
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">Disk free</span>
+        <span class="stat-value" id="disk-label">{{ "%.1f"|format(resource.disk_free_gb) }} GB free</span>
+        {% if resource.disk_critical %}<span style="color:#dc3545;font-size:0.75rem;font-weight:700;">CRITICAL</span>
+        {% elif resource.disk_warn %}<span style="color:#fd7e14;font-size:0.75rem;font-weight:700;">WARN</span>{% endif %}
+      </div>
+      <div class="gauge-bar-bg">
+        <div class="gauge-bar" id="disk-bar"
+          style="width:{{ [resource.disk_free_gb / resource.disk_total_gb * 100, 100]|min|round(1) }}%;
+                 background:{% if resource.disk_critical %}#dc3545{% elif resource.disk_warn %}#fd7e14{% else %}#28a745{% endif %};">
+        </div>
+      </div>
+    </div>
+    <div class="gauge-wrap">
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">Memory free</span>
+        <span class="stat-value" id="mem-label">{{ "%.1f"|format(resource.mem_available_mb / 1024) }} GB free</span>
+        {% if resource.mem_warn %}<span style="color:#fd7e14;font-size:0.75rem;font-weight:700;">WARN</span>{% endif %}
+      </div>
+      <div class="gauge-bar-bg">
+        <div class="gauge-bar" id="mem-bar"
+          style="width:{{ [resource.mem_available_mb / resource.mem_total_mb * 100, 100]|min|round(1) if resource.mem_total_mb else 50 }}%;
+                 background:{% if resource.mem_warn %}#fd7e14{% else %}#28a745{% endif %};">
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <p class="no-loops">Waiting for first resource poll…</p>
+    {% endif %}
+  </div>
+
+  <!-- Loop Health -->
+  <div class="card full-width">
+    <div class="section-title">Monitoring Loops</div>
+    {% if loop_statuses %}
+    <table class="loop-table">
+      <thead>
+        <tr>
+          <th>Loop</th>
+          <th>Status</th>
+          <th>Last run</th>
+          <th>Next run</th>
+          <th>Errors</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ls in loop_statuses %}
+        <tr id="loop-{{ ls.name }}">
+          <td>{{ ls.name }}</td>
+          <td>
+            <span class="status-dot dot-{{ ls.status }}"></span>
+            <span class="loop-status">{{ ls.status }}</span>
+          </td>
+          <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+          <td class="loop-next-run">{{ ls.next_run|epoch_to_iso if ls.next_run else "—" }}</td>
+          <td class="loop-errors">{{ ls.error_count }}</td>
+        </tr>
+        {% if ls.last_error %}
+        <tr>
+          <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+            <span class="loop-error-msg">{{ ls.last_error }}</span>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="no-loops">No loops running — start Pueo in supervisor mode (<code>python main.py</code>).</p>
+    {% endif %}
+  </div>
+
+  <!-- Recent Events (placeholder until item 60) -->
+  <div class="card full-width">
+    <div class="section-title">Recent Events</div>
+    <p class="no-loops">Event timeline will be available in the next update.</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var statusDotClass = {
+    running:    'dot-running',
+    error:      'dot-error',
+    restarting: 'dot-restarting',
+    paused:     'dot-paused',
+    disabled:   'dot-disabled',
+    starting:   'dot-starting',
+  };
+
+  function fmtTime(epoch) {
+    if (!epoch) return '—';
+    var d = new Date(epoch * 1000);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+  }
+
+  function updateLoopRow(evt) {
+    var row = document.getElementById('loop-' + evt.loop);
+    if (!row) {
+      // New loop appeared after page load — reload to show it
+      return;
+    }
+    var dotEl = row.querySelector('.status-dot');
+    var statusEl = row.querySelector('.loop-status');
+    if (dotEl && statusEl) {
+      dotEl.className = 'status-dot ' + (statusDotClass[evt.status] || '');
+      statusEl.textContent = evt.status;
+    }
+    var lastRunEl = row.querySelector('.loop-last-run');
+    if (lastRunEl) lastRunEl.textContent = fmtTime(evt.last_run);
+    var nextRunEl = row.querySelector('.loop-next-run');
+    if (nextRunEl) nextRunEl.textContent = evt.next_run ? fmtTime(evt.next_run) : '—';
+    var errEl = row.querySelector('.loop-errors');
+    if (errEl) errEl.textContent = evt.error_count;
+    // Update error message row if it follows this row
+    var next = row.nextElementSibling;
+    if (next && next.querySelector('.loop-error-msg')) {
+      next.querySelector('.loop-error-msg').textContent = evt.last_error || '';
+      next.style.display = evt.last_error ? '' : 'none';
+    }
+  }
+
+  function updateGauges(evt) {
+    var diskBar = document.getElementById('disk-bar');
+    var diskLabel = document.getElementById('disk-label');
+    if (diskBar) {
+      var freePct = evt.disk_free_gb !== undefined && evt.disk_used_pct !== undefined
+        ? Math.max(0, Math.min(100, 100 - evt.disk_used_pct)) : null;
+      if (freePct !== null) diskBar.style.width = freePct + '%';
+      diskBar.style.background = evt.disk_critical ? '#dc3545' : evt.disk_warn ? '#fd7e14' : '#28a745';
+    }
+    if (diskLabel && evt.disk_free_gb !== undefined) {
+      var sev = evt.disk_critical ? ' (CRITICAL)' : evt.disk_warn ? ' (WARN)' : '';
+      diskLabel.textContent = evt.disk_free_gb.toFixed(1) + ' GB free' + sev;
+    }
+    var memLabel = document.getElementById('mem-label');
+    if (memLabel && evt.mem_free_gb !== undefined) {
+      memLabel.textContent = evt.mem_free_gb.toFixed(1) + ' GB free';
+    }
+  }
+
+  var es = new EventSource('/events');
+  es.onmessage = function (e) {
+    try {
+      var evt = JSON.parse(e.data);
+      if (evt.event_type === 'loop_status') updateLoopRow(evt);
+      else if (evt.event_type === 'resource') updateGauges(evt);
+    } catch (_) {}
+  };
+  es.onerror = function () {
+    // Browser reconnects automatically; no action needed
+  };
+})();
+</script>
+{% endblock %}
