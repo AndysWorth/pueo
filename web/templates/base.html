@@ -6,7 +6,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,
       initial-scale=1.0">
-    <meta http-equiv="refresh" content="10">
     <title>Pueo HITL Dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon_16.svg">
     <style>
@@ -53,8 +52,9 @@
     <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
         height="32">&nbsp;Pueo</h1>
     <nav style="margin-bottom:1.25rem;display:flex;gap:1rem;font-size:0.9rem;">
-      <a href="/" style="color:#333;text-decoration:none;font-weight:600;">Approval Queue</a>
-      <a href="/backups" style="color:#333;text-decoration:none;font-weight:600;">Backup Inventory</a>
+      <a href="/" style="color:#333;text-decoration:none;font-weight:600;">Overview</a>
+      <a href="/queue" style="color:#333;text-decoration:none;font-weight:600;">Queue</a>
+      <a href="/backups" style="color:#333;text-decoration:none;font-weight:600;">Backups</a>
       <a href="/notifications" style="color:#333;text-decoration:none;font-weight:600;">Notifications</a>
     </nav>
     {% block content %}{% endblock %}

@@ -1,5 +1,6 @@
 """HITL web dashboard — queue approval/rejection of pending repair actions."""
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
@@ -97,8 +98,60 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
     return pending + resolved
 
 
+def _load_last_backup() -> dict:
+    """Return the most recent backup_registry row as a display dict, or empty defaults."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT backup_slug, timestamp, location FROM backup_registry"
+                " WHERE deleted_from_ha_at IS NULL"
+                " ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+    except Exception:
+        row = None
+    if not row:
+        return {"slug": None, "age": "never", "location": None}
+    slug, ts, location = row
+    now = time.time()
+    age_secs = now - (ts or now)
+    age_days = age_secs / 86400
+    if age_days >= 1:
+        age = f"{age_days:.0f}d ago"
+    elif age_secs >= 3600:
+        age = f"{age_secs / 3600:.0f}h ago"
+    else:
+        age = f"{age_secs / 60:.0f}m ago"
+    return {"slug": slug, "age": age, "location": location}
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
+async def overview(request: Request) -> HTMLResponse:
+    from utils.resource import get_resource_status
+    from utils.supervisor import get_supervisor_instance
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    watch_dir.mkdir(parents=True, exist_ok=True)
+    pending_count = sum(
+        1 for f in watch_dir.glob("*.json") if _status(f.stem, watch_dir) == "PENDING"
+    )
+    sv = get_supervisor_instance()
+    loop_statuses = sv.get_statuses() if sv else []
+    resource = get_resource_status()
+    last_backup = _load_last_backup()
+    return templates.TemplateResponse(
+        request,
+        "overview.html",
+        {
+            "loop_statuses": loop_statuses,
+            "resource": resource,
+            "pending_count": pending_count,
+            "last_backup": last_backup,
+        },
+    )
+
+
+@app.get("/queue", response_class=HTMLResponse)
+async def queue(request: Request) -> HTMLResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
     hitl_requests = _load_requests(watch_dir)
@@ -106,6 +159,32 @@ async def index(request: Request) -> HTMLResponse:
         request,
         "index.html",
         {"requests": hitl_requests},
+    )
+
+
+@app.get("/events")
+async def sse_events() -> StreamingResponse:
+    """Server-Sent Events stream — pushes loop_status and resource events to the browser."""
+    from utils.supervisor import subscribe, unsubscribe
+
+    async def event_stream():
+        q = subscribe()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            unsubscribe(q)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -292,14 +371,14 @@ async def approve(nid: str) -> RedirectResponse:
             await _execute_queued_fix(
                 nid, yaml_content, description, data, json_path, watch_dir
             )
-            return RedirectResponse(url="/", status_code=303)
+            return RedirectResponse(url="/queue", status_code=303)
 
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
             await handler(nid, data, json_path, watch_dir)
         else:
             (watch_dir / f"{nid}.approved").touch()
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 async def _execute_queued_fix(
@@ -357,7 +436,7 @@ async def reject(nid: str) -> RedirectResponse:
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         (watch_dir / f"{nid}.rejected").touch()
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 @app.post("/defer/{nid}")
@@ -368,7 +447,7 @@ async def defer(nid: str) -> RedirectResponse:
         (watch_dir / f"{nid}.deferred").touch()
         # Write .rejected so wait_for_approval() unblocks with False
         (watch_dir / f"{nid}.rejected").touch()
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 @app.post("/dismiss-notification/{card_id}")
@@ -392,7 +471,7 @@ async def dismiss_notification(card_id: str) -> RedirectResponse:
             except Exception:  # nosec B110
                 pass
         (watch_dir / f"{card_id}.approved").touch()
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 def _load_backup_inventory() -> list[dict]:

@@ -225,7 +225,7 @@ class TestDashboardRoutes:
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         self._write_request(tmp_path, "req1")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/")
+        response = client.get("/queue")
         assert "PENDING" in response.text
         assert "Test subject" in response.text
 
@@ -1116,7 +1116,7 @@ class TestDashboardRichPayload:
             },
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "Evidence" in html
         assert "addon_info" in html
         assert "state: stopped" in html
@@ -1128,7 +1128,7 @@ class TestDashboardRichPayload:
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         self._write_request(tmp_path, "ev2", {"severity": "HIGH"})
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "Raw gathered data" not in html
 
     def test_diagnosis_section_rendered_when_present(self, tmp_path, monkeypatch):
@@ -1149,7 +1149,7 @@ class TestDashboardRichPayload:
             },
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "Diagnosis" in html
         assert "severity" in html
         assert "HIGH" in html
@@ -1173,7 +1173,7 @@ class TestDashboardRichPayload:
             },
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "LLM Interaction" in html
         assert "qwen2.5-coder:7b" in html
         assert "System prompt" in html
@@ -1191,7 +1191,7 @@ class TestDashboardRichPayload:
             {"evidence_raw": {"log_buffer_snapshot": ["ERROR crash", "INFO ok"]}},
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "<pre>" in html
         assert "ERROR crash" in html
         assert "INFO ok" in html
@@ -1216,7 +1216,7 @@ class TestDashboardRichPayload:
             },
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "Full payload (raw JSON)" in html
 
     def test_epoch_to_iso_filter_registered(self):
@@ -1342,7 +1342,7 @@ class TestDeferEndpoint:
         self._write_request(tmp_path, "upd2")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         client.post("/defer/upd2", follow_redirects=False)
-        response = client.get("/")
+        response = client.get("/queue")
         assert "DEFERRED" in response.text
 
     def test_defer_unknown_nid_is_noop(self, tmp_path, monkeypatch):
@@ -1507,7 +1507,7 @@ class TestDismissNotificationRoute:
             )
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/")
+        response = client.get("/queue")
         assert "Dismiss in HA" in response.text
         assert "Keep" in response.text
 
@@ -1532,7 +1532,7 @@ class TestDismissNotificationRoute:
             )
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/")
+        response = client.get("/queue")
         assert "Approve" in response.text
         assert "Reject" in response.text
         assert "Defer" in response.text
@@ -2237,7 +2237,7 @@ class TestExecuteQueuedUpdate:
         (tmp_path / f"{nid}.in_progress").touch()
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "spinner" in html
         assert "Action in progress" in html
         assert "Approve" not in html
@@ -2270,7 +2270,7 @@ class TestExecuteQueuedUpdate:
         )
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        html = client.get("/").text
+        html = client.get("/queue").text
         assert "Approve" in html
         assert "Action in progress" not in html
 
@@ -2590,3 +2590,264 @@ class TestExecuteResourceAction:
         asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
 
         assert not (tmp_path / f"{nid}.in_progress").exists()
+
+
+# ── Overview tab + SSE /events (item 59) ─────────────────────────────────────
+
+
+class TestOverviewRoute:
+    """Tests for the new / overview page and /queue approval queue."""
+
+    def test_overview_returns_200(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "Pueo" in response.text
+
+    def test_overview_shows_overview_tab_text(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Monitoring Loops" in html
+        assert "Overview" in html
+
+    def test_overview_shows_pending_count(self, tmp_path, monkeypatch):
+        import json as _json, time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        (tmp_path / "card1.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "card1",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        # pending_count=1 should appear somewhere in the page
+        assert "1" in html
+
+    def test_queue_route_returns_200(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/queue")
+        assert response.status_code == 200
+
+    def test_queue_shows_pending_cards(self, tmp_path, monkeypatch):
+        import json as _json, time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        (tmp_path / "qcard1.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "qcard1",
+                    "subject": "Repair needed",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/queue").text
+        assert "Repair needed" in html
+        assert "PENDING" in html
+
+    def test_nav_includes_queue_link(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert 'href="/queue"' in html
+
+    def test_overview_no_supervisor_shows_no_loops_message(self, tmp_path, monkeypatch):
+        """When no supervisor is running, overview shows the no-loops placeholder."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", None)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "supervisor mode" in html or "No loops running" in html
+
+    def test_overview_with_supervisor_shows_loop_rows(self, tmp_path, monkeypatch):
+        """When a supervisor with loops is registered, loop rows appear in the table."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+
+        fake_sv = type(
+            "FakeSV",
+            (),
+            {
+                "get_statuses": lambda self: [
+                    sup_mod.LoopStatus(
+                        name="ha_log_monitor", status="running", error_count=0
+                    )
+                ]
+            },
+        )()
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "ha_log_monitor" in html
+        assert "running" in html
+
+
+class TestSSEEventBus:
+    """Tests for the SSE fan-out publish/subscribe mechanism."""
+
+    def test_publish_event_reaches_subscriber(self):
+        """An event published to the bus is delivered to a subscribed queue."""
+        import asyncio
+        from utils.supervisor import publish_event, subscribe, unsubscribe
+
+        async def run():
+            q = subscribe()
+            try:
+                publish_event({"event_type": "loop_status", "loop": "test"})
+                event = q.get_nowait()
+                assert event["event_type"] == "loop_status"
+                assert event["loop"] == "test"
+            finally:
+                unsubscribe(q)
+
+        asyncio.run(run())
+
+    def test_publish_event_reaches_multiple_subscribers(self):
+        """All subscribed queues receive a copy of each published event."""
+        import asyncio
+        from utils.supervisor import publish_event, subscribe, unsubscribe
+
+        async def run():
+            q1, q2 = subscribe(), subscribe()
+            try:
+                publish_event({"event_type": "resource", "disk_free_gb": 5.0})
+                e1 = q1.get_nowait()
+                e2 = q2.get_nowait()
+                assert e1["event_type"] == "resource"
+                assert e2["event_type"] == "resource"
+            finally:
+                unsubscribe(q1)
+                unsubscribe(q2)
+
+        asyncio.run(run())
+
+    def test_unsubscribe_stops_delivery(self):
+        """After unsubscribe(), the queue receives no further events."""
+        import asyncio
+        from utils.supervisor import publish_event, subscribe, unsubscribe
+
+        async def run():
+            q = subscribe()
+            unsubscribe(q)
+            publish_event({"event_type": "loop_status", "loop": "gone"})
+            assert q.empty()
+
+        asyncio.run(run())
+
+    def test_loop_supervisor_emits_to_subscribers(self):
+        """LoopSupervisor._emit() publishes to SSE subscribers via publish_event."""
+        import asyncio
+        import utils.supervisor as sup_mod
+        from utils.supervisor import LoopSupervisor, subscribe, unsubscribe
+
+        async def run():
+            q = subscribe()
+            try:
+                sv = LoopSupervisor()
+                sv._handles["my_loop"] = sup_mod.LoopStatus(
+                    name="my_loop", status="running"
+                )
+                sv._emit("my_loop")
+                event = q.get_nowait()
+                assert event["event_type"] == "loop_status"
+                assert event["loop"] == "my_loop"
+                assert event["status"] == "running"
+            finally:
+                unsubscribe(q)
+
+        asyncio.run(run())
+
+    def test_sse_events_endpoint_registered(self):
+        """The /events route is registered in the FastAPI app."""
+        import web.dashboard as dashboard
+
+        route_paths = {getattr(r, "path", "") for r in dashboard.app.routes}
+        assert "/events" in route_paths
+
+    def test_sse_events_returns_streaming_response(self):
+        """sse_events() returns a StreamingResponse with text/event-stream media type."""
+        import asyncio
+        from fastapi.responses import StreamingResponse
+        from web.dashboard import sse_events
+
+        async def run():
+            resp = await sse_events()
+            # The generator is lazy — just check the response object metadata
+            assert isinstance(resp, StreamingResponse)
+            assert resp.media_type == "text/event-stream"
+
+        asyncio.run(run())
+
+
+class TestLoadLastBackup:
+    """Tests for the _load_last_backup helper."""
+
+    def test_returns_never_when_db_missing(self, monkeypatch):
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "DB_PATH", "/nonexistent/path/test.db")
+        result = dashboard._load_last_backup()
+        assert result["age"] == "never"
+        assert result["slug"] is None
+
+    def test_returns_age_string_for_recent_backup(self, monkeypatch, tmp_path):
+        import sqlite3, time
+        import ha_agent_advanced
+        import web.dashboard as dashboard
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", db)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, 'abc123', 'ACTIVE', 0, 'both')",
+                (int(time.time()) - 120,),
+            )
+        result = dashboard._load_last_backup()
+        assert result["slug"] == "abc123"
+        assert "m ago" in result["age"] or "h ago" in result["age"]

@@ -40,13 +40,14 @@ async def supervisor_main(config_path: Path) -> None:
     from utils.notify import get_notifier
     from utils.resource import ResourcePoller
     from utils.ssh_client import AsyncSSHClient
-    from utils.supervisor import LoopSupervisor, event_bus
+    from utils.supervisor import LoopSupervisor, event_bus, set_supervisor_instance
     from web.dashboard import app as dashboard_app
 
     ha_agent_advanced.init_local_database()
 
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)
+    set_supervisor_instance(supervisor)
 
     # HA log monitor loop (SSH tail + AI triage)
     supervisor.start(
