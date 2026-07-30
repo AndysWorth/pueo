@@ -2724,6 +2724,157 @@ class TestOverviewRoute:
         assert "running" in html
 
 
+class TestLoopControlEndpoints:
+    """Tests for POST /loops/{name}/pause|resume|run-now endpoints."""
+
+    def _make_fake_sv(self, loop_names=("ha_log_monitor",)):
+        """Return a minimal fake supervisor that records control calls."""
+        import utils.supervisor as sup_mod
+
+        calls: list[tuple] = []
+
+        def _ctrl(action):
+            def method(self_inner, name):
+                if name not in loop_names:
+                    raise KeyError(name)
+                calls.append((action, name))
+
+            return method
+
+        FakeSV = type(
+            "FakeSV",
+            (),
+            {
+                "get_statuses": lambda self: [
+                    sup_mod.LoopStatus(name=n) for n in loop_names
+                ],
+                "pause": _ctrl("pause"),
+                "resume": _ctrl("resume"),
+                "run_now": _ctrl("run_now"),
+            },
+        )
+        return FakeSV(), calls
+
+    def test_pause_loop_returns_ok(self, tmp_path, monkeypatch):
+        """POST /loops/{name}/pause returns 200 and calls sv.pause()."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fake_sv, calls = self._make_fake_sv()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        r = client.post("/loops/ha_log_monitor/pause")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert ("pause", "ha_log_monitor") in calls
+
+    def test_resume_loop_returns_ok(self, tmp_path, monkeypatch):
+        """POST /loops/{name}/resume returns 200 and calls sv.resume()."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fake_sv, calls = self._make_fake_sv()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        r = client.post("/loops/ha_log_monitor/resume")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert ("resume", "ha_log_monitor") in calls
+
+    def test_run_now_loop_returns_ok(self, tmp_path, monkeypatch):
+        """POST /loops/{name}/run-now returns 200 and calls sv.run_now()."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fake_sv, calls = self._make_fake_sv()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        r = client.post("/loops/ha_log_monitor/run-now")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert ("run_now", "ha_log_monitor") in calls
+
+    def test_unknown_loop_returns_404(self, tmp_path, monkeypatch):
+        """Unknown loop name returns 404."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fake_sv, _ = self._make_fake_sv()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        r = client.post("/loops/nonexistent/pause")
+        assert r.status_code == 404
+
+    def test_no_supervisor_returns_503(self, tmp_path, monkeypatch):
+        """When no supervisor is registered, all loop control endpoints return 503."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", None)
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        assert client.post("/loops/ha_log_monitor/pause").status_code == 503
+        assert client.post("/loops/ha_log_monitor/resume").status_code == 503
+        assert client.post("/loops/ha_log_monitor/run-now").status_code == 503
+
+    def test_overview_shows_controls_column(self, tmp_path, monkeypatch):
+        """Overview page renders the Controls column with Pause/Run now buttons."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fake_sv, _ = self._make_fake_sv(loop_names=("ha_log_monitor",))
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Controls" in html
+        assert "Pause" in html
+        assert "Run now" in html
+
+    def test_paused_loop_shows_resume_button(self, tmp_path, monkeypatch):
+        """A paused loop renders a Resume button instead of Pause."""
+        import utils.supervisor as sup_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        paused_sv = type(
+            "FakeSV",
+            (),
+            {
+                "get_statuses": lambda self: [
+                    sup_mod.LoopStatus(
+                        name="ha_log_monitor", status="paused", paused=True
+                    )
+                ],
+                "pause": lambda self, n: None,
+                "resume": lambda self, n: None,
+                "run_now": lambda self, n: None,
+            },
+        )()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(sup_mod, "_supervisor_instance", paused_sv)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "Resume" in html
+
+
 class TestSSEEventBus:
     """Tests for the SSE fan-out publish/subscribe mechanism."""
 

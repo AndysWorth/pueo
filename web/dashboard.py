@@ -1004,6 +1004,48 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
     )
 
 
+@app.post("/loops/{loop_name}/pause")
+async def loop_pause(loop_name: str) -> JSONResponse:
+    from utils.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        raise HTTPException(status_code=503, detail="Supervisor not running")
+    try:
+        sv.pause(loop_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/loops/{loop_name}/resume")
+async def loop_resume(loop_name: str) -> JSONResponse:
+    from utils.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        raise HTTPException(status_code=503, detail="Supervisor not running")
+    try:
+        sv.resume(loop_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/loops/{loop_name}/run-now")
+async def loop_run_now(loop_name: str) -> JSONResponse:
+    from utils.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        raise HTTPException(status_code=503, detail="Supervisor not running")
+    try:
+        sv.run_now(loop_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
+    return JSONResponse({"ok": True})
+
+
 def run_dashboard() -> None:
     import uvicorn
 

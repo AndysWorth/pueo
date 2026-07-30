@@ -76,6 +76,7 @@ class LoopStatus:
     last_run: float | None = None
     next_run: float | None = None
     paused: bool = False
+    run_now_pending: bool = False
 
 
 class LoopSupervisor:
@@ -115,9 +116,20 @@ class LoopSupervisor:
         status = self._handles[name]
         delay = self._backoff_start
         while True:
+            # --- Paused state: sleep 1 s per tick until resumed ---
             if status.paused:
-                await asyncio.sleep(1.0)
-                continue
+                if status.status != "paused":
+                    status.status = "paused"
+                    self._emit(name)
+                try:
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    if status.paused:
+                        raise  # shutdown cancel; paused still True → propagate to exit
+                    # run_now() cleared paused before cancelling; fall through
+                continue  # re-check status.paused
+
+            # --- Running state ---
             status.status = "running"
             status.last_run = time.time()
             self._emit(name)
@@ -125,6 +137,11 @@ class LoopSupervisor:
                 await coro_factory()
                 break  # Clean return — daemon loops normally run forever
             except asyncio.CancelledError:
+                if status.paused:
+                    continue  # pause() called while running → enter paused state
+                if status.run_now_pending:
+                    status.run_now_pending = False
+                    continue  # run_now() called while running → restart immediately
                 status.status = "disabled"
                 self._emit(name)
                 return
@@ -135,7 +152,15 @@ class LoopSupervisor:
                 status.next_run = time.time() + delay
                 self._emit(name)
                 log.error("loop_crashed", loop=name, error=str(exc), restart_in=delay)
-                await asyncio.sleep(delay)
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    if status.paused:
+                        continue  # pause() during backoff → paused state
+                    if status.run_now_pending:
+                        status.run_now_pending = False
+                        continue  # run_now() during backoff → restart immediately
+                    return  # clean cancel during backoff
                 delay = min(delay * 2, self._backoff_cap)
 
     def _emit(self, name: str) -> None:
@@ -158,6 +183,38 @@ class LoopSupervisor:
                 pass
         # publish_event handles the module-level bus + all SSE subscriber queues
         publish_event(event)
+
+    def pause(self, name: str) -> None:
+        """Pause a loop by name. The running coro is cancelled; the restart loop re-enters
+        the paused-sleep branch instead of restarting the coro."""
+        status = self._handles[name]  # raises KeyError if unknown
+        if status.paused:
+            return
+        status.paused = True
+        status.status = "paused"
+        self._emit(name)
+        task = self._tasks.get(name)
+        if task and not task.done():
+            task.cancel()
+
+    def resume(self, name: str) -> None:
+        """Resume a paused loop. The next paused-sleep tick will detect paused=False
+        and proceed to run the coro."""
+        status = self._handles[name]  # raises KeyError if unknown
+        if not status.paused:
+            return
+        status.paused = False
+        self._emit(name)
+
+    def run_now(self, name: str) -> None:
+        """Run a loop's next iteration immediately, interrupting any sleep or pause.
+        If the loop is paused it is also resumed."""
+        status = self._handles[name]  # raises KeyError if unknown
+        status.paused = False
+        status.run_now_pending = True
+        task = self._tasks.get(name)
+        if task and not task.done():
+            task.cancel()
 
     def cancel_all(self) -> None:
         """Cancel all supervised tasks (called on SIGTERM/SIGINT)."""

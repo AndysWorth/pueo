@@ -1805,6 +1805,132 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_pause_stops_running_daemon(self):
+        """pause() cancels the running daemon; the loop enters paused status."""
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)  # simulate a long-running daemon
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)  # let daemon start
+            sup.pause("d")
+            await asyncio.sleep(0.05)  # let loop re-enter paused branch
+
+            status = sup.get_statuses()[0]
+            assert status.paused is True
+            assert status.status == "paused"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_resume_restarts_paused_loop(self):
+        """resume() clears the paused flag; the loop runs the coro again."""
+
+        async def _run():
+            called: list[int] = []
+            resume_event = asyncio.Event()
+
+            async def daemon():
+                called.append(1)
+                await resume_event.wait()  # block until we signal
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)  # daemon running, waiting on event
+            sup.pause("d")
+            await asyncio.sleep(0.05)  # loop now paused
+            assert sup._handles["d"].paused is True
+
+            resume_event.set()  # unblock daemon so it can exit cleanly
+            sup.resume("d")
+            await asyncio.sleep(0.05)  # loop resumes and re-runs daemon
+            assert sup._handles["d"].paused is False
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+            assert len(called) >= 1
+
+        asyncio.run(_run())
+
+    def test_run_now_fires_paused_loop(self):
+        """run_now() clears paused and restarts the loop immediately."""
+
+        async def _run():
+            called: list[int] = []
+
+            async def coro():
+                called.append(1)
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.5, backoff_cap=0.5)
+            sup.start("d", coro)
+            # Pause before the coro gets a chance to run
+            sup._handles["d"].paused = True
+            await asyncio.sleep(0.05)
+            assert len(called) == 0  # still paused
+
+            sup.run_now("d")
+            await asyncio.sleep(0.1)  # loop should fire within 100 ms
+
+            assert len(called) >= 1
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_run_now_interrupts_backoff(self):
+        """run_now() during error backoff fires the loop immediately."""
+
+        async def _run():
+            calls: list[int] = []
+
+            async def flaky():
+                calls.append(1)
+                if len(calls) == 1:
+                    raise RuntimeError("first call fails")
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=5.0, backoff_cap=5.0)
+            sup.start("d", flaky)
+            await asyncio.sleep(0.05)  # first call fails, now in 5s backoff
+
+            assert calls == [1]
+            sup.run_now("d")
+            await asyncio.sleep(0.1)  # should restart within 100 ms
+
+            assert len(calls) >= 2  # second run fired by run_now
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_pause_unknown_loop_raises(self):
+        """pause/resume/run_now raise KeyError for unknown loop names."""
+        from utils.supervisor import LoopSupervisor
+
+        sup = LoopSupervisor()
+        with pytest.raises(KeyError):
+            sup.pause("nonexistent")
+        with pytest.raises(KeyError):
+            sup.resume("nonexistent")
+        with pytest.raises(KeyError):
+            sup.run_now("nonexistent")
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 
