@@ -278,6 +278,27 @@ async def check_netalertx(
     return AuditResult("netalertx", "OK", "; ".join(parts))
 
 
+def check_netalertx_api_token() -> AuditResult:
+    """Warn when NetAlertX setup is desired but no API token has been configured."""
+    import config as _cfg
+
+    if not _cfg.NETALERTX_SETUP_DESIRED:
+        return AuditResult(
+            "netalertx_api_token",
+            "OK",
+            "NetAlertX setup not enabled (netalertx.setup_desired=false)",
+        )
+    if not _cfg.NETALERTX_API_TOKEN:
+        return AuditResult(
+            "netalertx_api_token",
+            "WARN",
+            "netalertx.setup_desired=true but api_token is empty",
+            "Generate token: NetAlertX UI → Settings → Main Settings → API Key, "
+            "then set netalertx.api_token in config.yaml and restart Pueo",
+        )
+    return AuditResult("netalertx_api_token", "OK", "NetAlertX API token is configured")
+
+
 def check_state_history() -> AuditResult:
     """Report the ratio of is_valid=0 in state_history and flag suspicious patterns."""
     import config
@@ -410,6 +431,7 @@ async def run_audit(
     results.append(check_state_history())
     results.append(check_pending_hitl(watch_dir=watch_dir))
     results.append(check_update_check(watch_dir=watch_dir))
+    results.append(check_netalertx_api_token())
 
     # Async checks (SSH / external API) — gather in parallel, tolerate per-check failures
     async_tasks = [

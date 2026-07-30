@@ -3129,6 +3129,48 @@ class TestRunInstaller:
             )
         )
 
+    def test_main_skips_name_sync_when_token_empty(self, tmp_path, monkeypatch):
+        """When api_token is empty, a notification is sent and sync_names is NOT called."""
+        import asyncio
+        import config
+
+        import netalertx.installer as inst
+        from netalertx.installer import main as installer_main
+        from utils.ssh_client import FakeSSHClient
+        from utils.notify import FakeNotifier
+        import ha_agent_advanced
+
+        db = tmp_path / "main_token_empty.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        monkeypatch.setattr(inst, "DB_PATH", str(db))
+        monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "")
+
+        async def _fake_run(*a, **k):
+            return "FULLY_OPERATIONAL"
+
+        monkeypatch.setattr(inst, "run_installer", _fake_run)
+
+        sync_called = []
+
+        async def _fake_sync(self_inner, *a, **k):
+            sync_called.append(True)
+
+        monkeypatch.setattr("netalertx.ha_name_sync.HaNameSync.sync_names", _fake_sync)
+
+        notifier = FakeNotifier(approve=True)
+        asyncio.run(
+            installer_main(
+                ssh_client=FakeSSHClient(),
+                gate=self._gate_auto(),
+                notifier=notifier,
+                db_path=str(db),
+            )
+        )
+        assert not sync_called, "sync_names must not be called without a token"
+        assert len(notifier.sent) == 1
+        assert "API token" in notifier.sent[0]["subject"]
+
     def test_main_runs_name_sync_when_api_ready(self, tmp_path, monkeypatch):
         """When _poll_api_ready succeeds, sync_names is called and its report logged."""
         import asyncio
@@ -3142,6 +3184,10 @@ class TestRunInstaller:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
         ha_agent_advanced.init_local_database()
         monkeypatch.setattr(inst, "DB_PATH", str(db))
+
+        import config
+
+        monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "tok")
 
         async def _fake_run(*a, **k):
             return "FULLY_OPERATIONAL"

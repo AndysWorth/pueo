@@ -214,6 +214,7 @@ if $WRITE_CONFIG; then
     ask "Home Assistant hostname or IP"    "homeassistant.local"          HA_HOST
     ask "SSH username"                      "root"                          HA_USER
     ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
+    echo "  (Create at: HA Profile → Security → Long-Lived Access Tokens)"
     ask "HA long-lived access token"        ""                              HA_API_TOKEN
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
     ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
@@ -292,10 +293,13 @@ if $WRITE_CONFIG; then
     NAX_SETUP_DESIRED=false
     [[ "${nax_setup_ans:-Y}" =~ ^[Yy] ]] && NAX_SETUP_DESIRED=true
     echo
-    echo "  Provide an API token to enable REST API calls from Pueo."
-    echo "  All other values default to your HA SSH settings."
+    echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
+    echo "  installed. If this is your first run, press Enter to skip."
+    echo "  Once NetAlertX is running, find it at:"
+    echo "    NetAlertX web UI → Settings → Main Settings → API Key"
+    echo "  Then re-run setup.sh or edit config.yaml directly."
     echo
-    ask "NetAlertX API token"  ""  NAX_API_TOKEN
+    ask "NetAlertX API token (blank = set after first install)"  ""  NAX_API_TOKEN
 
     # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
     echo
@@ -313,8 +317,12 @@ if $WRITE_CONFIG; then
     fi
     echo
     echo "  If Mosquitto requires authentication, enter the credentials Pueo should"
-    echo "  use to connect. Create a dedicated HA user at:"
+    echo "  use to connect."
+    echo "  Step 1 — Create a dedicated HA user:"
     echo "    Settings → People → Users → Add User (enable 'Local access only')"
+    echo "  Step 2 — Enable auth in the Mosquitto add-on:"
+    echo "    Settings → Apps → Mosquitto broker → Configuration"
+    echo "    Add the user to the 'logins:' list and save."
     echo "  Leave blank for anonymous (unauthenticated) access."
     echo
     read -rp "  MQTT username (blank = anonymous): " MQTT_USER

@@ -49,7 +49,46 @@ In alignment with the spirit of open-source and out of respect for Native Hawaii
 > ```
 > `setup.sh` will remind you if the agent is not active or the key is not loaded.
 
-### 2. Installation & Configuration
+### 2. Credentials
+
+`setup.sh` will ask for three sets of credentials. Have these ready, or leave them blank and set them in `config.yaml` after the first install.
+
+#### HA Long-Lived Access Token
+Required for update monitoring and notification polling.
+1. In Home Assistant, click your profile picture (bottom-left)
+2. Scroll to **Security → Long-Lived Access Tokens**
+3. Click **Create Token**, name it `pueo`, and copy the value
+
+Config key: `home_assistant.api_token`
+
+#### NetAlertX API Token
+Required for device name sync and health monitoring via the NetAlertX REST API.
+
+> **First-time setup:** Leave this blank. NetAlertX doesn't exist yet. Pueo will send a dashboard card with step-by-step instructions immediately after the first successful install.
+
+After first install:
+1. Open the NetAlertX web UI at `http://<your-ha-host>:20212`
+2. Go to **Settings → Main Settings → API Key** and copy the value
+3. Set `netalertx.api_token` in `config.yaml` and restart Pueo
+
+Config key: `netalertx.api_token`
+
+#### MQTT Credentials (optional — only if Mosquitto authentication is enabled)
+
+**Step 1 — Create a dedicated HA user for Mosquitto:**
+`Settings → People → Users → Add User` (enable "Local access only")
+
+**Step 2 — Enable authentication in the Mosquitto add-on:**
+`Settings → Apps → Mosquitto broker → Configuration`
+Add the user to the `logins:` list and save.
+
+Leave both fields blank to use anonymous access.
+
+Config keys: `netalertx.mqtt_user`, `netalertx.mqtt_password`
+
+---
+
+### 3. Installation & Configuration
 Clone the repository and run the setup script:
 ```bash
 git clone https://github.com/AndysWorth/pueo
@@ -68,7 +107,7 @@ cd pueo
 
 A reference template for `config.yaml` is available in `config.yaml.default`.
 
-### 3. Running the Agent
+### 4. Running the Agent
 
 #### Supervisor (recommended — starts everything)
 ```bash

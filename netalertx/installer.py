@@ -1411,6 +1411,40 @@ async def main(
         from netalertx.ha_name_sync import HaNameSync
 
         _base_url = f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}"
+
+        if not NETALERTX_API_TOKEN:
+            log.warning(
+                "netalertx_api_token_missing",
+                reason="FULLY_OPERATIONAL but netalertx.api_token is empty; ha_name_sync skipped",
+                action=(
+                    "Generate token at: NetAlertX UI → Settings → Main Settings → API Key, "
+                    "set netalertx.api_token in config.yaml, restart Pueo"
+                ),
+            )
+            await _notifier.send(
+                subject="NetAlertX installed — action required: set API token",
+                body=(
+                    f"NetAlertX is fully installed and running at {_base_url}.\n\n"
+                    "To enable REST API features (device name sync, health monitoring),\n"
+                    "an API token is required.\n\n"
+                    "Steps:\n"
+                    f"  1. Open the NetAlertX web UI: {_base_url}\n"
+                    "  2. Go to: Settings → Main Settings → API Key\n"
+                    '  3. Click "Generate" (or copy existing key)\n'
+                    "  4. Edit config.yaml and set:\n"
+                    "         netalertx:\n"
+                    '           api_token: "<your-token>"\n'
+                    "  5. Restart Pueo: python main.py\n\n"
+                    "Device name sync has been skipped this run and will resume automatically\n"
+                    "after the token is set and Pueo restarts."
+                ),
+                payload={
+                    "card_type": "netalertx_setup",
+                    "notification_id": "netalertx_api_token_required",
+                },
+            )
+            return
+
         api_ready = await _poll_api_ready(_base_url)
         if not api_ready:
             log.warning(
