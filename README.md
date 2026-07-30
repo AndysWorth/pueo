@@ -122,7 +122,8 @@ restart automatically with exponential backoff.
 
 `setup.sh` can install Pueo as a macOS launchd service (auto-start at login, auto-restart
 on crash) — choose the option when prompted, or run `python main.py --mode install-service`
-afterwards.
+afterwards. Once installed, use `stop-service` / `start-service` / `restart-service` to
+control the daemon without touching `launchctl` directly.
 
 #### Individual modes
 ```bash
@@ -145,6 +146,9 @@ python main.py --mode netalertx-setup     # install and configure NetAlertX on H
 python main.py --mode netalertx           # monitor NetAlertX logs continuously (daemon)
 python main.py --mode rag-refresh         # embed cached HA release notes + HACS changelogs
 python main.py --mode install-service     # install as macOS launchd service
+python main.py --mode stop-service        # stop the launchd service (stays stopped until start-service)
+python main.py --mode start-service       # re-enable and start the launchd service
+python main.py --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
 ```
 
 Pass `--config /path/to/config.yaml` if your config file is not in the project directory.

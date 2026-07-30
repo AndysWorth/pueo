@@ -121,20 +121,32 @@ class TestLoadHITLRequests:
         assert results[0].status == "PENDING"
 
     def test_approved_signal_yields_approved_status(self, tmp_path):
+        from web.dashboard import _status
+
+        self._write_request(tmp_path, "bbb")
+        (tmp_path / "bbb.approved").touch()
+        assert _status("bbb", tmp_path) == "APPROVED"
+
+    def test_approved_card_excluded_from_load_requests(self, tmp_path):
         from web.dashboard import _load_requests
 
         self._write_request(tmp_path, "bbb")
         (tmp_path / "bbb.approved").touch()
-        results = _load_requests(tmp_path)
-        assert results[0].status == "APPROVED"
+        assert _load_requests(tmp_path) == []
 
     def test_rejected_signal_yields_rejected_status(self, tmp_path):
+        from web.dashboard import _status
+
+        self._write_request(tmp_path, "ccc")
+        (tmp_path / "ccc.rejected").touch()
+        assert _status("ccc", tmp_path) == "REJECTED"
+
+    def test_rejected_card_excluded_from_load_requests(self, tmp_path):
         from web.dashboard import _load_requests
 
         self._write_request(tmp_path, "ccc")
         (tmp_path / "ccc.rejected").touch()
-        results = _load_requests(tmp_path)
-        assert results[0].status == "REJECTED"
+        assert _load_requests(tmp_path) == []
 
     def test_empty_directory_returns_empty_list(self, tmp_path):
         from web.dashboard import _load_requests
@@ -157,16 +169,16 @@ class TestLoadHITLRequests:
         assert len(results) == 1
         assert results[0].notification_id == "good"
 
-    def test_pending_sorted_before_resolved(self, tmp_path):
+    def test_resolved_cards_excluded_from_queue(self, tmp_path):
         from web.dashboard import _load_requests
 
         self._write_request(tmp_path, "p1")
         self._write_request(tmp_path, "r1")
         (tmp_path / "r1.approved").touch()
         results = _load_requests(tmp_path)
-        statuses = [r.status for r in results]
-        assert statuses[0] == "PENDING"
-        assert statuses[1] == "APPROVED"
+        assert len(results) == 1
+        assert results[0].notification_id == "p1"
+        assert results[0].status == "PENDING"
 
 
 # ── main.py dashboard mode ────────────────────────────────────────────────────────
@@ -1334,7 +1346,7 @@ class TestDeferEndpoint:
         assert (tmp_path / "upd1.deferred").exists()
         assert (tmp_path / "upd1.rejected").exists()
 
-    def test_defer_shows_deferred_status(self, tmp_path, monkeypatch):
+    def test_defer_removes_card_from_queue(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -1343,7 +1355,9 @@ class TestDeferEndpoint:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         client.post("/defer/upd2", follow_redirects=False)
         response = client.get("/queue")
-        assert "DEFERRED" in response.text
+        # Deferred cards leave the queue; they appear only in the Timeline
+        assert "upd2" not in response.text
+        assert (tmp_path / "upd2.deferred").exists()
 
     def test_defer_unknown_nid_is_noop(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
@@ -1526,7 +1540,7 @@ class TestDismissNotificationRoute:
                     "notification_id": card_id,
                     "subject": "Repair action",
                     "body": "Apply fix?",
-                    "payload": {"severity": "MEDIUM"},
+                    "payload": {"card_type": "repair", "severity": "MEDIUM"},
                     "sent_at": int(_time.time()) - 10,
                 }
             )
@@ -1536,6 +1550,32 @@ class TestDismissNotificationRoute:
         assert "Approve" in response.text
         assert "Reject" in response.text
         assert "Defer" in response.text
+
+    def test_informational_card_shows_acknowledge_button(self, tmp_path, monkeypatch):
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        card_id = "info-xyz"
+        (tmp_path / f"{card_id}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Backup failed",
+                    "body": "HA backup failed. Aborting to protect HA state.",
+                    "payload": {"severity": "CRITICAL", "step": 6},
+                    "sent_at": int(_time.time()) - 10,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/queue")
+        assert "Acknowledge" in response.text
+        assert "Reject" not in response.text
+        assert "Defer" not in response.text
 
 
 class TestDeferredStatusRecognition:
@@ -1556,13 +1596,20 @@ class TestDeferredStatusRecognition:
         )
 
     def test_deferred_file_yields_deferred_status(self, tmp_path):
+        from web.dashboard import _status
+
+        self._write_request(tmp_path, "ddd")
+        (tmp_path / "ddd.deferred").touch()
+        (tmp_path / "ddd.rejected").touch()
+        assert _status("ddd", tmp_path) == "DEFERRED"
+
+    def test_deferred_card_excluded_from_queue(self, tmp_path):
         from web.dashboard import _load_requests
 
         self._write_request(tmp_path, "ddd")
         (tmp_path / "ddd.deferred").touch()
         (tmp_path / "ddd.rejected").touch()
-        results = _load_requests(tmp_path)
-        assert results[0].status == "DEFERRED"
+        assert _load_requests(tmp_path) == []
 
     def test_deferred_takes_precedence_over_rejected(self, tmp_path):
         from web.dashboard import _status

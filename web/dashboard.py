@@ -257,12 +257,7 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
         [r for r in requests if r.status == "PENDING"],
         key=lambda r: r.sent_at,
     )
-    resolved = sorted(
-        [r for r in requests if r.status != "PENDING"],
-        key=lambda r: r.sent_at,
-        reverse=True,
-    )
-    return pending + resolved
+    return pending
 
 
 def _load_last_backup() -> dict:
