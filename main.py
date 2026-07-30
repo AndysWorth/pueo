@@ -87,6 +87,19 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: tail_netalertx_log_stream(notifier=notifier),
         )
 
+    # NetAlertX deferred setup: if the user requested setup and it isn't done yet,
+    # run the installer as a supervised one-shot loop so HITL cards reach the dashboard.
+    if cfg.NETALERTX_SETUP_DESIRED:
+        import netalertx.installer as _nax_installer
+        from utils.autonomy import AutonomyGate
+
+        if _nax_installer.get_install_state(cfg.DB_PATH) != "FULLY_OPERATIONAL":
+            _nax_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
+            supervisor.start(
+                "netalertx_setup",
+                lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
+            )
+
     # Register signal handlers for clean shutdown
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

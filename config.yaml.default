@@ -18,6 +18,7 @@ ollama:
   # embed_model: "nomic-embed-text"   # Embedding model for RAG knowledge store (requires `ollama pull nomic-embed-text`)
 
 netalertx:
+  setup_desired: false                        # set true to have Pueo install and configure NetAlertX automatically
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
   host: ""                                    # NetAlertX host (default: same as home_assistant.host)
   api_port: 20212                             # NetAlertX REST API port

@@ -1155,6 +1155,71 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "netalertx" in started
 
+    def test_netalertx_setup_loop_registered_when_desired_and_not_operational(
+        self, monkeypatch, tmp_path
+    ):
+        """netalertx_setup loop starts when setup_desired=true and not yet FULLY_OPERATIONAL."""
+        cfg_data = {
+            "home_assistant": {"host": "ha.local"},
+            "netalertx": {"setup_desired": True},
+            "agent": {"notify_watch_dir": str(tmp_path / "hitl")},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg_data))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.installer as nax_inst
+
+        monkeypatch.setattr(nax_inst, "get_install_state", lambda db: "ADDON_RUNNING")
+
+        async def _noop(**kw):
+            pass
+
+        monkeypatch.setattr(nax_inst, "main", _noop)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_setup" in started
+
+    def test_netalertx_setup_loop_not_registered_when_fully_operational(
+        self, monkeypatch, tmp_path
+    ):
+        """netalertx_setup loop is skipped when install state is FULLY_OPERATIONAL."""
+        cfg_data = {
+            "home_assistant": {"host": "ha.local"},
+            "netalertx": {"setup_desired": True},
+            "agent": {"notify_watch_dir": str(tmp_path / "hitl")},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg_data))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.installer as nax_inst
+
+        monkeypatch.setattr(
+            nax_inst, "get_install_state", lambda db: "FULLY_OPERATIONAL"
+        )
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_setup" not in started
+
+    def test_netalertx_setup_loop_not_registered_when_not_desired(
+        self, monkeypatch, tmp_path
+    ):
+        """netalertx_setup loop is skipped when setup_desired is false (the default)."""
+        config_path = self._make_config(tmp_path)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_setup" not in started
+
 
 # ── check_ha_version ─────────────────────────────────────────────────────────────
 
