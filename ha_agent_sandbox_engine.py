@@ -143,6 +143,21 @@ def _migrate_v6(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v7(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS timeline_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          REAL    NOT NULL,
+            level       TEXT    NOT NULL,
+            source      TEXT    NOT NULL,
+            message     TEXT    NOT NULL,
+            detail_json TEXT
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -150,6 +165,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (4, _migrate_v4),
     (5, _migrate_v5),
     (6, _migrate_v6),
+    (7, _migrate_v7),
 ]
 
 

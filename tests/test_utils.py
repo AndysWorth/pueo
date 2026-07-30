@@ -1806,6 +1806,186 @@ class TestLoopSupervisor:
         asyncio.run(_run())
 
 
+# ── Timeline utility ──────────────────────────────────────────────────────────────
+
+
+class TestTimelineUtils:
+    """Unit tests for utils/timeline.py — write, load, count, get."""
+
+    @pytest.fixture()
+    def tl_db(self, tmp_path, monkeypatch):
+        """Isolated SQLite DB with timeline_events table."""
+        import ha_agent_advanced
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "tl_test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        return db
+
+    def test_write_returns_positive_id(self, tl_db):
+        from utils.timeline import write_timeline_event
+
+        eid = write_timeline_event("INFO", "test_src", "hello world")
+        assert eid > 0
+
+    def test_write_persists_to_db(self, tl_db):
+        import sqlite3
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event("WARN", "resource", "disk low", {"disk_free_gb": 1.5})
+        with sqlite3.connect(tl_db) as conn:
+            row = conn.execute(
+                "SELECT level, source, message, detail_json FROM timeline_events"
+            ).fetchone()
+        assert row[0] == "WARN"
+        assert row[1] == "resource"
+        assert row[2] == "disk low"
+        assert '"disk_free_gb"' in row[3]
+
+    def test_write_publishes_to_sse_bus(self, tl_db, monkeypatch):
+        """write_timeline_event() calls publish_event with event_type='timeline'."""
+        import utils.timeline as tl_mod
+
+        published = []
+        monkeypatch.setattr(tl_mod, "_publish_event_for_test", None, raising=False)
+
+        import utils.supervisor as sup_mod
+
+        captured = []
+        monkeypatch.setattr(sup_mod, "publish_event", lambda e: captured.append(e))
+
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event("ERROR", "ha_log_monitor", "bad thing happened")
+        assert any(e.get("event_type") == "timeline" for e in captured)
+
+    def test_load_returns_newest_first(self, tl_db):
+        import time as _time
+        from utils.timeline import load_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "a", "first")
+        _time.sleep(0.01)
+        write_timeline_event("INFO", "b", "second")
+        events = load_timeline_events()
+        assert events[0]["message"] == "second"
+        assert events[1]["message"] == "first"
+
+    def test_load_level_filter(self, tl_db):
+        from utils.timeline import load_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "src", "info event")
+        write_timeline_event("ERROR", "src", "error event")
+        events = load_timeline_events(level_filter="ERROR")
+        assert len(events) == 1
+        assert events[0]["message"] == "error event"
+
+    def test_load_source_filter(self, tl_db):
+        from utils.timeline import load_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "resource", "disk ok")
+        write_timeline_event("INFO", "update_check", "no updates")
+        events = load_timeline_events(source_filter="resource")
+        assert len(events) == 1
+        assert events[0]["source"] == "resource"
+
+    def test_load_parses_detail_json(self, tl_db):
+        from utils.timeline import load_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "src", "msg", {"key": "val"})
+        events = load_timeline_events()
+        assert events[0]["detail"] == {"key": "val"}
+
+    def test_load_empty_detail_returns_dict(self, tl_db):
+        from utils.timeline import load_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "src", "msg")
+        events = load_timeline_events()
+        assert events[0]["detail"] == {}
+
+    def test_get_returns_event_by_id(self, tl_db):
+        from utils.timeline import get_timeline_event, write_timeline_event
+
+        eid = write_timeline_event("CRITICAL", "src", "critical thing", {"x": 1})
+        ev = get_timeline_event(eid)
+        assert ev is not None
+        assert ev["level"] == "CRITICAL"
+        assert ev["detail"] == {"x": 1}
+
+    def test_get_returns_none_for_missing_id(self, tl_db):
+        from utils.timeline import get_timeline_event
+
+        assert get_timeline_event(99999) is None
+
+    def test_count_total(self, tl_db):
+        from utils.timeline import count_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "src", "a")
+        write_timeline_event("WARN", "src", "b")
+        assert count_timeline_events() == 2
+
+    def test_count_with_level_filter(self, tl_db):
+        from utils.timeline import count_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "src", "a")
+        write_timeline_event("WARN", "src", "b")
+        assert count_timeline_events(level_filter="WARN") == 1
+
+    def test_load_on_missing_table_returns_empty(self, tmp_path, monkeypatch):
+        """Querying a DB with no timeline_events table returns []."""
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        from utils.timeline import load_timeline_events
+
+        result = load_timeline_events()
+        assert result == []
+
+    def test_write_sse_publish_exception_still_returns_id(self, tl_db, monkeypatch):
+        """write_timeline_event() returns the id even when publish_event raises."""
+        import utils.supervisor as sup_mod
+
+        monkeypatch.setattr(
+            sup_mod,
+            "publish_event",
+            lambda e: (_ for _ in ()).throw(RuntimeError("bus down")),
+        )
+
+        from utils.timeline import write_timeline_event
+
+        eid = write_timeline_event("INFO", "src", "msg")
+        assert eid > 0
+
+    def test_get_on_missing_table_returns_none(self, tmp_path, monkeypatch):
+        """get_timeline_event() returns None when the table doesn't exist."""
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        from utils.timeline import get_timeline_event
+
+        assert get_timeline_event(1) is None
+
+    def test_count_with_source_filter(self, tl_db):
+        from utils.timeline import count_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "resource", "disk ok")
+        write_timeline_event("INFO", "update_check", "no updates")
+        assert count_timeline_events(source_filter="resource") == 1
+
+    def test_count_on_missing_table_returns_zero(self, tmp_path, monkeypatch):
+        """count_timeline_events() returns 0 when the table doesn't exist."""
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        from utils.timeline import count_timeline_events
+
+        assert count_timeline_events() == 0
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"

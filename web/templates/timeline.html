@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .filter-bar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+  .filter-bar label { font-size: 0.82rem; color: #555; }
+  .filter-bar select, .filter-bar input { font-size: 0.82rem; padding: 0.25rem 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+  .filter-bar .btn-filter { padding: 0.3rem 0.9rem; font-size: 0.82rem; background: #6366f1; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+  .filter-bar .btn-filter:hover { background: #4f46e5; }
+  .filter-bar .btn-clear { padding: 0.3rem 0.7rem; font-size: 0.82rem; background: #e9ecef; color: #444; border: none; border-radius: 4px; cursor: pointer; }
+  .filter-bar .btn-clear:hover { background: #dee2e6; }
+  .level-badge { font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .level-info     { background: #dbeafe; color: #1d4ed8; }
+  .level-warn     { background: #fef3c7; color: #92400e; }
+  .level-error    { background: #fee2e2; color: #991b1b; }
+  .level-critical { background: #dc3545; color: #fff; }
+  table.tl-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+  table.tl-table th { text-align: left; padding: 0.3rem 0.6rem; color: #888; font-weight: 600;
+    font-size: 0.72rem; text-transform: uppercase; border-bottom: 2px solid #eee; }
+  table.tl-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #f0f0f0; color: #333; vertical-align: top; }
+  table.tl-table tr:hover td { background: #fafafa; }
+  table.tl-table .msg-cell a { color: #222; text-decoration: none; }
+  table.tl-table .msg-cell a:hover { text-decoration: underline; }
+  .pagination { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; font-size: 0.85rem; }
+  .pagination a { color: #1a73e8; text-decoration: none; padding: 0.2rem 0.6rem; border: 1px solid #cce; border-radius: 3px; }
+  .pagination a:hover { background: #eef; }
+  .pagination .current { padding: 0.2rem 0.6rem; font-weight: 700; color: #333; }
+  .empty { color: #888; font-size: 0.9rem; text-align: center; padding: 2.5rem; }
+</style>
+
+<div class="card">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+    <h2 style="font-size:1rem;font-weight:700;color:#333;">Event Timeline</h2>
+    <span style="font-size:0.8rem;color:#888;">{{ total }} event{{ '' if total == 1 else 's' }}</span>
+  </div>
+
+  <form class="filter-bar" method="get" action="/timeline">
+    <label>Level
+      <select name="level">
+        <option value="" {% if not level_filter %}selected{% endif %}>All</option>
+        <option value="INFO"     {% if level_filter == 'INFO'     %}selected{% endif %}>INFO</option>
+        <option value="WARN"     {% if level_filter == 'WARN'     %}selected{% endif %}>WARN</option>
+        <option value="ERROR"    {% if level_filter == 'ERROR'    %}selected{% endif %}>ERROR</option>
+        <option value="CRITICAL" {% if level_filter == 'CRITICAL' %}selected{% endif %}>CRITICAL</option>
+      </select>
+    </label>
+    <label>Source
+      <input type="text" name="source" value="{{ source_filter }}" placeholder="e.g. resource" style="width:11rem;">
+    </label>
+    <button type="submit" class="btn-filter">Filter</button>
+    {% if level_filter or source_filter %}
+    <a href="/timeline" class="btn-clear">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if events %}
+  <table class="tl-table">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Level</th>
+        <th>Source</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ev in events %}
+      <tr>
+        <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts|epoch_to_iso }}</td>
+        <td><span class="level-badge level-{{ ev.level|lower }}">{{ ev.level }}</span></td>
+        <td style="color:#666;font-size:0.82rem;">{{ ev.source }}</td>
+        <td class="msg-cell"><a href="/timeline/{{ ev.id }}">{{ ev.message }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="pagination">
+    {% if page > 1 %}
+    <a href="/timeline?page={{ page - 1 }}&level={{ level_filter }}&source={{ source_filter }}">← Prev</a>
+    {% endif %}
+    <span class="current">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="/timeline?page={{ page + 1 }}&level={{ level_filter }}&source={{ source_filter }}">Next →</a>
+    {% endif %}
+  </div>
+
+  {% else %}
+  <p class="empty">No events yet{% if level_filter or source_filter %} matching this filter{% endif %}.</p>
+  {% endif %}
+</div>
+{% endblock %}

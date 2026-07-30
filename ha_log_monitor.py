@@ -172,6 +172,21 @@ async def tail_remote_log_stream(
                     evaluation.is_actionable
                     and evaluation.confidence_score > CONFIDENCE_THRESHOLD
                 ):
+                    try:  # pragma: no cover
+                        from utils.timeline import write_timeline_event
+
+                        write_timeline_event(
+                            "ERROR",
+                            "ha_log_monitor",
+                            evaluation.root_cause_summary,
+                            {
+                                "confidence": evaluation.confidence_score,
+                                "log_line": clean_line,
+                                "llm_trace": llm_trace.as_dict(),
+                            },
+                        )
+                    except Exception:  # nosec B110
+                        pass
                     if not SELF_HEALING_ENABLED:
                         log.info(
                             "self_healing_disabled",
@@ -264,6 +279,23 @@ async def poll_for_updates(
                             "release_summary": u.release_summary,
                         },
                     )
+                try:  # pragma: no cover
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "INFO",
+                        "update_check",
+                        f"Update available: {u.component}"
+                        f" {u.installed_version} → {u.latest_version}",
+                        {
+                            "component": u.component,
+                            "installed_version": u.installed_version,
+                            "latest_version": u.latest_version,
+                            "release_url": u.release_url,
+                        },
+                    )
+                except Exception:  # nosec B110
+                    pass
                 _notified.add(u.entity_id)
             elif not u.update_available:
                 # Clear the flag once the update entity goes back to "off"

@@ -190,6 +190,21 @@ class ResourcePoller:
                         "mem_available_mb": round(status.mem_available_mb),
                     },
                 )
+                try:
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "CRITICAL",
+                        "resource",
+                        f"Disk CRITICAL: {status.disk_free_gb:.1f} GB free"
+                        f" — below {self._disk_critical_gb} GB threshold",
+                        {
+                            "disk_free_gb": status.disk_free_gb,
+                            "disk_total_gb": status.disk_total_gb,
+                        },
+                    )
+                except Exception:  # nosec B110
+                    pass
                 self._alerted.add("disk_critical")
         else:
             self._alerted.discard("disk_critical")
@@ -214,6 +229,18 @@ class ResourcePoller:
                             "mem_available_mb": round(status.mem_available_mb),
                         },
                     )
+                    try:  # pragma: no cover
+                        from utils.timeline import write_timeline_event
+
+                        write_timeline_event(
+                            "WARN",
+                            "resource",
+                            f"Disk WARN: {status.disk_free_gb:.1f} GB free"
+                            f" — below {self._disk_warn_gb} GB threshold",
+                            {"disk_free_gb": status.disk_free_gb},
+                        )
+                    except Exception:  # nosec B110
+                        pass
                     self._alerted.add("disk_warn")
             else:
                 self._alerted.discard("disk_warn")
