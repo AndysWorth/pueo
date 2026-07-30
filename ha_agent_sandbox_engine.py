@@ -13,6 +13,7 @@ from config import (
     SSH_KEY_PATH,
     CONFIG_REMOTE_PATH,
     OLLAMA_MODEL,
+    OLLAMA_ENDPOINT,
     DB_PATH,
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
@@ -22,8 +23,14 @@ from config import (
     NOTIFY_WATCH_DIR,
     HITL_ALWAYS,
     AUTONOMY_LEVEL,
+    CHROMADB_PATH,
+    RAG_EMBED_MODEL,
 )
-from interfaces import LLMClientProtocol, SSHClientProtocol
+from interfaces import (
+    KnowledgeStoreClientProtocol,
+    LLMClientProtocol,
+    SSHClientProtocol,
+)
 from utils.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
 from utils.logging import (
@@ -401,6 +408,7 @@ async def main(
     llm_client: Optional[LLMClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     gate: Optional[AutonomyGate] = None,
+    knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
 ) -> None:
     setup_logging()
     if not get_correlation_id():
@@ -420,10 +428,22 @@ async def main(
     from utils.tool_executor import ToolExecutor
     from utils.tool_registry import build_ha_tool_registry
 
+    _knowledge_store: Optional[KnowledgeStoreClientProtocol]
+    if knowledge_store is not None:
+        _knowledge_store = knowledge_store
+    else:
+        from utils.knowledge_store import ChromaKnowledgeStore  # pragma: no cover
+
+        _knowledge_store = ChromaKnowledgeStore(  # pragma: no cover
+            path=CHROMADB_PATH,
+            embed_model=RAG_EMBED_MODEL,
+            ollama_endpoint=OLLAMA_ENDPOINT,
+        )
     executor = ToolExecutor(
         ha_ssh_client=_ssh,
         gate=_gate,
         notifier=_notifier,
+        knowledge_store=_knowledge_store,
     )
     registry = build_ha_tool_registry()
     loop = AgentLoop(

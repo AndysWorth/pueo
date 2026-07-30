@@ -1541,47 +1541,69 @@ class TestSandboxPipeline:
 
         return FakeAutonomyGate(auto_execute_result=True)
 
-    def test_valid_config_no_backup_taken(self, ssh_ok, llm_valid, db_path):
-        import ha_agent_sandbox_engine
+    @pytest.fixture
+    def knowledge_store(self):
+        from utils.knowledge_store import FakeKnowledgeStore
 
-        ha_agent_sandbox_engine.init_local_database()
-        asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_valid)
-        )
-        assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
+        return FakeKnowledgeStore()
 
-    def test_valid_config_records_state(self, ssh_ok, llm_valid, db_path):
-        import ha_agent_sandbox_engine
-
-        ha_agent_sandbox_engine.init_local_database()
-        asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_valid)
-        )
-        with sqlite3.connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM state_history").fetchone()[0]
-        assert count == 1
-
-    def test_repair_path_writes_config(self, ssh_ok, llm_with_fix, db_path, gate_auto):
-        import ha_agent_sandbox_engine
-
-        ha_agent_sandbox_engine.init_local_database()
-        asyncio.run(
-            ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
-            )
-        )
-        assert "/config/configuration.yaml" in ssh_ok.written_files
-        assert ssh_ok.written_files["/config/configuration.yaml"] == _FIXED_CONFIG
-
-    def test_repair_path_backup_recorded(
-        self, ssh_ok, llm_with_fix, db_path, gate_auto
+    def test_valid_config_no_backup_taken(
+        self, ssh_ok, llm_valid, db_path, knowledge_store
     ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
+                ssh_client=ssh_ok, llm_client=llm_valid, knowledge_store=knowledge_store
+            )
+        )
+        assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
+
+    def test_valid_config_records_state(
+        self, ssh_ok, llm_valid, db_path, knowledge_store
+    ):
+        import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok, llm_client=llm_valid, knowledge_store=knowledge_store
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM state_history").fetchone()[0]
+        assert count == 1
+
+    def test_repair_path_writes_config(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
+    ):
+        import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
+            )
+        )
+        assert "/config/configuration.yaml" in ssh_ok.written_files
+        assert ssh_ok.written_files["/config/configuration.yaml"] == _FIXED_CONFIG
+
+    def test_repair_path_backup_recorded(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
+    ):
+        import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
             )
         )
         with sqlite3.connect(db_path) as conn:
@@ -1590,33 +1612,48 @@ class TestSandboxPipeline:
         assert slug[0] == "sbx-slug-1"
 
     def test_sandbox_fail_aborts_atomic_swap(
-        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto
+        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix, gate=gate_auto
+                ssh_client=ssh_sandbox_fail,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
             )
         )
         assert "/config/configuration.yaml" not in ssh_sandbox_fail.written_files
 
-    def test_bad_fix_rejected_before_backup(self, ssh_ok, llm_bad_fix, db_path):
+    def test_bad_fix_rejected_before_backup(
+        self, ssh_ok, llm_bad_fix, db_path, knowledge_store
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_bad_fix)
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok,
+                llm_client=llm_bad_fix,
+                knowledge_store=knowledge_store,
+            )
         )
         assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
-    def test_bad_fix_records_rejection_in_state(self, ssh_ok, llm_bad_fix, db_path):
+    def test_bad_fix_records_rejection_in_state(
+        self, ssh_ok, llm_bad_fix, db_path, knowledge_store
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
-            ha_agent_sandbox_engine.main(ssh_client=ssh_ok, llm_client=llm_bad_fix)
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok,
+                llm_client=llm_bad_fix,
+                knowledge_store=knowledge_store,
+            )
         )
         with sqlite3.connect(db_path) as conn:
             action = conn.execute("SELECT action_taken FROM state_history").fetchone()
@@ -1625,14 +1662,17 @@ class TestSandboxPipeline:
         assert "fix" in action[0].lower()
 
     def test_sandbox_fail_records_state(
-        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto
+        self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_sandbox_fail, llm_client=llm_with_fix, gate=gate_auto
+                ssh_client=ssh_sandbox_fail,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
             )
         )
         with sqlite3.connect(db_path) as conn:
@@ -1641,13 +1681,18 @@ class TestSandboxPipeline:
         # AgentLoop records fix_failed outcome when sandbox test fails
         assert "fix" in action[0].lower()
 
-    def test_repair_path_llm_consulted(self, ssh_ok, llm_with_fix, db_path, gate_auto):
+    def test_repair_path_llm_consulted(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
+    ):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
             ha_agent_sandbox_engine.main(
-                ssh_client=ssh_ok, llm_client=llm_with_fix, gate=gate_auto
+                ssh_client=ssh_ok,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
             )
         )
         # AgentLoop makes one chat_with_tools call per tool-calling step
