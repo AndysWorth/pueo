@@ -140,6 +140,9 @@ def main() -> None:
             "  rag-refresh         embed cached HA release notes and HACS changelogs into ChromaDB\n"
             "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
             "  install-service     install Pueo as a macOS launchd service (auto-start at login)\n"
+            "  start-service       load and enable the launchd service\n"
+            "  stop-service        unload the launchd service (suppresses KeepAlive restart)\n"
+            "  restart-service     stop the service; launchd KeepAlive restarts it immediately\n"
             "  audit               self-diagnostics: gap report saved to audits/\n"
         ),
     )
@@ -166,6 +169,9 @@ def main() -> None:
             "rag-refresh",
             "dashboard",
             "install-service",
+            "start-service",
+            "stop-service",
+            "restart-service",
             "audit",
         ],
         default="supervisor",
@@ -260,6 +266,21 @@ def main() -> None:
         )
         print("Pueo service installed → com.pueo.agent")
         print(f"Dashboard → http://127.0.0.1:{os.environ.get('DASHBOARD_PORT', 8080)}")
+    elif args.mode == "start-service":  # pragma: no cover
+        from utils.service import start_service
+
+        start_service()
+        print("Pueo service started → com.pueo.agent")
+    elif args.mode == "stop-service":  # pragma: no cover
+        from utils.service import stop_service
+
+        stop_service()
+        print("Pueo service stopped.")
+    elif args.mode == "restart-service":  # pragma: no cover
+        from utils.service import restart_service
+
+        restart_service()
+        print("Pueo service restarting (launchd KeepAlive will restart it).")
     elif args.mode == "audit":
         import ha_agent_advanced
         from utils.audit import main_audit

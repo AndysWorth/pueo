@@ -102,27 +102,6 @@
       <pre>{{ r.payload | tojson(indent=2) }}</pre>
     </details>
     {% if r.status == "PENDING" %}
-    {% if not r.in_progress and not r.payload.get("is_notification_card") %}
-    {% set ct = r.payload.get("card_type", "") %}
-    {% if ct == "repair" %}
-      {% set hint_approve = "Sandbox-test and apply the config fix to HA (backup created first)" %}
-    {% elif ct == "update" %}
-      {% set hint_approve = "Download and install this update (backup created first)" %}
-    {% elif ct == "netalertx_heal" %}
-      {% set hint_approve = "Apply the NetAlertX fix" %}
-    {% elif ct == "netalertx_setup" %}
-      {% set hint_approve = "Continue the NetAlertX installer with this step (backup created first)" %}
-    {% elif ct == "resource_action" %}
-      {% set hint_approve = "Execute the disk management action" %}
-    {% else %}
-      {% set hint_approve = "Execute this action" %}
-    {% endif %}
-    <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
-      <strong style="color:#222;">Approve</strong> — {{ hint_approve }} &nbsp;·&nbsp;
-      <strong style="color:#222;">Reject</strong> — Discard; no changes made &nbsp;·&nbsp;
-      <strong style="color:#222;">Defer</strong> — Re-present in 24 hours
-    </p>
-    {% endif %}
     <div class="actions">
       {% if r.in_progress %}
       <span class="spinner" aria-label="In progress"></span>
@@ -135,6 +114,34 @@
         <button class="btn btn-reject" type="submit">Keep</button>
       </form>
       {% else %}
+      {% set ct = r.payload.get("card_type", "") %}
+      {% set has_fix = r.payload.get("pending_fix_yaml") %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action") or has_fix %}
+      {% if is_actionable %}
+        {% if ct == "repair" or has_fix %}
+          {% set hint_approve = "Create HA backup → sandbox-test the proposed fix → atomically swap into production if sandbox passes" %}
+          {% set hint_reject = "Discard the proposed fix; HA config unchanged" %}
+        {% elif ct == "update" %}
+          {% set hint_approve = "Create HA backup, then install this update; Pueo will run a self-check after Core updates" %}
+          {% set hint_reject = "Skip this update; HA stays on its current version" %}
+        {% elif ct == "netalertx_heal" %}
+          {% set hint_approve = "Apply the NetAlertX configuration fix now" %}
+          {% set hint_reject = "Skip this fix; NetAlertX config unchanged" %}
+        {% elif ct == "netalertx_setup" %}
+          {% set hint_approve = "Tell the NetAlertX installer to proceed with this step" %}
+          {% set hint_reject = "Abort the installer at this step; prior steps already completed are not rolled back" %}
+        {% elif ct == "resource_action" %}
+          {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}
+          {% set hint_reject = "Skip; no backups moved or deleted" %}
+        {% else %}
+          {% set hint_approve = "Execute this action" %}
+          {% set hint_reject = "Discard; no changes made" %}
+        {% endif %}
+      <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
+        <strong style="color:#222;">Approve</strong> — {{ hint_approve }} &nbsp;·&nbsp;
+        <strong style="color:#222;">Reject</strong> — {{ hint_reject }} &nbsp;·&nbsp;
+        <strong style="color:#222;">Defer</strong> — Ask again in 24 hours
+      </p>
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Approve</button>
       </form>
@@ -144,6 +151,14 @@
       <form method="POST" action="/defer/{{ r.notification_id }}">
         <button class="btn btn-defer" type="submit">Defer (24h)</button>
       </form>
+      {% else %}
+      <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
+        <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
+      </p>
+      <form method="POST" action="/approve/{{ r.notification_id }}">
+        <button class="btn btn-approve" type="submit">Acknowledge</button>
+      </form>
+      {% endif %}
       {% endif %}
     </div>
     {% endif %}
