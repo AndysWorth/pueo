@@ -1943,6 +1943,48 @@ class TestTimelineUtils:
         result = load_timeline_events()
         assert result == []
 
+    def test_write_sse_publish_exception_still_returns_id(self, tl_db, monkeypatch):
+        """write_timeline_event() returns the id even when publish_event raises."""
+        import utils.supervisor as sup_mod
+
+        monkeypatch.setattr(
+            sup_mod,
+            "publish_event",
+            lambda e: (_ for _ in ()).throw(RuntimeError("bus down")),
+        )
+
+        from utils.timeline import write_timeline_event
+
+        eid = write_timeline_event("INFO", "src", "msg")
+        assert eid > 0
+
+    def test_get_on_missing_table_returns_none(self, tmp_path, monkeypatch):
+        """get_timeline_event() returns None when the table doesn't exist."""
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        from utils.timeline import get_timeline_event
+
+        assert get_timeline_event(1) is None
+
+    def test_count_with_source_filter(self, tl_db):
+        from utils.timeline import count_timeline_events, write_timeline_event
+
+        write_timeline_event("INFO", "resource", "disk ok")
+        write_timeline_event("INFO", "update_check", "no updates")
+        assert count_timeline_events(source_filter="resource") == 1
+
+    def test_count_on_missing_table_returns_zero(self, tmp_path, monkeypatch):
+        """count_timeline_events() returns 0 when the table doesn't exist."""
+        import utils.timeline as tl_mod
+
+        db = str(tmp_path / "empty.db")
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        from utils.timeline import count_timeline_events
+
+        assert count_timeline_events() == 0
+
 
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 

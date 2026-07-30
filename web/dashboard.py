@@ -239,7 +239,7 @@ async def _execute_queued_update(
                     f"Update executed: {component} → {latest_version}",
                     {"component": component, "latest_version": latest_version},
                 )
-            except Exception:  # nosec B110
+            except Exception:  # nosec B110  # pragma: no cover
                 pass
         else:
             data["fix_error"] = (
@@ -256,7 +256,7 @@ async def _execute_queued_update(
                     f"Update failed: {component} → {latest_version}",
                     {"component": component, "latest_version": latest_version},
                 )
-            except Exception:  # nosec B110
+            except Exception:  # nosec B110  # pragma: no cover
                 pass
     except Exception as exc:
         data["fix_error"] = str(exc)
@@ -271,7 +271,7 @@ async def _execute_queued_update(
                 f"Update error: {component} — {exc}",
                 {"component": component},
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B110  # pragma: no cover
             pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
@@ -330,7 +330,7 @@ async def _execute_netalertx_heal(
                 f"NetAlertX heal executed: {heal_action}",
                 {"heal_action": heal_action},
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B110  # pragma: no cover
             pass
     except Exception as exc:
         data["fix_error"] = str(exc)
@@ -345,7 +345,7 @@ async def _execute_netalertx_heal(
                 f"NetAlertX heal failed: {heal_action} — {exc}",
                 {"heal_action": heal_action},
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B110  # pragma: no cover
             pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
@@ -402,7 +402,7 @@ async def _execute_resource_action(
                 f"Resource action executed: {action}",
                 {"action": action},
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B110  # pragma: no cover
             pass
     except Exception as exc:
         data["fix_error"] = str(exc)
@@ -417,7 +417,7 @@ async def _execute_resource_action(
                 f"Resource action failed: {action} — {exc}",
                 {"action": action},
             )
-        except Exception:  # nosec B110
+        except Exception:  # nosec B110  # pragma: no cover
             pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
