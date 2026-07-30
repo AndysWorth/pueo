@@ -1931,6 +1931,105 @@ class TestLoopSupervisor:
         with pytest.raises(KeyError):
             sup.run_now("nonexistent")
 
+    def test_pause_idempotent(self):
+        """Calling pause() on an already-paused loop is a no-op."""
+        from utils.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+            sup.pause("d")
+            await asyncio.sleep(0.05)  # enter paused state
+            # Second pause() must not raise or cancel a second time
+            sup.pause("d")
+            assert sup._handles["d"].paused is True
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_resume_not_paused_is_noop(self):
+        """Calling resume() on a running (non-paused) loop is a no-op."""
+        from utils.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+            # resume() on a running (not paused) loop must be a no-op
+            sup.resume("d")
+            assert sup._handles["d"].paused is False
+            assert sup._handles["d"].status == "running"
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_run_now_while_daemon_running(self):
+        """run_now() cancels and immediately restarts a currently running daemon."""
+
+        async def _run():
+            iterations: list[int] = []
+            allow_exit = asyncio.Event()
+
+            async def daemon():
+                iterations.append(1)
+                await allow_exit.wait()  # block until signalled
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)  # daemon running, blocked on allow_exit
+            assert len(iterations) == 1
+
+            # run_now cancels the running coro and restarts it immediately
+            sup.run_now("d")
+            await asyncio.sleep(0.05)  # let restart complete
+
+            assert len(iterations) >= 2
+
+            allow_exit.set()
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_pause_during_backoff(self):
+        """pause() called while the loop is in error-backoff enters paused state."""
+
+        async def _run():
+            async def bad_coro():
+                raise RuntimeError("always fails")
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=5.0, backoff_cap=5.0)
+            sup.start("d", bad_coro)
+            await asyncio.sleep(0.05)  # coro failed, now in 5s backoff sleep
+
+            # pause() during backoff → loop enters paused state
+            sup.pause("d")
+            await asyncio.sleep(0.05)
+            assert sup._handles["d"].paused is True
+            assert sup._handles["d"].status == "paused"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 
