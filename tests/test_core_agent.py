@@ -986,6 +986,176 @@ class TestMain:
         assert "monitor" in capsys.readouterr().out
 
 
+class TestSupervisorMain:
+    """Tests for supervisor_main() — verifies loop selection based on config."""
+
+    def _make_config(
+        self,
+        tmp_path,
+        *,
+        api_token: str = "",
+        update_interval_h: float = 0.0,
+        notif_interval_m: float = 0.0,
+        netalertx_host: str = "",
+    ) -> Path:
+        cfg = {
+            "home_assistant": {"host": "ha.local", "api_token": api_token},
+            "agent": {
+                "update_check_interval_hours": update_interval_h,
+                "notification_poll_interval_minutes": notif_interval_m,
+                "notify_watch_dir": str(tmp_path / "hitl"),
+            },
+            "netalertx": {"host": netalertx_host},
+        }
+        p = tmp_path / "config.yaml"
+        p.write_text(yaml.dump(cfg))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        return p
+
+    def _patch_all(self, monkeypatch, config_path: Path) -> list:
+        """Patch external deps so supervisor_main() runs and terminates immediately."""
+        import config as cfg_mod
+        import ha_agent_advanced
+        import ha_log_monitor
+        import uvicorn
+        import utils.resource as rm
+        import utils.ssh_client as sc
+        import netalertx.log_monitor as nax
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setenv("PUEO_CONFIG", str(config_path))
+        importlib.reload(cfg_mod)
+
+        monkeypatch.setattr(ha_agent_advanced, "init_local_database", lambda: None)
+
+        async def _noop(**kw):
+            pass
+
+        monkeypatch.setattr(
+            ha_log_monitor, "tail_remote_log_stream", lambda **kw: _noop()
+        )
+        monkeypatch.setattr(ha_log_monitor, "poll_for_updates", lambda **kw: _noop())
+        monkeypatch.setattr(
+            ha_log_monitor, "poll_for_notifications", lambda **kw: _noop()
+        )
+        monkeypatch.setattr(nax, "tail_netalertx_log_stream", lambda **kw: _noop())
+
+        class _FakePoller:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def run(self):
+                pass
+
+        monkeypatch.setattr(rm, "ResourcePoller", _FakePoller)
+        monkeypatch.setattr(sc, "AsyncSSHClient", lambda *a, **kw: object())
+
+        import utils.notify as notify_mod
+
+        monkeypatch.setattr(notify_mod, "get_notifier", lambda *a, **kw: FakeNotifier())
+
+        # Uvicorn — returns immediately so supervisor_main() can complete
+        class _FakeServer:
+            async def serve(self):
+                pass
+
+        monkeypatch.setattr(uvicorn, "Config", lambda *a, **kw: object())
+        monkeypatch.setattr(uvicorn, "Server", lambda c: _FakeServer())
+
+        # Track which loop names were started
+        started: list = []
+        from utils.supervisor import LoopSupervisor
+
+        orig_start = LoopSupervisor.start
+
+        def _tracking_start(self, name, factory):
+            started.append(name)
+            orig_start(self, name, factory)
+
+        monkeypatch.setattr(LoopSupervisor, "start", _tracking_start)
+        return started
+
+    def test_core_loops_always_start(self, monkeypatch, tmp_path):
+        """ha_log_monitor and resource_poll start regardless of optional config."""
+        config_path = self._make_config(tmp_path)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+
+        assert "ha_log_monitor" in started
+        assert "resource_poll" in started
+
+    def test_update_check_loop_disabled_without_token(self, monkeypatch, tmp_path):
+        """update_check loop doesn't start when api_token is empty."""
+        config_path = self._make_config(tmp_path, update_interval_h=1.0, api_token="")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "update_check" not in started
+
+    def test_update_check_loop_starts_with_token_and_interval(
+        self, monkeypatch, tmp_path
+    ):
+        """update_check loop starts when api_token and interval are both set."""
+        config_path = self._make_config(
+            tmp_path, update_interval_h=1.0, api_token="test-tok"
+        )
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "update_check" in started
+
+    def test_notification_poll_loop_disabled_without_token(self, monkeypatch, tmp_path):
+        """notification_poll loop doesn't start when api_token is empty."""
+        config_path = self._make_config(tmp_path, notif_interval_m=5.0, api_token="")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "notification_poll" not in started
+
+    def test_notification_poll_loop_starts_with_token_and_interval(
+        self, monkeypatch, tmp_path
+    ):
+        """notification_poll starts when token and interval are set."""
+        config_path = self._make_config(
+            tmp_path, notif_interval_m=5.0, api_token="test-tok"
+        )
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "notification_poll" in started
+
+    def test_netalertx_loop_disabled_when_host_empty(self, monkeypatch, tmp_path):
+        """netalertx loop doesn't start when NETALERTX_HOST resolves to empty string."""
+        config_path = self._make_config(tmp_path, netalertx_host="")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx" not in started
+
+    def test_netalertx_loop_starts_when_host_set(self, monkeypatch, tmp_path):
+        """netalertx loop starts when netalertx.host is configured."""
+        config_path = self._make_config(tmp_path, netalertx_host="ha.local")
+        started = self._patch_all(monkeypatch, config_path)
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx" in started
+
+
 # ── check_ha_version ─────────────────────────────────────────────────────────────
 
 

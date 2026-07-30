@@ -1941,44 +1941,50 @@ class TestCardTypeDispatch:
         asyncio.run(dashboard.approve("legacy1"))
         assert "legacy1" in called
 
-    def test_update_card_routes_to_stub(self, watch_dir, monkeypatch):
-        """CARD_TYPE_UPDATE dispatches to the update stub handler."""
+    def test_update_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
+        """CARD_TYPE_UPDATE dispatches to the update stub which creates .approved."""
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
-        called = []
-
-        async def _fake_update(nid, data, json_path, wd):
-            called.append(nid)
-
-        monkeypatch.setattr(dashboard, "_execute_queued_update_stub", _fake_update)
-        monkeypatch.setitem(dashboard._CARD_DISPATCH, "update", _fake_update)
         self._write_card(
             watch_dir,
             "u1",
             {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
         )
         asyncio.run(dashboard.approve("u1"))
-        assert "u1" in called
+        assert (watch_dir / "u1.approved").exists()
 
-    def test_netalertx_heal_card_routes_to_stub(self, watch_dir, monkeypatch):
+    def test_netalertx_heal_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
         """CARD_TYPE_NETALERTX_HEAL dispatches to the netalertx heal stub."""
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
-        called = []
-
-        async def _fake_heal(nid, data, json_path, wd):
-            called.append(nid)
-
-        monkeypatch.setitem(dashboard._CARD_DISPATCH, "netalertx_heal", _fake_heal)
         self._write_card(
             watch_dir,
             "nh1",
             {"card_type": "netalertx_heal", "heal_action": "fix_webhook_fields"},
         )
         asyncio.run(dashboard.approve("nh1"))
-        assert "nh1" in called
+        assert (watch_dir / "nh1.approved").exists()
+
+    def test_resource_action_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
+        """CARD_TYPE_RESOURCE_ACTION dispatches to the resource action stub."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(
+            watch_dir,
+            "ra1",
+            {"card_type": "resource_action", "action": "offload_backups"},
+        )
+        asyncio.run(dashboard.approve("ra1"))
+        assert (watch_dir / "ra1.approved").exists()
 
     def test_unknown_card_type_falls_back_to_approved(self, watch_dir, monkeypatch):
         """Unknown card_type just touches the .approved file."""

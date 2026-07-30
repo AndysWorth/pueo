@@ -1762,6 +1762,49 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_paused_loop_does_not_run_coro(self):
+        """A paused loop skips the coro body and sleeps instead."""
+
+        async def _run():
+            called: list[int] = []
+
+            async def coro():
+                called.append(1)
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            # Pause before the task gets a chance to run the coro
+            sup._handles["t"].paused = True
+            await asyncio.sleep(0.05)  # Task is sleeping in the paused branch
+            assert len(called) == 0
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_emit_drops_silently_when_queue_full(self):
+        """_emit() catches QueueFull and silently drops the event."""
+
+        async def _run():
+            async def coro():
+                pass
+
+            bus: asyncio.Queue = asyncio.Queue(maxsize=1)
+            bus.put_nowait({"event_type": "filler"})  # Fill the queue
+
+            from utils.supervisor import LoopSupervisor
+
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            await asyncio.sleep(0.05)  # _emit() should not raise even with full queue
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
 
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
