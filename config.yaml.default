@@ -8,7 +8,7 @@ home_assistant:
   host: "homeassistant.local"        # IP address or mDNS hostname of your HA server
   user: "root"                        # SSH username (root for the Terminal & SSH App)
   ssh_key_path: "~/.ssh/id_ed25519"  # Local path to the SSH private key
-  api_token: ""                        # HA long-lived access token (required for REST API features)
+  api_token: ""                        # HA long-lived access token — create at: Profile → Security → Long-Lived Access Tokens
   api_port: 8123                       # Port for the HA REST API
   config_path: "/config/configuration.yaml"  # Path to configuration.yaml on the HA host
 
@@ -22,7 +22,7 @@ netalertx:
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
   host: ""                                    # NetAlertX host (default: same as home_assistant.host)
   api_port: 20212                             # NetAlertX REST API port
-  api_token: ""                               # Required when netalertx.enabled = true
+  api_token: ""                               # Generated after first install: NetAlertX UI → Settings → Main Settings → API Key
   ssh_host: ""                                # SSH host for NetAlertX (default: same as home_assistant.host)
   ssh_user: ""                                # SSH user for NetAlertX (default: same as home_assistant.user)
   ssh_key_path: ""                            # SSH key for NetAlertX (default: same as home_assistant.ssh_key_path)
@@ -34,8 +34,8 @@ netalertx:
     - "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
   max_scan_age_minutes: 20                    # Alert if no scan completed within this window
   mqtt_subscribe: true                        # Subscribe to NetAlertX MQTT device presence events
-  mqtt_user: ""                               # MQTT broker username (leave blank for anonymous)
-  mqtt_password: ""                           # MQTT broker password (leave blank for anonymous)
+  mqtt_user: ""                               # MQTT username — create HA user: Settings → People → Users → Add User
+  mqtt_password: ""                           # MQTT password — enable auth in: Settings → Apps → Mosquitto broker → Configuration
   log_container_name: "netalertx"            # Docker container name (Docker deployments only)
   max_db_history_rows: 100000                 # Trigger DB cleanup above this row count
 

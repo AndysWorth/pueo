@@ -2755,6 +2755,41 @@ class TestAuditCheckNetalertx:
         assert "unavailable" in result.detail
 
 
+class TestAuditCheckNetalertxApiToken:
+    def test_not_desired_returns_ok(self, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", False)
+        from utils.audit import check_netalertx_api_token
+
+        result = check_netalertx_api_token()
+        assert result.status == "OK"
+        assert "not enabled" in result.detail
+
+    def test_desired_empty_token_returns_warn(self, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", True)
+        monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "")
+        from utils.audit import check_netalertx_api_token
+
+        result = check_netalertx_api_token()
+        assert result.status == "WARN"
+        assert "api_token is empty" in result.detail
+        assert "API Key" in result.action
+
+    def test_desired_token_set_returns_ok(self, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", True)
+        monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "tok123")
+        from utils.audit import check_netalertx_api_token
+
+        result = check_netalertx_api_token()
+        assert result.status == "OK"
+        assert "configured" in result.detail
+
+
 class TestAuditCheckStateHistory:
     def test_missing_table(self, tmp_path, monkeypatch):
         import config
