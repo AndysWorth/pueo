@@ -30,6 +30,7 @@ In alignment with the spirit of open-source and out of respect for Native Hawaii
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
 *   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
+*   **Active Dashboard:** Approves and executes HITL repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8099`.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
 
 ---
@@ -68,17 +69,43 @@ cd pueo
 A reference template for `config.yaml` is available in `config.yaml.default`.
 
 ### 3. Running the Agent
+
+#### Supervisor (recommended — starts everything)
 ```bash
 source .venv/bin/activate
+python main.py
+```
 
-python main.py --mode monitor            # live SSH log tail with AI triage (default, daemon)
-python main.py --mode diagnose           # one-shot config fetch and analysis
-python main.py --mode advanced           # diagnose + SQLite memory + backup triggering
-python main.py --mode repair             # full sandbox-test-then-atomic-swap repair cycle
-python main.py --mode netalertx-setup    # install and configure NetAlertX on HA
-python main.py --mode netalertx          # monitor NetAlertX logs continuously
-python main.py --mode netalertx-diagnose # one-shot NetAlertX health check and optional heal
-python main.py --mode dashboard          # HITL web dashboard for approving/rejecting actions
+This is the default mode. It starts all monitoring loops (HA log tail, resource polling,
+update checks, notification polling, NetAlertX) and the HITL dashboard in a single
+supervised process. The dashboard is available at `http://127.0.0.1:8099`. Crashed loops
+restart automatically with exponential backoff.
+
+`setup.sh` can install Pueo as a macOS launchd service (auto-start at login, auto-restart
+on crash) — choose the option when prompted, or run `python main.py --mode install-service`
+afterwards.
+
+#### Individual modes
+```bash
+# Daemons (single-loop, no dashboard)
+python main.py --mode monitor             # live SSH log tail with AI triage
+python main.py --mode dashboard           # HITL web dashboard only (passive — no loops)
+
+# One-shot diagnostics
+python main.py --mode diagnose            # config fetch and analysis
+python main.py --mode advanced            # diagnose + SQLite memory + backup triggering
+python main.py --mode repair              # full sandbox-test-then-atomic-swap repair cycle
+python main.py --mode netalertx-diagnose  # NetAlertX health check and optional heal
+python main.py --mode update-check        # check for available HA Core/OS/add-on updates
+python main.py --mode notifications       # triage HA persistent notifications
+python main.py --mode backup-status       # print backup inventory table
+python main.py --mode audit               # self-diagnostics gap report (saved to audits/)
+
+# Setup and maintenance
+python main.py --mode netalertx-setup     # install and configure NetAlertX on HA
+python main.py --mode netalertx           # monitor NetAlertX logs continuously (daemon)
+python main.py --mode rag-refresh         # embed cached HA release notes + HACS changelogs
+python main.py --mode install-service     # install as macOS launchd service
 ```
 
 Pass `--config /path/to/config.yaml` if your config file is not in the project directory.

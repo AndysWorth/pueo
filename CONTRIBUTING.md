@@ -36,7 +36,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 **Types:** `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`
 
-**Scope** (optional): `core`, `advanced`, `sandbox`, `monitor`, `config`, `utils`, `tests`, `ci`
+**Scope** (optional): `core`, `advanced`, `sandbox`, `monitor`, `supervisor`, `dashboard`, `web`, `netalertx`, `resource`, `evals`, `config`, `utils`, `tests`, `ci`
 
 **Examples:**
 ```
@@ -92,12 +92,12 @@ If your change touches any part of the repair pipeline, re-read `docs/decisions/
 | New Pydantic schema | 3 tests: valid construction, invalid/missing fields, JSON round-trip |
 | New `config.py` key | Test in `TestConfigDefaults` using the `isolated_config` fixture |
 | New pure-logic function | Unit test (no SSH/Ollama mocks — those are integration concerns) |
-| Any of the above | Coverage must not drop below 80% |
+| Any of the above | Coverage must not drop below 90% |
 
 Run the full suite before pushing:
 
 ```bash
-pytest --cov=./ --cov-report=term-missing --cov-fail-under=80
+pytest --cov=./ --cov-report=term-missing --cov-fail-under=90
 ```
 
 ---
@@ -127,7 +127,7 @@ pytest --cov=./ --cov-report=term-missing --cov-fail-under=80
 
 The `audits/` directory (gitignored) is for operational state snapshots and diagnostic reports gathered from a live Pueo + HA instance. Save reports there when you want to track what a real deployment looked like at a point in time without publishing potentially sensitive state to the public repo.
 
-A future Pueo feature (`--mode audit`) will produce these reports automatically and surface a structured diff of gaps between the intended and actual operational state. Insights from real audit reports inform improvements that will be contributed back to the main repository via the normal PR process.
+`python main.py --mode audit` produces these reports automatically: it checks SSH connectivity, verifies HA state and disk, inspects the SQLite database, and surfaces a structured gap report comparing intended vs. actual operational state. Reports are saved to `audits/` with a datestamped filename. Insights from real audit reports inform improvements that can be contributed back via the normal PR process.
 
 ---
 

@@ -11,15 +11,23 @@ body:
   - type: dropdown
     id: layer
     attributes:
-      label: Affected layer
-      description: Which agent script is involved?
+      label: Affected mode or component
+      description: Which mode or component is involved?
       options:
-        - "Layer 1 — ha_agent_core.py (read-only sensing)"
-        - "Layer 2 — ha_agent_advanced.py (SQLite memory / backup)"
-        - "Layer 3 — ha_agent_sandbox_engine.py (sandbox + atomic swap)"
-        - "Layer 4 — ha_log_monitor.py (continuous monitoring)"
+        - "--mode supervisor (all loops + dashboard)"
+        - "--mode monitor (HA log tail / AI triage)"
+        - "--mode diagnose / advanced / repair"
+        - "--mode netalertx-setup / netalertx / netalertx-diagnose"
+        - "--mode update-check"
+        - "--mode notifications"
+        - "--mode backup-status"
+        - "--mode audit"
+        - "--mode dashboard"
+        - "--mode rag-refresh"
+        - "--mode install-service"
         - "config.py / setup.sh"
-        - "Unknown"
+        - "tests / CI"
+        - "Other / unknown"
     validations:
       required: true
 
@@ -54,7 +62,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Run `python ha_log_monitor.py`
+        1. Run `python main.py --mode monitor`
         2. Inject a log line matching CRITICAL_LOG_PATTERN
         3. ...
     validations:
