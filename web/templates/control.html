@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 700px) { .control-grid { grid-template-columns: 1fr; } }
+  .control-grid .full-width { grid-column: 1 / -1; }
+  .section-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: #888; margin-bottom: 0.75rem; }
+  .status-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; font-size: 0.88rem; }
+  .status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green  { background: #28a745; }
+  .dot-grey   { background: #adb5bd; }
+  .dot-orange { background: #fd7e14; }
+  .ctrl-btn { padding: 0.35rem 0.9rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer;
+    font-weight: 600; border: 1px solid transparent; }
+  .ctrl-btn-primary  { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  .ctrl-btn-primary:hover { background: #1558b0; }
+  .ctrl-btn-warn     { background: #fd7e14; color: #fff; border-color: #fd7e14; }
+  .ctrl-btn-warn:hover { background: #d96b0a; }
+  .ctrl-btn-danger   { background: #dc3545; color: #fff; border-color: #dc3545; }
+  .ctrl-btn-danger:hover { background: #b02a37; }
+  .ctrl-btn-neutral  { background: #fff; color: #333; border-color: #ccc; }
+  .ctrl-btn-neutral:hover { background: #f0f0f0; }
+  .ctrl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+  .mode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem; margin-top: 0.5rem; }
+  .mode-card { border: 1px solid #ddd; border-radius: 5px; padding: 0.75rem 1rem;
+    background: #fff; display: flex; flex-direction: column; gap: 0.3rem; }
+  .mode-card h3 { font-size: 0.88rem; font-weight: 700; color: #222; }
+  .mode-card p  { font-size: 0.78rem; color: #666; flex: 1; }
+  .mode-status  { font-size: 0.75rem; min-height: 1.1rem; }
+  .toast { display: none; position: fixed; bottom: 1.5rem; right: 1.5rem;
+    background: #222; color: #fff; padding: 0.6rem 1rem; border-radius: 5px;
+    font-size: 0.85rem; z-index: 9999; }
+</style>
+
+<div id="toast" class="toast"></div>
+
+<div class="control-grid">
+
+  <!-- Service status -->
+  <div class="card">
+    <div class="section-title">Pueo Service</div>
+
+    <div class="status-row">
+      {% if service.get("error") %}
+        <span class="status-dot dot-grey"></span>
+        <span>launchd unavailable ({{ service.error }})</span>
+      {% elif not service.plist_exists %}
+        <span class="status-dot dot-grey"></span>
+        <span>Not installed as a service</span>
+      {% elif not service.loaded %}
+        <span class="status-dot dot-orange"></span>
+        <span>Plist exists but not loaded</span>
+      {% elif service.running %}
+        <span class="status-dot dot-green"></span>
+        <span>Running (PID {{ service.pid }})</span>
+      {% else %}
+        <span class="status-dot dot-grey"></span>
+        <span>Loaded but stopped</span>
+      {% endif %}
+    </div>
+
+    <p style="font-size:0.78rem;color:#888;margin-bottom:0.75rem;">
+      Service label: <code>com.pueo.agent</code>
+    </p>
+
+    <div class="btn-row">
+      {% if service.plist_exists and service.loaded and service.running %}
+        <button class="ctrl-btn ctrl-btn-warn" onclick="svcAction('restart')">Restart</button>
+        <button class="ctrl-btn ctrl-btn-neutral" onclick="svcAction('stop')">Stop</button>
+        <button class="ctrl-btn ctrl-btn-danger" onclick="confirmRemove()">Remove service</button>
+      {% elif service.plist_exists and service.loaded and not service.running %}
+        <button class="ctrl-btn ctrl-btn-primary" onclick="svcAction('start')">Start</button>
+        <button class="ctrl-btn ctrl-btn-danger" onclick="confirmRemove()">Remove service</button>
+      {% elif service.plist_exists and not service.loaded %}
+        <button class="ctrl-btn ctrl-btn-primary" onclick="svcAction('start')">Enable &amp; start</button>
+        <button class="ctrl-btn ctrl-btn-danger" onclick="confirmRemove()">Remove service</button>
+      {% else %}
+        <button class="ctrl-btn ctrl-btn-primary" onclick="svcAction('install')">Install service</button>
+      {% endif %}
+    </div>
+
+    <p style="font-size:0.75rem;color:#aaa;margin-top:0.75rem;">
+      Restart = stops Pueo; launchd auto-restarts it (KeepAlive).
+      Stop = disables the service until you click Start.
+      Remove = unloads and deletes the plist.
+    </p>
+  </div>
+
+  <!-- Quick links -->
+  <div class="card">
+    <div class="section-title">Quick Links</div>
+    <div style="display:flex;flex-direction:column;gap:0.5rem;font-size:0.88rem;">
+      <a href="/queue" style="color:#1a73e8;">Approval queue</a>
+      <a href="/timeline" style="color:#1a73e8;">Event timeline</a>
+      <a href="/backups" style="color:#1a73e8;">Backup inventory</a>
+      <a href="/settings" style="color:#1a73e8;">Configuration editor</a>
+    </div>
+  </div>
+
+  <!-- Run a mode -->
+  <div class="card full-width">
+    <div class="section-title">Run a Mode</div>
+    <p style="font-size:0.82rem;color:#666;margin-bottom:0.75rem;">
+      Runs in the background. Results appear in the <a href="/timeline" style="color:#1a73e8;">Timeline</a> and <code>pueo.log</code>.
+    </p>
+    <div class="mode-grid">
+
+      <div class="mode-card">
+        <h3>Audit</h3>
+        <p>Self-diagnostics gap report: checks all Pueo systems against their intended state and saves a report to <code>audits/</code>.</p>
+        <p class="mode-status" id="status-audit"></p>
+        <button class="ctrl-btn ctrl-btn-neutral" style="margin-top:0.4rem;" onclick="runMode('audit', this)">Run audit</button>
+      </div>
+
+      <div class="mode-card">
+        <h3>Update Check</h3>
+        <p>Checks for available Home Assistant Core, OS, and add-on updates and queues HITL approval cards if any are found.</p>
+        <p class="mode-status" id="status-update-check"></p>
+        <button class="ctrl-btn ctrl-btn-neutral" style="margin-top:0.4rem;" onclick="runMode('update-check', this)">Run update check</button>
+      </div>
+
+      <div class="mode-card">
+        <h3>Backup Status</h3>
+        <p>Reconciles the local backup inventory against HA and reports disk usage, offload status, and retention health.</p>
+        <p class="mode-status" id="status-backup-status"></p>
+        <button class="ctrl-btn ctrl-btn-neutral" style="margin-top:0.4rem;" onclick="runMode('backup-status', this)">Run backup status</button>
+      </div>
+
+      <div class="mode-card">
+        <h3>NetAlertX Diagnose</h3>
+        <p>One-shot check of the current NetAlertX and HA integration state with AI diagnosis. May queue a HITL healing card.</p>
+        <p class="mode-status" id="status-netalertx-diagnose"></p>
+        <button class="ctrl-btn ctrl-btn-neutral" style="margin-top:0.4rem;" onclick="runMode('netalertx-diagnose', this)">Run diagnose</button>
+      </div>
+
+      <div class="mode-card">
+        <h3>RAG Refresh</h3>
+        <p>Re-scrapes HA release notes and HACS changelogs, re-embeds them, and updates the local knowledge vector store.</p>
+        <p class="mode-status" id="status-rag-refresh"></p>
+        <button class="ctrl-btn ctrl-btn-neutral" style="margin-top:0.4rem;" onclick="runMode('rag-refresh', this)">Run RAG refresh</button>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(function() { t.style.display = 'none'; }, 3000);
+}
+
+function svcAction(action) {
+  fetch('/service/' + action, {method: 'POST'})
+    .then(function(r) {
+      if (r.ok) {
+        showToast(action.charAt(0).toUpperCase() + action.slice(1) + ' command sent. Reload in a moment to see updated status.');
+      } else {
+        r.json().then(function(d) { showToast('Error: ' + (d.detail || r.status)); });
+      }
+    })
+    .catch(function(e) { showToast('Request failed: ' + e); });
+}
+
+function confirmRemove() {
+  if (!confirm('Remove the Pueo launchd service? Pueo will stop and will not restart at login until reinstalled.')) return;
+  fetch('/service/uninstall', {method: 'POST'})
+    .then(function(r) {
+      if (r.ok) { showToast('Service removed. Reload to see updated status.'); }
+      else { r.json().then(function(d) { showToast('Error: ' + (d.detail || r.status)); }); }
+    })
+    .catch(function(e) { showToast('Request failed: ' + e); });
+}
+
+function runMode(mode, btn) {
+  var statusEl = document.getElementById('status-' + mode);
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Starting…';
+  fetch('/control/run?mode=' + encodeURIComponent(mode), {method: 'POST'})
+    .then(function(r) {
+      if (r.ok) {
+        if (statusEl) statusEl.textContent = 'Running in background — check Timeline for results.';
+        setTimeout(function() { btn.disabled = false; if (statusEl) statusEl.textContent = ''; }, 8000);
+      } else {
+        r.json().then(function(d) {
+          if (statusEl) statusEl.textContent = 'Error: ' + (d.detail || r.status);
+          btn.disabled = false;
+        });
+      }
+    })
+    .catch(function(e) {
+      if (statusEl) statusEl.textContent = 'Request failed: ' + e;
+      btn.disabled = false;
+    });
+}
+</script>
+{% endblock %}

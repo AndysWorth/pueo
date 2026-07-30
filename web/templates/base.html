@@ -46,18 +46,24 @@
     .kv-grid .k { color: #555; font-weight: 600; }
     .kv-grid .v { color: #222; word-break: break-word; }
     pre { font-size: 0.78rem; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; padding: 0.6rem; overflow-x: auto; margin-top: 0.4rem; white-space: pre-wrap; }
+    .nav-link { color: #555; text-decoration: none; font-weight: 600; font-size: 0.9rem;
+      padding-bottom: 3px; border-bottom: 2px solid transparent; }
+    .nav-link.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+    .nav-link:hover { color: #1a73e8; }
   </style>
   </head>
   <body>
     <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
         height="32">&nbsp;Pueo</h1>
-    <nav style="margin-bottom:1.25rem;display:flex;gap:1rem;font-size:0.9rem;">
-      <a href="/" style="color:#333;text-decoration:none;font-weight:600;">Overview</a>
-      <a href="/queue" style="color:#333;text-decoration:none;font-weight:600;">Queue</a>
-      <a href="/timeline" style="color:#333;text-decoration:none;font-weight:600;">Timeline</a>
-      <a href="/backups" style="color:#333;text-decoration:none;font-weight:600;">Backups</a>
-      <a href="/notifications" style="color:#333;text-decoration:none;font-weight:600;">Notifications</a>
-      <a href="/settings" style="color:#333;text-decoration:none;font-weight:600;">Settings</a>
+    {% set p = request.url.path %}
+    <nav style="margin-bottom:1.25rem;display:flex;gap:1.25rem;align-items:center;">
+      <a class="nav-link{% if p == '/' %} active{% endif %}" href="/">Overview</a>
+      <a class="nav-link{% if p.startswith('/queue') %} active{% endif %}" href="/queue">Queue</a>
+      <a class="nav-link{% if p.startswith('/timeline') %} active{% endif %}" href="/timeline">Timeline</a>
+      <a class="nav-link{% if p.startswith('/backups') %} active{% endif %}" href="/backups">Backups</a>
+      <a class="nav-link{% if p.startswith('/notifications') %} active{% endif %}" href="/notifications">Notifications</a>
+      <a class="nav-link{% if p.startswith('/settings') %} active{% endif %}" href="/settings">Settings</a>
+      <a class="nav-link{% if p.startswith('/control') %} active{% endif %}" href="/control">Control</a>
     </nav>
     {% block content %}{% endblock %}
   </body>

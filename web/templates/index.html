@@ -102,6 +102,27 @@
       <pre>{{ r.payload | tojson(indent=2) }}</pre>
     </details>
     {% if r.status == "PENDING" %}
+    {% if not r.in_progress and not r.payload.get("is_notification_card") %}
+    {% set ct = r.payload.get("card_type", "") %}
+    {% if ct == "repair" %}
+      {% set hint_approve = "Sandbox-test and apply the config fix to HA (backup created first)" %}
+    {% elif ct == "update" %}
+      {% set hint_approve = "Download and install this update (backup created first)" %}
+    {% elif ct == "netalertx_heal" %}
+      {% set hint_approve = "Apply the NetAlertX fix" %}
+    {% elif ct == "netalertx_setup" %}
+      {% set hint_approve = "Continue the NetAlertX installer with this step (backup created first)" %}
+    {% elif ct == "resource_action" %}
+      {% set hint_approve = "Execute the disk management action" %}
+    {% else %}
+      {% set hint_approve = "Execute this action" %}
+    {% endif %}
+    <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
+      <strong style="color:#222;">Approve</strong> — {{ hint_approve }} &nbsp;·&nbsp;
+      <strong style="color:#222;">Reject</strong> — Discard; no changes made &nbsp;·&nbsp;
+      <strong style="color:#222;">Defer</strong> — Re-present in 24 hours
+    </p>
+    {% endif %}
     <div class="actions">
       {% if r.in_progress %}
       <span class="spinner" aria-label="In progress"></span>

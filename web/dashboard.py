@@ -1088,6 +1088,71 @@ async def service_uninstall() -> JSONResponse:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/service/stop")
+async def service_stop() -> JSONResponse:
+    from utils.service import stop_service
+
+    try:
+        stop_service()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/service/start")
+async def service_start() -> JSONResponse:
+    from utils.service import start_service
+
+    try:
+        start_service()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+_RUNNABLE_MODES: frozenset[str] = frozenset(
+    {"audit", "update-check", "backup-status", "netalertx-diagnose", "rag-refresh"}
+)
+
+_PUEO_DIR = Path(__file__).parent.parent
+
+
+@app.get("/control", response_class=HTMLResponse)
+async def control_tab(request: Request) -> HTMLResponse:
+    from utils.service import PLIST_TARGET, service_status
+
+    svc = service_status()
+    svc["plist_exists"] = PLIST_TARGET.exists()
+    return templates.TemplateResponse(
+        request,
+        "control.html",
+        {"service": svc, "runnable_modes": sorted(_RUNNABLE_MODES)},
+    )
+
+
+@app.post("/control/run")
+async def control_run(mode: str = Query(...)) -> JSONResponse:
+    import sys as _sys
+
+    if mode not in _RUNNABLE_MODES:
+        raise HTTPException(status_code=400, detail=f"Unknown mode: {mode!r}")
+
+    async def _background() -> None:
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable,
+            str(_PUEO_DIR / "main.py"),
+            "--mode",
+            mode,
+            cwd=str(_PUEO_DIR),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+
+    asyncio.create_task(_background())
+    return JSONResponse({"ok": True, "mode": mode})
+
+
 def run_dashboard() -> None:
     import uvicorn
 

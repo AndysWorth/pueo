@@ -1762,6 +1762,32 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_last_error_cleared_on_recovery(self):
+        """last_error is reset to '' when a crashed loop successfully starts again."""
+
+        async def _run():
+            attempts: list[int] = []
+
+            async def flaky_coro():
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise ValueError("first attempt fails")
+                # second attempt: return cleanly (simulates recovery)
+
+            from utils.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", flaky_coro)
+            await asyncio.sleep(0.15)
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+            status = sup.get_statuses()[0]
+            assert status.last_error == ""
+
+        asyncio.run(_run())
+
     def test_paused_loop_does_not_run_coro(self):
         """A paused loop skips the coro body and sleeps instead."""
 

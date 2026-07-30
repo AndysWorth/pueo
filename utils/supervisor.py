@@ -132,6 +132,7 @@ class LoopSupervisor:
             # --- Running state ---
             status.status = "running"
             status.last_run = time.time()
+            status.last_error = ""
             self._emit(name)
             try:
                 await coro_factory()
