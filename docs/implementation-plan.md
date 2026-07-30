@@ -82,7 +82,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 60   | Live event timeline: timeline_events SQLite table (migration v6); SSE push; drill-down detail view | ✅ Done (2026-07-30) |
 | 61   | Configuration editor: settings tab; live-apply for runtime params; config.yaml write; restart prompt for connection params | ✅ Done (2026-07-30) |
 | 62   | Loop control from dashboard: pause/resume/run-now per loop via POST endpoints | ✅ Done (2026-07-30) |
-| 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ☐ TODO |
+| 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ✅ Done (2026-07-30) |
 | 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ☐ TODO |
 | 65   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
 | 66   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |

@@ -415,18 +415,42 @@ else
     fi
 fi
 
+# ── 6. launchd service ───────────────────────────────────────────────────────────
+hdr "6. launchd Service"
+
+PLIST_LABEL="com.pueo.agent"
+PLIST_TARGET="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+
+if launchctl list "$PLIST_LABEL" &>/dev/null 2>&1; then
+    ok "Pueo launchd service is already installed and loaded"
+else
+    echo
+    read -rp "  Install Pueo as a launchd service (auto-start at login)? [Y/n]: " install_svc
+    if [[ "${install_svc:-Y}" =~ ^[Yy] ]]; then
+        PUEO_DIR="$(pwd)"
+        PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
+        sed -e "s|{{ PUEO_DIR }}|${PUEO_DIR}|g" \
+            -e "s|{{ PYTHON_PATH }}|${PYTHON_PATH}|g" \
+            deploy/pueo.launchd.plist.template > "$PLIST_TARGET"
+        launchctl load -w "$PLIST_TARGET"
+        ok "Pueo service installed and started: ${PLIST_LABEL}"
+        info "Pueo will start automatically at login and restart on crash."
+        info "Dashboard → http://127.0.0.1:8080"
+    else
+        info "Skipped — start manually: python main.py"
+    fi
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
 echo
 echo "  Activate environment : source .venv/bin/activate"
+echo "  Start supervisor     : python main.py"
 echo "  Live log monitor     : python main.py --mode monitor"
 echo "  One-shot diagnostics : python main.py --mode diagnose"
-echo "  With memory layer    : python main.py --mode advanced"
-echo "  Full repair pipeline : python main.py --mode repair"
 echo "  HITL dashboard       : python main.py --mode dashboard"
 echo
 echo "  NetAlertX install    : python main.py --mode netalertx-setup"
-echo "  NetAlertX monitor    : python main.py --mode netalertx"
 echo "  NetAlertX diagnose   : python main.py --mode netalertx-diagnose"
 echo

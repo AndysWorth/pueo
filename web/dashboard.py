@@ -926,10 +926,12 @@ def _build_settings_groups() -> list[dict]:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_tab(request: Request) -> HTMLResponse:
+    from utils.service import service_status
+
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {"groups": _build_settings_groups()},
+        {"groups": _build_settings_groups(), "service": service_status()},
     )
 
 
@@ -1044,6 +1046,46 @@ async def loop_run_now(loop_name: str) -> JSONResponse:
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
     return JSONResponse({"ok": True})
+
+
+@app.get("/service/status")
+async def service_status_endpoint() -> JSONResponse:
+    from utils.service import service_status
+
+    return JSONResponse(service_status())
+
+
+@app.post("/service/install")
+async def service_install() -> JSONResponse:
+    from utils.service import install_service
+
+    try:
+        install_service()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/service/restart")
+async def service_restart_endpoint() -> JSONResponse:
+    from utils.service import restart_service
+
+    try:
+        restart_service()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/service/uninstall")
+async def service_uninstall() -> JSONResponse:
+    from utils.service import uninstall_service
+
+    try:
+        uninstall_service()
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def run_dashboard() -> None:
