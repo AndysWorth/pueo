@@ -2804,7 +2804,7 @@ class TestLoopControlEndpoints:
         assert ("run_now", "ha_log_monitor") in calls
 
     def test_unknown_loop_returns_404(self, tmp_path, monkeypatch):
-        """Unknown loop name returns 404."""
+        """Unknown loop name returns 404 for all three control actions."""
         import utils.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
@@ -2814,8 +2814,9 @@ class TestLoopControlEndpoints:
         monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
         monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
         client = TestClient(dashboard.app, raise_server_exceptions=False)
-        r = client.post("/loops/nonexistent/pause")
-        assert r.status_code == 404
+        assert client.post("/loops/nonexistent/pause").status_code == 404
+        assert client.post("/loops/nonexistent/resume").status_code == 404
+        assert client.post("/loops/nonexistent/run-now").status_code == 404
 
     def test_no_supervisor_returns_503(self, tmp_path, monkeypatch):
         """When no supervisor is registered, all loop control endpoints return 503."""
