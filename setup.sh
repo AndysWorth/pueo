@@ -138,6 +138,15 @@ else
     ok "Model ${CONFIGURED_MODEL} ready"
 fi
 
+RAG_EMBED_MODEL="nomic-embed-text"
+if ollama list | grep -q "^${RAG_EMBED_MODEL}"; then
+    ok "Embedding model ${RAG_EMBED_MODEL} is available"
+else
+    info "Pulling embedding model ${RAG_EMBED_MODEL} (required for RAG knowledge base)..."
+    ollama pull "$RAG_EMBED_MODEL"
+    ok "Embedding model ${RAG_EMBED_MODEL} ready"
+fi
+
 # ── 3. SSH Key ──────────────────────────────────────────────────────────────────
 hdr "3. SSH Key"
 
@@ -438,6 +447,34 @@ else
         info "Dashboard → http://127.0.0.1:8080"
     else
         info "Skipped — start manually: python main.py"
+    fi
+fi
+
+# ── 7. RAG refresh launchd job ───────────────────────────────────────────────────
+hdr "7. RAG Knowledge-Base Refresh"
+
+RAG_PLIST_LABEL="io.pueo.rag-refresh"
+RAG_PLIST_TARGET="$HOME/Library/LaunchAgents/${RAG_PLIST_LABEL}.plist"
+
+if launchctl list "$RAG_PLIST_LABEL" &>/dev/null 2>&1; then
+    ok "RAG refresh launchd job is already installed"
+else
+    echo
+    echo "  Pueo uses a local ChromaDB vector store (RAG) for HA breaking-change"
+    echo "  knowledge. A weekly launchd job keeps it fresh by re-embedding cached"
+    echo "  HA release notes and HACS changelogs every Sunday at 03:00."
+    echo
+    read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
+    if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then
+        PUEO_DIR="$(pwd)"
+        sed -e "s|/path/to/pueo|${PUEO_DIR}|g" \
+            -e "s|python3|${PUEO_DIR}/.venv/bin/python|g" \
+            deploy/pueo-rag-refresh.plist > "$RAG_PLIST_TARGET"
+        launchctl load -w "$RAG_PLIST_TARGET"
+        ok "RAG refresh job installed: ${RAG_PLIST_LABEL} (runs Sundays at 03:00)"
+        info "Run immediately: launchctl start ${RAG_PLIST_LABEL}"
+    else
+        info "Skipped — run manually: python main.py --mode rag-refresh"
     fi
 fi
 
