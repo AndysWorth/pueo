@@ -2211,6 +2211,924 @@ class TestTimelineUtils:
         assert count_timeline_events() == 0
 
 
+# ── utils/audit.py ───────────────────────────────────────────────────────────────
+
+_HOST_INFO_YAML = "disk_free: 8.0\ndisk_total: 13.0\ndisk_used: 5.0\n"
+_HOST_INFO_YAML_CRITICAL = "disk_free: 1.5\ndisk_total: 13.0\ndisk_used: 11.5\n"
+_HOST_INFO_YAML_WARN = "disk_free: 4.0\ndisk_total: 13.0\ndisk_used: 9.0\n"
+_MEMINFO = "MemTotal:  8000000 kB\nMemAvailable:  2000000 kB\n"
+_BACKUP_LIST_JSON = (
+    '{"result": "ok", "data": {"backups": [{"slug": "abc123", "size_bytes": 1000}]}}'
+)
+
+
+def _make_db_with_tables(db_path: str, state_rows: list | None = None) -> None:
+    """Create a minimal ha_agent_state.db with required tables."""
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS state_history (
+                id INTEGER PRIMARY KEY,
+                timestamp INTEGER,
+                config_hash TEXT,
+                is_valid INTEGER,
+                issues_found TEXT,
+                action_taken TEXT,
+                correlation_id TEXT
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS backup_registry (
+                id INTEGER PRIMARY KEY,
+                timestamp INTEGER,
+                backup_slug TEXT,
+                status TEXT,
+                size_bytes INTEGER DEFAULT 0,
+                location TEXT DEFAULT 'ha',
+                offloaded_at REAL,
+                deleted_from_ha_at REAL
+            )"""
+        )
+        for row in state_rows or []:
+            conn.execute(
+                "INSERT INTO state_history (timestamp, config_hash, is_valid, issues_found, action_taken, correlation_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                row,
+            )
+        conn.commit()
+
+
+class TestAuditCheckService:
+    def test_not_loaded(self, monkeypatch):
+        import utils.service as svc
+
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+        from utils.audit import check_service
+
+        result = check_service()
+        assert result.status == "WARN"
+        assert "not installed" in result.detail
+
+    def test_loaded_not_running(self, monkeypatch):
+        import utils.service as svc
+
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": True, "running": False, "pid": None},
+        )
+        from utils.audit import check_service
+
+        result = check_service()
+        assert result.status == "CRITICAL"
+        assert "not running" in result.detail
+
+    def test_running(self, monkeypatch):
+        import utils.service as svc
+
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": True, "running": True, "pid": 12345},
+        )
+        from utils.audit import check_service
+
+        result = check_service()
+        assert result.status == "OK"
+        assert "12345" in result.detail
+
+    def test_launchctl_error(self, monkeypatch):
+        import utils.service as svc
+
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {
+                "loaded": False,
+                "running": False,
+                "pid": None,
+                "error": "macOS only",
+            },
+        )
+        from utils.audit import check_service
+
+        result = check_service()
+        assert result.status == "WARN"
+        assert "macOS only" in result.detail
+
+
+class TestAuditCheckHaDisk:
+    def test_disk_ok(self):
+        from utils.audit import check_ha_disk
+        from utils.ssh_client import FakeSSHClient
+
+        client = FakeSSHClient(
+            command_results={
+                "ha host info": (0, _HOST_INFO_YAML, ""),
+                "cat /proc/meminfo": (0, _MEMINFO, ""),
+            }
+        )
+        result = asyncio.run(check_ha_disk(ssh_client=client))
+        assert result.status == "OK"
+        assert "8.0 GB free" in result.detail
+
+    def test_disk_critical(self, monkeypatch, isolated_config):
+        import importlib
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_disk_critical_gb": 2.0, "ha_disk_warn_gb": 5.0}})
+        )
+        importlib.reload(sys.modules["config"])
+        from utils.audit import check_ha_disk
+        from utils.ssh_client import FakeSSHClient
+
+        client = FakeSSHClient(
+            command_results={
+                "ha host info": (0, _HOST_INFO_YAML_CRITICAL, ""),
+                "cat /proc/meminfo": (0, _MEMINFO, ""),
+            }
+        )
+        result = asyncio.run(check_ha_disk(ssh_client=client))
+        assert result.status == "CRITICAL"
+        assert "1.5 GB free" in result.detail
+
+    def test_disk_warn(self, monkeypatch, isolated_config):
+        import importlib
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_disk_critical_gb": 2.0, "ha_disk_warn_gb": 5.0}})
+        )
+        importlib.reload(sys.modules["config"])
+        from utils.audit import check_ha_disk
+        from utils.ssh_client import FakeSSHClient
+
+        client = FakeSSHClient(
+            command_results={
+                "ha host info": (0, _HOST_INFO_YAML_WARN, ""),
+                "cat /proc/meminfo": (0, _MEMINFO, ""),
+            }
+        )
+        result = asyncio.run(check_ha_disk(ssh_client=client))
+        assert result.status == "WARN"
+        assert "4.0 GB free" in result.detail
+
+    def test_ssh_failure(self):
+        from utils.audit import check_ha_disk
+        from utils.ssh_client import FakeSSHClient
+
+        class _BrokenSSHClient(FakeSSHClient):
+            async def run(self, command: str, check: bool = False):
+                raise OSError("connection refused")
+
+        result = asyncio.run(check_ha_disk(ssh_client=_BrokenSSHClient()))
+        assert result.status == "WARN"
+        assert "SSH unavailable" in result.detail
+
+
+class TestAuditCheckBackupRegistry:
+    def test_clean(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 1000, 'ha')",
+                (1000, "abc123"),
+            )
+            conn.commit()
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        client = FakeSSHClient(
+            command_results={"ha backups list --raw-json": (0, _BACKUP_LIST_JSON, "")}
+        )
+        result = asyncio.run(check_backup_registry(ssh_client=client))
+        assert result.status == "OK"
+        assert "1 HA backup" in result.detail
+
+    def test_unknown_slug(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
+                (1000, "unknown_slug"),
+            )
+            conn.commit()
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        client = FakeSSHClient(
+            command_results={"ha backups list --raw-json": (0, _BACKUP_LIST_JSON, "")}
+        )
+        result = asyncio.run(check_backup_registry(ssh_client=client))
+        assert result.status == "WARN"
+        assert "unknown_slug" in result.detail
+
+    def test_untracked_ha_backup(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        # HA has abc123 but DB has nothing
+        client = FakeSSHClient(
+            command_results={"ha backups list --raw-json": (0, _BACKUP_LIST_JSON, "")}
+        )
+        result = asyncio.run(check_backup_registry(ssh_client=client))
+        assert result.status == "WARN"
+        assert "not in DB" in result.detail
+
+    def test_ssh_failure(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        class _BrokenClient(FakeSSHClient):
+            async def run(self, command: str, check: bool = False):
+                raise OSError("connection refused")
+
+        result = asyncio.run(check_backup_registry(ssh_client=_BrokenClient()))
+        assert result.status == "WARN"
+        assert "SSH unavailable" in result.detail
+
+    def test_missing_table(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "empty.db")
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        result = asyncio.run(check_backup_registry(ssh_client=FakeSSHClient()))
+        assert result.status == "WARN"
+        assert "missing" in result.detail
+
+    def test_orphaned_db_slug(self, tmp_path, monkeypatch):
+        """Slug in DB not present on HA (orphaned) shows as WARN."""
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 1000, 'ha')",
+                (1000, "orphan-slug-xyz"),
+            )
+            conn.commit()
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        # HA returns no backups
+        client = FakeSSHClient(
+            command_results={
+                "ha backups list --raw-json": (
+                    0,
+                    '{"result": "ok", "data": {"backups": []}}',
+                    "",
+                )
+            }
+        )
+        result = asyncio.run(check_backup_registry(ssh_client=client))
+        assert result.status == "WARN"
+        assert "orphaned" in result.detail
+
+    def test_ssh_failure_with_unknown_slug(self, tmp_path, monkeypatch):
+        """SSH failure when DB has unknown_slug emits both facts."""
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
+                (1000, "unknown_slug"),
+            )
+            conn.commit()
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_backup_registry
+        from utils.ssh_client import FakeSSHClient
+
+        class _BrokenClient(FakeSSHClient):
+            async def run(self, command: str, check: bool = False):
+                raise OSError("timeout")
+
+        result = asyncio.run(check_backup_registry(ssh_client=_BrokenClient()))
+        assert result.status == "WARN"
+        assert "unknown_slug" in result.detail
+        assert "SSH unavailable" in result.detail
+
+
+class TestAuditCheckPendingHitl:
+    def test_no_dir(self, tmp_path):
+        from utils.audit import check_pending_hitl
+
+        result = check_pending_hitl(watch_dir=str(tmp_path / "nonexistent"))
+        assert result.status == "OK"
+
+    def test_no_pending(self, tmp_path):
+        import json
+
+        card_id = "test-card-123"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps({"notification_id": card_id, "sent_at": 1000})
+        )
+        (tmp_path / f"{card_id}.approved").touch()
+        from utils.audit import check_pending_hitl
+
+        result = check_pending_hitl(watch_dir=str(tmp_path))
+        assert result.status == "OK"
+        assert "No pending" in result.detail
+
+    def test_pending_less_than_24h(self, tmp_path):
+        import json
+        import time
+
+        card_id = "pending-card"
+        sent_at = time.time() - 3600  # 1 hour ago
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps({"notification_id": card_id, "sent_at": sent_at})
+        )
+        from utils.audit import check_pending_hitl
+
+        result = check_pending_hitl(watch_dir=str(tmp_path))
+        assert result.status == "WARN"
+        assert "1 pending" in result.detail
+
+    def test_pending_older_than_24h(self, tmp_path):
+        import json
+        import time
+
+        card_id = "old-card"
+        sent_at = time.time() - 30 * 3600  # 30 hours ago
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps({"notification_id": card_id, "sent_at": sent_at})
+        )
+        from utils.audit import check_pending_hitl
+
+        result = check_pending_hitl(watch_dir=str(tmp_path))
+        assert result.status == "CRITICAL"
+        assert "30h old" in result.detail
+
+
+class TestAuditCheckNetalertx:
+    def test_not_configured(self, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "NETALERTX_HOST", "")
+        from utils.audit import check_netalertx
+
+        result = asyncio.run(check_netalertx())
+        assert result.status == "OK"
+        assert "not configured" in result.detail
+
+    def test_scan_stale(self, monkeypatch):
+        import config
+        from netalertx import health as health_mod
+        from netalertx.health import HealthReport
+
+        monkeypatch.setattr(config, "NETALERTX_HOST", "192.168.1.100")
+        monkeypatch.setattr(config, "NETALERTX_MAX_SCAN_AGE_MINUTES", 20)
+
+        class _FakeMonitor:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def poll_once(self, event_queue):
+                return HealthReport(
+                    last_scan_age_minutes=9999,
+                    device_counts={"total": 1, "online": 0},
+                    mqtt_active=False,
+                    anomalies=["stale"],
+                    netalertx_version="v26.7.1",
+                )
+
+        monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _FakeMonitor)
+
+        from netalertx.api_client import NetAlertXAPIClient
+
+        class _FakeClient(NetAlertXAPIClient):
+            def __init__(self):
+                pass
+
+        from utils.audit import check_netalertx
+
+        result = asyncio.run(check_netalertx(api_client=_FakeClient()))
+        assert result.status == "CRITICAL"
+        assert "9999m" in result.detail
+
+    def test_mqtt_inactive(self, monkeypatch):
+        import config
+        from netalertx import health as health_mod
+        from netalertx.health import HealthReport
+
+        monkeypatch.setattr(config, "NETALERTX_HOST", "192.168.1.100")
+        monkeypatch.setattr(config, "NETALERTX_MAX_SCAN_AGE_MINUTES", 20)
+
+        class _FakeMonitor:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def poll_once(self, event_queue):
+                return HealthReport(
+                    last_scan_age_minutes=5,
+                    device_counts={"total": 10, "online": 5},
+                    mqtt_active=False,
+                    anomalies=[],
+                    netalertx_version="v26.7.1",
+                )
+
+        monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _FakeMonitor)
+
+        from netalertx.api_client import NetAlertXAPIClient
+
+        class _FakeClient(NetAlertXAPIClient):
+            def __init__(self):
+                pass
+
+        from utils.audit import check_netalertx
+
+        result = asyncio.run(check_netalertx(api_client=_FakeClient()))
+        assert result.status == "WARN"
+        assert "MQTT inactive" in result.detail
+
+    def test_healthy(self, monkeypatch):
+        import config
+        from netalertx import health as health_mod
+        from netalertx.health import HealthReport
+
+        monkeypatch.setattr(config, "NETALERTX_HOST", "192.168.1.100")
+        monkeypatch.setattr(config, "NETALERTX_MAX_SCAN_AGE_MINUTES", 20)
+
+        class _FakeMonitor:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def poll_once(self, event_queue):
+                return HealthReport(
+                    last_scan_age_minutes=5,
+                    device_counts={"total": 10, "online": 5},
+                    mqtt_active=True,
+                    anomalies=[],
+                    netalertx_version="v26.7.1",
+                )
+
+        monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _FakeMonitor)
+
+        from netalertx.api_client import NetAlertXAPIClient
+
+        class _FakeClient(NetAlertXAPIClient):
+            def __init__(self):
+                pass
+
+        from utils.audit import check_netalertx
+
+        result = asyncio.run(check_netalertx(api_client=_FakeClient()))
+        assert result.status == "OK"
+
+    def test_api_unavailable(self, monkeypatch):
+        import config
+        from netalertx import health as health_mod
+
+        monkeypatch.setattr(config, "NETALERTX_HOST", "192.168.1.100")
+
+        class _BrokenMonitor:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def poll_once(self, event_queue):
+                raise ConnectionError("refused")
+
+        monkeypatch.setattr(health_mod, "NetAlertXHealthMonitor", _BrokenMonitor)
+
+        from netalertx.api_client import NetAlertXAPIClient
+
+        class _FakeClient(NetAlertXAPIClient):
+            def __init__(self):
+                pass
+
+        from utils.audit import check_netalertx
+
+        result = asyncio.run(check_netalertx(api_client=_FakeClient()))
+        assert result.status == "WARN"
+        assert "unavailable" in result.detail
+
+
+class TestAuditCheckStateHistory:
+    def test_missing_table(self, tmp_path, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "empty.db"))
+        from utils.audit import check_state_history
+
+        result = check_state_history()
+        assert result.status == "WARN"
+        assert "missing" in result.detail
+
+    def test_no_entries(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        _make_db_with_tables(db)
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_state_history
+
+        result = check_state_history()
+        assert result.status == "OK"
+        assert "not run" in result.detail
+
+    def test_all_invalid(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        rows = [
+            (1000, "abc", 0, "[]", "awaiting_approval", ""),
+            (1001, "abc", 0, "[]", "awaiting_approval", ""),
+        ]
+        _make_db_with_tables(db, state_rows=rows)
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_state_history
+
+        result = check_state_history()
+        assert result.status == "WARN"
+        assert "all runs flagged invalid" in result.detail
+
+    def test_normal_mix(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "state.db")
+        rows = [
+            (1000, "abc", 1, "[]", "none", ""),
+            (1001, "xyz", 0, "[]", "repair", ""),
+        ]
+        _make_db_with_tables(db, state_rows=rows)
+
+        import config
+
+        monkeypatch.setattr(config, "DB_PATH", db)
+        from utils.audit import check_state_history
+
+        result = check_state_history()
+        assert result.status == "OK"
+        assert "2 entries" in result.detail
+
+
+class TestAuditCheckUpdateCheck:
+    def test_disabled_no_token(self, tmp_path, monkeypatch, isolated_config):
+        import importlib
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": ""},
+                    "agent": {"update_check_interval_hours": 0},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "WARN"
+        assert "disabled" in result.detail
+
+    def test_pending_update_card(self, tmp_path, monkeypatch, isolated_config):
+        import importlib
+        import json
+        import time
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        card_id = "update-card-abc"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Update available: core 2026.7.2 → 2026.7.4",
+                    "sent_at": time.time() - 3600,
+                }
+            )
+        )
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "WARN"
+        assert "awaiting approval" in result.detail
+
+    def test_approved_not_executed(self, tmp_path, monkeypatch, isolated_config):
+        import importlib
+        import json
+        import time
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        card_id = "update-card-approved"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Update available: core 2026.7.2 → 2026.7.4",
+                    "sent_at": time.time() - 3600,
+                }
+            )
+        )
+        (tmp_path / f"{card_id}.approved").touch()
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "CRITICAL"
+        assert "not yet executed" in result.detail
+
+    def test_approved_and_executed(self, tmp_path, monkeypatch, isolated_config):
+        import importlib
+        import json
+        import time
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        card_id = "update-done"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Update available: core 2026.7.2 → 2026.7.4",
+                    "sent_at": time.time() - 3600,
+                    "fix_applied": True,
+                }
+            )
+        )
+        (tmp_path / f"{card_id}.approved").touch()
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "OK"
+
+    def test_rejected_card_ignored(self, tmp_path, monkeypatch, isolated_config):
+        import importlib
+        import json
+        import time
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        card_id = "update-rejected"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Update available: core 2026.7.2 → 2026.7.4",
+                    "sent_at": time.time() - 3600,
+                }
+            )
+        )
+        (tmp_path / f"{card_id}.rejected").touch()
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "OK"
+
+    def test_non_json_file_skipped(self, tmp_path, monkeypatch, isolated_config):
+        """A non-JSON .json file in hitl/ is skipped without error."""
+        import importlib
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        # Write an invalid JSON file
+        (tmp_path / "garbage.json").write_text("not json {{{{")
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "OK"
+
+    def test_non_update_card_skipped(self, tmp_path, monkeypatch, isolated_config):
+        """A JSON card with an unrelated subject is not treated as an update card."""
+        import importlib
+        import json
+
+        import yaml
+
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "home_assistant": {"api_token": "tok123"},
+                    "agent": {"update_check_interval_hours": 24},
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+
+        card_id = "repair-card"
+        (tmp_path / f"{card_id}.json").write_text(
+            json.dumps(
+                {
+                    "notification_id": card_id,
+                    "subject": "Config repair required",
+                    "card_type": "repair",
+                }
+            )
+        )
+        from utils.audit import check_update_check
+
+        result = check_update_check(watch_dir=str(tmp_path))
+        assert result.status == "OK"
+
+
+class TestAuditPriorityOrdering:
+    def test_sorted_critical_before_warn_before_ok(self):
+        from utils.audit import AuditResult, format_audit_report
+
+        results = [
+            AuditResult("check_a", "OK", "all good"),
+            AuditResult("check_b", "CRITICAL", "very bad", "fix it"),
+            AuditResult("check_c", "WARN", "look at this", "investigate"),
+        ]
+        results.sort(
+            key=lambda r: {"CRITICAL": 0, "WARN": 1, "OK": 2}.get(r.status, 99)
+        )
+        assert results[0].status == "CRITICAL"
+        assert results[1].status == "WARN"
+        assert results[2].status == "OK"
+
+    def test_format_report_includes_priority_actions(self):
+        from utils.audit import AuditResult, format_audit_report
+
+        results = [
+            AuditResult("check_a", "CRITICAL", "disk full", "free disk"),
+            AuditResult("check_b", "OK", "all good"),
+        ]
+        report = format_audit_report(results, now=1000000)
+        assert "Priority Actions" in report
+        assert "free disk" in report
+        assert "[CRITICAL]" in report
+
+    def test_format_report_no_priority_section_when_all_ok(self):
+        from utils.audit import AuditResult, format_audit_report
+
+        results = [AuditResult("check_a", "OK", "fine")]
+        report = format_audit_report(results, now=1000000)
+        assert "Priority Actions" not in report
+
+
+class TestAuditSaveReport:
+    def test_saves_to_audits_dir(self, tmp_path):
+        from utils.audit import save_audit_report
+
+        report = "# Pueo Audit\n\nAll clear.\n"
+        out = save_audit_report(report, audits_dir=str(tmp_path / "audits"))
+        assert out.exists()
+        assert out.read_text() == report
+        assert "pueo-audit-" in out.name
+
+
+class TestAuditMainEntry:
+    def test_main_audit_runs_and_saves(self, tmp_path, monkeypatch):
+        """main_audit() writes a file to audits_dir and prints a summary."""
+        from utils.audit import AuditResult
+
+        ok_result = AuditResult("service", "OK", "running fine")
+        warn_result = AuditResult("ha_disk", "WARN", "4.0 GB free", "free disk")
+
+        async def _fake_run_audit(**kwargs):
+            return [ok_result, warn_result]
+
+        import utils.audit as audit_mod
+
+        monkeypatch.setattr(audit_mod, "run_audit", _fake_run_audit)
+
+        audits_dir = str(tmp_path / "audits")
+        asyncio.run(audit_mod.main_audit(audits_dir=audits_dir))
+
+        import os
+
+        files = os.listdir(audits_dir)
+        assert any("pueo-audit-" in f for f in files)
+
+    def test_run_audit_handles_unexpected_exception(self, monkeypatch, tmp_path):
+        """run_audit() wraps exceptions from async checks as WARN results."""
+        import utils.audit as audit_mod
+
+        async def _bad_check(**kwargs):
+            raise RuntimeError("unexpected!")
+
+        monkeypatch.setattr(audit_mod, "check_ha_disk", _bad_check)
+        monkeypatch.setattr(audit_mod, "check_backup_registry", _bad_check)
+        monkeypatch.setattr(audit_mod, "check_netalertx", _bad_check)
+        monkeypatch.setattr(
+            audit_mod, "check_service", lambda: audit_mod.AuditResult("svc", "OK", "ok")
+        )
+        monkeypatch.setattr(
+            audit_mod,
+            "check_state_history",
+            lambda: audit_mod.AuditResult("sh", "OK", "ok"),
+        )
+        monkeypatch.setattr(
+            audit_mod,
+            "check_pending_hitl",
+            lambda **kw: audit_mod.AuditResult("ph", "OK", "ok"),
+        )
+        monkeypatch.setattr(
+            audit_mod,
+            "check_update_check",
+            lambda **kw: audit_mod.AuditResult("uc", "OK", "ok"),
+        )
+
+        results = asyncio.run(audit_mod.run_audit(watch_dir=str(tmp_path)))
+        warn_results = [r for r in results if r.status == "WARN"]
+        assert len(warn_results) == 3  # one per failed async check
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
