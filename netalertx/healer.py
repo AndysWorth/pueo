@@ -412,6 +412,17 @@ class NetAlertXHealer:
         log.info("netalertx_container_restart_done")
 
     # ------------------------------------------------------------------
+    # Dashboard-triggered heal (item 58)
+    # ------------------------------------------------------------------
+
+    async def run_heal(self, action: str) -> None:
+        """Execute a named heal action approved via the HITL dashboard."""
+        if action == "fix_webhook_fields":
+            await self._fix_ha_automation_fields()
+        else:
+            raise ValueError(f"Unknown NetAlertX heal action: {action!r}")
+
+    # ------------------------------------------------------------------
     # Item 19: maintenance issue healing
     # ------------------------------------------------------------------
 

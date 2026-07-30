@@ -5727,6 +5727,62 @@ class TestNetAlertXHealer:
         # HA config had no mqtt: key, so only app.conf was written
         assert "/config/configuration.yaml" not in ha_ssh.written_files
 
+    # -----------------------------------------------------------------------
+    # run_heal (item 58) — dashboard-triggered named action dispatch
+    # -----------------------------------------------------------------------
+
+    def test_run_heal_fix_webhook_fields_calls_automation_fix(
+        self, tmp_path, monkeypatch
+    ):
+        """run_heal('fix_webhook_fields') calls _fix_ha_automation_fields."""
+        import ha_agent_sandbox_engine
+        from utils.autonomy import FakeAutonomyGate
+
+        db = str(tmp_path / "healer_test.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        ha_agent_sandbox_engine.init_local_database()
+
+        called = []
+
+        from netalertx.healer import NetAlertXHealer
+        from utils.ssh_client import FakeSSHClient
+        from utils.notify import FakeNotifier
+
+        healer = NetAlertXHealer(
+            gate=FakeAutonomyGate(),
+            ssh_client=FakeSSHClient(),
+            ha_ssh_client=FakeSSHClient(),
+            api_client=_FakeAPIClient(),
+            notifier=FakeNotifier(approve=True),
+            db_path=db,
+        )
+
+        async def _fake_fix(self_inner):  # noqa: N805
+            called.append("fix_ha_automation_fields")
+
+        monkeypatch.setattr(NetAlertXHealer, "_fix_ha_automation_fields", _fake_fix)
+        asyncio.run(healer.run_heal("fix_webhook_fields"))
+        assert called == ["fix_ha_automation_fields"]
+
+    def test_run_heal_unknown_action_raises(self, tmp_path):
+        """run_heal with an unknown action raises ValueError."""
+        import pytest as _pytest
+        from utils.autonomy import FakeAutonomyGate
+        from netalertx.healer import NetAlertXHealer
+        from utils.ssh_client import FakeSSHClient
+        from utils.notify import FakeNotifier
+
+        healer = NetAlertXHealer(
+            gate=FakeAutonomyGate(),
+            ssh_client=FakeSSHClient(),
+            ha_ssh_client=FakeSSHClient(),
+            api_client=_FakeAPIClient(),
+            notifier=FakeNotifier(approve=True),
+        )
+
+        with _pytest.raises(ValueError, match="Unknown NetAlertX heal action"):
+            asyncio.run(healer.run_heal("does_not_exist"))
+
 
 # ---------------------------------------------------------------------------
 # Test-only helpers (not part of production code)

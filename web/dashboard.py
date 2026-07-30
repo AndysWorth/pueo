@@ -162,24 +162,106 @@ async def _execute_queued_update(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
-async def _execute_netalertx_heal_stub(
+async def _execute_netalertx_heal(
     nid: str,
     data: dict,
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Stub for NetAlertX heal executor — replaced in full by item 58."""
-    (watch_dir / f"{nid}.approved").touch()
+    """Run the NetAlertX heal action for a HITL-approved card."""
+    import config as _config
+    from netalertx.api_client import NetAlertXAPIClient
+    from netalertx.healer import NetAlertXHealer
+    from utils.autonomy import AutonomyGate
+    from utils.notify import get_notifier
+    from utils.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        payload = data.get("payload", {})
+        heal_action = payload.get("heal_action", "")
+        nax_ssh = AsyncSSHClient(
+            _config.NETALERTX_SSH_HOST,
+            _config.NETALERTX_SSH_USER,
+            _config.NETALERTX_SSH_KEY_PATH,
+        )
+        ha_ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+        api = NetAlertXAPIClient(
+            base_url=f"http://{_config.NETALERTX_HOST}:{_config.NETALERTX_API_PORT}",
+            api_token=_config.NETALERTX_API_TOKEN,
+        )
+        gate = AutonomyGate(_config.AUTONOMY_LEVEL)
+        notifier = get_notifier(
+            _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+        )
+        healer = NetAlertXHealer(
+            gate=gate,
+            ssh_client=nax_ssh,
+            ha_ssh_client=ha_ssh,
+            api_client=api,
+            notifier=notifier,
+            container_name=_config.NETALERTX_LOG_CONTAINER_NAME,
+        )
+        await healer.run_heal(heal_action)
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
-async def _execute_resource_action_stub(
+async def _execute_resource_action(
     nid: str,
     data: dict,
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Stub for resource action executor — replaced in full by item 58."""
-    (watch_dir / f"{nid}.approved").touch()
+    """Run a resource management action for a HITL-approved card."""
+    import sqlite3 as _sqlite3
+
+    import config as _config
+    from ha_agent_advanced import (
+        enforce_ha_retention,
+        offload_backup_to_local,
+        purge_local_backups,
+    )
+    from utils.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        payload = data.get("payload", {})
+        action = payload.get("action", "")
+        ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+
+        if action == "offload_backups":
+            with _sqlite3.connect(DB_PATH) as conn:
+                rows = conn.execute(
+                    "SELECT backup_slug FROM backup_registry"
+                    " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
+                ).fetchall()
+            for (slug,) in rows:
+                await offload_backup_to_local(slug, ssh_client=ssh)
+            await enforce_ha_retention(ssh_client=ssh)
+            purge_local_backups()
+        elif action == "enforce_retention":
+            await enforce_ha_retention(ssh_client=ssh)
+            purge_local_backups()
+        else:
+            raise ValueError(f"Unknown resource action: {action!r}")
+
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
 _CARD_DISPATCH: dict[
@@ -187,8 +269,8 @@ _CARD_DISPATCH: dict[
     Any,
 ] = {
     CARD_TYPE_UPDATE: _execute_queued_update,
-    CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal_stub,
-    CARD_TYPE_RESOURCE_ACTION: _execute_resource_action_stub,
+    CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
+    CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
 }
 
 
