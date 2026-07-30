@@ -26,7 +26,7 @@ Report privately via [GitHub's private vulnerability reporting](https://docs.git
 Include:
 - A description of the vulnerability and its impact
 - Steps to reproduce or a proof-of-concept (responsible disclosure only — no exploit weaponization)
-- The affected layer (`ha_agent_core`, `ha_agent_advanced`, `ha_agent_sandbox_engine`, `ha_log_monitor`, `config.py`)
+- The affected component (e.g. `--mode supervisor`, `--mode repair`, SSH transport, dashboard, `config.py`)
 - Whether the safety invariant (backup-before-write) is bypassed
 
 ## Response timeline

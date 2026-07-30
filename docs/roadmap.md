@@ -60,40 +60,20 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 
 ### Milestone 6.5 — Supervisor + Active Dashboard
 
-**Objective:** Replace the collection of disconnected one-shot and daemon commands with a single
-`python main.py` entry point. A unified asyncio supervisor process runs all monitoring loops
-concurrently alongside the FastAPI dashboard. The dashboard becomes the face of Pueo: real-time
-status overview driven by Server-Sent Events, live event timeline with drill-down, configuration
-editor with live-apply, loop pause/resume controls, and direct execution of HITL-approved actions.
-A launchd plist keeps Pueo alive across reboots and restarts.
+**Delivered:** 2026-07-30 (Phase 17, items 55–64)
 
-**Why here:** An operational audit (2026-07-29) revealed that in practice only `--mode dashboard`
-stays running — and it is passive. Approved HITL actions don't execute. No monitoring loops run.
-Disk hit CRITICAL with no alert. The supervisor closes this gap: one command starts everything,
-and the dashboard handles both display and action dispatch.
+`python main.py` (no flags) is now the single entry point. It starts all monitoring loops
+(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the HITL
+dashboard in one supervised asyncio process. `LoopSupervisor` wraps each task with
+exception catching and exponential-backoff restart (2s → 5-min cap); a crashed loop emits a
+`loop_error` SSE event and restarts automatically.
 
-**Key design choices:**
-- Single asyncio process (not subprocess-per-mode): the dashboard dispatches approved actions
-  by calling handler functions directly in-process, which requires shared address space
-- `LoopSupervisor` wraps each monitoring task with exception catching and exponential-backoff
-  restart (2s → 5 min cap); a crashed loop emits a `loop_error` SSE event and restarts
-- SSE (`GET /events`) pushes loop status, HITL cards, resource state, and timeline events to
-  the browser; no WebSocket needed (server-to-client only)
-- Config live-apply: runtime params (`autonomy_level`, thresholds, intervals) take effect
-  immediately; connection params (`HA_HOST`, SSH key) write to config.yaml and prompt restart
-- HITL card dispatch: `card_type` field on every card routes approval to the matching handler
-  (`_execute_queued_update`, `_execute_netalertx_heal`, etc.) rather than writing a file
-  that nobody listens for
-- launchd plist: 127.0.0.1-only, no auth, starts at login, restarts on crash
-
-**Tasks (Phase 17, items 55–64):** Supervisor process → card-type dispatch → update executor →
-NetAlertX/resource executors → dashboard overview tab (SSE) → event timeline with drill-down →
-configuration editor → loop control → launchd install → `--mode audit` self-diagnostics.
-
-**Validation gate:** `python main.py` starts all loops and serves the dashboard; approving the
-pending HA Core update card executes the update in-process; changing `autonomy_level` in the
-settings tab takes effect on the next autonomy gate decision; pausing the log monitor stops
-triage; launchd restarts Pueo after `killall python`; `--mode audit` generates a gap report.
+HITL card approval executes repair actions in-process via a `card_type` dispatch table —
+no more file-polling race where the one-shot process exits before the user approves. The
+dashboard (`http://127.0.0.1:<DASHBOARD_PORT>`) shows real-time loop health, a live event
+timeline with drill-down, resource gauges, a configuration editor with live-apply for runtime
+params, and loop pause/resume/run-now controls. A launchd plist keeps Pueo alive at login and
+restarts it on crash. `--mode audit` produces a structured gap report saved to `audits/`.
 
 Full spec: [plan/supervisor.md](plan/supervisor.md)
 
