@@ -2851,3 +2851,171 @@ class TestLoadLastBackup:
         result = dashboard._load_last_backup()
         assert result["slug"] == "abc123"
         assert "m ago" in result["age"] or "h ago" in result["age"]
+
+
+class TestTimelineRoutes:
+    """Tests for GET /timeline (list) and GET /timeline/{id} (detail)."""
+
+    @pytest.fixture()
+    def tl_setup(self, tmp_path, monkeypatch):
+        """Migrated DB + patched DB_PATH in dashboard and timeline modules."""
+        import ha_agent_advanced
+        import utils.timeline as tl_mod
+        import web.dashboard as dashboard
+
+        db = str(tmp_path / "tl_dash_test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        monkeypatch.setattr(tl_mod, "DB_PATH", db)
+        monkeypatch.setattr(dashboard, "DB_PATH", db)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        ha_agent_advanced.init_local_database()
+        return db, tmp_path
+
+    def test_timeline_empty_returns_200(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/timeline")
+        assert response.status_code == 200
+        assert "Timeline" in response.text
+
+    def test_timeline_shows_events(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event("ERROR", "ha_log_monitor", "pycync mesh error")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/timeline").text
+        assert "pycync mesh error" in html
+        assert "ha_log_monitor" in html
+
+    def test_timeline_level_filter(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event("INFO", "update_check", "update found")
+        write_timeline_event("ERROR", "resource", "disk critical")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/timeline?level=ERROR").text
+        assert "disk critical" in html
+        assert "update found" not in html
+
+    def test_timeline_pagination_headers(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        for i in range(30):
+            write_timeline_event("INFO", "src", f"event {i}")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/timeline").text
+        assert "Page 1" in html
+        assert "Next" in html
+
+    def test_timeline_detail_returns_200(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        eid = write_timeline_event(
+            "WARN", "resource", "disk warn", {"disk_free_gb": 1.8}
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get(f"/timeline/{eid}")
+        assert response.status_code == 200
+        assert "disk warn" in response.text
+        assert "resource" in response.text
+
+    def test_timeline_detail_shows_detail_fields(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        eid = write_timeline_event(
+            "INFO",
+            "update_check",
+            "update available",
+            {"component": "core", "latest_version": "2026.8.0"},
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get(f"/timeline/{eid}").text
+        assert "component" in html
+        assert "core" in html
+
+    def test_timeline_detail_missing_id_returns_404(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/timeline/99999")
+        assert response.status_code == 404
+
+    def test_timeline_nav_link_present(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert 'href="/timeline"' in html
+
+    def test_overview_recent_events_section_present(self, tl_setup):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event("ERROR", "ha_log_monitor", "recent error event")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "recent error event" in html
+
+    def test_resource_disk_critical_emits_timeline_event(self, tl_setup):
+        """disk_critical alert writes a CRITICAL timeline event."""
+        import asyncio
+        import sqlite3
+        import utils.timeline as tl_mod
+
+        db, _ = tl_setup
+
+        async def run():
+            from utils.resource import (
+                ResourcePoller,
+                ResourceStatus,
+                update_resource_status,
+            )
+
+            captured = []
+
+            class FakeNotifier:
+                async def send(self, subject, body, payload=None):
+                    captured.append(subject)
+
+            poller = ResourcePoller(
+                ssh_client=None,  # type: ignore[arg-type]
+                notifier=FakeNotifier(),
+                interval_seconds=9999,
+                disk_warn_gb=2.0,
+                disk_critical_gb=3.0,
+                mem_warn_mb=200,
+            )
+            status = ResourceStatus(
+                disk_free_gb=1.0,
+                disk_total_gb=32.0,
+                disk_used_gb=31.0,
+                mem_available_mb=500,
+                mem_total_mb=8000,
+                disk_warn=True,
+                disk_critical=True,
+                mem_warn=False,
+            )
+            await poller._check_and_alert(status)
+
+        asyncio.run(run())
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT level, source FROM timeline_events WHERE level='CRITICAL'"
+            ).fetchall()
+        assert any(r[1] == "resource" for r in rows)

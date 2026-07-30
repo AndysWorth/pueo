@@ -30,6 +30,11 @@
     border: 1px solid #ffc107; border-radius: 3px; font-size: 0.75rem; font-weight: 700;
     padding: 0.15rem 0.5rem; }
   .no-loops { color: #aaa; font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+  .level-badge { font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .level-info     { background: #dbeafe; color: #1d4ed8; }
+  .level-warn     { background: #fef3c7; color: #92400e; }
+  .level-error    { background: #fee2e2; color: #991b1b; }
+  .level-critical { background: #dc3545; color: #fff; }
 </style>
 
 <div class="overview-grid">
@@ -142,10 +147,36 @@
     {% endif %}
   </div>
 
-  <!-- Recent Events (placeholder until item 60) -->
+  <!-- Recent Events -->
   <div class="card full-width">
-    <div class="section-title">Recent Events</div>
-    <p class="no-loops">Event timeline will be available in the next update.</p>
+    <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;">
+      <span>Recent Events</span>
+      <a href="/timeline" style="font-size:0.78rem;color:#1a73e8;font-weight:400;">View all →</a>
+    </div>
+    {% if recent_events %}
+    <table class="loop-table" id="recent-events-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Level</th>
+          <th>Source</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody id="recent-events-body">
+        {% for ev in recent_events %}
+        <tr>
+          <td style="white-space:nowrap;color:#888;font-size:0.78rem;">{{ ev.ts|epoch_to_iso }}</td>
+          <td><span class="level-badge level-{{ ev.level|lower }}">{{ ev.level }}</span></td>
+          <td style="color:#666;font-size:0.82rem;">{{ ev.source }}</td>
+          <td><a href="/timeline/{{ ev.id }}" style="color:#222;text-decoration:none;font-size:0.85rem;">{{ ev.message }}</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="no-loops" id="recent-events-empty">No events yet — Pueo will log significant actions here.</p>
+    {% endif %}
   </div>
 
 </div>
@@ -212,12 +243,50 @@
     }
   }
 
+  function levelBadgeHtml(level) {
+    return '<span class="level-badge level-' + level.toLowerCase() + '">' + level + '</span>';
+  }
+
+  function fmtEpoch(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts * 1000);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+  }
+
+  function prependTimelineRow(evt) {
+    var body = document.getElementById('recent-events-body');
+    var empty = document.getElementById('recent-events-empty');
+    if (empty) {
+      // Replace placeholder with table structure
+      var wrap = empty.parentElement;
+      empty.remove();
+      var tbl = document.createElement('table');
+      tbl.className = 'loop-table';
+      tbl.id = 'recent-events-table';
+      tbl.innerHTML = '<thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>'
+        + '<tbody id="recent-events-body"></tbody>';
+      wrap.appendChild(tbl);
+      body = document.getElementById('recent-events-body');
+    }
+    if (!body) return;
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td style="white-space:nowrap;color:#888;font-size:0.78rem;">' + fmtEpoch(evt.ts) + '</td>'
+      + '<td>' + levelBadgeHtml(evt.level) + '</td>'
+      + '<td style="color:#666;font-size:0.82rem;">' + (evt.source || '') + '</td>'
+      + '<td><a href="' + (evt.detail_url || '#') + '" style="color:#222;text-decoration:none;font-size:0.85rem;">'
+      + (evt.message || '') + '</a></td>';
+    body.insertBefore(tr, body.firstChild);
+    // Cap at 10 rows
+    while (body.rows.length > 10) body.deleteRow(body.rows.length - 1);
+  }
+
   var es = new EventSource('/events');
   es.onmessage = function (e) {
     try {
       var evt = JSON.parse(e.data);
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
       else if (evt.event_type === 'resource') updateGauges(evt);
+      else if (evt.event_type === 'timeline') prependTimelineRow(evt);
     } catch (_) {}
   };
   es.onerror = function () {

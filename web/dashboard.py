@@ -128,6 +128,7 @@ def _load_last_backup() -> dict:
 async def overview(request: Request) -> HTMLResponse:
     from utils.resource import get_resource_status
     from utils.supervisor import get_supervisor_instance
+    from utils.timeline import load_timeline_events
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +139,7 @@ async def overview(request: Request) -> HTMLResponse:
     loop_statuses = sv.get_statuses() if sv else []
     resource = get_resource_status()
     last_backup = _load_last_backup()
+    recent_events = load_timeline_events(limit=10)
     return templates.TemplateResponse(
         request,
         "overview.html",
@@ -146,6 +148,7 @@ async def overview(request: Request) -> HTMLResponse:
             "resource": resource,
             "pending_count": pending_count,
             "last_backup": last_backup,
+            "recent_events": recent_events,
         },
     )
 
@@ -227,16 +230,49 @@ async def _execute_queued_update(
             data["fix_applied"] = True
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.approved").touch()
+            try:
+                from utils.timeline import write_timeline_event
+
+                write_timeline_event(
+                    "INFO",
+                    "update_executor",
+                    f"Update executed: {component} → {latest_version}",
+                    {"component": component, "latest_version": latest_version},
+                )
+            except Exception:  # nosec B110
+                pass
         else:
             data["fix_error"] = (
                 f"Update of {component} to {latest_version} did not complete successfully"
             )
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
+            try:
+                from utils.timeline import write_timeline_event
+
+                write_timeline_event(
+                    "ERROR",
+                    "update_executor",
+                    f"Update failed: {component} → {latest_version}",
+                    {"component": component, "latest_version": latest_version},
+                )
+            except Exception:  # nosec B110
+                pass
     except Exception as exc:
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "ERROR",
+                "update_executor",
+                f"Update error: {component} — {exc}",
+                {"component": component},
+            )
+        except Exception:  # nosec B110
+            pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -285,10 +321,32 @@ async def _execute_netalertx_heal(
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "INFO",
+                "netalertx_heal",
+                f"NetAlertX heal executed: {heal_action}",
+                {"heal_action": heal_action},
+            )
+        except Exception:  # nosec B110
+            pass
     except Exception as exc:
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "ERROR",
+                "netalertx_heal",
+                f"NetAlertX heal failed: {heal_action} — {exc}",
+                {"heal_action": heal_action},
+            )
+        except Exception:  # nosec B110
+            pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -335,10 +393,32 @@ async def _execute_resource_action(
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "INFO",
+                "resource_action",
+                f"Resource action executed: {action}",
+                {"action": action},
+            )
+        except Exception:  # nosec B110
+            pass
     except Exception as exc:
         data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "ERROR",
+                "resource_action",
+                f"Resource action failed: {action} — {exc}",
+                {"action": action},
+            )
+        except Exception:  # nosec B110
+            pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -605,6 +685,56 @@ async def notifications_tab(
             "severity_filter": severity,
             "sort_by": sort_by,
         },
+    )
+
+
+_PAGE_SIZE = 25
+
+
+@app.get("/timeline", response_class=HTMLResponse)
+async def timeline(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    level: str = Query(default=""),
+    source: str = Query(default=""),
+) -> HTMLResponse:
+    from utils.timeline import count_timeline_events, load_timeline_events
+
+    offset = (page - 1) * _PAGE_SIZE
+    events = load_timeline_events(
+        limit=_PAGE_SIZE,
+        offset=offset,
+        level_filter=level,
+        source_filter=source,
+    )
+    total = count_timeline_events(level_filter=level, source_filter=source)
+    total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    return templates.TemplateResponse(
+        request,
+        "timeline.html",
+        {
+            "events": events,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+            "level_filter": level,
+            "source_filter": source,
+        },
+    )
+
+
+@app.get("/timeline/{event_id}", response_class=HTMLResponse)
+async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
+    from fastapi.responses import Response as _Response
+    from utils.timeline import get_timeline_event
+
+    event = get_timeline_event(event_id)
+    if event is None:
+        return _Response(content="Event not found", status_code=404)  # type: ignore[return-value]
+    return templates.TemplateResponse(
+        request,
+        "timeline_detail.html",
+        {"event": event},
     )
 
 

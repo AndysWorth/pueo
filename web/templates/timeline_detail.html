@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .level-badge { font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .level-info     { background: #dbeafe; color: #1d4ed8; }
+  .level-warn     { background: #fef3c7; color: #92400e; }
+  .level-error    { background: #fee2e2; color: #991b1b; }
+  .level-critical { background: #dc3545; color: #fff; }
+  .meta-row { font-size: 0.82rem; color: #666; margin-bottom: 0.3rem; }
+  .meta-row strong { color: #333; }
+  .section-label { display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 0.15rem 0.45rem;
+    border-radius: 3px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 0.4rem; }
+  .label-detail { background: #dbeafe; color: #1d4ed8; }
+  .label-llm    { background: #fef3c7; color: #92400e; }
+  .label-tools  { background: #dcfce7; color: #166534; }
+  details { margin-bottom: 0.75rem; }
+  summary { font-size: 0.82rem; color: #555; cursor: pointer; }
+  pre { font-size: 0.78rem; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px;
+    padding: 0.6rem; overflow-x: auto; margin-top: 0.4rem; white-space: pre-wrap; word-break: break-word; }
+  .kv-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 0.75rem;
+    font-size: 0.82rem; margin-top: 0.5rem; }
+  .kv-grid .k { color: #555; font-weight: 600; }
+  .kv-grid .v { color: #222; word-break: break-word; }
+  .back-link { font-size: 0.85rem; color: #1a73e8; text-decoration: none; display: inline-block; margin-bottom: 1rem; }
+  .back-link:hover { text-decoration: underline; }
+  .msg-heading { font-size: 1.05rem; font-weight: 700; color: #222; margin: 0.75rem 0 0.5rem; }
+</style>
+
+<a href="/timeline" class="back-link">← Back to Timeline</a>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+    <span class="level-badge level-{{ event.level|lower }}">{{ event.level }}</span>
+    <span style="font-size:0.82rem;color:#888;">{{ event.source }}</span>
+    <span style="font-size:0.78rem;color:#aaa;margin-left:auto;">{{ event.ts|epoch_to_iso }}</span>
+  </div>
+  <div class="msg-heading">{{ event.message }}</div>
+
+  {% set detail = event.detail %}
+
+  {% if detail %}
+  <details open>
+    <summary><span class="section-label label-detail">Detail</span>Event data</summary>
+    <div class="kv-grid" style="margin-top:0.5rem;">
+      {% for k, v in detail.items() if k not in ('llm_trace', 'tool_calls') %}
+      <span class="k">{{ k }}</span>
+      <span class="v">{{ v }}</span>
+      {% endfor %}
+    </div>
+    {% if 'log_line' in detail %}
+    <div style="margin-top:0.5rem;">
+      <div style="font-size:0.75rem;color:#888;margin-bottom:2px;">Log line</div>
+      <pre>{{ detail.log_line }}</pre>
+    </div>
+    {% endif %}
+  </details>
+
+  {% if detail.get('llm_trace') %}
+  <details>
+    <summary><span class="section-label label-llm">LLM</span>Prompt &amp; response</summary>
+    {% set trace = detail.llm_trace %}
+    {% if trace.get('system_prompt') %}
+    <div style="font-size:0.75rem;color:#888;margin-top:0.4rem;margin-bottom:2px;">System prompt</div>
+    <pre>{{ trace.system_prompt }}</pre>
+    {% endif %}
+    {% if trace.get('user_prompt') %}
+    <div style="font-size:0.75rem;color:#888;margin-top:0.4rem;margin-bottom:2px;">User prompt</div>
+    <pre>{{ trace.user_prompt }}</pre>
+    {% endif %}
+    {% if trace.get('raw_response') %}
+    <div style="font-size:0.75rem;color:#888;margin-top:0.4rem;margin-bottom:2px;">Response</div>
+    <pre>{{ trace.raw_response }}</pre>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  {% if detail.get('tool_calls') %}
+  <details>
+    <summary><span class="section-label label-tools">Tools</span>Tool call sequence</summary>
+    <pre>{{ detail.tool_calls | tojson(indent=2) }}</pre>
+  </details>
+  {% endif %}
+
+  {% else %}
+  <p style="color:#aaa;font-size:0.85rem;margin-top:0.75rem;">No additional detail recorded for this event.</p>
+  {% endif %}
+</div>
+{% endblock %}
