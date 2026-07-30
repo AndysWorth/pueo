@@ -17,7 +17,7 @@ Strategic capabilities in delivery order.
 | 4.7. HA Notification Intelligence             | ✅ Complete (2026-07-27) | `utils/ha_ws_client.py`, `web/dashboard.py`|
 | 5. Agent quality & evaluation                 | ✅ Complete (2026-07-28) | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
-| 6.5. Supervisor + Active Dashboard            | ❌ Not started           | `main.py`, `web/dashboard.py`              |
+| 6.5. Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | `main.py`, `web/dashboard.py`              |
 | 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
 | 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
@@ -44,7 +44,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
 | Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
 | Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54  |
-| Phase 17: Supervisor + Active Dashboard            | ❌ Not started           | 55–64  |
+| Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64  |
 | Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 65–68  |
 | Phase 19: Repair Episode Recording                 | ❌ Not started           | 69–71  |
 | Phase 20: Federated Case Library                   | ❌ Not started           | 72–74  |
