@@ -228,8 +228,11 @@ async def request_update_approval(
         body_parts.append(f"Advisory: {advisory} — {readiness_report.recommendation}")
     body = "\n".join(body_parts)
 
+    from utils.card_types import CARD_TYPE_UPDATE
+
     payload: dict = {
         "notification_id": nid,
+        "card_type": CARD_TYPE_UPDATE,
         "component": update.component,
         "installed_version": update.installed_version,
         "latest_version": update.latest_version,

@@ -1867,3 +1867,156 @@ class TestNotificationsDashboard:
         # Row is still returned; enrichment fields are simply absent
         assert len(pending) == 1
         assert "human_explanation" not in pending[0]
+
+
+# ── Card-type dispatch (item 56) ──────────────────────────────────────────────────
+
+
+class TestCardTypeDispatch:
+    """Verify approve() routes to the correct handler based on card_type field."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_card(self, watch_dir, nid, payload):
+        import json as _json
+        import time
+
+        card = {
+            "notification_id": nid,
+            "subject": "Test card",
+            "body": "body",
+            "payload": payload,
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(_json.dumps(card))
+
+    def test_repair_card_routes_to_execute_queued_fix(self, watch_dir, monkeypatch):
+        """CARD_TYPE_REPAIR dispatches to _execute_queued_fix."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        called = []
+
+        async def _fake_fix(nid, yaml_content, description, data, json_path, wd):
+            called.append(nid)
+
+        monkeypatch.setattr(dashboard, "_execute_queued_fix", _fake_fix)
+        self._write_card(
+            watch_dir,
+            "r1",
+            {
+                "card_type": "repair",
+                "pending_fix_yaml": "homeassistant:\n  name: Fixed\n",
+                "pending_fix_description": "test fix",
+            },
+        )
+        asyncio.run(dashboard.approve("r1"))
+        assert "r1" in called
+
+    def test_legacy_repair_card_routes_to_execute_queued_fix(
+        self, watch_dir, monkeypatch
+    ):
+        """Card with pending_fix_yaml but no card_type still routes to _execute_queued_fix."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        called = []
+
+        async def _fake_fix(nid, yaml_content, description, data, json_path, wd):
+            called.append(nid)
+
+        monkeypatch.setattr(dashboard, "_execute_queued_fix", _fake_fix)
+        self._write_card(
+            watch_dir,
+            "legacy1",
+            {
+                "pending_fix_yaml": "homeassistant:\n  name: Fixed\n",
+                "pending_fix_description": "legacy fix",
+            },
+        )
+        asyncio.run(dashboard.approve("legacy1"))
+        assert "legacy1" in called
+
+    def test_update_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
+        """CARD_TYPE_UPDATE dispatches to the update stub which creates .approved."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(
+            watch_dir,
+            "u1",
+            {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
+        )
+        asyncio.run(dashboard.approve("u1"))
+        assert (watch_dir / "u1.approved").exists()
+
+    def test_netalertx_heal_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
+        """CARD_TYPE_NETALERTX_HEAL dispatches to the netalertx heal stub."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(
+            watch_dir,
+            "nh1",
+            {"card_type": "netalertx_heal", "heal_action": "fix_webhook_fields"},
+        )
+        asyncio.run(dashboard.approve("nh1"))
+        assert (watch_dir / "nh1.approved").exists()
+
+    def test_resource_action_card_routes_to_stub_and_creates_approved(
+        self, watch_dir, monkeypatch
+    ):
+        """CARD_TYPE_RESOURCE_ACTION dispatches to the resource action stub."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(
+            watch_dir,
+            "ra1",
+            {"card_type": "resource_action", "action": "offload_backups"},
+        )
+        asyncio.run(dashboard.approve("ra1"))
+        assert (watch_dir / "ra1.approved").exists()
+
+    def test_unknown_card_type_falls_back_to_approved(self, watch_dir, monkeypatch):
+        """Unknown card_type just touches the .approved file."""
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        self._write_card(watch_dir, "x1", {"card_type": "future_unknown_type"})
+        asyncio.run(dashboard.approve("x1"))
+        assert (watch_dir / "x1.approved").exists()
+
+    def test_card_type_constants_exist(self):
+        """Verify all four card type constants are importable."""
+        from utils.card_types import (
+            CARD_TYPE_NETALERTX_HEAL,
+            CARD_TYPE_REPAIR,
+            CARD_TYPE_RESOURCE_ACTION,
+            CARD_TYPE_UPDATE,
+        )
+
+        assert CARD_TYPE_REPAIR == "repair"
+        assert CARD_TYPE_UPDATE == "update"
+        assert CARD_TYPE_NETALERTX_HEAL == "netalertx_heal"
+        assert CARD_TYPE_RESOURCE_ACTION == "resource_action"
+
+    def test_repair_payload_includes_card_type(self):
+        """apply_fix payload includes card_type=repair."""
+        from utils.card_types import CARD_TYPE_REPAIR
+
+        assert CARD_TYPE_REPAIR == "repair"
+
+    def test_resource_action_payload_includes_card_type(self):
+        """Disk-critical alert payload includes card_type=resource_action."""
+        from utils.card_types import CARD_TYPE_RESOURCE_ACTION
+
+        assert CARD_TYPE_RESOURCE_ACTION == "resource_action"

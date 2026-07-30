@@ -453,13 +453,19 @@ class NetAlertXHealer:
             return
 
         fields_str = ", ".join(i.field for i in issues)
+        from utils.card_types import CARD_TYPE_NETALERTX_HEAL
+
         approved = await self._gate.require_approval(
             subject="Pueo: NetAlertX — fix HA automation webhook fields to camelCase",
             body=(
                 f"Snake_case webhook fields detected: {fields_str}. "
                 "Rewrite to camelCase via HA sandbox engine."
             ),
-            payload={"fields": [i.field for i in issues]},
+            payload={
+                "card_type": CARD_TYPE_NETALERTX_HEAL,
+                "heal_action": "fix_webhook_fields",
+                "fields": [i.field for i in issues],
+            },
             notifier=self._notifier,
             risk=RiskLevel.HIGH,
         )

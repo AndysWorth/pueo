@@ -14,6 +14,12 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
 from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
+from utils.card_types import (
+    CARD_TYPE_NETALERTX_HEAL,
+    CARD_TYPE_REPAIR,
+    CARD_TYPE_RESOURCE_ACTION,
+    CARD_TYPE_UPDATE,
+)
 
 app = FastAPI(title="Pueo HITL Dashboard")
 app.mount(
@@ -101,20 +107,71 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+async def _execute_queued_update_stub(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Stub for update executor — replaced in full by item 57."""
+    (watch_dir / f"{nid}.approved").touch()
+
+
+async def _execute_netalertx_heal_stub(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Stub for NetAlertX heal executor — replaced in full by item 58."""
+    (watch_dir / f"{nid}.approved").touch()
+
+
+async def _execute_resource_action_stub(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Stub for resource action executor — replaced in full by item 58."""
+    (watch_dir / f"{nid}.approved").touch()
+
+
+_CARD_DISPATCH: dict[
+    str,
+    Any,
+] = {
+    CARD_TYPE_UPDATE: _execute_queued_update_stub,
+    CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal_stub,
+    CARD_TYPE_RESOURCE_ACTION: _execute_resource_action_stub,
+}
+
+
 @app.post("/approve/{nid}")
 async def approve(nid: str) -> RedirectResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         data = json.loads(json_path.read_text())
-        pending_yaml = data.get("payload", {}).get("pending_fix_yaml")
-        if pending_yaml:
-            description = data.get("payload", {}).get("pending_fix_description", "")
+        payload = data.get("payload", {})
+        card_type = payload.get("card_type", "")
+
+        if card_type == CARD_TYPE_REPAIR or (
+            not card_type and payload.get("pending_fix_yaml")
+        ):
+            # Repair card (typed) or legacy card with pending_fix_yaml
+            yaml_content = payload.get("pending_fix_yaml", "")
+            description = payload.get("pending_fix_description", "")
             await _execute_queued_fix(
-                nid, pending_yaml, description, data, json_path, watch_dir
+                nid, yaml_content, description, data, json_path, watch_dir
             )
             return RedirectResponse(url="/", status_code=303)
-        (watch_dir / f"{nid}.approved").touch()
+
+        handler = _CARD_DISPATCH.get(card_type)
+        if handler:
+            await handler(nid, data, json_path, watch_dir)
+        else:
+            (watch_dir / f"{nid}.approved").touch()
     return RedirectResponse(url="/", status_code=303)
 
 

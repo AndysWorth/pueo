@@ -146,6 +146,8 @@ class ResourcePoller:
                     disk_free_gb=status.disk_free_gb,
                     threshold_gb=self._disk_critical_gb,
                 )
+                from utils.card_types import CARD_TYPE_RESOURCE_ACTION
+
                 await self._notifier.send(
                     subject="Pueo CRITICAL: HA disk almost full",
                     body=(
@@ -153,7 +155,9 @@ class ResourcePoller:
                         f"{self._disk_critical_gb} GB. Backup creation is blocked."
                     ),
                     payload={
+                        "card_type": CARD_TYPE_RESOURCE_ACTION,
                         "type": "resource_alert",
+                        "action": "offload_backups",
                         "severity": "CRITICAL",
                         "disk_free_gb": status.disk_free_gb,
                         "disk_total_gb": status.disk_total_gb,
