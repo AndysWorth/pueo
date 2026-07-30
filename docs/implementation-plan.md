@@ -76,7 +76,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 54   | Evals — /project:run-evals slash command + optional CI job           | ✅ Done (2026-07-28) |
 | 55   | Supervisor process: asyncio task launcher; LoopSupervisor with health tracking, backoff restart | ✅ Done (2026-07-29) |
 | 56   | Card-type dispatch: utils/card_types.py; card_type field on all HITL cards; dispatch table in approve() | ✅ Done (2026-07-29) |
-| 57   | Update executor: _execute_queued_update() in dashboard; refactor execute_update() as callable | ☐ TODO |
+| 57   | Update executor: _execute_queued_update() in dashboard; refactor execute_update() as callable | ✅ Done (2026-07-30) |
 | 58   | NetAlertX + resource action executors; in-progress spinner state in dashboard | ☐ TODO |
 | 59   | Dashboard home: overview tab with loop health rows, HA state card, resource gauges; SSE /events endpoint | ☐ TODO |
 | 60   | Live event timeline: timeline_events SQLite table (migration v6); SSE push; drill-down detail view | ☐ TODO |
