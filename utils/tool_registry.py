@@ -245,6 +245,44 @@ QUERY_KNOWLEDGE = ToolDefinition(
     },
 )
 
+# Conversational agent tools
+REMEMBER = ToolDefinition(
+    name="remember",
+    description="Store a named piece of information in persistent agent memory.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Short label for this memory entry",
+            },
+            "content": {
+                "type": "string",
+                "description": "The information to remember",
+            },
+        },
+        "required": ["key", "content"],
+    },
+)
+
+RECALL = ToolDefinition(
+    name="recall",
+    description=(
+        "Search persistent agent memory by keyword. "
+        "Returns matching entries ordered by most recent first."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Keyword or phrase to search for in stored memories",
+            }
+        },
+        "required": ["query"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
