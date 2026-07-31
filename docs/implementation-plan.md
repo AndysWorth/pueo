@@ -88,7 +88,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 66   | remember + recall tools: ToolDefinitions, ToolExecutor methods, CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys | ✅ Done (2026-07-31) |
 | 67   | build_chat_tool_registry(); finish_chat ToolDefinition; AgentLoop.terminal_tool_name parameter; conversational system prompt | ✅ Done (2026-07-31) |
 | 68   | /chat GET route; chat.html template (session list + message thread + input); base.html nav link | ✅ Done (2026-07-31) |
-| 69   | POST /chat/message + GET /chat/events SSE; asyncio task dispatch; chat_thinking/chat_done/chat_error events | ☐ TODO |
+| 69   | POST /chat/message + GET /chat/events SSE; asyncio task dispatch; chat_thinking/chat_done/chat_error events | ✅ Done (2026-07-31) |
 | 70   | read_source, propose_patch, sandbox_code tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout | ☐ TODO |
 | 71   | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup | ☐ TODO |
 | 72   | Tests: test_chat.py (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); TestConfigDefaults for two new config keys | ☐ TODO |
