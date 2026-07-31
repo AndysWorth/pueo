@@ -1206,6 +1206,192 @@ async def delete_chat_session(session_id: int) -> JSONResponse:
     return JSONResponse({}, status_code=204)
 
 
+@app.get("/chat/events")
+async def chat_sse_events() -> StreamingResponse:
+    """SSE stream for chat progress: chat_thinking, chat_done, chat_error."""
+    from utils.supervisor import subscribe_chat, unsubscribe_chat
+
+    async def event_stream():
+        q = subscribe_chat()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            unsubscribe_chat(q)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class ChatMessageRequest(BaseModel):
+    session_id: int | None = None
+    message: str
+
+
+@app.post("/chat/message")
+async def post_chat_message(req: ChatMessageRequest) -> JSONResponse:
+    """Accept a user message, persist it, and dispatch an async agent loop."""
+    session_id = req.session_id
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            if session_id is None:
+                title = message[:60]
+                cur = conn.execute(
+                    "INSERT INTO chat_sessions (created_at, title) VALUES (?, ?)",
+                    (time.time(), title),
+                )
+                session_id = cur.lastrowid
+
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, "user", message, time.time()),
+            )
+            history = conn.execute(
+                "SELECT role, content FROM chat_messages"
+                " WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            ).fetchall()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    prior = [{"role": r, "content": c} for r, c in history[:-1]]
+    if session_id is None:
+        raise HTTPException(status_code=500, detail="session creation failed")
+    asyncio.create_task(_run_chat_loop(session_id, message, prior))
+    return JSONResponse({"session_id": session_id}, status_code=202)
+
+
+async def _run_chat_loop(
+    session_id: int,
+    message: str,
+    history: list[dict],
+) -> None:
+    """Run one AgentLoop turn for a chat session and publish SSE progress events."""
+    from config import (
+        AUTONOMY_LEVEL,
+        HA_HOST,
+        HA_USER,
+        NOTIFIER,
+        NOTIFY_URL,
+        NOTIFY_WATCH_DIR,
+        SSH_KEY_PATH,
+    )
+    from utils.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
+    from utils.autonomy import AutonomyGate
+    from utils.notify import get_notifier
+    from utils.ollama_client import OllamaClient
+    from utils.supervisor import get_supervisor_instance, publish_chat_event
+    from utils.tool_executor import ToolExecutor
+    from utils.tool_registry import AgentStep, build_chat_tool_registry
+
+    sv = get_supervisor_instance()
+    executor: ToolExecutor
+    if (
+        sv is not None
+        and hasattr(sv, "_tool_executor")
+        and sv._tool_executor is not None
+    ):
+        executor = sv._tool_executor
+    else:
+        from interfaces import SSHClientProtocol
+
+        ssh: SSHClientProtocol
+        try:
+            from utils.ssh_client import AsyncSSHClient
+
+            ssh = AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+        except Exception:
+            from utils.ssh_client import FakeSSHClient
+
+            ssh = FakeSSHClient()
+        gate = AutonomyGate(AUTONOMY_LEVEL)
+        notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+        executor = ToolExecutor(ha_ssh_client=ssh, gate=gate, notifier=notifier)
+
+    def on_step(step: AgentStep) -> None:
+        publish_chat_event(
+            {
+                "event_type": "chat_thinking",
+                "session_id": session_id,
+                "tool": step.tool_call.name,
+                "step": step.step_number,
+            }
+        )
+
+    context_parts: list[str] = []
+    if history:
+        context_parts.append("[Prior conversation]")
+        for msg in history:
+            role = msg["role"]
+            content = (msg.get("content") or "").strip()
+            if role == "user":
+                context_parts.append(f"User: {content}")
+            elif role == "assistant":
+                context_parts.append(f"Pueo: {content}")
+        context_parts.append("")
+    context_parts.append(message)
+    initial_context = "\n".join(context_parts)
+
+    try:
+        agent_loop = AgentLoop(
+            llm_client=OllamaClient(),
+            tool_executor=executor,
+            tool_registry=build_chat_tool_registry(),
+            system_prompt=_CHAT_SYSTEM_PROMPT,
+            terminal_tool_name="finish_chat",
+            max_tool_calls=10,
+            max_wall_seconds=60,
+            step_callback=on_step,
+        )
+        result = await agent_loop.run(initial_context)
+
+        summary = result.episode_stub.get("summary", "") if result.episode_stub else ""
+        if not summary:
+            for step in reversed(result.steps):
+                if step.tool_call.name == "finish_chat":
+                    summary = step.tool_call.arguments.get("summary", "")
+                    break
+        if not summary:
+            summary = f"(Loop ended: {result.outcome})"
+
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, "assistant", summary, time.time()),
+            )
+
+        publish_chat_event(
+            {
+                "event_type": "chat_done",
+                "session_id": session_id,
+                "content": summary,
+            }
+        )
+    except Exception as exc:
+        publish_chat_event(
+            {
+                "event_type": "chat_error",
+                "session_id": session_id,
+                "error": str(exc),
+            }
+        )
+
+
 def run_dashboard() -> None:
     import uvicorn
 

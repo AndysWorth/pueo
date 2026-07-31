@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 from config import AGENT_MAX_TOOL_CALLS, AGENT_MAX_WALL_SECONDS, OLLAMA_MODEL
@@ -104,6 +105,7 @@ class AgentLoop:
         max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
         terminal_tool_name: str = "finish_repair",
+        step_callback: Optional[Callable[["AgentStep"], None]] = None,
     ) -> None:
         self._llm = llm_client
         self._executor = tool_executor
@@ -113,6 +115,7 @@ class AgentLoop:
         self._max_tool_calls = max_tool_calls
         self._max_wall_seconds = max_wall_seconds
         self._terminal_tool_name = terminal_tool_name
+        self._step_callback = step_callback
 
     async def run(self, initial_context: str) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
@@ -242,14 +245,15 @@ class AgentLoop:
                 tool_result: ToolResult = await self._executor.execute(tool_call)
                 tool_call_count += 1
 
-                steps.append(
-                    AgentStep(
-                        step_number=tool_call_count,
-                        tool_call=tool_call,
-                        tool_result=tool_result,
-                        timestamp=ts,
-                    )
+                step = AgentStep(
+                    step_number=tool_call_count,
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    timestamp=ts,
                 )
+                steps.append(step)
+                if self._step_callback is not None:
+                    self._step_callback(step)
 
                 # Feed tool result back to the conversation.
                 result_text = (
