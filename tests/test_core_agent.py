@@ -7428,17 +7428,40 @@ class TestAgentLoop:
 
 
 class TestRunRagRefresh:
-    def test_calls_both_scrapers(self, tmp_path, monkeypatch, capsys):
+    """Tests for run_rag_refresh() — all network-dependent functions are mocked."""
+
+    def _patch_network(self, monkeypatch, tmp_path):
+        """Patch all network-dependent functions to no-ops."""
+        import utils.ha_docs_scraper as docs_mod
+        import utils.ha_release_notes_scraper as ha_mod
+        import utils.hacs_scraper as hacs_mod
+
+        monkeypatch.setattr(ha_mod, "fetch_ha_release_notes", lambda *a, **kw: 0)
+        monkeypatch.setattr(hacs_mod, "discover_hacs_integrations", lambda *a, **kw: [])
+        monkeypatch.setattr(hacs_mod, "fetch_hacs_changelog", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            docs_mod, "discover_installed_integrations", lambda *a, **kw: []
+        )
+        monkeypatch.setattr(docs_mod, "fetch_integration_doc", lambda *a, **kw: False)
+        monkeypatch.setattr("config.HA_API_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "ha_notes")
+        )
+        monkeypatch.setattr("config.RAG_HACS_CACHE_DIR", str(tmp_path / "hacs"))
+        monkeypatch.setattr("config.RAG_HA_DOCS_CACHE_DIR", str(tmp_path / "docs"))
+
+    def test_produces_progress_output(self, tmp_path, monkeypatch, capsys):
         from utils.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
+        self._patch_network(monkeypatch, tmp_path)
         store = FakeKnowledgeStore()
-        monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path))
         main_module.run_rag_refresh(store)
-        captured = capsys.readouterr().out
-        assert "rag-refresh" in captured
-        assert "HA release note file" in captured
-        assert "HACS changelog" in captured
+        out = capsys.readouterr().out
+        assert "rag-refresh" in out
+        assert "HA release note" in out
+        assert "HACS" in out
+        assert "integration doc" in out
 
     def test_embeds_ha_release_notes(self, tmp_path, monkeypatch):
         from utils.knowledge_store import FakeKnowledgeStore
@@ -7448,13 +7471,19 @@ class TestRunRagRefresh:
         notes_dir.mkdir()
         (notes_dir / "2024.1.txt").write_text(
             "# Home Assistant 2024.1\n## Breaking changes\nRemoved old_key from config."
+            "\n## New features\nAdded new light platform."
         )
-        store = FakeKnowledgeStore()
+        self._patch_network(monkeypatch, tmp_path)
         monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(notes_dir))
+        store = FakeKnowledgeStore()
         main_module.run_rag_refresh(store)
-        results = store.query("removed old_key", top_k=5)
-        assert len(results) > 0
-        assert results[0].collection == "ha_release_notes"
+        # breaking-change content
+        assert len(store.query("removed old_key", top_k=5)) > 0
+        assert (
+            store.query("removed old_key", top_k=5)[0].collection == "ha_release_notes"
+        )
+        # new feature content also embedded
+        assert len(store.query("new light platform", top_k=5)) > 0
 
     def test_embeds_hacs_changelogs(self, tmp_path, monkeypatch):
         from utils.knowledge_store import FakeKnowledgeStore
@@ -7465,18 +7494,38 @@ class TestRunRagRefresh:
         (hacs_dir / "myintegration.md").write_text(
             "## 1.2.0\nAdded new feature.\n## 1.1.0\nFixed bug."
         )
+        self._patch_network(monkeypatch, tmp_path)
+        monkeypatch.setattr("config.RAG_HACS_CACHE_DIR", str(hacs_dir))
         store = FakeKnowledgeStore()
-        monkeypatch.setattr("config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path))
-        # Patch embed_cached_changelogs to use our tmp hacs dir
-        import utils.hacs_scraper as hacs_mod
-
-        orig = hacs_mod.embed_cached_changelogs
-
-        def patched_embed(cache_dir: str, s):
-            return orig(str(hacs_dir), s)
-
-        monkeypatch.setattr(hacs_mod, "embed_cached_changelogs", patched_embed)
         main_module.run_rag_refresh(store)
         results = store.query("new feature", top_k=5)
         assert len(results) > 0
         assert results[0].collection == "hacs_changelogs"
+
+    def test_embeds_integration_docs(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        import main as main_module
+
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "hue.md").write_text(
+            "## Overview\nPhilips Hue integration.\n## Configuration\nAdd API token."
+        )
+        self._patch_network(monkeypatch, tmp_path)
+        monkeypatch.setattr("config.RAG_HA_DOCS_CACHE_DIR", str(docs_dir))
+        store = FakeKnowledgeStore()
+        main_module.run_rag_refresh(store)
+        results = store.query("Philips Hue", top_k=5)
+        assert len(results) > 0
+        assert results[0].collection == "ha_integration_docs"
+
+    def test_skips_hacs_discovery_when_no_token(self, tmp_path, monkeypatch, capsys):
+        from utils.knowledge_store import FakeKnowledgeStore
+        import main as main_module
+
+        self._patch_network(monkeypatch, tmp_path)
+        monkeypatch.setattr("config.HA_API_TOKEN", "")
+        store = FakeKnowledgeStore()
+        main_module.run_rag_refresh(store)
+        out = capsys.readouterr().out
+        assert "no HA API token" in out

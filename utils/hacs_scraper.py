@@ -1,7 +1,9 @@
 """HACS integration changelog scraper and embedder (item 51).
 
 Reads cached HACS changelog .md files, splits them by version header,
-and upserts them to the knowledge store.
+and upserts them to the knowledge store.  Active fetching from GitHub and
+integration discovery from the HA REST API are handled by the functions
+prefixed fetch_* and discover_*.
 """
 
 from __future__ import annotations
@@ -14,6 +16,15 @@ if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
 
 _SECTION_SPLIT = re.compile(r"\n##\s+")
+_GITHUB_REPO_RE = re.compile(
+    r"https://github\.com/([^/]+/[^/]+)/releases?", re.IGNORECASE
+)
+
+
+def _repo_from_release_url(release_url: str) -> str | None:
+    """Extract 'org/repo' from a GitHub release URL."""
+    m = _GITHUB_REPO_RE.match(release_url)
+    return m.group(1) if m else None
 
 
 def parse_changelog(changelog_text: str) -> list[str]:
@@ -25,14 +36,63 @@ def parse_changelog(changelog_text: str) -> list[str]:
 def chunk_changelog(
     changelog_text: str,
     slug: str,
+    collected_ids: set[str] | None = None,
 ) -> tuple[list[str], list[str], list[dict]]:
-    """Parse changelog into (ids, documents, metadatas) for a ChromaDB upsert."""
+    """Parse changelog into (ids, documents, metadatas) for a ChromaDB upsert.
+
+    If collected_ids is provided, all generated IDs are added to it.
+    """
     chunks = parse_changelog(changelog_text)
     if not chunks:
         return [], [], []
     ids = [f"hacs-{slug}-{i}" for i in range(len(chunks))]
     metadatas = [{"source": f"hacs/{slug}", "slug": slug} for _ in chunks]
+    if collected_ids is not None:
+        collected_ids.update(ids)
     return ids, chunks, metadatas
+
+
+def discover_hacs_integrations(  # pragma: no cover
+    ha_url: str,
+    ha_token: str,
+) -> list[tuple[str, str]]:
+    """Query HA REST /api/states for HACS-managed update entities.
+
+    Returns a list of (slug, github_repo) pairs.  Falls back to [] if HA is
+    unreachable or the token is missing.
+    """
+    import json
+    import urllib.request
+
+    if not ha_token:
+        return []
+    try:
+        req = urllib.request.Request(
+            f"{ha_url}/api/states",
+            headers={"Authorization": f"Bearer {ha_token}"},
+        )
+        with urllib.request.urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 — HA URL from user config
+            states = json.loads(resp.read())
+    except Exception:
+        return []
+
+    pairs: list[tuple[str, str]] = []
+    for state in states:
+        entity_id: str = state.get("entity_id", "")
+        attrs: dict = state.get("attributes", {})
+        if not entity_id.startswith("update."):
+            continue
+        if attrs.get("platform") != "hacs" and "hacs" not in entity_id:
+            continue
+        release_url: str = attrs.get("release_url", "") or ""
+        repo = _repo_from_release_url(release_url) if release_url else None
+        if not repo:
+            continue
+        slug = repo.split("/")[-1]
+        pairs.append((slug, repo))
+    return pairs
 
 
 def fetch_hacs_changelog(  # pragma: no cover
@@ -65,9 +125,11 @@ def fetch_hacs_changelog(  # pragma: no cover
 def embed_cached_changelogs(
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
+    collected_ids: set[str] | None = None,
 ) -> int:
     """Read all cached HACS changelog .md files and embed them.
 
+    If collected_ids is provided, all upserted chunk IDs are added to it.
     Returns the number of files processed.
     """
     path = Path(cache_dir)
@@ -80,7 +142,7 @@ def embed_cached_changelogs(
             content = fp.read_text(encoding="utf-8")
         except OSError:
             continue
-        ids, docs, metas = chunk_changelog(content, slug)
+        ids, docs, metas = chunk_changelog(content, slug, collected_ids)
         if ids:
             knowledge_store.upsert(
                 "hacs_changelogs", ids=ids, documents=docs, metadatas=metas

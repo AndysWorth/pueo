@@ -1421,6 +1421,58 @@ class TestFakeKnowledgeStore:
         assert results == []
 
 
+class TestFakeKnowledgeStorePrune:
+    def test_prune_removes_stale_ids(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2024.1-0", "ha-2024.2-0"],
+            documents=["old text", "new text"],
+            metadatas=[{"source": "ha/2024.1"}, {"source": "ha/2024.2"}],
+        )
+        removed = store.prune("ha_release_notes", keep_ids={"ha-2024.2-0"})
+        assert removed == 1
+        assert len(store.query("new text", top_k=5)) == 1
+        assert len(store.query("old text", top_k=5)) == 0
+
+    def test_prune_keeps_all_when_all_in_keep_set(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-a-0", "ha-b-0"],
+            documents=["alpha", "beta"],
+            metadatas=[{"source": "a"}, {"source": "b"}],
+        )
+        removed = store.prune("ha_release_notes", keep_ids={"ha-a-0", "ha-b-0"})
+        assert removed == 0
+        assert len(store._docs["ha_release_notes"]) == 2
+
+    def test_prune_empty_keep_set_clears_collection(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-a-0"],
+            documents=["some text"],
+            metadatas=[{"source": "a"}],
+        )
+        removed = store.prune("ha_release_notes", keep_ids=set())
+        assert removed == 1
+        assert store.query("some text", top_k=5) == []
+
+    def test_prune_on_missing_collection_returns_zero(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        removed = store.prune("nonexistent", keep_ids={"any-id"})
+        assert removed == 0
+
+
 # ── HA release notes scraper (item 50) ────────────────────────────────────────────
 
 
@@ -1533,6 +1585,79 @@ class TestScrapeCachedReleaseNotes:
         assert result == 0
 
 
+class TestParseReleaseSections:
+    def test_embeds_all_sections_not_just_breaking(self):
+        from utils.ha_release_notes_scraper import parse_release_sections
+
+        notes = "## New Features\nAdded new light platform\n## Bug Fixes\nFixed timer"
+        result = parse_release_sections(notes)
+        assert len(result) == 2
+        assert any("new light platform" in c for c in result)
+        assert any("Fixed timer" in c for c in result)
+
+    def test_embeds_additive_sections_with_no_breaking_keywords(self):
+        from utils.ha_release_notes_scraper import parse_release_sections
+
+        notes = (
+            "## New Integrations\nAdded Sonos support\n## Performance\nFaster startup"
+        )
+        result = parse_release_sections(notes)
+        assert len(result) == 2
+
+    def test_word_boundary_truncation_at_3000(self):
+        from utils.ha_release_notes_scraper import parse_release_sections
+
+        long_section = "word " * 700  # ~3500 chars
+        notes = f"## Section\n{long_section}"
+        result = parse_release_sections(notes)
+        assert len(result) == 1
+        assert len(result[0]) <= 3000
+        assert not result[0].endswith("wor")  # truncated at word boundary
+
+    def test_returns_single_chunk_for_no_headings(self):
+        from utils.ha_release_notes_scraper import parse_release_sections
+
+        notes = "Just some plain text with no headings."
+        result = parse_release_sections(notes)
+        assert len(result) == 1
+        assert "plain text" in result[0]
+
+    def test_strips_empty_sections(self):
+        from utils.ha_release_notes_scraper import parse_release_sections
+
+        notes = "## Header\n\n## Populated\nSome content"
+        result = parse_release_sections(notes)
+        assert all(c.strip() for c in result)
+
+
+class TestScrapeWithCollectedIds:
+    def test_collected_ids_populated(self, tmp_path):
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        (cache / "2024.1.txt").write_text("## Breaking\nfoo\n## Features\nbar")
+
+        store = FakeKnowledgeStore()
+        collected: set[str] = set()
+        scrape_cached_release_notes(str(cache), store, collected)
+        assert len(collected) == 2
+        assert "ha-2024.1-0" in collected
+
+    def test_collected_ids_none_does_not_error(self, tmp_path):
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        (cache / "2024.1.txt").write_text("## Features\nfoo")
+
+        store = FakeKnowledgeStore()
+        result = scrape_cached_release_notes(str(cache), store, None)
+        assert result == 1
+
+
 # ── HACS changelog scraper (item 51) ──────────────────────────────────────────────
 
 
@@ -1635,6 +1760,181 @@ class TestEmbedCachedChangelogs:
         store = FakeKnowledgeStore()
         result = embed_cached_changelogs(str(cache), store)
         assert result == 0
+
+
+class TestRepoFromReleaseUrl:
+    def test_extracts_org_repo(self):
+        from utils.hacs_scraper import _repo_from_release_url
+
+        url = "https://github.com/dmamontov/hass-pycync/releases/tag/v1.0.0"
+        assert _repo_from_release_url(url) == "dmamontov/hass-pycync"
+
+    def test_extracts_from_releases_url(self):
+        from utils.hacs_scraper import _repo_from_release_url
+
+        url = "https://github.com/custom-org/my-integration/releases"
+        assert _repo_from_release_url(url) == "custom-org/my-integration"
+
+    def test_returns_none_for_non_github_url(self):
+        from utils.hacs_scraper import _repo_from_release_url
+
+        assert _repo_from_release_url("https://gitlab.com/foo/bar/releases") is None
+
+    def test_returns_none_for_empty_string(self):
+        from utils.hacs_scraper import _repo_from_release_url
+
+        assert _repo_from_release_url("") is None
+
+
+class TestChunkChangelogCollectedIds:
+    def test_collected_ids_populated(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        collected: set[str] = set()
+        ids, _, _ = chunk_changelog("## 1.0.0\nfoo\n## 0.9.0\nbar", "myint", collected)
+        assert collected == set(ids)
+
+    def test_collected_ids_none_does_not_error(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        ids, docs, metas = chunk_changelog("## 1.0.0\nfoo", "myint", None)
+        assert len(ids) == 1
+
+
+class TestEmbedCachedChangelogsCollectedIds:
+    def test_collected_ids_populated(self, tmp_path):
+        from utils.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "hacs"
+        cache.mkdir()
+        (cache / "myint.md").write_text("## 1.0.0\nFeature A\n## 0.9.0\nBeta")
+
+        store = FakeKnowledgeStore()
+        collected: set[str] = set()
+        embed_cached_changelogs(str(cache), store, collected)
+        assert len(collected) == 2
+        assert "hacs-myint-0" in collected
+
+
+# ── HA integration docs scraper ───────────────────────────────────────────────────
+
+
+class TestParseIntegrationDoc:
+    def test_strips_frontmatter(self):
+        from utils.ha_docs_scraper import parse_integration_doc
+
+        doc = (
+            "---\ntitle: Test\nha_category: Integration\n---\n## Overview\nSome content"
+        )
+        result = parse_integration_doc(doc)
+        assert result
+        assert all("---" not in c for c in result)
+        assert any("Some content" in c for c in result)
+
+    def test_splits_by_headings(self):
+        from utils.ha_docs_scraper import parse_integration_doc
+
+        doc = "## Setup\nInstall the integration.\n## Configuration\nAdd to config."
+        result = parse_integration_doc(doc)
+        assert len(result) == 2
+
+    def test_word_boundary_truncation(self):
+        from utils.ha_docs_scraper import parse_integration_doc
+
+        long_section = "word " * 700  # ~3500 chars
+        doc = f"## Section\n{long_section}"
+        result = parse_integration_doc(doc)
+        assert len(result) == 1
+        assert len(result[0]) <= 3000
+        assert not result[0].endswith("wor")
+
+    def test_strips_empty_sections(self):
+        from utils.ha_docs_scraper import parse_integration_doc
+
+        doc = "## Header\n\n## Content\nActual text here"
+        result = parse_integration_doc(doc)
+        assert all(c.strip() for c in result)
+
+    def test_handles_doc_without_frontmatter(self):
+        from utils.ha_docs_scraper import parse_integration_doc
+
+        doc = "## Overview\nJust a plain doc with no front matter."
+        result = parse_integration_doc(doc)
+        assert result
+        assert "plain doc" in result[0]
+
+
+class TestEmbedCachedIntegrationDocs:
+    def test_returns_zero_for_missing_dir(self):
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_integration_docs("/nonexistent/path", store) == 0
+
+    def test_processes_md_files(self, tmp_path):
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "hue.md").write_text(
+            "## Overview\nPhilips Hue integration.\n## Configuration\nAdd token."
+        )
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_integration_docs(str(cache), store)
+        assert result == 1
+        hits = store.query("Philips Hue", top_k=5)
+        assert len(hits) > 0
+        assert hits[0].collection == "ha_integration_docs"
+
+    def test_skips_non_md_files(self, tmp_path):
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "readme.txt").write_text("## Overview\nSome text")
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_integration_docs(str(cache), store) == 0
+
+    def test_skips_unreadable_file(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "hue.md").write_text("## Overview\nHue content")
+
+        original_read_text = Path.read_text
+
+        def _raising_read_text(self, *args, **kwargs):
+            if self.name.endswith(".md"):
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _raising_read_text)
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_integration_docs(str(cache), store) == 0
+
+    def test_collected_ids_populated(self, tmp_path):
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "hue.md").write_text("## Setup\nSection one.\n## Config\nSection two.")
+
+        store = FakeKnowledgeStore()
+        collected: set[str] = set()
+        embed_cached_integration_docs(str(cache), store, collected)
+        assert len(collected) == 2
+        assert "ha-docs-hue-0" in collected
 
 
 # ── LoopSupervisor ────────────────────────────────────────────────────────────────
