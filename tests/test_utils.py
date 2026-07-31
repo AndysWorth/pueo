@@ -2065,18 +2065,19 @@ class TestDiscoverHacsIntegrationsEntityFallback:
 
         from utils.hacs_scraper import discover_hacs_integrations
 
+        # Modern HA always sets platform=None; detection is via entity_picture brands URL
         states = [
             {
                 "entity_id": "update.hacs",
                 "attributes": {
-                    "platform": "hacs",
+                    "entity_picture": "https://brands.home-assistant.io/_/hacs/icon.png",
                     "release_url": "https://github.com/hacs/integration/releases/tag/v2.0.0",
                 },
             },
             {
                 "entity_id": "update.pycync",
                 "attributes": {
-                    "platform": "hacs",
+                    "entity_picture": "https://brands.home-assistant.io/_/pycync/icon.png",
                     "release_url": "https://github.com/dmamontov/hass-pycync/releases/tag/v1.0.0",
                 },
             },
@@ -2091,10 +2092,127 @@ class TestDiscoverHacsIntegrationsEntityFallback:
         assert "hacs/integration" not in repos
         assert "dmamontov/hass-pycync" in repos
 
+    def test_entity_scan_skips_builtin_update_entities(self, monkeypatch):
+        """Built-in update entities use non-underscore brands URL — should be skipped."""
+        import urllib.request
+
+        from utils.hacs_scraper import discover_hacs_integrations
+
+        states = [
+            {
+                "entity_id": "update.home_assistant_core_update",
+                "attributes": {
+                    "entity_picture": "https://brands.home-assistant.io/homeassistant/icon.png",
+                    "release_url": "https://github.com/home-assistant/core/releases/tag/2026.7.0",
+                },
+            },
+        ]
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            self._make_sequential_urlopen(OSError("unavailable"), states),
+        )
+        result = discover_hacs_integrations("http://ha:8123", "tok")
+        assert result == []
+
     def test_returns_empty_for_missing_token(self):
         from utils.hacs_scraper import discover_hacs_integrations
 
         assert discover_hacs_integrations("http://ha:8123", "") == []
+
+
+# ── discover_installed_integrations ──────────────────────────────────────────────
+
+
+class _MockHTTPConfigResponse:
+    """Minimal urllib response stub for /api/config payloads."""
+
+    def __init__(self, payload: dict) -> None:
+        import json
+
+        self._data = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def read(self):
+        return self._data
+
+
+class TestDiscoverInstalledIntegrations:
+    def test_uses_api_config_endpoint(self, monkeypatch):
+        """Discovery calls /api/config, not /api/states."""
+        import urllib.request
+
+        from utils.ha_docs_scraper import discover_installed_integrations
+
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout=10):
+            calls.append(req.full_url)
+            return _MockHTTPConfigResponse({"components": ["mqtt", "hue.light"]})
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = discover_installed_integrations("http://ha:8123", "tok")
+        assert any("/api/config" in url for url in calls)
+        assert "/api/states" not in "".join(calls)
+        assert "mqtt" in result
+        assert "hue" in result
+
+    def test_filters_trivial_domains(self, monkeypatch):
+        """Known trivial domains (automation, sensor, etc.) are excluded."""
+        import urllib.request
+
+        from utils.ha_docs_scraper import discover_installed_integrations
+
+        components = ["automation", "binary_sensor", "sensor", "mqtt", "frontend"]
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **kw: _MockHTTPConfigResponse({"components": components}),
+        )
+        result = discover_installed_integrations("http://ha:8123", "tok")
+        assert "automation" not in result
+        assert "binary_sensor" not in result
+        assert "sensor" not in result
+        assert "frontend" not in result
+        assert "mqtt" in result
+
+    def test_returns_empty_for_missing_token(self):
+        from utils.ha_docs_scraper import discover_installed_integrations
+
+        assert discover_installed_integrations("http://ha:8123", "") == []
+
+    def test_returns_empty_on_network_error(self, monkeypatch):
+        import urllib.request
+
+        from utils.ha_docs_scraper import discover_installed_integrations
+
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("timeout")),
+        )
+        assert discover_installed_integrations("http://ha:8123", "tok") == []
+
+    def test_deduplicates_platform_variants(self, monkeypatch):
+        """Components like 'mqtt' and 'mqtt.sensor' both produce domain 'mqtt' once."""
+        import urllib.request
+
+        from utils.ha_docs_scraper import discover_installed_integrations
+
+        components = ["mqtt", "mqtt.sensor", "mqtt.light", "hue.light", "hue"]
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **kw: _MockHTTPConfigResponse({"components": components}),
+        )
+        result = discover_installed_integrations("http://ha:8123", "tok")
+        assert result.count("mqtt") == 1
+        assert result.count("hue") == 1
 
 
 # ── LoopSupervisor ────────────────────────────────────────────────────────────────

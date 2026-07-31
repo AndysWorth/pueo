@@ -136,7 +136,11 @@ def discover_hacs_integrations(  # pragma: no cover
         attrs: dict = state.get("attributes", {})
         if not entity_id.startswith("update."):
             continue
-        if attrs.get("platform") != "hacs" and "hacs" not in entity_id:
+        # Custom/HACS components use brands.home-assistant.io/_/ (with underscore);
+        # HA built-ins use the path without the underscore prefix. platform is always
+        # None on modern HA so we can't rely on it.
+        entity_picture: str = attrs.get("entity_picture") or ""
+        if "brands.home-assistant.io/_/" not in entity_picture:
             continue
         release_url: str = attrs.get("release_url", "") or ""
         repo = _repo_from_release_url(release_url) if release_url else None
