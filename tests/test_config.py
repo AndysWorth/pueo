@@ -823,3 +823,31 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.RAG_HA_DOCS_CACHE_DIR == "/data/ha_docs"
+
+    def test_chat_memory_top_k_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHAT_MEMORY_TOP_K == 10
+
+    def test_chat_memory_top_k_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"chat_memory_top_k": 5}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHAT_MEMORY_TOP_K == 5
+
+    def test_chat_allow_tool_registration_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHAT_ALLOW_TOOL_REGISTRATION is False
+
+    def test_chat_allow_tool_registration_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"chat_allow_tool_registration": True}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CHAT_ALLOW_TOOL_REGISTRATION is True

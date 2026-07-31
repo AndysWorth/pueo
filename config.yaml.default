@@ -72,6 +72,8 @@ agent:
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
   agent_max_tool_calls: 20            # Hard cap on tool invocations per agent loop run
   agent_max_wall_seconds: 120.0       # Wall-clock timeout for the entire agent loop (seconds)
+  # chat_memory_top_k: 10             # Max memory entries returned per recall() call
+  # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + HITL required)
   # chromadb_path: "./chromadb/"      # Local ChromaDB vector store directory (RAG knowledge layer)
   # rag_top_k: 5                      # Number of knowledge chunks returned per query_knowledge call
   # rag_ha_versions_to_fetch: 12      # How many recent HA releases to fetch from GitHub on rag-refresh

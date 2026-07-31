@@ -90,6 +90,12 @@ RAG_HA_DOCS_CACHE_DIR: str = _agent.get("rag_ha_docs_cache_dir", ".cache/ha_docs
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 20))
 AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0))
+
+# Conversational agent
+CHAT_MEMORY_TOP_K: int = int(_agent.get("chat_memory_top_k", 10))
+CHAT_ALLOW_TOOL_REGISTRATION: bool = bool(
+    _agent.get("chat_allow_tool_registration", False)
+)
 HA_NOTIFICATION_ENRICH_AUTH_FAILURES: bool = bool(
     _agent.get("notification_enrich_auth_failures", True)
 )

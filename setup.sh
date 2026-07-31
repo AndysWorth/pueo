@@ -237,6 +237,12 @@ if $WRITE_CONFIG; then
     ask "Require human approval before every repair? (true/false)"  "false"  HITL_ALWAYS
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
     ask "HITL dashboard port"  "8080"  DASHBOARD_PORT
+    echo
+    echo "  Chat tool registration allows the conversational agent to write and register"
+    echo "  new Python tools at runtime. Each tool requires sandbox CI validation and"
+    echo "  explicit HITL approval before it is loaded, but the agent can still generate"
+    echo "  arbitrary code. Leave disabled unless you understand the risk."
+    ask "Allow chat agent to register new tools? (true/false)"  "false"  CHAT_ALLOW_TOOL_REGISTRATION
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
@@ -375,6 +381,7 @@ agent:
   hitl_always: ${HITL_ALWAYS}
   autonomy_level: ${AUTONOMY_LEVEL}
   dashboard_port: ${DASHBOARD_PORT}
+  chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"

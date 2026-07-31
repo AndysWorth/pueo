@@ -7,10 +7,12 @@ Each tool method returns a ToolResult; errors are captured rather than raised.
 from __future__ import annotations
 
 import json
+import sqlite3
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from config import CONFIG_REMOTE_PATH, OLLAMA_MODEL
+from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH, OLLAMA_MODEL
 from utils.logging import get_correlation_id, get_logger
 from utils.tool_registry import ToolCall, ToolResult
 
@@ -54,6 +56,7 @@ class ToolExecutor:
         netalertx_api_client: Optional["NetAlertXAPIClient"] = None,
         netalertx_container_name: str = "netalertx",
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+        db_path: str = DB_PATH,
     ) -> None:
         self._ha_ssh = ha_ssh_client
         self._nax_ssh = nax_ssh_client
@@ -62,6 +65,7 @@ class ToolExecutor:
         self._api = netalertx_api_client
         self._container = netalertx_container_name
         self._knowledge_store = knowledge_store
+        self._db_path = db_path
         self._apply_fix_used = False
 
     def reset(self) -> None:
@@ -98,6 +102,14 @@ class ToolExecutor:
                 )
             if name == "query_knowledge":
                 return await self._query_knowledge(args.get("query", ""))
+            if name == "remember":
+                return await self._remember(
+                    args.get("key", ""),
+                    args.get("content", ""),
+                    args.get("source", "agent"),
+                )
+            if name == "recall":
+                return await self._recall(args.get("query", ""))
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
@@ -196,6 +208,45 @@ class ToolExecutor:
             )
         output = "\n\n".join(f"[{c.collection} | {c.source}]\n{c.text}" for c in chunks)
         return ToolResult(tool_name="query_knowledge", success=True, output=output)
+
+    # ------------------------------------------------------------------
+    # Conversational memory tools
+    # ------------------------------------------------------------------
+
+    async def _remember(self, key: str, content: str, source: str) -> ToolResult:
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute(
+                    "INSERT INTO agent_memory (key, content, source, ts) VALUES (?, ?, ?, ?)",
+                    (key, content, source, time.time()),
+                )
+            return ToolResult(
+                tool_name="remember", success=True, output=f"Remembered: {key}"
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="remember", success=False, output="", error=str(exc)
+            )
+
+    async def _recall(self, query: str) -> ToolResult:
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT key, content, source, ts FROM agent_memory "
+                    "WHERE content LIKE ? OR key LIKE ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (f"%{query}%", f"%{query}%", CHAT_MEMORY_TOP_K),
+                ).fetchall()
+            if not rows:
+                return ToolResult(
+                    tool_name="recall", success=True, output="Nothing found."
+                )
+            lines = [f"[{r[0]}] ({r[2]}) {r[1]}" for r in rows]
+            return ToolResult(tool_name="recall", success=True, output="\n".join(lines))
+        except Exception as exc:
+            return ToolResult(
+                tool_name="recall", success=False, output="", error=str(exc)
+            )
 
     async def _apply_fix(self, yaml_content: str, description: str) -> ToolResult:
         if self._apply_fix_used:
