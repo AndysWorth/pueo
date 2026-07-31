@@ -146,6 +146,41 @@ def _migrate_v7(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v8(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            id      INTEGER PRIMARY KEY,
+            key     TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source  TEXT NOT NULL,
+            ts      REAL NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id         INTEGER PRIMARY KEY,
+            created_at REAL NOT NULL,
+            title      TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id              INTEGER PRIMARY KEY,
+            session_id      INTEGER NOT NULL REFERENCES chat_sessions(id),
+            role            TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            tool_calls_json TEXT,
+            ts              REAL NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -154,6 +189,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (5, _migrate_v5),
     (6, _migrate_v6),
     (7, _migrate_v7),
+    (8, _migrate_v8),
 ]
 
 
