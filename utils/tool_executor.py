@@ -6,10 +6,16 @@ Each tool method returns a ToolResult; errors are captured rather than raised.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 import sqlite3
+import subprocess  # nosec B404 — commands are fixed CI tools (black, flake8, mypy, pytest), no user input
+import sys
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH, OLLAMA_MODEL
@@ -23,6 +29,11 @@ if TYPE_CHECKING:
     from utils.notify import NotifierProtocol
 
 log = get_logger("tool_executor")
+
+_REPO_ROOT = Path(__file__).parent.parent
+_SOURCE_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
+    {".py", ".yaml", ".md", ".toml", ".txt"}
+)
 
 _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -67,10 +78,16 @@ class ToolExecutor:
         self._knowledge_store = knowledge_store
         self._db_path = db_path
         self._apply_fix_used = False
+        self._pending_patch: dict[str, str] = {}
+        self._sandbox_passed: bool = False
+        self._sandbox_output: str = ""
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
         self._apply_fix_used = False
+        self._pending_patch = {}
+        self._sandbox_passed = False
+        self._sandbox_output = ""
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -116,6 +133,14 @@ class ToolExecutor:
                 )
             if name == "recall":
                 return await self._recall(args.get("query", ""))
+            if name == "read_source":
+                return await self._read_source(args.get("path", ""))
+            if name == "propose_patch":
+                return await self._propose_patch(
+                    args.get("path", ""), args.get("content", "")
+                )
+            if name == "sandbox_code":
+                return await self._sandbox_code(args.get("description", ""))
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
@@ -253,6 +278,167 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="recall", success=False, output="", error=str(exc)
             )
+
+    # ------------------------------------------------------------------
+    # Code sandbox tools (item 70)
+    # ------------------------------------------------------------------
+
+    def _resolve_repo_path(self, path: str) -> "Path | str":
+        """Resolve a repo-relative path. Returns Path on success, error string on failure."""
+        try:
+            resolved = (_REPO_ROOT / path).resolve()
+        except Exception as exc:
+            return str(exc)
+        if not str(resolved).startswith(str(_REPO_ROOT.resolve())):
+            return f"Path traversal rejected: {path!r}"
+        if resolved.suffix not in _SOURCE_ALLOWED_EXTENSIONS:
+            allowed = sorted(_SOURCE_ALLOWED_EXTENSIONS)
+            return f"Extension not allowed: {resolved.suffix!r} (allowed: {allowed})"
+        return resolved
+
+    async def _read_source(self, path: str) -> ToolResult:
+        result = self._resolve_repo_path(path)
+        if isinstance(result, str):
+            return ToolResult(
+                tool_name="read_source", success=False, output="", error=result
+            )
+        try:
+            content = result.read_text()
+            if len(content) > 8000:
+                content = content[:8000]
+            return ToolResult(tool_name="read_source", success=True, output=content)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="read_source", success=False, output="", error=str(exc)
+            )
+
+    async def _propose_patch(self, path: str, content: str) -> ToolResult:
+        result = self._resolve_repo_path(path)
+        if isinstance(result, str):
+            return ToolResult(
+                tool_name="propose_patch", success=False, output="", error=result
+            )
+        self._pending_patch[path] = content
+        self._sandbox_passed = False
+        self._sandbox_output = ""
+        return ToolResult(
+            tool_name="propose_patch",
+            success=True,
+            output=f"Patch staged for {path!r}. Call sandbox_code to validate.",
+        )
+
+    async def _sandbox_code(self, description: str) -> ToolResult:
+        if not self._pending_patch:
+            return ToolResult(
+                tool_name="sandbox_code",
+                success=False,
+                output="",
+                error="No pending patch. Call propose_patch first.",
+            )
+        tmpdir = Path(tempfile.mkdtemp(prefix="pueo_sandbox_"))
+        try:
+            shutil.copytree(
+                str(_REPO_ROOT),
+                str(tmpdir),
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    ".venv", "__pycache__", ".git", "*.pyc", "chromadb_data"
+                ),
+            )
+            for rel_path, file_content in self._pending_patch.items():
+                target = tmpdir / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(file_content)
+
+            combined: list[str] = []
+            all_passed = True
+
+            for rel_path in self._pending_patch:
+                patched_file = str(tmpdir / rel_path)
+                for cmd in [
+                    [sys.executable, "-m", "black", "--check", patched_file],
+                    [
+                        sys.executable,
+                        "-m",
+                        "flake8",
+                        "--count",
+                        "--select=E9,F63,F7,F82",
+                        "--show-source",
+                        "--statistics",
+                        patched_file,
+                    ],
+                    [
+                        sys.executable,
+                        "-m",
+                        "mypy",
+                        "--ignore-missing-imports",
+                        patched_file,
+                    ],
+                ]:
+                    label = " ".join(cmd[2:])
+                    try:
+                        proc = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                subprocess.run,
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=60,
+                                cwd=str(tmpdir),
+                            ),
+                            timeout=65,
+                        )
+                        out = (proc.stdout + proc.stderr).strip()
+                        if out:
+                            combined.append(f"$ {label}\n{out}")
+                        if proc.returncode != 0:
+                            all_passed = False
+                    except asyncio.TimeoutError:
+                        combined.append(f"$ {label}\nTimeout after 60s")
+                        all_passed = False
+
+            pytest_cmd = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/",
+                "--tb=short",
+                "--ignore=tests/integration",
+                "-x",
+                "-q",
+            ]
+            try:
+                proc = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        subprocess.run,
+                        pytest_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        cwd=str(tmpdir),
+                    ),
+                    timeout=65,
+                )
+                out = (proc.stdout + proc.stderr).strip()
+                if out:
+                    combined.append(f"$ pytest tests/\n{out}")
+                if proc.returncode != 0:
+                    all_passed = False
+            except asyncio.TimeoutError:
+                combined.append("$ pytest tests/\nTimeout after 60s")
+                all_passed = False
+
+            full_output = "\n\n".join(combined)
+            if len(full_output) > 3000:
+                full_output = full_output[:3000]
+
+            self._sandbox_passed = all_passed
+            self._sandbox_output = full_output
+            return ToolResult(
+                tool_name="sandbox_code", success=all_passed, output=full_output
+            )
+        finally:
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
 
     async def _apply_fix(self, yaml_content: str, description: str) -> ToolResult:
         if self._apply_fix_used:
