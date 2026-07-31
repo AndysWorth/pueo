@@ -1148,6 +1148,64 @@ async def control_run(mode: str = Query(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "mode": mode})
 
 
+# ── Chat routes ───────────────────────────────────────────────────────────────
+
+
+def _load_chat_sessions() -> list[dict]:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT s.id, s.created_at, s.title,"
+                " COUNT(m.id) AS message_count"
+                " FROM chat_sessions s"
+                " LEFT JOIN chat_messages m ON m.session_id = s.id"
+                " GROUP BY s.id ORDER BY s.created_at DESC"
+            ).fetchall()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_tab(request: Request) -> HTMLResponse:
+    sessions = _load_chat_sessions()
+    return templates.TemplateResponse(request, "chat.html", {"sessions": sessions})
+
+
+@app.get("/chat/sessions")
+async def chat_sessions() -> JSONResponse:
+    return JSONResponse(_load_chat_sessions())
+
+
+@app.get("/chat/sessions/{session_id}/messages")
+async def chat_session_messages(session_id: int) -> JSONResponse:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT role, content, tool_calls_json, ts"
+                " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            ).fetchall()
+    except Exception:
+        return JSONResponse([])
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.delete("/chat/sessions/{session_id}")
+async def delete_chat_session(session_id: int) -> JSONResponse:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = ?", (session_id,)
+            )
+            conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return JSONResponse({}, status_code=204)
+
+
 def run_dashboard() -> None:
     import uvicorn
 
