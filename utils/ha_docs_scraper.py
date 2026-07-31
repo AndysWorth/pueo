@@ -21,24 +21,35 @@ _FRONTMATTER = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
 _HEADING = re.compile(r"\n#+\s+")
 _HA_DOCS_RAW_URL = (
     "https://raw.githubusercontent.com/home-assistant/home-assistant.io"
-    "/current/source/integrations/{domain}.markdown"
+    "/current/source/_integrations/{domain}.markdown"
 )
 
 # Domains that are HA internals or abstract base platforms — not worth fetching docs for
 _TRIVIAL_DOMAINS = frozenset(
     {
+        "analytics",
+        "auth",
         "automation",
+        "backup",
         "binary_sensor",
+        "bluetooth",
         "button",
         "calendar",
         "camera",
         "climate",
+        "config",
         "cover",
         "device_tracker",
+        "dhcp",
+        "energy",
         "event",
         "fan",
+        "frontend",
         "group",
+        "hassio",
+        "history",
         "homeassistant",
+        "http",
         "input_boolean",
         "input_button",
         "input_datetime",
@@ -47,34 +58,44 @@ _TRIVIAL_DOMAINS = frozenset(
         "input_text",
         "light",
         "lock",
+        "logbook",
+        "lovelace",
         "media_player",
         "number",
+        "onboarding",
         "persistent_notification",
         "person",
+        "recorder",
         "scene",
         "script",
         "select",
         "sensor",
         "siren",
+        "ssdp",
         "sun",
         "switch",
+        "system_log",
         "tag",
         "timer",
         "todo",
         "update",
         "vacuum",
+        "websocket_api",
         "zone",
     }
 )
 
 
-def discover_installed_integrations(  # pragma: no cover
+def discover_installed_integrations(
     ha_url: str,
     ha_token: str,
 ) -> list[str]:
-    """Query HA REST /api/states to get a sorted list of active integration domains.
+    """Query HA REST /api/config to get a sorted list of active integration domains.
 
-    Filters out trivial built-in domains that don't have meaningful docs pages.
+    /api/config returns a 'components' list of strings like 'domain' or
+    'domain.platform'. Extracting the top-level domain name and filtering
+    trivials gives the real integration set (~29 on a typical HA install).
+
     Falls back to [] if HA is unreachable or token is missing.
     """
     import json
@@ -84,23 +105,21 @@ def discover_installed_integrations(  # pragma: no cover
         return []
     try:
         req = urllib.request.Request(
-            f"{ha_url}/api/states",
+            f"{ha_url}/api/config",
             headers={"Authorization": f"Bearer {ha_token}"},
         )
         with urllib.request.urlopen(
             req, timeout=10
         ) as resp:  # nosec B310 — HA URL from user config
-            states = json.loads(resp.read())
+            config_data = json.loads(resp.read())
     except Exception:
         return []
 
     domains: set[str] = set()
-    for state in states:
-        entity_id: str = state.get("entity_id", "")
-        if "." in entity_id:
-            domain = entity_id.split(".", 1)[0]
-            if domain not in _TRIVIAL_DOMAINS:
-                domains.add(domain)
+    for component in config_data.get("components", []):
+        domain = component.split(".")[0]
+        if domain not in _TRIVIAL_DOMAINS:
+            domains.add(domain)
     return sorted(domains)
 
 
