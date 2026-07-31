@@ -17,13 +17,92 @@ if TYPE_CHECKING:
 
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
-    from utils.ha_release_notes_scraper import scrape_cached_release_notes
-    from utils.hacs_scraper import embed_cached_changelogs
+    from utils.ha_docs_scraper import (
+        discover_installed_integrations,
+        embed_cached_integration_docs,
+        fetch_integration_doc,
+    )
+    from utils.ha_release_notes_scraper import (
+        fetch_ha_release_notes,
+        scrape_cached_release_notes,
+    )
+    from utils.hacs_scraper import (
+        discover_hacs_integrations,
+        embed_cached_changelogs,
+        fetch_hacs_changelog,
+    )
 
-    n_ha = scrape_cached_release_notes(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store)
-    n_hacs = embed_cached_changelogs(".cache/hacs_changelogs/", store)
+    ha_url = f"http://{config.HA_HOST}:{config.HA_API_PORT}"
+    ha_token = config.HA_API_TOKEN
+
+    # ── 1. HA release notes ──────────────────────────────────────────────────
     print(
-        f"rag-refresh: embedded {n_ha} HA release note file(s), {n_hacs} HACS changelog(s)"
+        f"[rag-refresh] Fetching HA release notes "
+        f"(last {config.RAG_HA_VERSIONS_TO_FETCH} versions)…"
+    )
+    n_fetched_notes = fetch_ha_release_notes(
+        config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, config.RAG_HA_VERSIONS_TO_FETCH
+    )
+    print(f"[rag-refresh]   → {n_fetched_notes} new version(s) downloaded")
+
+    print("[rag-refresh] Embedding HA release notes…")
+    ha_ids: set[str] = set()
+    n_ha = scrape_cached_release_notes(
+        config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store, ha_ids
+    )
+    print(f"[rag-refresh]   → embedded {n_ha} version(s)")
+    if ha_ids:
+        store.prune("ha_release_notes", ha_ids)
+
+    # ── 2. HACS changelogs ───────────────────────────────────────────────────
+    print("[rag-refresh] Discovering HACS integrations from HA…")
+    if ha_token:
+        hacs_pairs = discover_hacs_integrations(ha_url, ha_token)
+        slugs = [s for s, _ in hacs_pairs]
+        slug_list = ", ".join(slugs) if slugs else "none found"
+        print(f"[rag-refresh]   → {len(hacs_pairs)} integration(s): {slug_list}")
+        for slug, repo in hacs_pairs:
+            fetch_hacs_changelog(slug, repo, config.RAG_HACS_CACHE_DIR)
+    else:
+        print("[rag-refresh]   → skipped (no HA API token configured)")
+
+    print("[rag-refresh] Embedding HACS changelogs…")
+    hacs_ids: set[str] = set()
+    n_hacs = embed_cached_changelogs(config.RAG_HACS_CACHE_DIR, store, hacs_ids)
+    print(f"[rag-refresh]   → embedded {n_hacs} changelog(s)")
+    if hacs_ids:
+        store.prune("hacs_changelogs", hacs_ids)
+
+    # ── 3. HA integration docs ───────────────────────────────────────────────
+    print("[rag-refresh] Discovering installed HA integrations…")
+    n_fetched_docs = 0
+    if ha_token:
+        domains = discover_installed_integrations(ha_url, ha_token)
+        print(f"[rag-refresh]   → {len(domains)} domain(s) active")
+        for domain in domains:
+            if fetch_integration_doc(domain, config.RAG_HA_DOCS_CACHE_DIR):
+                n_fetched_docs += 1
+        cached = len(domains) - n_fetched_docs
+        print(
+            f"[rag-refresh]   → {n_fetched_docs} new doc(s) fetched, "
+            f"{cached} already cached"
+        )
+    else:
+        print("[rag-refresh]   → skipped (no HA API token configured)")
+
+    print("[rag-refresh] Embedding HA integration docs…")
+    docs_ids: set[str] = set()
+    n_docs = embed_cached_integration_docs(
+        config.RAG_HA_DOCS_CACHE_DIR, store, docs_ids
+    )
+    print(f"[rag-refresh]   → embedded {n_docs} doc(s)")
+    if docs_ids:
+        store.prune("ha_integration_docs", docs_ids)
+
+    total = n_ha + n_hacs + n_docs
+    print(
+        f"[rag-refresh] Done. Embedded content from {total} file(s) "
+        f"across 3 collections."
     )
 
 

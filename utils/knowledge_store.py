@@ -18,6 +18,7 @@ class KnowledgeChunk:
 COLLECTIONS: tuple[str, ...] = (
     "ha_release_notes",
     "hacs_changelogs",
+    "ha_integration_docs",
     "community_cases",
 )
 
@@ -68,6 +69,13 @@ class FakeKnowledgeStore:
                         )
                     )
         return results[:top_k]
+
+    def prune(self, collection: str, keep_ids: set[str]) -> int:
+        if collection not in self._docs:
+            return 0
+        before = len(self._docs[collection])
+        self._docs[collection] = [d for d in self._docs[collection] if d[0] in keep_ids]
+        return before - len(self._docs[collection])
 
 
 class ChromaKnowledgeStore:  # pragma: no cover
@@ -125,6 +133,16 @@ class ChromaKnowledgeStore:  # pragma: no cover
                 )
         results.sort(key=lambda c: c.score, reverse=True)
         return results[:top_k]
+
+    def prune(self, collection: str, keep_ids: set[str]) -> int:
+        if collection not in self._cols:
+            return 0
+        col = self._cols[collection]
+        all_ids = col.get()["ids"]
+        stale = [id_ for id_ in all_ids if id_ not in keep_ids]
+        if stale:
+            col.delete(ids=stale)
+        return len(stale)
 
 
 class _OllamaEmbeddingFunction:  # pragma: no cover

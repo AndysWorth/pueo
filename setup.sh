@@ -448,9 +448,12 @@ if launchctl list "$RAG_PLIST_LABEL" &>/dev/null 2>&1; then
     ok "RAG refresh launchd job is already installed"
 else
     echo
-    echo "  Pueo uses a local ChromaDB vector store (RAG) for HA breaking-change"
-    echo "  knowledge. A weekly launchd job keeps it fresh by re-embedding cached"
-    echo "  HA release notes and HACS changelogs every Sunday at 03:00."
+    echo "  Pueo uses a local ChromaDB vector store (RAG) for HA knowledge: release"
+    echo "  notes (last N versions), HACS integration changelogs (auto-discovered"
+    echo "  from your HA instance), and HA integration documentation. A weekly"
+    echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
+    echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
+    echo "  rag_ha_docs_cache_dir — see config.yaml.default for details."
     echo
     read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
     if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then

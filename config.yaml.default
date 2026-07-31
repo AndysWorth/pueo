@@ -74,3 +74,6 @@ agent:
   agent_max_wall_seconds: 120.0       # Wall-clock timeout for the entire agent loop (seconds)
   # chromadb_path: "./chromadb/"      # Local ChromaDB vector store directory (RAG knowledge layer)
   # rag_top_k: 5                      # Number of knowledge chunks returned per query_knowledge call
+  # rag_ha_versions_to_fetch: 12      # How many recent HA releases to fetch from GitHub on rag-refresh
+  # rag_hacs_cache_dir: ".cache/hacs_changelogs/"  # Local cache for fetched HACS integration changelogs
+  # rag_ha_docs_cache_dir: ".cache/ha_docs/"       # Local cache for fetched HA integration documentation

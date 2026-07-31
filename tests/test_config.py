@@ -778,3 +778,48 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.RAG_EMBED_MODEL == "mxbai-embed-large"
+
+    def test_rag_ha_versions_to_fetch_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HA_VERSIONS_TO_FETCH == 12
+
+    def test_rag_ha_versions_to_fetch_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"rag_ha_versions_to_fetch": 6}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HA_VERSIONS_TO_FETCH == 6
+
+    def test_rag_hacs_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HACS_CACHE_DIR == ".cache/hacs_changelogs/"
+
+    def test_rag_hacs_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"rag_hacs_cache_dir": "/data/hacs"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HACS_CACHE_DIR == "/data/hacs"
+
+    def test_rag_ha_docs_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HA_DOCS_CACHE_DIR == ".cache/ha_docs/"
+
+    def test_rag_ha_docs_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"rag_ha_docs_cache_dir": "/data/ha_docs"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HA_DOCS_CACHE_DIR == "/data/ha_docs"
