@@ -62,6 +62,15 @@ MANDATORY RULES — follow exactly:
 TYPICAL FLOW: read_config / read_logs → (apply_fix if broken) → finish_repair
 """
 
+_CHAT_SYSTEM_PROMPT = """\
+You are Pueo, a Home Assistant assistant. Use tools to look up live state,
+answer questions, and investigate problems. Use remember/recall to store and
+retrieve context across sessions. Use read_source, propose_patch, sandbox_code,
+and add_tool to build new capabilities when the user asks. Always end by calling
+finish_chat with a plain-language summary of what you found or did. Never return
+plain text — always call a tool.
+"""
+
 
 class AgentLoop:
     """Iterative tool-calling loop with budget and wall-clock timeout.
@@ -94,6 +103,7 @@ class AgentLoop:
         system_prompt: str = _AGENT_LOOP_SYSTEM_PROMPT,
         max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
+        terminal_tool_name: str = "finish_repair",
     ) -> None:
         self._llm = llm_client
         self._executor = tool_executor
@@ -102,6 +112,7 @@ class AgentLoop:
         self._system_prompt = system_prompt
         self._max_tool_calls = max_tool_calls
         self._max_wall_seconds = max_wall_seconds
+        self._terminal_tool_name = terminal_tool_name
 
     async def run(self, initial_context: str) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
@@ -205,7 +216,7 @@ class AgentLoop:
                             "role": "user",
                             "content": (
                                 "You MUST call a tool now. "
-                                "If your investigation is complete, call finish_repair "
+                                f"If your investigation is complete, call {self._terminal_tool_name} "
                                 "with a summary. Do not return plain text."
                             ),
                         }
@@ -261,7 +272,7 @@ class AgentLoop:
                     success=tool_result.success,
                 )
 
-                if tool_call.name == "finish_repair":
+                if tool_call.name == self._terminal_tool_name:
                     episode_stub = {
                         "summary": tool_call.arguments.get("summary", ""),
                         "action_taken": tool_call.arguments.get("action_taken", ""),

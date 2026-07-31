@@ -245,7 +245,10 @@ QUERY_KNOWLEDGE = ToolDefinition(
     },
 )
 
-# Conversational agent tools
+# ---------------------------------------------------------------------------
+# Conversational agent tools (items 66–71)
+# ---------------------------------------------------------------------------
+
 REMEMBER = ToolDefinition(
     name="remember",
     description="Store a named piece of information in persistent agent memory.",
@@ -280,6 +283,118 @@ RECALL = ToolDefinition(
             }
         },
         "required": ["query"],
+    },
+)
+
+FINISH_CHAT = ToolDefinition(
+    name="finish_chat",
+    description=(
+        "Signal that the chat response is complete. "
+        "Call with a plain-language summary of what you found or did."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Plain-language summary of findings or actions taken",
+            }
+        },
+        "required": ["summary"],
+    },
+)
+
+# Code sandbox tools — ToolDefinitions defined here; executor methods in items 70–71.
+
+READ_SOURCE = ToolDefinition(
+    name="read_source",
+    description=(
+        "Read a source file from the Pueo repository. "
+        "Allowed extensions: .py, .yaml, .md, .toml, .txt. "
+        "Returns up to 8000 characters."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repo-relative path to read (e.g. utils/tool_registry.py)",
+            }
+        },
+        "required": ["path"],
+    },
+)
+
+PROPOSE_PATCH = ToolDefinition(
+    name="propose_patch",
+    description=(
+        "Stage a proposed change to a Pueo source file. "
+        "The patch is not applied to the live tree until sandbox_code passes "
+        "and add_tool is called and approved."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repo-relative path to modify",
+            },
+            "content": {
+                "type": "string",
+                "description": "Complete new content for the file",
+            },
+        },
+        "required": ["path", "content"],
+    },
+)
+
+SANDBOX_CODE = ToolDefinition(
+    name="sandbox_code",
+    description=(
+        "Run the CI gate (black, flake8, mypy, pytest) against the pending patch "
+        "in a temporary copy of the repo. Must be called before add_tool. "
+        "Returns combined output and pass/fail status."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "description": {
+                "type": "string",
+                "description": "Brief description of what the patch does",
+            }
+        },
+        "required": ["description"],
+    },
+)
+
+ADD_TOOL = ToolDefinition(
+    name="add_tool",
+    description=(
+        "Register a new tool from the pending patch. "
+        "Requires sandbox_code to have passed and CHAT_ALLOW_TOOL_REGISTRATION=true. "
+        "Queues a HITL approval card; the tool is available after the user approves."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Tool name (snake_case, unique)",
+            },
+            "description": {
+                "type": "string",
+                "description": "One-sentence description of what the tool does",
+            },
+            "parameters_schema": {
+                "type": "string",
+                "description": "JSON schema string for the tool's parameters",
+            },
+            "code": {
+                "type": "string",
+                "description": "Python source for the tool implementation",
+            },
+        },
+        "required": ["name", "description", "parameters_schema", "code"],
     },
 )
 
@@ -342,6 +457,32 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
         FINISH_REPAIR,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_chat_tool_registry() -> ToolRegistry:
+    """Conversational agent registry.
+
+    Excludes apply_fix and verify_fix (chat sessions do not write to HA config).
+    Includes memory, code-sandbox, and dynamic-tool-registration tools.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_CONFIG,
+        READ_LOGS,
+        RUN_HA_COMMAND,
+        READ_FILE,
+        QUERY_KNOWLEDGE,
+        QUERY_NETALERTX,
+        REMEMBER,
+        RECALL,
+        READ_SOURCE,
+        PROPOSE_PATCH,
+        SANDBOX_CODE,
+        ADD_TOOL,
+        FINISH_CHAT,
     ):
         reg.register(tool)
     return reg

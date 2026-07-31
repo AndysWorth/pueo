@@ -100,6 +100,12 @@ class ToolExecutor:
                     success=True,
                     output=args.get("summary", "Repair complete"),
                 )
+            if name == "finish_chat":
+                return ToolResult(
+                    tool_name="finish_chat",
+                    success=True,
+                    output=args.get("summary", ""),
+                )
             if name == "query_knowledge":
                 return await self._query_knowledge(args.get("query", ""))
             if name == "remember":
