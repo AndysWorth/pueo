@@ -85,7 +85,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ✅ Done (2026-07-30) |
 | 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ✅ Done (2026-07-30) |
 | 65   | DB migration v8: agent_memory, chat_sessions, chat_messages tables   | ✅ Done (2026-07-31) |
-| 66   | remember + recall tools: ToolDefinitions, ToolExecutor methods, CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys | ☐ TODO |
+| 66   | remember + recall tools: ToolDefinitions, ToolExecutor methods, CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys | ✅ Done (2026-07-31) |
 | 67   | build_chat_tool_registry(); finish_chat ToolDefinition; AgentLoop.terminal_tool_name parameter; conversational system prompt | ☐ TODO |
 | 68   | /chat GET route; chat.html template (session list + message thread + input); base.html nav link | ☐ TODO |
 | 69   | POST /chat/message + GET /chat/events SSE; asyncio task dispatch; chat_thinking/chat_done/chat_error events | ☐ TODO |
