@@ -52,11 +52,56 @@ def chunk_changelog(
     return ids, chunks, metadatas
 
 
+def _discover_via_hacs_api(  # pragma: no cover
+    ha_url: str,
+    ha_token: str,
+) -> list[tuple[str, str]]:
+    """Query the HACS REST API for installed integrations.
+
+    GET /api/hacs/repositories returns a list of tracked repositories.  Each
+    entry includes 'slug', 'installed', 'category', and 'full_name' (org/repo).
+    Returns [] on any error so the caller can fall back to the entity-scan path.
+    """
+    import json
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            f"{ha_url}/api/hacs/repositories",
+            headers={"Authorization": f"Bearer {ha_token}"},
+        )
+        with urllib.request.urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 — HA URL from user config
+            repos = json.loads(resp.read())
+    except Exception:
+        return []
+
+    pairs: list[tuple[str, str]] = []
+    for repo in repos:
+        if not isinstance(repo, dict):
+            continue
+        if not repo.get("installed"):
+            continue
+        if repo.get("category") != "integration":
+            continue
+        slug: str = repo.get("slug", "")
+        full_name: str = repo.get("full_name", "")
+        if not slug or not full_name or "/" not in full_name:
+            continue
+        pairs.append((slug, full_name))
+    return pairs
+
+
 def discover_hacs_integrations(  # pragma: no cover
     ha_url: str,
     ha_token: str,
 ) -> list[tuple[str, str]]:
-    """Query HA REST /api/states for HACS-managed update entities.
+    """Discover HACS-managed integrations installed on HA.
+
+    Tries the HACS REST API first (/api/hacs/repositories), then falls back to
+    scanning update.* entities from /api/states.  The HACS manager itself
+    (hacs/integration) is excluded from both paths.
 
     Returns a list of (slug, github_repo) pairs.  Falls back to [] if HA is
     unreachable or the token is missing.
@@ -66,6 +111,13 @@ def discover_hacs_integrations(  # pragma: no cover
 
     if not ha_token:
         return []
+
+    # Primary: HACS REST API — more reliable, includes integrations without GitHub releases
+    pairs = _discover_via_hacs_api(ha_url, ha_token)
+    if pairs:
+        return pairs
+
+    # Fallback: scan update.* entities for HACS-managed components
     try:
         req = urllib.request.Request(
             f"{ha_url}/api/states",
@@ -78,7 +130,7 @@ def discover_hacs_integrations(  # pragma: no cover
     except Exception:
         return []
 
-    pairs: list[tuple[str, str]] = []
+    pairs = []
     for state in states:
         entity_id: str = state.get("entity_id", "")
         attrs: dict = state.get("attributes", {})
@@ -89,6 +141,8 @@ def discover_hacs_integrations(  # pragma: no cover
         release_url: str = attrs.get("release_url", "") or ""
         repo = _repo_from_release_url(release_url) if release_url else None
         if not repo:
+            continue
+        if repo == "hacs/integration":
             continue
         slug = repo.split("/")[-1]
         pairs.append((slug, repo))
