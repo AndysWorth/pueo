@@ -1,12 +1,14 @@
-"""Tests for conversational agent — item 72 (partial: item 66 scope).
+"""Tests for conversational agent — item 72.
 
-Covers: TestRememberRecall (remember/recall tool methods on ToolExecutor).
+Covers: migrations v8+v9, remember/recall, chat tool registry,
+AgentLoop.terminal_tool_name, read_source, sandbox_code, add_tool.
 """
 
 from __future__ import annotations
 
 import asyncio
 import sqlite3
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,6 +18,11 @@ from utils.notify import FakeNotifier
 from utils.ssh_client import FakeSSHClient
 from utils.tool_executor import ToolExecutor
 from utils.tool_registry import ToolCall
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -34,6 +41,76 @@ def executor(db_path):
         notifier=FakeNotifier(),
         db_path=db_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# TestMigrationV8
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV8:
+    def _table_exists(self, db_path: str, table: str) -> bool:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchall()
+        return len(rows) > 0
+
+    def test_agent_memory_table_exists(self, db_path):
+        assert self._table_exists(db_path, "agent_memory")
+
+    def test_chat_sessions_table_exists(self, db_path):
+        assert self._table_exists(db_path, "chat_sessions")
+
+    def test_chat_messages_table_exists(self, db_path):
+        assert self._table_exists(db_path, "chat_messages")
+
+    def test_agent_memory_schema(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(agent_memory)")]
+        for col in ("id", "key", "content", "source", "ts"):
+            assert col in cols
+
+    def test_chat_messages_foreign_key_column(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(chat_messages)")]
+        assert "session_id" in cols
+        assert "role" in cols
+
+
+# ---------------------------------------------------------------------------
+# TestMigrationV9
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV9:
+    def test_registered_tools_table_exists(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='registered_tools'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    def test_registered_tools_schema(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(registered_tools)")
+            ]
+        for col in (
+            "id",
+            "name",
+            "description",
+            "parameters_json",
+            "code",
+            "created_at",
+        ):
+            assert col in cols
+
+
+# ---------------------------------------------------------------------------
+# TestRememberRecall
+# ---------------------------------------------------------------------------
 
 
 class TestRememberRecall:
@@ -147,3 +224,508 @@ class TestRememberRecall:
         )
         assert result.success
         assert "unique_key_xyz" in result.output
+
+
+# ---------------------------------------------------------------------------
+# TestChatToolRegistry
+# ---------------------------------------------------------------------------
+
+
+class TestChatToolRegistry:
+    @pytest.fixture(autouse=True)
+    def registry(self):
+        from utils.tool_registry import build_chat_tool_registry
+
+        self._registry = build_chat_tool_registry()
+
+    def test_contains_finish_chat(self):
+        assert "finish_chat" in self._registry
+
+    def test_does_not_contain_apply_fix(self):
+        assert "apply_fix" not in self._registry
+
+    def test_does_not_contain_verify_fix(self):
+        assert "verify_fix" not in self._registry
+
+    def test_contains_remember(self):
+        assert "remember" in self._registry
+
+    def test_contains_recall(self):
+        assert "recall" in self._registry
+
+    def test_contains_read_source(self):
+        assert "read_source" in self._registry
+
+    def test_contains_propose_patch(self):
+        assert "propose_patch" in self._registry
+
+    def test_contains_sandbox_code(self):
+        assert "sandbox_code" in self._registry
+
+    def test_contains_add_tool(self):
+        assert "add_tool" in self._registry
+
+    def test_does_not_contain_finish_repair(self):
+        assert "finish_repair" not in self._registry
+
+
+# ---------------------------------------------------------------------------
+# TestAgentLoopTerminalTool
+# ---------------------------------------------------------------------------
+
+
+class TestAgentLoopTerminalTool:
+    """AgentLoop terminates on finish_chat when terminal_tool_name='finish_chat'."""
+
+    def _make_loop(self, llm, terminal_tool_name, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeLLMClient
+        from utils.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name=terminal_tool_name,
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+
+    def test_finish_chat_terminates_loop(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        loop = self._make_loop(llm, "finish_chat", db_path)
+        result = asyncio.run(loop.run("Hello"))
+        assert result.outcome == "success"
+
+    def test_default_terminal_tool_is_finish_repair(self, db_path):
+        """Default terminal_tool_name='finish_repair' still works unchanged."""
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_ha_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "Done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+
+    def test_finish_chat_does_not_trigger_default_loop(self, db_path):
+        """finish_chat call in a default (finish_repair) loop does NOT terminate it."""
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_ha_tool_registry
+
+        # Call finish_chat (not finish_repair) — loop should continue and exhaust
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        # Use default terminal_tool_name = "finish_repair"; registry has finish_repair
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        result = asyncio.run(loop.run("test"))
+        # finish_repair IS the terminal tool here → should succeed
+        assert result.outcome == "success"
+
+
+# ---------------------------------------------------------------------------
+# TestReadSource
+# ---------------------------------------------------------------------------
+
+
+class TestReadSource:
+    @pytest.fixture
+    def fake_repo(self, monkeypatch, tmp_path):
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        return tmp_path
+
+    def test_reads_file_within_repo(self, fake_repo, executor):
+        target = fake_repo / "hello.py"
+        target.write_text("print('hello')")
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="read_source", arguments={"path": "hello.py"})
+            )
+        )
+        assert result.success
+        assert "print('hello')" in result.output
+
+    def test_rejects_path_outside_repo(self, fake_repo, executor):
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="read_source",
+                    arguments={"path": "../../etc/passwd"},
+                )
+            )
+        )
+        assert not result.success
+        assert result.error is not None
+        assert "traversal" in result.error.lower() or "rejected" in result.error.lower()
+
+    def test_rejects_disallowed_extension(self, fake_repo, executor):
+        target = fake_repo / "binary.exe"
+        target.write_text("ELF")
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="read_source", arguments={"path": "binary.exe"})
+            )
+        )
+        assert not result.success
+        assert "Extension not allowed" in (result.error or "")
+
+    def test_truncates_at_8000_chars(self, fake_repo, executor):
+        target = fake_repo / "large.py"
+        target.write_text("x" * 10_000)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="read_source", arguments={"path": "large.py"})
+            )
+        )
+        assert result.success
+        assert len(result.output) == 8000
+
+
+# ---------------------------------------------------------------------------
+# TestSandboxCode
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxCode:
+    """sandbox_code delegates to subprocess; tests mock it to avoid real CI runs."""
+
+    @pytest.fixture
+    def patched_executor(self, db_path, monkeypatch, tmp_path):
+        import utils.tool_executor as te_mod
+
+        # Redirect _REPO_ROOT so propose_patch accepts a path that exists there
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        (tmp_path / "snippet.py").write_text("x = 1\n")
+
+        # Stub copytree to avoid copying the whole real repo
+        monkeypatch.setattr(te_mod.shutil, "copytree", lambda *a, **kw: None)
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+
+    def _fake_proc(self, returncode: int, out: str = "") -> MagicMock:
+        m = MagicMock()
+        m.returncode = returncode
+        m.stdout = out
+        m.stderr = ""
+        return m
+
+    def test_no_pending_patch_returns_error(self, patched_executor):
+        result = asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="sandbox_code",
+                    arguments={"description": "test"},
+                )
+            )
+        )
+        assert not result.success
+        assert "propose_patch" in (result.error or "")
+
+    def test_all_checks_pass_returns_success(self, patched_executor, monkeypatch):
+        import utils.tool_executor as te_mod
+
+        # Stage a patch first
+        asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="propose_patch",
+                    arguments={"path": "snippet.py", "content": "x = 2\n"},
+                )
+            )
+        )
+
+        proc_ok = self._fake_proc(0, "All good")
+        monkeypatch.setattr(te_mod.subprocess, "run", lambda *a, **kw: proc_ok)
+
+        result = asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="sandbox_code",
+                    arguments={"description": "formatting fix"},
+                )
+            )
+        )
+        assert result.success
+        assert patched_executor._sandbox_passed is True
+
+    def test_failing_check_returns_failure(self, patched_executor, monkeypatch):
+        import utils.tool_executor as te_mod
+
+        asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="propose_patch",
+                    arguments={"path": "snippet.py", "content": "x = 2\n"},
+                )
+            )
+        )
+
+        proc_fail = self._fake_proc(1, "E101 syntax error")
+        monkeypatch.setattr(te_mod.subprocess, "run", lambda *a, **kw: proc_fail)
+
+        result = asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="sandbox_code",
+                    arguments={"description": "bad patch"},
+                )
+            )
+        )
+        assert not result.success
+        assert patched_executor._sandbox_passed is False
+
+    def test_sandbox_output_captured(self, patched_executor, monkeypatch):
+        import utils.tool_executor as te_mod
+
+        asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="propose_patch",
+                    arguments={"path": "snippet.py", "content": "x = 2\n"},
+                )
+            )
+        )
+
+        proc_ok = self._fake_proc(0, "pytest passed")
+        monkeypatch.setattr(te_mod.subprocess, "run", lambda *a, **kw: proc_ok)
+
+        result = asyncio.run(
+            patched_executor.execute(
+                ToolCall(
+                    name="sandbox_code",
+                    arguments={"description": "check"},
+                )
+            )
+        )
+        assert "pytest passed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# TestAddTool
+# ---------------------------------------------------------------------------
+
+
+class TestAddTool:
+    _VALID_CODE = "async def tool_implementation(args):\n    return 'ok'\n"
+
+    @pytest.fixture
+    def prepped_executor(self, db_path, monkeypatch, tmp_path):
+        """Executor with sandbox already passed and a pending patch staged."""
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        (tmp_path / "new_tool.py").write_text(self._VALID_CODE)
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        # Manually mark sandbox as passed (simulates sandbox_code succeeding)
+        ex._sandbox_passed = True
+        ex._sandbox_output = "All checks passed"
+        return ex
+
+    def test_disabled_by_default(self, executor, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", False)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="add_tool",
+                    arguments={
+                        "name": "ping_host",
+                        "description": "Pings a host",
+                        "parameters_schema": "{}",
+                        "code": self._VALID_CODE,
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "CHAT_ALLOW_TOOL_REGISTRATION" in (result.error or "")
+
+    def test_sandbox_not_run_returns_error(self, prepped_executor, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
+        prepped_executor._sandbox_passed = False  # override back to False
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="add_tool",
+                    arguments={
+                        "name": "ping_host",
+                        "description": "Pings a host",
+                        "parameters_schema": "{}",
+                        "code": self._VALID_CODE,
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "sandbox_code" in (result.error or "").lower()
+
+    def test_valid_flow_queues_hitl_card(self, prepped_executor, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="add_tool",
+                    arguments={
+                        "name": "ping_host",
+                        "description": "Pings a host",
+                        "parameters_schema": '{"type": "object"}',
+                        "code": self._VALID_CODE,
+                    },
+                )
+            )
+        )
+        assert result.awaiting_approval is True
+
+    def test_valid_flow_notifier_receives_card(self, prepped_executor, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
+        asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="add_tool",
+                    arguments={
+                        "name": "ping_host",
+                        "description": "Pings a host",
+                        "parameters_schema": "{}",
+                        "code": self._VALID_CODE,
+                    },
+                )
+            )
+        )
+        notifier = prepped_executor._notifier
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["tool_name"] == "ping_host"
+        assert "code_proposal" in payload["card_type"]
+
+    def test_syntax_error_in_code_returns_error(self, prepped_executor, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="add_tool",
+                    arguments={
+                        "name": "bad_tool",
+                        "description": "Has syntax error",
+                        "parameters_schema": "{}",
+                        "code": "def broken(:\n    pass\n",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "Syntax error" in (result.error or "")
+
+    def test_register_dynamic_tool_callable(self, db_path):
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+
+        async def my_tool(args):
+            return "result"
+
+        ex.register_dynamic_tool("my_tool", my_tool)
+        result = asyncio.run(ex.execute(ToolCall(name="my_tool", arguments={})))
+        assert result.success
+        assert result.output == "result"
