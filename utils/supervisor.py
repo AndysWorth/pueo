@@ -120,6 +120,7 @@ class LoopSupervisor:
         self._backoff_cap = backoff_cap
         self._handles: dict[str, LoopStatus] = {}
         self._tasks: dict[str, "asyncio.Task[None]"] = {}
+        self._tool_executor: Any = None  # shared ToolExecutor; set by supervisor_main
 
     def start(
         self,

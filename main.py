@@ -9,7 +9,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
@@ -111,6 +111,45 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     )
 
 
+def _load_registered_tools(executor: "Any", db_path: str) -> None:
+    """Load approved dynamic tools from registered_tools DB into the shared executor."""
+    import importlib.util
+    import sqlite3
+
+    from utils.logging import get_logger
+
+    log = get_logger("main")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("SELECT name, code FROM registered_tools").fetchall()
+    except Exception:
+        return
+
+    user_tools_dir = Path(__file__).parent / "user_tools"
+    for tool_name, _code in rows:
+        tool_file = user_tools_dir / f"{tool_name}.py"
+        if not tool_file.exists():
+            continue
+        try:
+            module_name = f"user_tools.{tool_name}"
+            spec = importlib.util.spec_from_file_location(module_name, tool_file)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            import sys
+
+            sys.modules[module_name] = mod
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            fn = getattr(mod, "tool_implementation", None) or getattr(
+                mod, tool_name, None
+            )
+            if fn is not None:
+                executor.register_dynamic_tool(tool_name, fn)
+                log.info("dynamic_tool_loaded", name=tool_name)
+        except Exception as exc:
+            log.warning("dynamic_tool_load_failed", name=tool_name, error=str(exc))
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     import config as cfg
@@ -132,6 +171,20 @@ async def supervisor_main(config_path: Path) -> None:
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)
     set_supervisor_instance(supervisor)
+
+    # Build shared ToolExecutor and attach to supervisor so the chat loop and
+    # dashboard code_proposal handler share the same dynamic-tools registry.
+    from utils.autonomy import AutonomyGate
+    from utils.tool_executor import ToolExecutor
+
+    _shared_executor = ToolExecutor(
+        ha_ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
+        gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
+        notifier=notifier,
+        db_path=cfg.DB_PATH,
+    )
+    supervisor._tool_executor = _shared_executor
+    _load_registered_tools(_shared_executor, cfg.DB_PATH)
 
     # HA log monitor loop (SSH tail + AI triage)
     supervisor.start(
