@@ -90,7 +90,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 68   | /chat GET route; chat.html template (session list + message thread + input); base.html nav link | ✅ Done (2026-07-31) |
 | 69   | POST /chat/message + GET /chat/events SSE; asyncio task dispatch; chat_thinking/chat_done/chat_error events | ✅ Done (2026-07-31) |
 | 70   | read_source, propose_patch, sandbox_code tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout | ✅ Done (2026-07-31) |
-| 71   | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup | ☐ TODO |
+| 71   | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup | ✅ Done (2026-07-31) |
 | 72   | Tests: test_chat.py (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); TestConfigDefaults for two new config keys | ☐ TODO |
 | 73   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
 | 74   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |

@@ -15,8 +15,9 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH, OLLAMA_MODEL
 from utils.logging import get_correlation_id, get_logger
@@ -81,6 +82,7 @@ class ToolExecutor:
         self._pending_patch: dict[str, str] = {}
         self._sandbox_passed: bool = False
         self._sandbox_output: str = ""
+        self._dynamic_tools: dict[str, Callable[..., Any]] = {}
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -88,6 +90,11 @@ class ToolExecutor:
         self._pending_patch = {}
         self._sandbox_passed = False
         self._sandbox_output = ""
+        # _dynamic_tools intentionally not reset — registered tools persist across loops
+
+    def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
+        """Register a user-approved dynamic tool callable by name."""
+        self._dynamic_tools[name] = fn
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -141,10 +148,22 @@ class ToolExecutor:
                 )
             if name == "sandbox_code":
                 return await self._sandbox_code(args.get("description", ""))
+            if name == "add_tool":
+                return await self._add_tool(
+                    args.get("name", ""),
+                    args.get("description", ""),
+                    args.get("parameters_schema", ""),
+                    args.get("code", ""),
+                )
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
                 return await self._rewrite_netalertx_conf(args.get("overrides", {}))
+            if name in self._dynamic_tools:
+                result = await self._dynamic_tools[name](args)
+                if isinstance(result, ToolResult):
+                    return result
+                return ToolResult(tool_name=name, success=True, output=str(result))
             return ToolResult(
                 tool_name=name,
                 success=False,
@@ -439,6 +458,58 @@ class ToolExecutor:
             )
         finally:
             shutil.rmtree(str(tmpdir), ignore_errors=True)
+
+    async def _add_tool(
+        self, name: str, description: str, parameters_schema: str, code: str
+    ) -> ToolResult:
+        from config import CHAT_ALLOW_TOOL_REGISTRATION
+
+        if not CHAT_ALLOW_TOOL_REGISTRATION:
+            return ToolResult(
+                tool_name="add_tool",
+                success=False,
+                output="",
+                error="CHAT_ALLOW_TOOL_REGISTRATION is disabled; enable it in config to register tools",
+            )
+        try:
+            compile(code, "<string>", "exec")
+        except SyntaxError as exc:
+            return ToolResult(
+                tool_name="add_tool",
+                success=False,
+                output="",
+                error=f"Syntax error in proposed code: {exc}",
+            )
+        if not self._sandbox_passed:
+            return ToolResult(
+                tool_name="add_tool",
+                success=False,
+                output="",
+                error="Run sandbox_code first and ensure all CI checks pass",
+            )
+        from utils.card_types import CARD_TYPE_CODE_PROPOSAL
+
+        nid = get_correlation_id() or str(uuid.uuid4())
+        await self._notifier.send(
+            subject=f"Pueo HITL: add_tool — {name}",
+            body=f"Register new tool: {name}\n\n{description}",
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_CODE_PROPOSAL,
+                "tool_name": name,
+                "tool_description": description,
+                "parameters_schema": parameters_schema,
+                "code": code,
+                "sandbox_output": self._sandbox_output,
+            },
+        )
+        log.info("add_tool_queued_for_hitl", name=name, nid=nid)
+        return ToolResult(
+            tool_name="add_tool",
+            success=False,
+            output=f"Tool registration queued for HITL approval (id={nid})",
+            awaiting_approval=True,
+        )
 
     async def _apply_fix(self, yaml_content: str, description: str) -> ToolResult:
         if self._apply_fix_used:

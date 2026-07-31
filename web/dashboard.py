@@ -21,6 +21,7 @@ from pydantic import BaseModel, field_validator
 
 from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
 from utils.card_types import (
+    CARD_TYPE_CODE_PROPOSAL,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
@@ -585,6 +586,79 @@ async def _execute_resource_action(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_code_proposal(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Write approved tool code to user_tools/, import it, and register it dynamically."""
+    import importlib.util
+    import sys
+
+    from utils.supervisor import get_supervisor_instance, publish_event
+
+    payload = data.get("payload", {})
+    name = payload.get("tool_name", "")
+    description = payload.get("tool_description", "")
+    parameters_schema = payload.get("parameters_schema", "")
+    code = payload.get("code", "")
+
+    if not name or not code:
+        data["error"] = "Missing tool_name or code in payload"
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+        return
+
+    try:
+        user_tools_dir = Path(__file__).parent.parent / "user_tools"
+        user_tools_dir.mkdir(exist_ok=True)
+        init_file = user_tools_dir / "__init__.py"
+        if not init_file.exists():
+            init_file.write_text("")
+
+        tool_file = user_tools_dir / f"{name}.py"
+        tool_file.write_text(code)
+
+        module_name = f"user_tools.{name}"
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+        spec = importlib.util.spec_from_file_location(module_name, tool_file)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load module spec for {module_name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+
+        fn = getattr(mod, "tool_implementation", None) or getattr(mod, name, None)
+        if fn is None:
+            raise AttributeError(
+                f"Module must define 'tool_implementation' or '{name}'"
+            )
+
+        sv = get_supervisor_instance()
+        if sv is not None and sv._tool_executor is not None:
+            sv._tool_executor.register_dynamic_tool(name, fn)
+
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO registered_tools"
+                " (name, description, parameters_json, code, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (name, description, parameters_schema, code, time.time()),
+            )
+
+        data["tool_registered"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        publish_event({"event_type": "tool_registered", "name": name})
+
+    except Exception as exc:
+        data["error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -592,6 +666,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_UPDATE: _execute_queued_update,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
+    CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
 }
 
 

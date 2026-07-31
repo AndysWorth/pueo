@@ -200,6 +200,21 @@ def _migrate_v8(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v9(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registered_tools (
+            id              INTEGER PRIMARY KEY,
+            name            TEXT NOT NULL UNIQUE,
+            description     TEXT NOT NULL,
+            parameters_json TEXT NOT NULL,
+            code            TEXT NOT NULL,
+            created_at      REAL NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -209,6 +224,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (6, _migrate_v6),
     (7, _migrate_v7),
     (8, _migrate_v8),
+    (9, _migrate_v9),
 ]
 
 
