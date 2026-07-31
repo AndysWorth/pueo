@@ -22,6 +22,9 @@ event_bus: asyncio.Queue = asyncio.Queue(maxsize=1000)
 # SSE fan-out: per-connection subscriber queues
 _sse_subscribers: list[asyncio.Queue] = []
 
+# Chat SSE fan-out: per-connection subscriber queues (chat_thinking/chat_done/chat_error)
+_chat_subscribers: list[asyncio.Queue] = []
+
 # Running supervisor instance (set by main.py supervisor_main; None in standalone dashboard mode)
 _supervisor_instance: "LoopSupervisor | None" = None
 
@@ -52,6 +55,30 @@ def unsubscribe(q: asyncio.Queue) -> None:
         _sse_subscribers.remove(q)
     except ValueError:
         pass
+
+
+def subscribe_chat() -> asyncio.Queue:
+    """Create and register a new chat SSE subscriber queue."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _chat_subscribers.append(q)
+    return q
+
+
+def unsubscribe_chat(q: asyncio.Queue) -> None:
+    """Remove a chat subscriber queue from the fan-out list."""
+    try:
+        _chat_subscribers.remove(q)
+    except ValueError:
+        pass
+
+
+def publish_chat_event(event: dict) -> None:
+    """Publish a chat event to all chat SSE subscriber queues (non-blocking)."""
+    for q in list(_chat_subscribers):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
 
 
 def set_supervisor_instance(sv: "LoopSupervisor") -> None:
