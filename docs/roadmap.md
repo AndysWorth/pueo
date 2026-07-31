@@ -18,6 +18,7 @@ Strategic capabilities in delivery order.
 | 5. Agent quality & evaluation                 | ✅ Complete (2026-07-28) | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
 | 6.5. Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | `main.py`, `web/dashboard.py`              |
+| 6.6. Conversational Agent                     | ❌ Not started           | `web/templates/chat.html`, `utils/tool_executor.py` |
 | 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
 | 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
@@ -45,16 +46,17 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
 | Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54  |
 | Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64  |
-| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 65–68  |
-| Phase 19: Repair Episode Recording                 | ❌ Not started           | 69–71  |
-| Phase 20: Federated Case Library                   | ❌ Not started           | 72–74  |
-| Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 75–80  |
+| Phase 17.5: Conversational Agent                   | ❌ Not started           | 65–72  |
+| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 73–76  |
+| Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79  |
+| Phase 20: Federated Case Library                   | ❌ Not started           | 80–82  |
+| Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86  |
 
 ---
 
 ## Remaining Work
 
-**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → **6.5** → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
+**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → **6.5** → **6.6** → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
 
 ---
 
@@ -76,6 +78,35 @@ params, and loop pause/resume/run-now controls. A launchd plist keeps Pueo alive
 restarts it on crash. `--mode audit` produces a structured gap report saved to `audits/`.
 
 Full spec: [plan/supervisor.md](plan/supervisor.md)
+
+---
+
+### Milestone 6.6 — Conversational Agent
+
+**Objective:** Add a Chat tab to the HITL dashboard so the user can talk directly to Pueo — querying live HA state, storing persistent notes across sessions, and proposing new tools through a sandboxed code flow. The same `AgentLoop` that drives reactive repair sessions drives the conversational agent; only the system prompt, tool registry, and termination signal differ.
+
+**Why here:** Pueo is currently reactive only. Adding conversation lets the user interrogate the system at any time ("what's the state of sensor X?"), build up context that informs future repairs ("remember that the NAS is on 192.168.1.100"), and extend Pueo's capabilities without editing source code. The code-sandbox path (items 70–71) also delivers the shared infrastructure that Milestone 10 (Phase 21) reuses for its autonomous code-proposal flow.
+
+**Key design choices:**
+- `AgentLoop` is reused unchanged, extended with a `terminal_tool_name` parameter (defaults to `"finish_repair"` to preserve existing behavior)
+- Memory uses SQLite keyword search — no new embedding overhead; ChromaDB can be wired in later
+- Chat responses stream via a dedicated `/chat/events` SSE endpoint (separate from the global `/events` stream)
+- `add_tool` requires sandbox pass + explicit HITL approval regardless of autonomy level — hardcoded, not gated by `AutonomyGate`
+- `CHAT_ALLOW_TOOL_REGISTRATION = false` default — inert until the user explicitly enables it
+
+**Tasks (Phase 17.5, items 65–72):**
+- DB migration v8: `agent_memory`, `chat_sessions`, `chat_messages` tables
+- `remember`/`recall` tools + `CHAT_MEMORY_TOP_K`, `CHAT_ALLOW_TOOL_REGISTRATION` config keys
+- `build_chat_tool_registry()`, `finish_chat` tool definition, `AgentLoop.terminal_tool_name` parameter
+- `/chat` dashboard route + `chat.html` template (session list, message thread, input)
+- `POST /chat/message` endpoint + `GET /chat/events` SSE; `asyncio.create_task` loop dispatch
+- `read_source`, `propose_patch`, `sandbox_code` tools (shared with Milestone 10)
+- `add_tool`: DB migration v9 (`registered_tools`), dynamic tool executor, `code_proposal` HITL card
+- Tests: `test_chat.py` full coverage
+
+**Validation gate:** `/chat` tab accessible in dashboard; "What is the HA disk usage?" triggers `run_ha_command` and returns a human-readable answer; "remember that X" stores a memory; memory survives page reload; with `CHAT_ALLOW_TOOL_REGISTRATION=true`, a proposed tool clears sandbox and appears as a HITL card; approving it makes the tool callable in the next session.
+
+Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 
 ---
 
@@ -242,13 +273,15 @@ Full spec: [plan/federated-cases.md](plan/federated-cases.md)
 
 **Objective:** When Pueo identifies a capability gap during a repair loop, it proposes a Python diff, validates it against CI in a sandboxed temp directory, and surfaces a HITL approval card to open a PR. Approved changes become reusable tools for every future incident.
 
-**Tasks:**
-- New tools: `read_source`, `propose_patch`, `sandbox_code` (subprocess, no network, 60s timeout), `open_pr`
-- Code proposal HITL card: diff viewer, test output, approve/reject
-- Safety-critical file block list: diffs touching `utils/autonomy.py`, `interfaces.py`, `config.py`, or the backup invariant chain require additional confirmation
-- Security review: sandbox escape vectors; ADR 007
+**Foundation in Milestone 6.6:** The sandbox tools (`read_source`, `propose_patch`, `sandbox_code`) and the `code_proposal` HITL card were delivered in Phase 17.5 (Milestone 6.6) as part of the conversational agent's code-skill-building feature. Milestone 10 adds only the remaining pieces: the autonomous trigger and the formal `open_pr` path.
 
-**Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; HITL approval opens a real PR; safety-critical block list tested.
+**Remaining tasks (Phase 21, items 83–86):**
+- `open_pr` tool: `gh pr create` integration; formal PR opens on HITL approval instead of in-process registration
+- Autonomous gap detection: `finish_repair` with `capability_gap=True` automatically triggers `propose_patch → sandbox_code → code_proposal` HITL card
+- Security review: sandbox escape vectors, safety-critical file block list (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain), `read_source` path traversal
+- ADR 007: agent-generated code proposals with sandboxed CI gate
+
+**Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; HITL approval opens a real PR; safety-critical block list tested; security review complete.
 
 Full spec: [plan/code-proposals.md](plan/code-proposals.md)
 

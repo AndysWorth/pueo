@@ -10,7 +10,7 @@ Pick up the next incomplete item at the start of a new session: find it in the S
 
 Plan detail files use a **Phase Deliverables** table (item number + one-line description) to link items to spec text. Do not introduce new "Feature N" labels — reference items by number.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/conversational-agent.md](plan/conversational-agent.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ---
 
@@ -84,22 +84,28 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 62   | Loop control from dashboard: pause/resume/run-now per loop via POST endpoints | ✅ Done (2026-07-30) |
 | 63   | launchd service: plist template; setup.sh install step; dashboard service status + controls | ✅ Done (2026-07-30) |
 | 64   | --mode audit: Pueo self-diagnostics; structured gap report (actual vs. intended state); saved to audits/ | ✅ Done (2026-07-30) |
-| 65   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
-| 66   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
-| 67   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
-| 68   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
-| 69   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
-| 70   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
-| 71   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
-| 72   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
-| 73   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
-| 74   | Eval scenario generation from each ingested community case           | ☐ TODO |
-| 75   | read_source + propose_patch tools; diff generation prompt engineering | ☐ TODO |
-| 76   | sandbox_code tool: subprocess sandbox, no-network isolation, pytest runner, lint gate | ☐ TODO |
-| 77   | Code proposal HITL card: diff viewer in dashboard, test output, approve/reject | ☐ TODO |
-| 78   | open_pr tool: gh pr create integration, PR body template             | ☐ TODO |
-| 79   | Security review: sandbox escape vectors, allowlist, safety-critical file block list | ☐ TODO |
-| 80   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
+| 65   | DB migration v8: agent_memory, chat_sessions, chat_messages tables   | ☐ TODO |
+| 66   | remember + recall tools: ToolDefinitions, ToolExecutor methods, CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys | ☐ TODO |
+| 67   | build_chat_tool_registry(); finish_chat ToolDefinition; AgentLoop.terminal_tool_name parameter; conversational system prompt | ☐ TODO |
+| 68   | /chat GET route; chat.html template (session list + message thread + input); base.html nav link | ☐ TODO |
+| 69   | POST /chat/message + GET /chat/events SSE; asyncio task dispatch; chat_thinking/chat_done/chat_error events | ☐ TODO |
+| 70   | read_source, propose_patch, sandbox_code tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout | ☐ TODO |
+| 71   | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup | ☐ TODO |
+| 72   | Tests: test_chat.py (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); TestConfigDefaults for two new config keys | ☐ TODO |
+| 73   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
+| 74   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
+| 75   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
+| 76   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
+| 77   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
+| 78   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
+| 79   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
+| 80   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
+| 81   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
+| 82   | Eval scenario generation from each ingested community case           | ☐ TODO |
+| 83   | open_pr tool: gh pr create integration; builds on propose_patch + sandbox_code from item 70; PR body template with diff + test summary + ADR 007 ref | ☐ TODO |
+| 84   | Autonomous gap detection: finish_repair with capability_gap=True triggers propose_patch → sandbox_code → code_proposal HITL card automatically | ☐ TODO |
+| 85   | Security review: sandbox escape vectors, safety-critical file block list (utils/autonomy.py, interfaces.py, config.py, backup chain), read_source path traversal | ☐ TODO |
+| 86   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
 
 ---
 
@@ -309,57 +315,73 @@ Phase 16 (Evals) complete.
 
 ---
 
-### Phase 18 — HITL Cloud Escalation (4 items)
-Items 65–68. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+### Phase 17.5 — Conversational Agent (8 items)
+Items 65–72. Adds a Chat tab to the HITL dashboard, persistent agent memory (SQLite), and an interactive code-sandbox flow for proposing and registering new tools. The same `AgentLoop` that drives repair sessions drives the conversational agent — with a different system prompt, a chat-specific tool registry, and `terminal_tool_name="finish_chat"`. Also implements the shared sandbox infrastructure (`read_source`, `propose_patch`, `sandbox_code`) that Phase 21 will reuse for its autonomous code-proposal path. Prerequisite: Phase 17 complete.
 
 | Items | Concern |
 |-------|---------|
-| 65 | ClaudeAPIClient + tool adapter |
-| 66 | Escalation HITL card |
-| 67 | Cloud response pipeline via shared tool execution layer |
-| 68 | Billing guard + cloud_spend SQLite table |
+| 65 | DB migration v8: agent_memory, chat_sessions, chat_messages |
+| 66 | remember + recall tools; CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys |
+| 67 | build_chat_tool_registry(); finish_chat tool; AgentLoop.terminal_tool_name; conversational system prompt |
+| 68 | /chat UI: route, chat.html template, base.html nav link |
+| 69 | POST /chat/message + GET /chat/events SSE; asyncio task dispatch |
+| 70 | read_source, propose_patch, sandbox_code tools; subprocess CI gate |
+| 71 | add_tool: migration v9, _dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler |
+| 72 | Tests: test_chat.py + TestConfigDefaults entries |
+
+→ [plan/conversational-agent.md](plan/conversational-agent.md)
+
+---
+
+### Phase 18 — HITL Cloud Escalation (4 items)
+Items 73–76. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+
+| Items | Concern |
+|-------|---------|
+| 73 | ClaudeAPIClient + tool adapter |
+| 74 | Escalation HITL card |
+| 75 | Cloud response pipeline via shared tool execution layer |
+| 76 | Billing guard + cloud_spend SQLite table |
 
 → [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
 ---
 
 ### Phase 19 — Repair Episode Recording (3 items)
-Items 69–71. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 20 (Federated Case Library).
+Items 77–79. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 20 (Federated Case Library).
 
 | Items | Concern |
 |-------|---------|
-| 69 | repair_episodes migration + RepairEpisode dataclass |
-| 70 | Serialization hook at finish_repair in AgentLoop |
-| 71 | --mode export-episodes CLI + episodes dashboard tab |
+| 77 | repair_episodes migration + RepairEpisode dataclass |
+| 78 | Serialization hook at finish_repair in AgentLoop |
+| 79 | --mode export-episodes CLI + episodes dashboard tab |
 
 → [plan/repair-episodes.md](plan/repair-episodes.md)
 
 ---
 
 ### Phase 20 — Federated Case Library (3 items)
-Items 72–74. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
+Items 80–82. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
 
 | Items | Concern |
 |-------|---------|
-| 72 | Case submission flow (dashboard → gh pr create) |
-| 73 | Case ingest (weekly pull → embed → community_cases ChromaDB) |
-| 74 | Eval scenario generation from ingested cases |
+| 80 | Case submission flow (dashboard → gh pr create) |
+| 81 | Case ingest (weekly pull → embed → community_cases ChromaDB) |
+| 82 | Eval scenario generation from ingested cases |
 
 → [plan/federated-cases.md](plan/federated-cases.md)
 
 ---
 
-### Phase 21 — Self-Improving Code Proposals *(stretch goal, 6 items)*
-Items 75–80. When Pueo identifies a capability gap, it proposes a Python diff, validates it in a sandboxed temp directory against CI, and surfaces a HITL card to open a PR. Approved changes become reusable tools. Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain) are block-listed from diffs. Requires Milestones 7 and 9 complete.
+### Phase 21 — Self-Improving Code Proposals *(stretch goal, 4 items)*
+Items 83–86. The sandbox infrastructure (`read_source`, `propose_patch`, `sandbox_code`, code_proposal HITL card) was delivered in Phase 17.5. This phase adds the autonomous trigger (agent detects a capability gap during a repair loop), the `open_pr` path (formal PR instead of in-process registration), a security review, and ADR 007. Requires Milestones 7 and 9 complete.
 
-| Items | Concern                                                           |
-| ----- | ----------------------------------------------------------------- |
-| 75    | read_source + propose_patch tools                                 |
-| 76    | sandbox_code tool: subprocess sandbox, no-network, pytest runner  |
-| 77    | Code proposal HITL card: diff viewer, test output, approve/reject |
-| 78    | open_pr tool                                                      |
-| 79    | Security review: sandbox escape vectors + block list              |
-| 80    | ADR 007                                                           |
+| Items | Concern |
+| ----- | ------- |
+| 83    | open_pr tool: gh pr create; builds on propose_patch + sandbox_code from item 70; PR body template |
+| 84    | Autonomous gap detection: finish_repair with capability_gap=True triggers propose_patch → sandbox_code → code_proposal HITL card |
+| 85    | Security review: sandbox escape vectors, safety-critical file block list, read_source path traversal |
+| 86    | ADR 007: agent-generated code proposals with sandboxed CI gate |
 
 → [plan/code-proposals.md](plan/code-proposals.md)
 
