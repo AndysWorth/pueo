@@ -1,0 +1,528 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .chat-layout {
+    display: flex;
+    gap: 1rem;
+    height: calc(100vh - 10rem);
+    min-height: 400px;
+  }
+  /* Sidebar */
+  .chat-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .chat-sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.25rem;
+  }
+  .chat-sidebar-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #888;
+  }
+  #btn-new-chat {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  #btn-new-chat:hover { background: #1557b0; }
+  .session-list {
+    overflow-y: auto;
+    flex: 1;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fff;
+  }
+  .session-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #f0f0f0;
+    cursor: pointer;
+    font-size: 0.82rem;
+    gap: 0.4rem;
+  }
+  .session-item:last-child { border-bottom: none; }
+  .session-item:hover, .session-item.active { background: #e8f0fe; }
+  .session-item .session-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #333;
+  }
+  .session-item .session-del {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    color: #aaa;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 0.1rem;
+    line-height: 1;
+  }
+  .session-item .session-del:hover { color: #dc3545; }
+  .session-empty { color: #aaa; font-size: 0.82rem; padding: 1rem; text-align: center; }
+
+  /* Main panel */
+  .chat-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .message-thread {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 6px 6px 0 0;
+    background: #fafafa;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .msg-row {
+    display: flex;
+    flex-direction: column;
+    max-width: 80%;
+  }
+  .msg-row.user { align-self: flex-end; align-items: flex-end; }
+  .msg-row.assistant { align-self: flex-start; align-items: flex-start; }
+  .msg-bubble {
+    padding: 0.55rem 0.85rem;
+    border-radius: 12px;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg-row.user .msg-bubble {
+    background: #1a73e8;
+    color: #fff;
+    border-bottom-right-radius: 3px;
+  }
+  .msg-row.assistant .msg-bubble {
+    background: #fff;
+    color: #222;
+    border: 1px solid #ddd;
+    border-bottom-left-radius: 3px;
+  }
+  .msg-meta {
+    font-size: 0.7rem;
+    color: #aaa;
+    margin-top: 0.2rem;
+    padding: 0 0.25rem;
+  }
+  .tool-trace {
+    font-size: 0.75rem;
+    color: #888;
+    font-style: italic;
+    padding: 0.2rem 0.4rem;
+  }
+  .tool-trace summary { cursor: pointer; color: #6366f1; font-style: normal; }
+  .thread-empty {
+    color: #bbb;
+    text-align: center;
+    margin: auto;
+    font-size: 0.9rem;
+  }
+
+  /* Thinking indicator */
+  .thinking-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    color: #6366f1;
+    font-style: italic;
+    padding: 0.25rem 0.4rem;
+  }
+  .thinking-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #6366f1;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+  .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse {
+    0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1); }
+  }
+
+  /* Footer input */
+  .chat-footer {
+    display: flex;
+    gap: 0.5rem;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    background: #fff;
+    padding: 0.6rem;
+  }
+  #chat-input {
+    flex: 1;
+    resize: none;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.88rem;
+    font-family: inherit;
+    outline: none;
+    min-height: 2.5rem;
+    max-height: 8rem;
+    overflow-y: auto;
+  }
+  #chat-input:focus { border-color: #1a73e8; }
+  #btn-send {
+    align-self: flex-end;
+    padding: 0.5rem 1.1rem;
+    background: #1a73e8;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #btn-send:hover { background: #1557b0; }
+  #btn-send:disabled { background: #9ab4d8; cursor: default; }
+
+  @media (max-width: 600px) {
+    .chat-layout { flex-direction: column; height: auto; }
+    .chat-sidebar { width: 100%; height: 150px; }
+    .message-thread { min-height: 300px; }
+  }
+</style>
+
+<div class="chat-layout">
+  <!-- Sidebar: session list -->
+  <div class="chat-sidebar">
+    <div class="chat-sidebar-header">
+      <span class="chat-sidebar-title">Sessions</span>
+      <button id="btn-new-chat" onclick="newChat()">+ New</button>
+    </div>
+    <div class="session-list" id="session-list">
+      {% if sessions %}
+        {% for s in sessions %}
+        <div class="session-item{% if loop.first %} active{% endif %}"
+             data-sid="{{ s.id }}"
+             onclick="loadSession({{ s.id }}, this)">
+          <span class="session-title" title="{{ s.title or ('Session ' ~ s.id) }}">
+            {{ s.title or ('Session ' ~ s.id) }}
+          </span>
+          <button class="session-del" title="Delete"
+                  onclick="event.stopPropagation(); deleteSession({{ s.id }}, this.closest('.session-item'))">✕</button>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="session-empty" id="session-empty-msg">No sessions yet</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Main panel -->
+  <div class="chat-main">
+    <div class="message-thread" id="message-thread">
+      {% if sessions %}
+        <div class="thread-empty" id="thread-placeholder" style="display:none;">
+          Select a session or start a new chat.
+        </div>
+      {% else %}
+        <div class="thread-empty" id="thread-placeholder">
+          No sessions yet — click <strong>+ New</strong> to start.
+        </div>
+      {% endif %}
+    </div>
+    <div class="chat-footer">
+      <textarea id="chat-input" rows="1" placeholder="Ask Pueo anything…"
+                onkeydown="handleKey(event)"></textarea>
+      <button id="btn-send" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let _currentSessionId = {% if sessions %}{{ sessions[0].id }}{% else %}null{% endif %};
+  let _eventSource = null;
+  let _thinkingEl = null;
+  let _pendingToolCalls = [];
+
+  // ── Session list ────────────────────────────────────────────────────────────
+
+  function newChat() {
+    _currentSessionId = null;
+    document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
+    clearThread();
+    document.getElementById('thread-placeholder').style.display = '';
+    document.getElementById('chat-input').focus();
+  }
+
+  function loadSession(sid, el) {
+    _currentSessionId = sid;
+    document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
+    if (el) el.classList.add('active');
+    fetchMessages(sid);
+  }
+
+  async function deleteSession(sid, el) {
+    if (!confirm('Delete this session and all its messages?')) return;
+    await fetch('/chat/sessions/' + sid, {method: 'DELETE'});
+    el.remove();
+    if (_currentSessionId === sid) {
+      _currentSessionId = null;
+      clearThread();
+      document.getElementById('thread-placeholder').style.display = '';
+    }
+    const remaining = document.querySelectorAll('.session-item');
+    if (remaining.length === 0) {
+      const list = document.getElementById('session-list');
+      if (!document.getElementById('session-empty-msg')) {
+        const d = document.createElement('div');
+        d.className = 'session-empty';
+        d.id = 'session-empty-msg';
+        d.textContent = 'No sessions yet';
+        list.appendChild(d);
+      }
+    }
+  }
+
+  // ── Message thread ──────────────────────────────────────────────────────────
+
+  function clearThread() {
+    const thread = document.getElementById('message-thread');
+    thread.innerHTML = '';
+    const ph = document.createElement('div');
+    ph.className = 'thread-empty';
+    ph.id = 'thread-placeholder';
+    thread.appendChild(ph);
+    _thinkingEl = null;
+    _pendingToolCalls = [];
+  }
+
+  async function fetchMessages(sid) {
+    clearThread();
+    document.getElementById('thread-placeholder').style.display = 'none';
+    try {
+      const resp = await fetch('/chat/sessions/' + sid + '/messages');
+      if (!resp.ok) return;
+      const msgs = await resp.json();
+      msgs.forEach(m => appendMessage(m.role, m.content, m.ts, m.tool_calls_json));
+    } catch (e) {
+      console.error('fetchMessages error', e);
+    }
+    scrollThread();
+  }
+
+  function appendMessage(role, content, ts, toolCallsJson) {
+    if (role === 'tool') return; // raw tool results not shown in UI
+    const thread = document.getElementById('message-thread');
+    const row = document.createElement('div');
+    row.className = 'msg-row ' + (role === 'user' ? 'user' : 'assistant');
+
+    // Tool trace (collapsible) for assistant messages that called tools
+    if (role === 'assistant' && toolCallsJson) {
+      let calls;
+      try { calls = JSON.parse(toolCallsJson); } catch { calls = null; }
+      if (calls && calls.length) {
+        const det = document.createElement('details');
+        det.className = 'tool-trace';
+        const sum = document.createElement('summary');
+        sum.textContent = calls.length + ' tool call' + (calls.length > 1 ? 's' : '');
+        det.appendChild(sum);
+        calls.forEach(c => {
+          const p = document.createElement('div');
+          p.style.cssText = 'padding:0.15rem 0.4rem;';
+          p.textContent = '→ ' + c;
+          det.appendChild(p);
+        });
+        row.appendChild(det);
+      }
+    }
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.textContent = content || '';
+    row.appendChild(bubble);
+
+    if (ts) {
+      const meta = document.createElement('div');
+      meta.className = 'msg-meta';
+      meta.textContent = new Date(ts * 1000).toLocaleTimeString();
+      row.appendChild(meta);
+    }
+
+    thread.appendChild(row);
+  }
+
+  function showThinking(toolName) {
+    removeThinking();
+    const thread = document.getElementById('message-thread');
+    _thinkingEl = document.createElement('div');
+    _thinkingEl.className = 'thinking-row';
+    _thinkingEl.innerHTML =
+      '<span class="thinking-dot"></span>' +
+      '<span class="thinking-dot"></span>' +
+      '<span class="thinking-dot"></span>' +
+      '<span>' + (toolName ? 'Calling ' + toolName + '…' : 'Thinking…') + '</span>';
+    thread.appendChild(_thinkingEl);
+    scrollThread();
+  }
+
+  function removeThinking() {
+    if (_thinkingEl) { _thinkingEl.remove(); _thinkingEl = null; }
+  }
+
+  function scrollThread() {
+    const thread = document.getElementById('message-thread');
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  // ── SSE ──────────────────────────────────────────────────────────────────────
+
+  function connectSSE() {
+    if (_eventSource) return;
+    _eventSource = new EventSource('/chat/events');
+    _eventSource.onmessage = function(ev) {
+      let data;
+      try { data = JSON.parse(ev.data); } catch { return; }
+      if (data.session_id !== _currentSessionId) return;
+      if (data.event_type === 'chat_thinking') {
+        showThinking(data.tool || '');
+        if (data.tool) _pendingToolCalls.push(data.tool);
+      } else if (data.event_type === 'chat_done') {
+        removeThinking();
+        appendMessage('assistant', data.content, data.ts || (Date.now() / 1000),
+                      _pendingToolCalls.length ? JSON.stringify(_pendingToolCalls) : null);
+        _pendingToolCalls = [];
+        scrollThread();
+        setSending(false);
+        addSessionToSidebar(data.session_id, data.session_title || '');
+      } else if (data.event_type === 'chat_error') {
+        removeThinking();
+        appendMessage('assistant', '⚠ ' + (data.error || 'Unknown error'), Date.now() / 1000, null);
+        _pendingToolCalls = [];
+        scrollThread();
+        setSending(false);
+      }
+    };
+    _eventSource.onerror = function() {
+      // SSE reconnects automatically; no action needed
+    };
+  }
+
+  // ── Send ──────────────────────────────────────────────────────────────────────
+
+  function setSending(busy) {
+    const btn = document.getElementById('btn-send');
+    const inp = document.getElementById('chat-input');
+    btn.disabled = busy;
+    inp.disabled = busy;
+    if (!busy) inp.focus();
+  }
+
+  async function sendMessage() {
+    const inp = document.getElementById('chat-input');
+    const text = inp.value.trim();
+    if (!text) return;
+
+    // Remove empty placeholder
+    const ph = document.getElementById('thread-placeholder');
+    if (ph) ph.style.display = 'none';
+
+    inp.value = '';
+    inp.style.height = 'auto';
+
+    appendMessage('user', text, Date.now() / 1000, null);
+    scrollThread();
+    setSending(true);
+    showThinking('');
+
+    try {
+      const resp = await fetch('/chat/message', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: _currentSessionId, message: text}),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        removeThinking();
+        appendMessage('assistant', '⚠ Request failed: ' + err, Date.now() / 1000, null);
+        setSending(false);
+        return;
+      }
+      const data = await resp.json();
+      // Update session id from response (new sessions are created server-side)
+      _currentSessionId = data.session_id;
+    } catch (e) {
+      removeThinking();
+      appendMessage('assistant', '⚠ Network error: ' + e, Date.now() / 1000, null);
+      setSending(false);
+    }
+  }
+
+  function handleKey(ev) {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      sendMessage();
+    }
+    // Auto-grow textarea
+    const ta = ev.target;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 128) + 'px';
+  }
+
+  // ── Sidebar helpers ───────────────────────────────────────────────────────────
+
+  function addSessionToSidebar(sid, title) {
+    if (document.querySelector('.session-item[data-sid="' + sid + '"]')) {
+      // Already in list; update active state
+      document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
+      document.querySelector('.session-item[data-sid="' + sid + '"]').classList.add('active');
+      return;
+    }
+    // Remove empty message if present
+    const em = document.getElementById('session-empty-msg');
+    if (em) em.remove();
+
+    const list = document.getElementById('session-list');
+    const item = document.createElement('div');
+    item.className = 'session-item active';
+    item.dataset.sid = sid;
+    item.onclick = function() { loadSession(sid, item); };
+    const displayTitle = title || ('Session ' + sid);
+    item.innerHTML =
+      '<span class="session-title" title="' + displayTitle + '">' + displayTitle + '</span>' +
+      '<button class="session-del" title="Delete" onclick="event.stopPropagation();deleteSession(' + sid + ',this.closest(\'.session-item\'))">✕</button>';
+
+    document.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
+    list.insertBefore(item, list.firstChild);
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+
+  document.addEventListener('DOMContentLoaded', function() {
+    connectSSE();
+    {% if sessions %}
+    loadSession({{ sessions[0].id }}, document.querySelector('.session-item[data-sid="{{ sessions[0].id }}"]'));
+    {% endif %}
+  });
+</script>
+{% endblock %}
