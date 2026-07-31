@@ -7442,7 +7442,7 @@ class TestRunRagRefresh:
         monkeypatch.setattr(
             docs_mod, "discover_installed_integrations", lambda *a, **kw: []
         )
-        monkeypatch.setattr(docs_mod, "fetch_integration_doc", lambda *a, **kw: False)
+        monkeypatch.setattr(docs_mod, "fetch_integration_doc", lambda *a, **kw: -1)
         monkeypatch.setattr("config.HA_API_TOKEN", "test-token")
         monkeypatch.setattr(
             "config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "ha_notes")

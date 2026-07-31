@@ -75,17 +75,22 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
 
     # ── 3. HA integration docs ───────────────────────────────────────────────
     print("[rag-refresh] Discovering installed HA integrations…")
-    n_fetched_docs = 0
+    n_fetched_docs = n_cached_docs = n_missing_docs = 0
     if ha_token:
         domains = discover_installed_integrations(ha_url, ha_token)
         print(f"[rag-refresh]   → {len(domains)} domain(s) active")
         for domain in domains:
-            if fetch_integration_doc(domain, config.RAG_HA_DOCS_CACHE_DIR):
+            result = fetch_integration_doc(domain, config.RAG_HA_DOCS_CACHE_DIR)
+            if result == 1:
                 n_fetched_docs += 1
-        cached = len(domains) - n_fetched_docs
+            elif result == 0:
+                n_cached_docs += 1
+            else:
+                n_missing_docs += 1
         print(
-            f"[rag-refresh]   → {n_fetched_docs} new doc(s) fetched, "
-            f"{cached} already cached"
+            f"[rag-refresh]   → {n_fetched_docs} new, "
+            f"{n_cached_docs} cached, "
+            f"{n_missing_docs} not on ha.io"
         )
     else:
         print("[rag-refresh]   → skipped (no HA API token configured)")

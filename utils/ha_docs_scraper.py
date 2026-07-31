@@ -125,17 +125,17 @@ def parse_integration_doc(doc_text: str) -> list[str]:
 def fetch_integration_doc(  # pragma: no cover
     domain: str,
     cache_dir: str,
-) -> bool:
+) -> int:
     """Fetch the HA integration doc from GitHub and cache locally.
 
-    Returns True if newly fetched, False if already cached or not found (404).
+    Returns 1=newly fetched, 0=already cached, -1=not found / 404.
     """
     import urllib.request
 
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
     cache_path = Path(cache_dir) / f"{domain}.md"
     if cache_path.exists():
-        return False
+        return 0
     url = _HA_DOCS_RAW_URL.format(domain=domain)
     try:
         req = urllib.request.Request(
@@ -146,10 +146,10 @@ def fetch_integration_doc(  # pragma: no cover
         ) as resp:  # nosec B310 — hardcoded GitHub raw URL
             if resp.status == 200:
                 cache_path.write_bytes(resp.read())
-                return True
+                return 1
     except Exception:  # nosec B110 — fetch failures are expected (404 = no docs page)
         pass
-    return False
+    return -1
 
 
 def embed_cached_integration_docs(
