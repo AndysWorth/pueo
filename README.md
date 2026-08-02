@@ -9,12 +9,6 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 
 ---
 
-## 🌺 Naming & Cultural Attribution
-
-This project is named after the endemic Hawaiian short-eared owl — a traditional guardian spirit and namesake of the structural beams that hold a Hawaiian home together. See [NAMING.md](NAMING.md) for the full cultural attribution and non-commercialization commitment.
-
----
-
 ## 🚀 Core Features
 
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
@@ -221,6 +215,12 @@ Skipped unless `HA_HOST` is set. Read-only SSH commands against a real HA instan
 | `evals.yml` | Manual (`workflow_dispatch` only) | Tier 3 evals via `evals/run_evals.py`; never blocks merges |
 
 Tier 2 and Tier 3 tests are never run automatically on GitHub — run them locally on demand.
+
+---
+
+## 🌺 Naming & Cultural Attribution
+
+This project is named after the endemic Hawaiian short-eared owl — a traditional guardian spirit and namesake of the structural beams that hold a Hawaiian home together. See [NAMING.md](NAMING.md) for the full cultural attribution and non-commercialization commitment.
 
 ---
 
