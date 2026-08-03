@@ -7547,3 +7547,48 @@ class TestRunRagRefresh:
         main_module.run_rag_refresh(store)
         out = capsys.readouterr().out
         assert "no HA API token" in out
+
+
+class TestLoopCrashTimeline:
+    """LoopSupervisor writes a timeline event when a loop crashes."""
+
+    def test_crash_writes_loop_crash_timeline_event(self, tmp_path):
+        import sqlite3 as _sq
+        import utils.timeline
+        from utils.supervisor import LoopSupervisor
+
+        # The _patch_timeline_db autouse fixture already redirected utils.timeline.DB_PATH
+        # to a per-test temp DB with the timeline_events table.
+        call_count = 0
+
+        async def _crashing_factory():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("boom")
+            # Second iteration: return cleanly so the loop exits
+            return
+
+        async def _run():
+            sv = LoopSupervisor(backoff_start=0.0, backoff_cap=0.0)
+            sv.start("test_loop", _crashing_factory)
+            # Give the event loop a few ticks to run the loop and restart it
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        rows = (
+            _sq.connect(utils.timeline.DB_PATH)
+            .execute(
+                "SELECT level, source, message, detail_json FROM timeline_events"
+                " WHERE source = 'loop_crash'"
+            )
+            .fetchall()
+        )
+        assert rows, "expected a loop_crash timeline event"
+        import json
+
+        detail = json.loads(rows[0][3])
+        assert detail["loop"] == "test_loop"
+        assert "boom" in detail["error"]

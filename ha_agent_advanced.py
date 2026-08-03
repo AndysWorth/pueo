@@ -383,10 +383,13 @@ def _sha256_file(path: Path) -> str:
 async def offload_backup_to_local(
     slug: str,
     ssh_client: Optional[SSHClientProtocol] = None,
-) -> None:
-    """SFTP-pull /backup/<slug>.tar to BACKUP_LOCAL_DIR, SHA-256 verify, update location."""
+) -> bool:
+    """SFTP-pull /backup/<slug>.tar to BACKUP_LOCAL_DIR, SHA-256 verify, update location.
+
+    Returns True on success, False on any failure (SFTP error, checksum mismatch, etc.).
+    """
     if not BACKUP_OFFLOAD_ENABLED:
-        return
+        return True
     remote_path = f"/backup/{slug}.tar"
     local_dir = Path(BACKUP_LOCAL_DIR)
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -405,7 +408,7 @@ async def offload_backup_to_local(
                 local_hash=local_hash,
                 remote_hash=remote_hash,
             )
-            return
+            return False
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
                 "UPDATE backup_registry SET location = 'both', offloaded_at = ?"
@@ -414,8 +417,10 @@ async def offload_backup_to_local(
             )
             conn.commit()
         log.info("backup_offloaded", slug=slug, local_path=str(local_path))
+        return True
     except Exception as e:
         log.warning("backup_offload_failed", slug=slug, error=str(e))
+        return False
 
 
 async def enforce_ha_retention(

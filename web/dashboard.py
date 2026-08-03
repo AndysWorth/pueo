@@ -543,8 +543,23 @@ async def _execute_resource_action(
                     "SELECT backup_slug FROM backup_registry"
                     " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
                 ).fetchall()
+            fail_count = 0
             for (slug,) in rows:
-                await offload_backup_to_local(slug, ssh_client=ssh)
+                ok = await offload_backup_to_local(slug, ssh_client=ssh)
+                if not ok:
+                    fail_count += 1
+            if fail_count:
+                try:
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "WARN",
+                        "resource_action",
+                        f"offload_backups: {fail_count}/{len(rows)} SFTP transfer(s) failed",
+                        {"fail_count": fail_count, "total": len(rows)},
+                    )
+                except Exception:  # nosec B110
+                    pass
             await enforce_ha_retention(ssh_client=ssh)
             purge_local_backups()
         elif action == "enforce_retention":
