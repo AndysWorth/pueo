@@ -182,6 +182,17 @@ class LoopSupervisor:
                 self._emit(name)
                 log.error("loop_crashed", loop=name, error=str(exc), restart_in=delay)
                 try:
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "ERROR",
+                        "loop_crash",
+                        f"Loop '{name}' crashed — restarting in {delay:.0f}s: {exc}",
+                        {"loop": name, "error": str(exc), "restart_in": delay},
+                    )
+                except Exception:  # nosec B110
+                    pass
+                try:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:
                     if status.paused:
