@@ -381,6 +381,7 @@ agent:
   hitl_always: ${HITL_ALWAYS}
   autonomy_level: ${AUTONOMY_LEVEL}
   dashboard_port: ${DASHBOARD_PORT}
+  timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"

@@ -20,7 +20,7 @@
   table.tl-table tr:hover td { background: #fafafa; }
   table.tl-table .msg-cell a { color: #222; text-decoration: none; }
   table.tl-table .msg-cell a:hover { text-decoration: underline; }
-  .pagination { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; font-size: 0.85rem; }
+  .pagination { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; font-size: 0.85rem; }
   .pagination a { color: #1a73e8; text-decoration: none; padding: 0.2rem 0.6rem; border: 1px solid #cce; border-radius: 3px; }
   .pagination a:hover { background: #eef; }
   .pagination .current { padding: 0.2rem 0.6rem; font-weight: 700; color: #333; }
@@ -53,6 +53,16 @@
   </form>
 
   {% if events %}
+  <div class="pagination">
+    {% if page > 1 %}
+    <a href="/timeline?page={{ page - 1 }}&level={{ level_filter }}&source={{ source_filter }}">← Prev</a>
+    {% endif %}
+    <span class="current">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="/timeline?page={{ page + 1 }}&level={{ level_filter }}&source={{ source_filter }}">Next →</a>
+    {% endif %}
+  </div>
+
   <table class="tl-table">
     <thead>
       <tr>
@@ -73,16 +83,6 @@
       {% endfor %}
     </tbody>
   </table>
-
-  <div class="pagination">
-    {% if page > 1 %}
-    <a href="/timeline?page={{ page - 1 }}&level={{ level_filter }}&source={{ source_filter }}">← Prev</a>
-    {% endif %}
-    <span class="current">Page {{ page }} of {{ total_pages }}</span>
-    {% if page < total_pages %}
-    <a href="/timeline?page={{ page + 1 }}&level={{ level_filter }}&source={{ source_filter }}">Next →</a>
-    {% endif %}
-  </div>
 
   {% else %}
   <p class="empty">No events yet{% if level_filter or source_filter %} matching this filter{% endif %}.</p>

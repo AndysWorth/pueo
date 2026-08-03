@@ -334,6 +334,19 @@ class TestDashboardConfig:
 
         assert config.DASHBOARD_PORT == 9090
 
+    def test_timeline_page_size_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.TIMELINE_PAGE_SIZE == 25
+
+    def test_timeline_page_size_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"timeline_page_size": 100}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.TIMELINE_PAGE_SIZE == 100
+
 
 # ── netalertx.* config keys ─────────────────────────────────────────────────────
 

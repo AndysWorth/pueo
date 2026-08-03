@@ -93,6 +93,7 @@ venv.bak/
 .claude/settings.local.json
 
 # Agent runtime state
+pueo.pid
 ha_agent_state.db
 *.log
 hitl/
