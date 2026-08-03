@@ -168,6 +168,10 @@ async def supervisor_main(config_path: Path) -> None:
     from web.dashboard import app as dashboard_app
 
     ha_agent_advanced.init_local_database()
+    try:
+        await ha_agent_advanced.reconcile_backup_inventory()
+    except Exception:  # nosec B110 — reconcile failure must not block startup
+        pass
 
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)

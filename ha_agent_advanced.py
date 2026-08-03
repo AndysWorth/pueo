@@ -360,8 +360,9 @@ async def execute_remote_backup(
     log.info("backup_trigger_start")
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
+        ts = time.strftime("%Y-%m-%d_%H%M")
         exit_code, stdout, stderr = await client.run(
-            'ha backup new --name "Agent_PreFix_Snapshot"', check=True
+            f'ha backup new --name "Pueo_{ts}"', check=True
         )
         slug = _extract_backup_slug(stdout.strip())
         log.info("backup_created", slug=slug)

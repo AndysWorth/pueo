@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
-from config import DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
+from config import AGENT_MAX_WALL_SECONDS, DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
 from utils.card_types import (
     CARD_TYPE_CODE_PROPOSAL,
     CARD_TYPE_NETALERTX_HEAL,
@@ -848,6 +848,33 @@ async def backups(request: Request) -> HTMLResponse:
     )
 
 
+@app.post("/backups/trigger")
+async def trigger_backup_now() -> JSONResponse:
+    """Run the full Pueo backup lifecycle and refresh the registry."""
+    from ha_agent_advanced import (
+        enforce_ha_retention,
+        execute_remote_backup,
+        offload_backup_to_local,
+        purge_local_backups,
+        reconcile_backup_inventory,
+        record_backup_slug,
+    )
+    from utils.ssh_client import AsyncSSHClient
+
+    ssh = AsyncSSHClient()
+    try:
+        await reconcile_backup_inventory(ssh_client=ssh)
+        slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(slug)
+        offloaded = await offload_backup_to_local(slug, ssh_client=ssh)
+        await enforce_ha_retention(ssh_client=ssh)
+        purge_local_backups()
+        await reconcile_backup_inventory(ssh_client=ssh)
+        return JSONResponse({"ok": True, "slug": slug, "offloaded": offloaded})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 def _load_notification_dashboard_data(
     watch_dir: Path,
     category_filter: str = "",
@@ -1444,7 +1471,7 @@ async def _run_chat_loop(
             system_prompt=_CHAT_SYSTEM_PROMPT,
             terminal_tool_name="finish_chat",
             max_tool_calls=10,
-            max_wall_seconds=60,
+            max_wall_seconds=AGENT_MAX_WALL_SECONDS,
             step_callback=on_step,
         )
         result = await agent_loop.run(initial_context)
@@ -1456,7 +1483,15 @@ async def _run_chat_loop(
                     summary = step.tool_call.arguments.get("summary", "")
                     break
         if not summary:
-            summary = f"(Loop ended: {result.outcome})"
+            if result.outcome == "timeout":
+                completed = [s.tool_call.name for s in result.steps]
+                summary = (
+                    f"Timed out after {len(result.steps)} step(s): "
+                    f"{', '.join(completed) or 'none completed'}. "
+                    "Check /backups to see current backup state."
+                )
+            else:
+                summary = f"(Loop ended: {result.outcome})"
 
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
