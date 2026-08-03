@@ -476,15 +476,31 @@ else
     fi
 fi
 
+# ── 8. pueo command ──────────────────────────────────────────────────────────────
+hdr "8. pueo Command"
+
+PUEO_BIN="$SCRIPT_DIR/bin/pueo"
+PUEO_LINK="/usr/local/bin/pueo"
+
+chmod +x "$PUEO_BIN"
+if ln -sf "$PUEO_BIN" "$PUEO_LINK" 2>/dev/null; then
+    ok "pueo command installed at $PUEO_LINK"
+else
+    warn "Could not write to /usr/local/bin (try: sudo ln -sf \"$PUEO_BIN\" $PUEO_LINK)"
+    info "Or add $SCRIPT_DIR/bin to your PATH manually"
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
 echo
-echo "  Activate environment : source .venv/bin/activate"
-echo "  Start supervisor     : python main.py"
-echo "  Live log monitor     : python main.py --mode monitor"
-echo "  One-shot diagnostics : python main.py --mode diagnose"
-echo "  HITL dashboard       : python main.py --mode dashboard"
+echo "  Start Pueo           : pueo"
+echo "  Live log              : tail -f pueo.log"
+echo
+echo "  Other modes (in venv): source .venv/bin/activate"
+echo "    python main.py --mode monitor"
+echo "    python main.py --mode diagnose"
+echo "    python main.py --mode dashboard"
 echo
 echo "  NetAlertX install    : python main.py --mode netalertx-setup"
 echo "  NetAlertX diagnose   : python main.py --mode netalertx-diagnose"
