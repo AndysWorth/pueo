@@ -465,6 +465,36 @@ async def enforce_ha_retention(
             log.warning("backup_delete_ha_failed", slug=slug, error=str(e))
 
 
+async def offload_pending_backups(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """Offload any HA-only backups to local storage, then enforce retention.
+
+    Called at startup after reconcile so pre-existing HA backups get pulled
+    and old ones are cleaned from HA once confirmed local.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        pending = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE location = 'ha' AND offloaded_at IS NULL"
+            " AND deleted_from_ha_at IS NULL"
+            " AND backup_slug NOT LIKE 'unknown%'"
+        ).fetchall()
+
+    slugs = [r[0] for r in pending]
+    if not slugs:
+        return
+
+    log.info("backup_offload_pending_start", count=len(slugs))
+    for slug in slugs:
+        offloaded = await offload_backup_to_local(slug, ssh_client=ssh_client)
+        if not offloaded:
+            log.warning("backup_offload_pending_failed", slug=slug)
+
+    await enforce_ha_retention(ssh_client=ssh_client)
+    purge_local_backups()
+
+
 def purge_local_backups() -> None:
     """Delete local .tar copies older than BACKUP_RETAIN_LOCAL_DAYS; update inventory."""
     local_dir = Path(BACKUP_LOCAL_DIR)
@@ -500,10 +530,13 @@ def purge_local_backups() -> None:
             log.info("local_backup_purged", slug=slug)
         if deleted_from_ha_at is not None:
             log.warning("backup_gone_from_everywhere", slug=slug)
+            new_location = "purged"
+        else:
+            new_location = "ha"
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "UPDATE backup_registry SET location = 'ha' WHERE backup_slug = ?",
-                (slug,),
+                "UPDATE backup_registry SET location = ? WHERE backup_slug = ?",
+                (new_location, slug),
             )
             conn.commit()
 
