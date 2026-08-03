@@ -920,6 +920,7 @@ def _load_notification_dashboard_data(
                     "original_message", payload.get("original_message", "")
                 )
                 record.setdefault("original_title", payload.get("original_title", ""))
+                record.setdefault("ha_created_at", payload.get("ha_created_at"))
             except Exception:  # nosec B110 — skip malformed card JSON
                 pass
         records.append(record)

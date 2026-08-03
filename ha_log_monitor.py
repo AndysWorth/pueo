@@ -3,6 +3,7 @@
 
 import asyncio
 import collections
+import datetime
 import re
 import uuid
 from typing import Optional
@@ -343,9 +344,20 @@ async def poll_for_notifications(
             nid: str = notif.get("notification_id", "")
             title: Optional[str] = notif.get("title")
             message: str = notif.get("message", "")
+            ha_created_at: Optional[float] = None
+            created_at_str: Optional[str] = notif.get("created_at")
+            if created_at_str:
+                try:
+                    ha_created_at = datetime.datetime.fromisoformat(
+                        created_at_str
+                    ).timestamp()
+                except Exception:  # nosec B110
+                    pass
 
             category, severity = classify_notification(nid)
-            is_new = record_notification_seen(nid, category, severity, db_path=db_path)
+            is_new = record_notification_seen(
+                nid, category, severity, db_path=db_path, ha_created_at=ha_created_at
+            )
 
             if is_new:
                 try:
@@ -384,6 +396,7 @@ async def poll_for_notifications(
                     "enriched_context": analysis.enriched_context,
                     "original_message": analysis.original_message,
                     "original_title": analysis.original_title,
+                    "ha_created_at": ha_created_at,
                 }
                 await _notifier.send(
                     subject=_format_notification_subject(analysis),

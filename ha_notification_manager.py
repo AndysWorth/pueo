@@ -2,6 +2,7 @@
 """HA persistent notification triage: schema, rule-based classification, history tracking, and enrichment."""
 
 import asyncio
+import datetime
 import re
 import socket
 import sqlite3
@@ -73,6 +74,97 @@ def extract_ip_from_message(message: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+async def _get_default_gateway() -> Optional[str]:
+    """Return the default gateway IP from the local routing table, or None on failure."""
+    for cmd in (
+        ["route", "-n", "get", "default"],
+        ["netstat", "-rn"],
+    ):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            for line in stdout.decode().splitlines():
+                if "gateway" in line.lower() or "default" in line.lower():
+                    parts = line.split()
+                    for part in parts:
+                        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", part):
+                            return part
+        except Exception:  # nosec B110
+            pass
+    return None
+
+
+async def _get_arp_info(ip: str) -> dict:
+    """Return MAC address and vendor info from the local ARP table."""
+    result: dict = {
+        "mac_address": None,
+        "mac_is_randomized": None,
+        "mac_vendor": None,
+    }
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "arp",
+            "-n",
+            ip,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        m = re.search(r"([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})", stdout.decode(), re.I)
+        if not m:
+            return result
+        mac = m.group(1).lower()
+        result["mac_address"] = mac
+        first_byte = int(mac.split(":")[0], 16)
+        result["mac_is_randomized"] = bool(first_byte & 0x02)
+        if not result["mac_is_randomized"]:
+            try:
+                from manuf import manuf as manuf_mod  # type: ignore[import]
+
+                p = manuf_mod.MacParser()
+                result["mac_vendor"] = p.get_manuf(mac)
+            except Exception:  # nosec B110
+                pass
+    except Exception:  # nosec B110
+        pass
+    return result
+
+
+async def _try_router_dhcp_hostname(gateway_ip: str, target_ip: str) -> Optional[str]:
+    """Try SSH to the router for dnsmasq lease files. Returns hostname or None on failure."""
+    lease_cmd = "cat /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases 2>/dev/null"
+    for user in ("root", "admin"):
+        try:
+            proc = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    "ssh",
+                    "-o",
+                    "ConnectTimeout=2",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "BatchMode=yes",
+                    f"{user}@{gateway_ip}",
+                    lease_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                ),
+                timeout=3.0,
+            )
+            stdout, _ = await proc.communicate()
+            for line in stdout.decode().splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[2] == target_ip and parts[3] != "*":
+                    return parts[3]
+        except Exception:  # nosec B110
+            pass
+    return None
+
+
 async def enrich_http_login(
     ip: str,
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
@@ -89,6 +181,10 @@ async def enrich_http_login(
         "netalertx_name": None,
         "ha_device_name": None,
         "is_known_device": False,
+        "mac_address": None,
+        "mac_is_randomized": None,
+        "mac_vendor": None,
+        "dhcp_hostname": None,
     }
 
     try:
@@ -122,6 +218,16 @@ async def enrich_http_login(
         except Exception:  # nosec B110
             pass
 
+    arp_info = await _get_arp_info(ip)
+    context.update(arp_info)
+
+    gateway_ip = await _get_default_gateway()
+    if gateway_ip:
+        dhcp_hostname = await _try_router_dhcp_hostname(gateway_ip, ip)
+        if dhcp_hostname:
+            context["dhcp_hostname"] = dhcp_hostname
+            context["is_known_device"] = True
+
     return context
 
 
@@ -142,7 +248,26 @@ async def analyze_notification(
 
     context_parts: list[str] = []
     if enriched_context:
-        context_parts.append(f"Enriched context: {enriched_context}")
+        lines: list[str] = []
+        if enriched_context.get("source_ip"):
+            lines.append(f"Source IP: {enriched_context['source_ip']}")
+        if enriched_context.get("mac_address"):
+            mac = enriched_context["mac_address"]
+            rand = enriched_context.get("mac_is_randomized")
+            vendor = enriched_context.get("mac_vendor")
+            if rand:
+                lines.append(
+                    f"MAC: {mac} (locally administered / randomized — cannot identify vendor)"
+                )
+            else:
+                lines.append(f"MAC: {mac}" + (f" ({vendor})" if vendor else ""))
+        for key in ("dhcp_hostname", "hostname", "netalertx_name", "ha_device_name"):
+            val = enriched_context.get(key)
+            if val:
+                lines.append(f"{key.replace('_', ' ').title()}: {val}")
+        is_known = enriched_context.get("is_known_device", False)
+        lines.append(f"Known device: {'yes' if is_known else 'no'}")
+        context_parts.append("Device context:\n" + "\n".join(lines))
     if config_content:
         budget = MAX_PROMPT_TOKENS - 400
         context_parts.append(
@@ -252,6 +377,7 @@ def record_notification_seen(
     category: str,
     severity: str,
     db_path: str = DB_PATH,
+    ha_created_at: Optional[float] = None,
 ) -> bool:
     """Insert notification into history if new; update last_seen_at if existing.
 
@@ -272,10 +398,11 @@ def record_notification_seen(
         conn.execute(
             """
             INSERT INTO notification_history
-                (notification_id, first_seen_at, last_seen_at, category, severity)
-            VALUES (?, ?, ?, ?, ?)
+                (notification_id, first_seen_at, last_seen_at, category, severity,
+                 ha_created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (notification_id, now, now, category, severity),
+            (notification_id, now, now, category, severity, ha_created_at),
         )
     return True
 
@@ -402,9 +529,18 @@ async def run_notifications(
         ha_nid: str = notif.get("notification_id", "")
         title: Optional[str] = notif.get("title")
         message: str = notif.get("message", "")
+        ha_created_at: Optional[float] = None
+        created_at_str: Optional[str] = notif.get("created_at")
+        if created_at_str:
+            try:
+                ha_created_at = datetime.datetime.fromisoformat(
+                    created_at_str
+                ).timestamp()
+            except Exception:  # nosec B110
+                pass
 
         category, severity = classify_notification(ha_nid)
-        record_notification_seen(ha_nid, category, severity, db_path)
+        record_notification_seen(ha_nid, category, severity, db_path, ha_created_at)
 
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
@@ -448,6 +584,7 @@ async def run_notifications(
             "enriched_context": analysis.enriched_context,
             "original_message": analysis.original_message,
             "original_title": analysis.original_title,
+            "ha_created_at": ha_created_at,
         }
 
         await card_notifier.send(subject, body, payload)
