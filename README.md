@@ -15,6 +15,8 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 *   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
 *   **Active Dashboard:** Approves and executes HITL repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8099`.
+*   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
+*   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS component changelogs, and installed integration docs are embedded locally via ChromaDB and `nomic-embed-text`. The agent queries this knowledge automatically during repair cycles — no internet access required.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
 
 ---
@@ -82,27 +84,48 @@ cd pueo
 
 `setup.sh` is idempotent — safe to re-run at any time. It will:
 - Locate Python 3.14 (Homebrew or pyenv) and create a `.venv`
-- Check that Ollama is installed and running, and pull `qwen2.5-coder:7b` if missing
+- Check that Ollama is installed and running, and pull `qwen2.5-coder:7b` and `nomic-embed-text` if missing
 - Generate an SSH key if none exists and show instructions for adding it to the Terminal & SSH App
 - Check that the SSH agent is running and the key is loaded
 - Prompt for your HA hostname, SSH settings, and agent preferences, then write `config.yaml`
 - Connect to HA over SSH, detect the HA version, and warn if the log file is missing
+- Offer to install Pueo as a macOS launchd service (auto-start at login)
+- Offer to install a weekly launchd job that refreshes the RAG knowledge base every Sunday
+- Symlink `bin/pueo` to `/usr/local/bin/pueo` so you can start Pueo from anywhere
 - Run `./setup.sh --clean` to wipe all generated files and start from scratch
 
 A reference template for `config.yaml` is available in `config.yaml.default`.
 
 ### 4. Running the Agent
 
-#### Supervisor (recommended — starts everything)
+#### Starting Pueo
 ```bash
+pueo
+```
+
+`setup.sh` installs a `pueo` command at `/usr/local/bin/pueo`. This is the recommended way
+to start the supervisor — it resolves its own path (works from anywhere, no `cd` required),
+checks for an already-running instance, and launches in the background so your terminal stays
+free. Logs go to `pueo.log` in the project directory.
+
+```bash
+tail -f pueo.log   # follow the live log
+```
+
+If the symlink install failed (check `setup.sh` output), you can start manually:
+
+```bash
+cd /path/to/pueo
 source .venv/bin/activate
 python main.py
 ```
 
-This is the default mode. It starts all monitoring loops (HA log tail, resource polling,
-update checks, notification polling, NetAlertX) and the HITL dashboard in a single
-supervised process. The dashboard is available at `http://127.0.0.1:8099`. Crashed loops
-restart automatically with exponential backoff.
+#### What the supervisor starts
+
+`python main.py` (no flags) is the default supervisor mode. It starts all monitoring loops
+(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the HITL
+dashboard in a single supervised process. The dashboard is available at
+`http://127.0.0.1:8099`. Crashed loops restart automatically with exponential backoff.
 
 `setup.sh` can install Pueo as a macOS launchd service (auto-start at login, auto-restart
 on crash) — choose the option when prompted, or run `python main.py --mode install-service`
@@ -128,7 +151,7 @@ python main.py --mode audit               # self-diagnostics gap report (saved t
 # Setup and maintenance
 python main.py --mode netalertx-setup     # install and configure NetAlertX on HA
 python main.py --mode netalertx           # monitor NetAlertX logs continuously (daemon)
-python main.py --mode rag-refresh         # embed cached HA release notes + HACS changelogs
+python main.py --mode rag-refresh         # refresh the local RAG knowledge base (see below)
 python main.py --mode install-service     # install as macOS launchd service
 python main.py --mode stop-service        # stop the launchd service (stays stopped until start-service)
 python main.py --mode start-service       # re-enable and start the launchd service
@@ -136,6 +159,59 @@ python main.py --mode restart-service     # bounce the service; launchd KeepAliv
 ```
 
 Pass `--config /path/to/config.yaml` if your config file is not in the project directory.
+
+---
+
+## 📚 Local RAG Knowledge Base
+
+Pueo maintains a local vector database (ChromaDB) seeded with context the repair agent can
+query during active sessions — no internet access needed during monitoring or repair cycles.
+
+**What gets embedded:**
+- **HA Core release notes** — the breaking-changes section from each version's GitHub release,
+  so the agent can flag when a config key was deprecated or a service call was renamed
+- **HACS component changelogs** — fetched for each HACS integration installed on your HA instance
+- **HA integration docs** — official documentation pages for your active integrations, scraped
+  from the Home Assistant docs site
+
+**How the agent uses it:**
+The `query_knowledge` tool is registered alongside the repair tools. During a fix cycle the
+model decides when to call it — surfacing relevant context only when it judges it useful,
+rather than prepending every prompt with the full knowledge base.
+
+**Refreshing the knowledge base:**
+`setup.sh` installs a weekly `launchd` job that runs `--mode rag-refresh` automatically.
+To refresh on demand:
+
+```bash
+python main.py --mode rag-refresh
+```
+
+Embedded data is stored in `chromadb/` in the project directory. The embeddings use
+`nomic-embed-text` running locally via Ollama — zero WAN traffic after the initial scrape.
+
+---
+
+## 💬 Ask Pueo
+
+The **Chat** tab in the HITL dashboard (`http://127.0.0.1:8099/chat`) lets you talk directly
+to the agent between incidents. It uses the same `AgentLoop` that drives reactive repair
+sessions — same tool registry, same safety gates — with a conversational system prompt and
+a `finish_chat` termination signal instead of `finish_repair`.
+
+**What you can do:**
+- **Query live HA state** — "What's the disk usage on HA right now?" triggers
+  `run_ha_command` and returns a plain-English answer
+- **Store persistent notes** — "Remember that the NAS is at 192.168.1.100" saves a memory
+  entry that survives restarts and is recalled automatically in future sessions
+- **Browse session history** — past conversations are listed in the left panel; click any to
+  resume it
+
+**Extending Pueo with new tools** (opt-in):
+Set `CHAT_ALLOW_TOOL_REGISTRATION = true` in `config.yaml` to enable the code-sandbox flow.
+With it enabled, you can ask Pueo to write a new tool, review the proposed code in a HITL
+approval card, and — once approved — have the tool registered and callable in the next
+session. Tools are stored in `user_tools/` and loaded automatically on startup.
 
 ---
 
