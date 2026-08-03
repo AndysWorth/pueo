@@ -381,19 +381,36 @@ def record_notification_seen(
 ) -> bool:
     """Insert notification into history if new; update last_seen_at if existing.
 
+    If ha_created_at is newer than the stored value, resets hitl_sent_at so the
+    new occurrence generates a fresh HITL card.
+
     Returns True if newly seen (first time), False if already in history.
     """
     now = time.time()
     with sqlite3.connect(db_path) as conn:
         existing = conn.execute(
-            "SELECT notification_id FROM notification_history WHERE notification_id = ?",
+            "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
             (notification_id,),
         ).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE notification_history SET last_seen_at = ? WHERE notification_id = ?",
-                (now, notification_id),
+            stored_ha_created_at = existing[0]
+            is_new_occurrence = (
+                ha_created_at is not None
+                and stored_ha_created_at is not None
+                and ha_created_at > stored_ha_created_at
             )
+            if is_new_occurrence:
+                conn.execute(
+                    """UPDATE notification_history
+                       SET last_seen_at = ?, ha_created_at = ?, hitl_sent_at = NULL
+                       WHERE notification_id = ?""",
+                    (now, ha_created_at, notification_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE notification_history SET last_seen_at = ? WHERE notification_id = ?",
+                    (now, notification_id),
+                )
             return False
         conn.execute(
             """
