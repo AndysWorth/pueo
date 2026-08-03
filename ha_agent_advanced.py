@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -196,6 +197,10 @@ def _migrate_v9(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v10(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE notification_history ADD COLUMN ha_created_at REAL")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -206,6 +211,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (7, _migrate_v7),
     (8, _migrate_v8),
     (9, _migrate_v9),
+    (10, _migrate_v10),
 ]
 
 
@@ -301,15 +307,22 @@ async def reconcile_backup_inventory(
 
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        db_slugs = {
+        db_slugs_all = {
             row[0]
             for row in cursor.execute(
                 "SELECT backup_slug FROM backup_registry"
             ).fetchall()
         }
+        # Only slugs not yet intentionally deleted from HA — skip for orphan check
+        db_slugs_active = {
+            row[0]
+            for row in cursor.execute(
+                "SELECT backup_slug FROM backup_registry WHERE deleted_from_ha_at IS NULL"
+            ).fetchall()
+        }
 
         for slug, size_bytes in ha_slugs.items():
-            if slug not in db_slugs:
+            if slug not in db_slugs_all:
                 log.info("backup_inventory_add", slug=slug, size_bytes=size_bytes)
                 cursor.execute(
                     "INSERT INTO backup_registry"
@@ -318,7 +331,7 @@ async def reconcile_backup_inventory(
                     (int(time.time()), slug, size_bytes),
                 )
 
-        for slug in db_slugs:
+        for slug in db_slugs_active:
             if slug not in ha_slugs:
                 log.warning("backup_inventory_orphaned", slug=slug)
 
@@ -360,8 +373,9 @@ async def execute_remote_backup(
     log.info("backup_trigger_start")
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
+        ts = time.strftime("%Y-%m-%d_%H%M")
         exit_code, stdout, stderr = await client.run(
-            'ha backup new --name "Agent_PreFix_Snapshot"', check=True
+            f'ha backup new --name "Pueo_{ts}"', check=True
         )
         slug = _extract_backup_slug(stdout.strip())
         log.info("backup_created", slug=slug)
@@ -380,19 +394,57 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+_SLUG_RE = re.compile(r"^[0-9a-f]+$")
+
+
+async def _resolve_backup_remote_path(
+    slug: str, client: SSHClientProtocol
+) -> Optional[str]:
+    """Return the actual remote /backup/<filename>.tar for slug, or None if not found.
+
+    HA stores Pueo-triggered backups as {slug}.tar, but auto-created backups use
+    descriptive filenames. Falls back to scanning /backup/*.tar via SSH when the
+    direct path doesn't exist.
+    """
+    if not _SLUG_RE.match(slug):
+        return None
+    direct = f"/backup/{slug}.tar"
+    _, stdout, _ = await client.run(f"[ -f {direct} ] && echo found", check=False)
+    if "found" in stdout:
+        return direct
+    _, stdout, _ = await client.run(
+        "for f in /backup/*.tar; do "
+        f's=$(tar -xOf "$f" ./backup.json 2>/dev/null '
+        '| grep -o \'"slug":"[^"]*"\' | head -1 '
+        '| sed \'s/.*"slug":"//;s/".*//\'); '
+        f'[ "$s" = "{slug}" ] && echo "$f" && break; '
+        "done",
+        check=False,
+    )
+    path = stdout.strip()
+    return path if path else None
+
+
 async def offload_backup_to_local(
     slug: str,
     ssh_client: Optional[SSHClientProtocol] = None,
-) -> None:
-    """SFTP-pull /backup/<slug>.tar to BACKUP_LOCAL_DIR, SHA-256 verify, update location."""
+) -> bool:
+    """SFTP-pull a backup tar to BACKUP_LOCAL_DIR, SHA-256 verify, update location.
+
+    Resolves the actual remote filename (HA auto-backups use descriptive names, not
+    {slug}.tar). Returns True on success, False on any failure.
+    """
     if not BACKUP_OFFLOAD_ENABLED:
-        return
-    remote_path = f"/backup/{slug}.tar"
-    local_dir = Path(BACKUP_LOCAL_DIR)
-    local_dir.mkdir(parents=True, exist_ok=True)
-    local_path = local_dir / f"{slug}.tar"
+        return True
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
+        remote_path = await _resolve_backup_remote_path(slug, client)
+        if remote_path is None:
+            log.warning("backup_offload_no_path", slug=slug)
+            return False
+        local_dir = Path(BACKUP_LOCAL_DIR)
+        local_dir.mkdir(parents=True, exist_ok=True)
+        local_path = local_dir / f"{slug}.tar"
         await client.download_file(remote_path, str(local_path))
         local_hash = _sha256_file(local_path)
         _, stdout, _ = await client.run(f"sha256sum {remote_path}", check=False)
@@ -405,7 +457,7 @@ async def offload_backup_to_local(
                 local_hash=local_hash,
                 remote_hash=remote_hash,
             )
-            return
+            return False
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
                 "UPDATE backup_registry SET location = 'both', offloaded_at = ?"
@@ -414,8 +466,10 @@ async def offload_backup_to_local(
             )
             conn.commit()
         log.info("backup_offloaded", slug=slug, local_path=str(local_path))
+        return True
     except Exception as e:
         log.warning("backup_offload_failed", slug=slug, error=str(e))
+        return False
 
 
 async def enforce_ha_retention(
@@ -459,6 +513,36 @@ async def enforce_ha_retention(
             log.warning("backup_delete_ha_failed", slug=slug, error=str(e))
 
 
+async def offload_pending_backups(
+    ssh_client: Optional[SSHClientProtocol] = None,
+) -> None:
+    """Offload any HA-only backups to local storage, then enforce retention.
+
+    Called at startup after reconcile so pre-existing HA backups get pulled
+    and old ones are cleaned from HA once confirmed local.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        pending = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE location = 'ha' AND offloaded_at IS NULL"
+            " AND deleted_from_ha_at IS NULL"
+            " AND backup_slug NOT LIKE 'unknown%'"
+        ).fetchall()
+
+    slugs = [r[0] for r in pending]
+    if not slugs:
+        return
+
+    log.info("backup_offload_pending_start", count=len(slugs))
+    for slug in slugs:
+        offloaded = await offload_backup_to_local(slug, ssh_client=ssh_client)
+        if not offloaded:
+            log.warning("backup_offload_pending_failed", slug=slug)
+
+    await enforce_ha_retention(ssh_client=ssh_client)
+    purge_local_backups()
+
+
 def purge_local_backups() -> None:
     """Delete local .tar copies older than BACKUP_RETAIN_LOCAL_DAYS; update inventory."""
     local_dir = Path(BACKUP_LOCAL_DIR)
@@ -494,10 +578,13 @@ def purge_local_backups() -> None:
             log.info("local_backup_purged", slug=slug)
         if deleted_from_ha_at is not None:
             log.warning("backup_gone_from_everywhere", slug=slug)
+            new_location = "purged"
+        else:
+            new_location = "ha"
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "UPDATE backup_registry SET location = 'ha' WHERE backup_slug = ?",
-                (slug,),
+                "UPDATE backup_registry SET location = ? WHERE backup_slug = ?",
+                (new_location, slug),
             )
             conn.commit()
 

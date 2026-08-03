@@ -378,13 +378,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_9_after_init(self, db_path):
+    def test_schema_version_is_10_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 9
+        assert rows[0][0] == 10
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -591,6 +591,25 @@ class TestBackupInventory:
             count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
         assert count == 0
 
+    def test_reconcile_skips_deleted_from_ha_in_orphan_check(self, db_path, caplog):
+        import logging
+
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("already-gone")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET deleted_from_ha_at = ? WHERE backup_slug = ?",
+                (1234567890.0, "already-gone"),
+            )
+            conn.commit()
+        backup_json = '{"result":"ok","data":{"backups":[]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        assert not any("orphan" in r.message for r in caplog.records)
+
 
 # ── Backup offloading ─────────────────────────────────────────────────────────────
 
@@ -604,6 +623,16 @@ class TestBackupOffloading:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         ha_agent_advanced.init_local_database()
         return path
+
+    @pytest.fixture(autouse=True)
+    def _patch_resolve_direct(self, monkeypatch):
+        """Make _resolve_backup_remote_path return the direct {slug}.tar path by default."""
+        import ha_agent_advanced
+
+        async def _direct(slug, client):
+            return f"/backup/{slug}.tar"
+
+        monkeypatch.setattr(ha_agent_advanced, "_resolve_backup_remote_path", _direct)
 
     def _insert_slug(self, db_path, slug):
         import sqlite3
@@ -725,6 +754,134 @@ class TestBackupOffloading:
             ).fetchone()
         assert row[0] == "both"
 
+    def test_offload_uses_fallback_path_for_descriptive_filename(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import hashlib
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        self._insert_slug(db_path, slug)
+        descriptive_path = "/backup/Automatic_backup_2026.7.2_2026-08-03.tar"
+        content = b"ha-auto-backup content"
+        remote_hash = hashlib.sha256(content).hexdigest()
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+
+        async def _fallback_resolve(s, client):
+            return descriptive_path if s == slug else None
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "_resolve_backup_remote_path", _fallback_resolve
+        )
+        ssh = FakeSSHClient(
+            download_contents={descriptive_path: content},
+            command_results={
+                "sha256sum": (0, f"{remote_hash}  {descriptive_path}\n", "")
+            },
+        )
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+
+        assert ssh.downloaded_files[0][0] == descriptive_path
+        assert (local_dir / f"{slug}.tar").exists()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "both"
+
+    def test_offload_returns_false_when_no_remote_path(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        self._insert_slug(db_path, slug)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
+
+        async def _not_found(s, client):
+            return None
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "_resolve_backup_remote_path", _not_found
+        )
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh)
+        )
+
+        assert result is False
+        assert ssh.downloaded_files == []
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "ha"
+
+
+# ── _resolve_backup_remote_path ───────────────────────────────────────────────────
+
+
+class TestResolveBackupRemotePath:
+    def test_direct_path_returned_when_slug_tar_exists(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        ssh = FakeSSHClient(
+            command_results={f"[ -f /backup/{slug}.tar ]": (0, "found", "")}
+        )
+        result = asyncio.run(ha_agent_advanced._resolve_backup_remote_path(slug, ssh))
+        assert result == f"/backup/{slug}.tar"
+
+    def test_fallback_ssh_search_when_direct_not_found(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        descriptive = "/backup/Automatic_backup_2026.7.2.tar"
+        ssh = FakeSSHClient(
+            command_results={
+                f"[ -f /backup/{slug}.tar ]": (0, "", ""),
+                "for f in": (0, descriptive, ""),
+            }
+        )
+        result = asyncio.run(ha_agent_advanced._resolve_backup_remote_path(slug, ssh))
+        assert result == descriptive
+
+    def test_returns_none_when_not_found_anywhere(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced._resolve_backup_remote_path("abc123", ssh)
+        )
+        assert result is None
+
+    def test_returns_none_for_non_hex_slug(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced._resolve_backup_remote_path("slug-abc", ssh)
+        )
+        assert result is None
+        assert ssh.commands_run == []
+
 
 # ── ha_agent_sandbox_engine SQLite layer ─────────────────────────────────────────
 
@@ -732,10 +889,12 @@ class TestBackupOffloading:
 class TestSandboxDB:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
         import ha_agent_sandbox_engine
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         return path
 
     def test_init_creates_state_history_table(self, db_path):
@@ -828,13 +987,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_9_after_init(self, db_path):
+    def test_schema_version_is_10_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -844,7 +1003,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 9
+        assert rows[0][0] == 10
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -872,7 +1031,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -4551,6 +4710,14 @@ class TestClassifyNotification:
         assert category == "security"
         assert severity == "HIGH"
 
+    def test_http_login_hyphen_is_security_high(self):
+        # HA WebSocket API returns "http-login" (hyphen), not "http_login"
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("http-login")
+        assert category == "security"
+        assert severity == "HIGH"
+
     def test_invalid_config_is_config_error_high(self):
         from ha_notification_manager import classify_notification
 
@@ -4709,6 +4876,83 @@ class TestRecordNotificationSeen:
         assert len(pending) == 1
         assert pending[0]["notification_id"] == "invalid_config"
 
+    def test_ha_created_at_stored(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        ha_ts = 1722700876.0
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=ha_ts
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == ha_ts
+
+    def test_ha_created_at_defaults_none(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None
+
+    def test_newer_ha_created_at_resets_hitl_sent_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        # First occurrence: recorded and HITL card sent
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        # Second occurrence with a newer ha_created_at: hitl_sent_at should be cleared
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=2000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at, ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert (
+            row[0] is None
+        ), "hitl_sent_at must be reset for a new notification occurrence"
+        assert row[1] == 2000.0
+
+    def test_same_ha_created_at_does_not_reset_hitl_sent_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        # Same ha_created_at: hitl_sent_at should remain set (already processed)
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert (
+            row[0] is not None
+        ), "hitl_sent_at must not be reset for same notification"
+
 
 # ── ha_agent_advanced — migration v6 (notification_history) ──────────────────────
 
@@ -4755,6 +4999,7 @@ class TestNotificationHistoryMigration:
             "hitl_sent_at",
             "dismissed_at",
             "dismissed_by",
+            "ha_created_at",
         }
         assert expected.issubset(set(cols))
 
@@ -4763,6 +5008,19 @@ class TestNotificationHistoryMigration:
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.init_local_database()
+
+    def test_migration_v10_adds_ha_created_at_column(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(notification_history)"
+                ).fetchall()
+            ]
+        assert "ha_created_at" in cols
 
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
@@ -4785,13 +5043,9 @@ class TestPollForNotifications:
         message: str = "test message",
     ) -> dict:
         return {
-            "entity_id": f"persistent_notification.{nid}",
-            "state": "notifying",
-            "attributes": {
-                "notification_id": nid,
-                "title": title,
-                "message": message,
-            },
+            "notification_id": nid,
+            "title": title,
+            "message": message,
         }
 
     @staticmethod
@@ -4821,14 +5075,14 @@ class TestPollForNotifications:
     def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "http_login", "Login attempt", "Bad creds"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4836,7 +5090,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
@@ -4845,28 +5099,31 @@ class TestPollForNotifications:
             )
 
         assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["notification_id"] == "http_login"
-        assert notifier.sent[0]["payload"]["category"] == "security"
-        assert notifier.sent[0]["payload"]["severity"] == "HIGH"
-        assert notifier.sent[0]["payload"]["human_explanation"] == "Test explanation."
+        payload = notifier.sent[0]["payload"]
+        assert payload["notification_id"] == "notif_http_login"
+        assert payload["ha_notification_id"] == "http_login"
+        assert payload["is_notification_card"] is True
+        assert payload["category"] == "security"
+        assert payload["severity"] == "HIGH"
+        assert payload["human_explanation"] == "Test explanation."
 
     def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_notification_manager import record_notification_seen
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
-        entity = self._make_notification_entity("http_login", "Login attempt")
-        rest = FakeHARestClient(states=[entity])
+        notif = self._make_notification_entity("http_login", "Login attempt")
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest, notifier=notifier, db_path=db_path
+                    ha_ws_client=ws, notifier=notifier, db_path=db_path
                 )
             )
 
@@ -4877,16 +5134,11 @@ class TestPollForNotifications:
         from ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
-        class ExplodingRestClient:
-            async def get_states(self, prefix: str | None = None) -> list:
+        class ExplodingWSClient:
+            async def get_persistent_notifications(self) -> list:
                 raise RuntimeError("network down")
 
-            async def get_state(self, entity_id: str) -> dict:
-                raise RuntimeError("network down")
-
-            async def call_service(
-                self, domain: str, service: str, payload: dict
-            ) -> dict:
+            async def get_device_registry(self) -> list:
                 raise RuntimeError("network down")
 
         notifier = FakeNotifier()
@@ -4895,7 +5147,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=ExplodingRestClient(),
+                    ha_ws_client=ExplodingWSClient(),
                     notifier=notifier,
                     db_path=db_path,
                 )
@@ -4906,14 +5158,14 @@ class TestPollForNotifications:
     def test_unknown_notification_id_classified_as_other(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "some_integration_abc", message="Something failed"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4921,7 +5173,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
@@ -4937,22 +5189,22 @@ class TestPollForNotifications:
         """If enrich_and_analyze_notification raises, the notification is skipped."""
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         class ExplodingLLM:
             async def chat(self, model, messages, options, format):
                 raise RuntimeError("LLM exploded")
 
-        entity = self._make_notification_entity("http_login", "Login", "Bad creds")
-        rest = FakeHARestClient(states=[entity])
+        notif = self._make_notification_entity("http_login", "Login", "Bad creds")
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=ExplodingLLM(),
                     db_path=db_path,
@@ -4966,14 +5218,14 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         import sqlite3
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "invalid_config", "Config error", "Bad YAML"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4981,7 +5233,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
@@ -5140,6 +5392,100 @@ class TestEnrichHttpLogin:
         )
         ctx = asyncio.run(enrich_http_login("192.168.1.6", ws_client=ws))
         assert ctx["ha_device_name"] == "Fallback Name"
+
+    def test_arp_mac_added_to_context(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"? (10.0.0.168) at 52:ea:9d:13:80:c8 on en0", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.168"))
+        assert result["mac_address"] == "52:ea:9d:13:80:c8"
+        assert result["mac_is_randomized"] is True
+        assert result["mac_vendor"] is None
+
+    def test_arp_non_randomized_mac(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"? (10.0.0.1) at ac:bc:32:ab:cd:ef on en0", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.1"))
+        assert result["mac_address"] == "ac:bc:32:ab:cd:ef"
+        assert result["mac_is_randomized"] is False
+
+    def test_arp_no_mac_returns_none_fields(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"no entry for 10.0.0.200", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.200"))
+        assert result["mac_address"] is None
+        assert result["mac_is_randomized"] is None
+        assert result["mac_vendor"] is None
+
+    def test_dhcp_hostname_added_when_ssh_succeeds(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _try_router_dhcp_hostname
+
+        dhcp_output = b"1234567890 aa:bb:cc:dd:ee:ff 10.0.0.50 android-phone *\n"
+
+        class _FakeProc:
+            async def communicate(self):
+                return (dhcp_output, b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "wait_for", lambda coro, timeout: coro
+        )
+        result = asyncio.run(_try_router_dhcp_hostname("10.0.0.1", "10.0.0.50"))
+        assert result == "android-phone"
+
+    def test_dhcp_probe_silent_on_failure(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _try_router_dhcp_hostname
+
+        async def fake_exec(*args, **kwargs):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "wait_for", lambda coro, timeout: coro
+        )
+        result = asyncio.run(_try_router_dhcp_hostname("10.0.0.1", "10.0.0.99"))
+        assert result is None
 
 
 # ── ha_notification_manager — analyze_notification ───────────────────────────────
@@ -6581,7 +6927,7 @@ class TestToolExecutor:
 
     def test_apply_fix_backup_failure(self, monkeypatch):
         """apply_fix returns error when execute_remote_backup raises."""
-        import ha_agent_sandbox_engine
+        import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
         from utils.tool_registry import ToolCall
 
@@ -6602,9 +6948,7 @@ class TestToolExecutor:
         async def _fail_backup(*args, **kwargs):
             raise RuntimeError("backup storage full")
 
-        monkeypatch.setattr(
-            ha_agent_sandbox_engine, "execute_remote_backup", _fail_backup
-        )
+        monkeypatch.setattr(ha_agent_advanced, "execute_remote_backup", _fail_backup)
 
         result = asyncio.run(
             executor.execute(
@@ -7000,6 +7344,24 @@ class TestAgentLoop:
         )
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
+
+    def test_no_tool_calls_captures_last_plain_text_as_summary(self):
+        # When the loop exhausts due to plain-text responses, the last
+        # plain-text content is captured in episode_stub["summary"] so the
+        # chat UI can surface it instead of "(Loop ended: exhausted)".
+        loop = self._make_loop(
+            call_sequence=[
+                {"content": "Yes, I can help with Home Assistant."},
+                {"content": "Here are the details about my capabilities."},
+            ]
+        )
+        result = asyncio.run(loop.run("Are you capable of anything?"))
+        assert result.outcome == "exhausted"
+        assert result.episode_stub is not None
+        assert (
+            result.episode_stub["summary"]
+            == "Here are the details about my capabilities."
+        )
 
     def test_single_plain_text_then_finish_repair_succeeds(self):
         # One plain-text response triggers the recovery nudge; the model then
@@ -7529,3 +7891,48 @@ class TestRunRagRefresh:
         main_module.run_rag_refresh(store)
         out = capsys.readouterr().out
         assert "no HA API token" in out
+
+
+class TestLoopCrashTimeline:
+    """LoopSupervisor writes a timeline event when a loop crashes."""
+
+    def test_crash_writes_loop_crash_timeline_event(self, tmp_path):
+        import sqlite3 as _sq
+        import utils.timeline
+        from utils.supervisor import LoopSupervisor
+
+        # The _patch_timeline_db autouse fixture already redirected utils.timeline.DB_PATH
+        # to a per-test temp DB with the timeline_events table.
+        call_count = 0
+
+        async def _crashing_factory():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("boom")
+            # Second iteration: return cleanly so the loop exits
+            return
+
+        async def _run():
+            sv = LoopSupervisor(backoff_start=0.0, backoff_cap=0.0)
+            sv.start("test_loop", _crashing_factory)
+            # Give the event loop a few ticks to run the loop and restart it
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        rows = (
+            _sq.connect(utils.timeline.DB_PATH)
+            .execute(
+                "SELECT level, source, message, detail_json FROM timeline_events"
+                " WHERE source = 'loop_crash'"
+            )
+            .fetchall()
+        )
+        assert rows, "expected a loop_crash timeline event"
+        import json
+
+        detail = json.loads(rows[0][3])
+        assert detail["loop"] == "test_loop"
+        assert "boom" in detail["error"]
