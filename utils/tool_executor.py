@@ -43,7 +43,6 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha core stop",
         "ha host info",
         "ha backups list",
-        "ha backups new",
         "ha apps list",
         "ha os info",
     }
@@ -107,6 +106,8 @@ class ToolExecutor:
                 return await self._read_logs(int(args.get("lines", 100)))
             if name == "run_ha_command":
                 return await self._run_ha_command(args.get("command", ""))
+            if name == "trigger_backup":
+                return await self._trigger_backup()
             if name == "read_file":
                 return await self._read_file(args.get("path", ""))
             if name == "query_netalertx":
@@ -221,6 +222,34 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="run_ha_command", success=False, output="", error=str(exc)
             )
+
+    async def _trigger_backup(self) -> ToolResult:
+        from ha_agent_advanced import (
+            enforce_ha_retention,
+            execute_remote_backup,
+            offload_backup_to_local,
+            purge_local_backups,
+            record_backup_slug,
+        )
+
+        try:
+            slug = await execute_remote_backup(ssh_client=self._ha_ssh)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="trigger_backup", success=False, output="", error=str(exc)
+            )
+        record_backup_slug(slug)
+        offloaded = await offload_backup_to_local(slug, ssh_client=self._ha_ssh)
+        try:
+            await enforce_ha_retention(ssh_client=self._ha_ssh)
+            purge_local_backups()
+        except Exception:  # nosec B110 — retention errors don't invalidate the backup
+            pass
+        return ToolResult(
+            tool_name="trigger_backup",
+            success=True,
+            output=f"Backup created slug={slug}, offloaded={offloaded}",
+        )
 
     async def _read_file(self, path: str) -> ToolResult:
         if not any(path.startswith(p) for p in _READ_FILE_ALLOWED_PREFIXES):
@@ -576,16 +605,16 @@ class ToolExecutor:
             )
 
         # Backup invariant: backup before every write
+        from ha_agent_advanced import (
+            enforce_ha_retention,
+            execute_remote_backup,
+            offload_backup_to_local,
+            purge_local_backups,
+            record_backup_slug,
+        )
         from ha_agent_sandbox_engine import (
             commit_atomic_swap,
             deploy_and_test_in_sandbox,
-            execute_remote_backup,
-            record_backup_slug,
-        )
-        from ha_agent_advanced import (
-            enforce_ha_retention,
-            offload_backup_to_local,
-            purge_local_backups,
         )
 
         try:

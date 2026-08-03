@@ -125,8 +125,10 @@ RUN_HA_COMMAND = ToolDefinition(
     name="run_ha_command",
     description=(
         "Run an allowlisted HA CLI subcommand and return stdout. "
-        "Allowed commands: ha core check, ha core restart, ha core stop, "
-        "ha host info, ha backups list, ha backups new, ha apps list, ha os info."
+        "Allowed commands: ha core check (takes 45-60s — use only when necessary), "
+        "ha core restart, ha core stop, ha host info, ha backups list, "
+        "ha apps list, ha os info. "
+        "To create a backup use trigger_backup instead."
     ),
     parameters={
         "type": "object",
@@ -137,6 +139,22 @@ RUN_HA_COMMAND = ToolDefinition(
             }
         },
         "required": ["command"],
+    },
+)
+
+TRIGGER_BACKUP = ToolDefinition(
+    name="trigger_backup",
+    description=(
+        "Create a full HA backup via the Pueo backup chain: "
+        "triggers ha backup new with a timestamped name, records the slug in the "
+        "local backup registry, SFTP-offloads the .tar to the local backups/ "
+        "directory with SHA-256 verification, enforces HA retention, and purges "
+        "old local archives. Use this instead of run_ha_command for backups."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
     },
 )
 
@@ -437,6 +455,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         READ_LOGS,
         RUN_HA_COMMAND,
         READ_FILE,
+        TRIGGER_BACKUP,
         QUERY_NETALERTX,
         APPLY_FIX,
         VERIFY_FIX,
@@ -474,6 +493,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         READ_LOGS,
         RUN_HA_COMMAND,
         READ_FILE,
+        TRIGGER_BACKUP,
         QUERY_KNOWLEDGE,
         QUERY_NETALERTX,
         REMEMBER,

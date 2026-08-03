@@ -2512,6 +2512,7 @@ class TestExecuteResourceAction:
 
         async def _fake_offload(slug, ssh_client=None):
             offloaded.append(slug)
+            return True
 
         async def _fake_retention(ssh_client=None):
             retention_called.append(True)
@@ -2587,6 +2588,57 @@ class TestExecuteResourceAction:
         assert not (tmp_path / f"{nid}.in_progress").exists()
         saved = _json.loads(json_path.read_text())
         assert "fix_error" in saved
+
+    def test_offload_backups_sftp_failure_writes_warn(self, tmp_path, monkeypatch):
+        """offload_backup_to_local returning False → WARN timeline event; action still succeeds."""
+        import json as _json
+        import sqlite3 as _sqlite3
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+        import utils.timeline
+
+        db_path = tmp_path / "test.db"
+        self._make_db(db_path, ["slug-fail"])
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db_path))
+
+        async def _fake_offload_fail(slug, ssh_client=None):
+            return False
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "offload_backup_to_local", _fake_offload_fail
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "enforce_ha_retention", _make_async_return(None)
+        )
+        monkeypatch.setattr(ha_agent_advanced, "purge_local_backups", lambda: None)
+
+        nid = "ra-sftp-fail-1"
+        json_path = self._write_resource_card(tmp_path, nid, "offload_backups")
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
+
+        # Action completes successfully despite SFTP failure
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+
+        # A WARN event must be recorded in the (patched) timeline DB
+        rows = (
+            _sqlite3.connect(utils.timeline.DB_PATH)
+            .execute(
+                "SELECT level, source, message, detail_json FROM timeline_events"
+                " WHERE source = 'resource_action' AND level = 'WARN'"
+            )
+            .fetchall()
+        )
+        assert rows, "expected a WARN timeline row for failed SFTP transfers"
+        detail = _json.loads(rows[0][3])
+        assert detail["fail_count"] == 1
+        assert detail["total"] == 1
 
     def test_exception_writes_rejected_and_fix_error(self, tmp_path, monkeypatch):
         """Exception in offload → .rejected, fix_error set, no in_progress."""

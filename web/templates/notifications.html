@@ -42,7 +42,9 @@
     <div class="card-header">
       <span class="badge" style="{% if n.severity == 'CRITICAL' %}background:#f8d7da;color:#58151c;border:1px solid #dc3545;{% elif n.severity == 'HIGH' %}background:#fff3cd;color:#856404;border:1px solid #ffc107;{% elif n.severity == 'MEDIUM' %}background:#e0e7ff;color:#3730a3;border:1px solid #6366f1;{% else %}background:#d1e7dd;color:#0a3622;border:1px solid #28a745;{% endif %}">{{ n.severity }}</span>
       <span class="subject">{{ n.get("original_title") or n.notification_id }}</span>
-      <span class="elapsed">{{ n.first_seen_at | epoch_to_iso }}</span>
+      <span class="elapsed">
+        {% if n.get("ha_created_at") %}Event time: {{ n.ha_created_at | epoch_to_iso }}&ensp;<span style="font-size:0.78rem;color:#888;">Detected: {{ n.first_seen_at | epoch_to_iso }}</span>{% else %}{{ n.first_seen_at | epoch_to_iso }}{% endif %}
+      </span>
     </div>
     <p class="meta">Category: <strong>{{ n.category }}</strong></p>
     {% if n.get("original_message") %}
@@ -88,7 +90,7 @@
       <span>ID</span>
       <span>Category</span>
       <span>Severity</span>
-      <span>First Seen</span>
+      <span>Event Time</span>
       <span>Dismissed</span>
     </div>
     {% for n in history %}
@@ -97,7 +99,7 @@
         <span style="font-family:monospace;font-size:0.8rem;">{{ n.notification_id }}</span>
         <span>{{ n.category }}</span>
         <span {% if n.severity == "CRITICAL" %}style="color:var(--red);font-weight:700;"{% elif n.severity == "HIGH" %}style="color:var(--orange);font-weight:700;"{% endif %}>{{ n.severity }}</span>
-        <span>{{ n.first_seen_at | epoch_to_iso }}</span>
+        <span>{{ (n.get("ha_created_at") or n.first_seen_at) | epoch_to_iso }}</span>
         <span>{% if n.dismissed_at %}<span style="color:#28a745;">&#10003; {{ n.dismissed_at | epoch_to_iso }}</span>{% else %}—{% endif %}</span>
       </summary>
       <div style="padding:0.75rem 1rem;background:#fafafa;border-top:1px solid #eee;">

@@ -5,6 +5,7 @@ Pueo entry point. Reads config.yaml and dispatches to the chosen agent mode.
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -167,6 +168,11 @@ async def supervisor_main(config_path: Path) -> None:
     from web.dashboard import app as dashboard_app
 
     ha_agent_advanced.init_local_database()
+    try:
+        await ha_agent_advanced.reconcile_backup_inventory()
+        await ha_agent_advanced.offload_pending_backups()
+    except Exception:  # nosec B110 — reconcile/offload failure must not block startup
+        pass
 
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)
@@ -237,10 +243,23 @@ async def supervisor_main(config_path: Path) -> None:
                 lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
             )
 
-    # Register signal handlers for clean shutdown
+    # Register signal handlers for clean shutdown.
+    # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.
+    # call_later forces an exit after 3 s in case SSH streams or Ollama
+    # threads don't yield to the cancellation in time.
     loop = asyncio.get_running_loop()
+
+    def _shutdown() -> None:
+        # Mute uvicorn.error before cancellation so the expected CancelledErrors
+        # from open SSE connections (listen_for_disconnect / lifespan) don't
+        # flood the terminal.  They are normal shutdown noise, not real errors.
+        logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+        supervisor.cancel_all()
+        server.should_exit = True
+        loop.call_later(3.0, sys.exit, 0)
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, supervisor.cancel_all)
+        loop.add_signal_handler(sig, _shutdown)
 
     # Run uvicorn as an asyncio coroutine alongside the supervised loops
     uvi_config = uvicorn.Config(
