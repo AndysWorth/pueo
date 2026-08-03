@@ -237,10 +237,19 @@ async def supervisor_main(config_path: Path) -> None:
                 lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
             )
 
-    # Register signal handlers for clean shutdown
+    # Register signal handlers for clean shutdown.
+    # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.
+    # call_later forces an exit after 3 s in case SSH streams or Ollama
+    # threads don't yield to the cancellation in time.
     loop = asyncio.get_running_loop()
+
+    def _shutdown() -> None:
+        supervisor.cancel_all()
+        server.should_exit = True
+        loop.call_later(3.0, sys.exit, 0)
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, supervisor.cancel_all)
+        loop.add_signal_handler(sig, _shutdown)
 
     # Run uvicorn as an asyncio coroutine alongside the supervised loops
     uvi_config = uvicorn.Config(
