@@ -67,9 +67,12 @@ _CHAT_SYSTEM_PROMPT = """\
 You are Pueo, a Home Assistant assistant. Use tools to look up live state,
 answer questions, and investigate problems. Use remember/recall to store and
 retrieve context across sessions. Use read_source, propose_patch, sandbox_code,
-and add_tool to build new capabilities when the user asks. Always end by calling
-finish_chat with a plain-language summary of what you found or did. Never return
-plain text — always call a tool.
+and add_tool to build new capabilities when the user asks.
+
+MANDATORY: Always respond by calling a tool — never return plain text.
+For every question, including general ones you can answer from knowledge:
+  call finish_chat(summary="<your answer here>")
+Do not ask clarifying questions. Answer what was asked and call finish_chat.
 """
 
 
@@ -175,6 +178,7 @@ class AgentLoop:
     ) -> tuple[str, Optional[dict]]:
         episode_stub: Optional[dict] = None
         no_tool_streak = 0  # consecutive plain-text responses with no tool calls
+        last_plain_text: str = ""  # most recent plain-text content (fallback summary)
 
         while tool_call_count < self._max_tool_calls:
             response = await self._llm.chat_with_tools(
@@ -201,11 +205,15 @@ class AgentLoop:
                     tool_calls_raw = fallback
                 else:
                     no_tool_streak += 1
+                    if content:
+                        last_plain_text = content
                     if no_tool_streak >= 2:
                         log.info(
                             "agent_loop_no_tool_calls",
                             content=content[:120],
                         )
+                        if last_plain_text and episode_stub is None:
+                            episode_stub = {"summary": last_plain_text}
                         return "exhausted", episode_stub
                     # Single plain-text response — inject a recovery nudge and
                     # retry rather than giving up immediately.
@@ -218,9 +226,8 @@ class AgentLoop:
                         {
                             "role": "user",
                             "content": (
-                                "You MUST call a tool now. "
-                                f"If your investigation is complete, call {self._terminal_tool_name} "
-                                "with a summary. Do not return plain text."
+                                f"Call {self._terminal_tool_name} NOW with your answer "
+                                f'in the "summary" field. Do not return plain text.'
                             ),
                         }
                     )

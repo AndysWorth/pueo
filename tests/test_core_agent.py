@@ -7001,6 +7001,24 @@ class TestAgentLoop:
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
 
+    def test_no_tool_calls_captures_last_plain_text_as_summary(self):
+        # When the loop exhausts due to plain-text responses, the last
+        # plain-text content is captured in episode_stub["summary"] so the
+        # chat UI can surface it instead of "(Loop ended: exhausted)".
+        loop = self._make_loop(
+            call_sequence=[
+                {"content": "Yes, I can help with Home Assistant."},
+                {"content": "Here are the details about my capabilities."},
+            ]
+        )
+        result = asyncio.run(loop.run("Are you capable of anything?"))
+        assert result.outcome == "exhausted"
+        assert result.episode_stub is not None
+        assert (
+            result.episode_stub["summary"]
+            == "Here are the details about my capabilities."
+        )
+
     def test_single_plain_text_then_finish_repair_succeeds(self):
         # One plain-text response triggers the recovery nudge; the model then
         # calls finish_repair and the loop ends with 'success'.
