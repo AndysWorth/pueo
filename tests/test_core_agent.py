@@ -732,10 +732,12 @@ class TestBackupOffloading:
 class TestSandboxDB:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
         import ha_agent_sandbox_engine
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         return path
 
     def test_init_creates_state_history_table(self, db_path):
@@ -6581,7 +6583,7 @@ class TestToolExecutor:
 
     def test_apply_fix_backup_failure(self, monkeypatch):
         """apply_fix returns error when execute_remote_backup raises."""
-        import ha_agent_sandbox_engine
+        import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
         from utils.tool_registry import ToolCall
 
@@ -6602,9 +6604,7 @@ class TestToolExecutor:
         async def _fail_backup(*args, **kwargs):
             raise RuntimeError("backup storage full")
 
-        monkeypatch.setattr(
-            ha_agent_sandbox_engine, "execute_remote_backup", _fail_backup
-        )
+        monkeypatch.setattr(ha_agent_advanced, "execute_remote_backup", _fail_backup)
 
         result = asyncio.run(
             executor.execute(

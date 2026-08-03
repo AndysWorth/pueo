@@ -48,6 +48,8 @@ from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix
 from ha_agent_advanced import (
+    execute_remote_backup,  # noqa: F401 — re-exported; callers may import from here
+    record_backup_slug,  # noqa: F401 — re-exported; callers may import from here
     offload_backup_to_local,
     enforce_ha_retention,
     purge_local_backups,
@@ -270,17 +272,6 @@ def record_state_memory(
         conn.commit()
 
 
-def record_backup_slug(slug: str) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
-            " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
-            (int(time.time()), slug),
-        )
-        conn.commit()
-
-
 # ==========================================
 # REMOTE INFRASTRUCTURE & BACKUP TOOLS
 # ==========================================
@@ -304,24 +295,6 @@ def _extract_backup_slug(output: str) -> str:
         if "slug:" in line.lower():
             return line.split(":")[-1].strip()
     return "unknown_slug"
-
-
-@async_retry(**SSH_RETRY_KWARGS)
-async def execute_remote_backup(
-    ssh_client: Optional[SSHClientProtocol] = None,
-) -> str:
-    log.info("backup_trigger_start")
-    client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
-    try:
-        exit_code, stdout, stderr = await client.run(
-            'ha backup new --name "Agent_PreFix_Snapshot"', check=True
-        )
-        slug = _extract_backup_slug(stdout.strip())
-        log.info("backup_created", slug=slug)
-        return slug
-    except Exception as e:
-        log.critical("backup_failed", error=str(e))
-        raise
 
 
 @async_retry(**SSH_RETRY_KWARGS)

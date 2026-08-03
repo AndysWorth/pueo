@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<h2 style="font-size:1rem;margin-bottom:1rem;color:#555;">Backup Inventory</h2>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
+  <h2 style="font-size:1rem;color:#555;margin:0;">Backup Inventory</h2>
+  <button id="trigger-btn" onclick="triggerBackup()"
+    style="padding:0.4rem 1rem;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
+    Run Backup Now
+  </button>
+</div>
+<div id="trigger-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
+
 {% if not inventory %}
   <p class="empty">No backups recorded yet.</p>
 {% else %}
@@ -33,4 +41,37 @@
     </table>
   </div>
 {% endif %}
+
+<script>
+async function triggerBackup() {
+  const btn = document.getElementById('trigger-btn');
+  const result = document.getElementById('trigger-result');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  result.style.display = 'none';
+  try {
+    const resp = await fetch('/backups/trigger', {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+      result.textContent = 'Backup created: ' + data.slug + (data.offloaded ? ' (offloaded to Pueo)' : ' (HA only — offload failed)');
+      result.style.background = '#d4edda';
+      result.style.color = '#155724';
+    } else {
+      result.textContent = 'Error: ' + (data.error || 'unknown error');
+      result.style.background = '#f8d7da';
+      result.style.color = '#721c24';
+    }
+  } catch (e) {
+    result.textContent = 'Request failed: ' + e.message;
+    result.style.background = '#f8d7da';
+    result.style.color = '#721c24';
+  }
+  result.style.display = 'block';
+  btn.disabled = false;
+  btn.textContent = 'Run Backup Now';
+  if (result.style.background.includes('d4edda')) {
+    setTimeout(() => location.reload(), 1500);
+  }
+}
+</script>
 {% endblock %}
