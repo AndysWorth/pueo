@@ -5,6 +5,7 @@ Pueo entry point. Reads config.yaml and dispatches to the chosen agent mode.
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -244,6 +245,10 @@ async def supervisor_main(config_path: Path) -> None:
     loop = asyncio.get_running_loop()
 
     def _shutdown() -> None:
+        # Mute uvicorn.error before cancellation so the expected CancelledErrors
+        # from open SSE connections (listen_for_disconnect / lifespan) don't
+        # flood the terminal.  They are normal shutdown noise, not real errors.
+        logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
         supervisor.cancel_all()
         server.should_exit = True
         loop.call_later(3.0, sys.exit, 0)
