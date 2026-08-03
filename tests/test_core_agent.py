@@ -378,13 +378,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_9_after_init(self, db_path):
+    def test_schema_version_is_10_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 9
+        assert rows[0][0] == 10
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -830,13 +830,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_9_after_init(self, db_path):
+    def test_schema_version_is_10_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -846,7 +846,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 9
+        assert rows[0][0] == 10
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -874,7 +874,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -4719,6 +4719,33 @@ class TestRecordNotificationSeen:
         assert len(pending) == 1
         assert pending[0]["notification_id"] == "invalid_config"
 
+    def test_ha_created_at_stored(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        ha_ts = 1722700876.0
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=ha_ts
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == ha_ts
+
+    def test_ha_created_at_defaults_none(self, db_path):
+        from ha_notification_manager import record_notification_seen
+
+        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None
+
 
 # ── ha_agent_advanced — migration v6 (notification_history) ──────────────────────
 
@@ -4765,6 +4792,7 @@ class TestNotificationHistoryMigration:
             "hitl_sent_at",
             "dismissed_at",
             "dismissed_by",
+            "ha_created_at",
         }
         assert expected.issubset(set(cols))
 
@@ -4773,6 +4801,19 @@ class TestNotificationHistoryMigration:
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.init_local_database()
+
+    def test_migration_v10_adds_ha_created_at_column(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(notification_history)"
+                ).fetchall()
+            ]
+        assert "ha_created_at" in cols
 
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
@@ -5144,6 +5185,100 @@ class TestEnrichHttpLogin:
         )
         ctx = asyncio.run(enrich_http_login("192.168.1.6", ws_client=ws))
         assert ctx["ha_device_name"] == "Fallback Name"
+
+    def test_arp_mac_added_to_context(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"? (10.0.0.168) at 52:ea:9d:13:80:c8 on en0", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.168"))
+        assert result["mac_address"] == "52:ea:9d:13:80:c8"
+        assert result["mac_is_randomized"] is True
+        assert result["mac_vendor"] is None
+
+    def test_arp_non_randomized_mac(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"? (10.0.0.1) at ac:bc:32:ab:cd:ef on en0", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.1"))
+        assert result["mac_address"] == "ac:bc:32:ab:cd:ef"
+        assert result["mac_is_randomized"] is False
+
+    def test_arp_no_mac_returns_none_fields(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _get_arp_info
+
+        class _FakeProc:
+            async def communicate(self):
+                return (b"no entry for 10.0.0.200", b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        result = asyncio.run(_get_arp_info("10.0.0.200"))
+        assert result["mac_address"] is None
+        assert result["mac_is_randomized"] is None
+        assert result["mac_vendor"] is None
+
+    def test_dhcp_hostname_added_when_ssh_succeeds(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _try_router_dhcp_hostname
+
+        dhcp_output = b"1234567890 aa:bb:cc:dd:ee:ff 10.0.0.50 android-phone *\n"
+
+        class _FakeProc:
+            async def communicate(self):
+                return (dhcp_output, b"")
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "wait_for", lambda coro, timeout: coro
+        )
+        result = asyncio.run(_try_router_dhcp_hostname("10.0.0.1", "10.0.0.50"))
+        assert result == "android-phone"
+
+    def test_dhcp_probe_silent_on_failure(self, monkeypatch):
+        import ha_notification_manager
+        from ha_notification_manager import _try_router_dhcp_hostname
+
+        async def fake_exec(*args, **kwargs):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "create_subprocess_exec", fake_exec
+        )
+        monkeypatch.setattr(
+            ha_notification_manager.asyncio, "wait_for", lambda coro, timeout: coro
+        )
+        result = asyncio.run(_try_router_dhcp_hostname("10.0.0.1", "10.0.0.99"))
+        assert result is None
 
 
 # ── ha_notification_manager — analyze_notification ───────────────────────────────

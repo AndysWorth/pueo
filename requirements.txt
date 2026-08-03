@@ -6,6 +6,7 @@ httpx
 jinja2
 ollama
 pydantic
+manuf
 pyyaml
 uvicorn
 websockets
