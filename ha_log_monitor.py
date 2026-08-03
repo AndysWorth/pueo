@@ -312,6 +312,8 @@ async def poll_for_notifications(
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires HITL alerts."""
     from ha_notification_manager import (
+        _format_notification_body,
+        _format_notification_subject,
         classify_notification,
         enrich_and_analyze_notification,
         mark_notification_hitl_sent,
@@ -330,11 +332,11 @@ async def poll_for_notifications(
     )  # pragma: no cover
 
     while True:
-        await asyncio.sleep(interval)
         try:
             notifications = await _ws.get_persistent_notifications()
         except Exception as exc:
             log.warning("notification_poll_failed", error=str(exc))
+            await asyncio.sleep(interval)
             continue
 
         for notif in notifications:
@@ -370,14 +372,27 @@ async def poll_for_notifications(
                     category=analysis.category,
                     severity=analysis.severity,
                 )
+                card_id = f"notif_{nid}"
+                payload: dict = {
+                    "notification_id": card_id,
+                    "ha_notification_id": nid,
+                    "is_notification_card": True,
+                    "category": analysis.category,
+                    "severity": analysis.severity,
+                    "human_explanation": analysis.human_explanation,
+                    "recommended_action": analysis.recommended_action,
+                    "enriched_context": analysis.enriched_context,
+                    "original_message": analysis.original_message,
+                    "original_title": analysis.original_title,
+                }
                 await _notifier.send(
-                    subject=(
-                        f"Pueo: HA notification — {title or nid} [{analysis.severity}]"
-                    ),
-                    body=analysis.human_explanation or message,
-                    payload=analysis.model_dump(),
+                    subject=_format_notification_subject(analysis),
+                    body=_format_notification_body(analysis),
+                    payload=payload,
                 )
                 mark_notification_hitl_sent(nid, db_path=db_path)
+
+        await asyncio.sleep(interval)
 
 
 async def trigger_remediation_pipeline() -> None:

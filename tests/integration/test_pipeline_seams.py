@@ -216,16 +216,15 @@ class TestLogMonitorActionablePath:
 class TestPollForNotificationsLoopBody:
     """Tests ha_log_monitor.poll_for_notifications() — 0% covered in the unit suite.
 
-    The function is a `while True` daemon loop. Tests run exactly one iteration by
-    cancelling asyncio.sleep on the second call.
+    The function is a `while True` daemon loop. Tests cancel on the second sleep call,
+    which allows one full processing iteration plus one no-op round.
     """
 
-    _ENTITY = {
-        "entity_id": "persistent_notification.http_login",
-        "attributes": {
-            "title": "Login attempt",
-            "message": "Failed login from 1.2.3.4",
-        },
+    # Real HA WebSocket format: notification_id uses hyphens (e.g. "http-login")
+    _NOTIF = {
+        "notification_id": "http-login",
+        "title": "Login attempt failed",
+        "message": "Failed login from 1.2.3.4",
     }
 
     def _make_llm_json(self):
@@ -251,10 +250,10 @@ class TestPollForNotificationsLoopBody:
         monkeypatch.setattr(ha_log_monitor.asyncio, "sleep", fake_sleep)
 
     def test_new_notification_writes_card_file_and_db_row(self, monkeypatch, tmp_path):
-        """One iteration: REST entity fetched → card JSON written → notification_history row inserted."""
+        """One iteration: WS notification fetched → card JSON written → notification_history row inserted."""
         import ha_agent_advanced
         import ha_log_monitor
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
         from utils.ollama_client import FakeLLMClient
         from utils.ssh_client import FakeSSHClient
@@ -276,7 +275,7 @@ class TestPollForNotificationsLoopBody:
         self._one_shot_sleep(monkeypatch)
         monkeypatch.setattr(ha_log_monitor, "HA_NOTIFICATION_POLL_INTERVAL_MINUTES", 0)
 
-        rest = FakeHARestClient(states=[self._ENTITY])
+        ws = FakeHAWebSocketClient(notifications=[self._NOTIF])
         llm = FakeLLMClient(self._make_llm_json())
         ssh = FakeSSHClient(
             file_contents={
@@ -288,7 +287,7 @@ class TestPollForNotificationsLoopBody:
         try:
             asyncio.run(
                 ha_log_monitor.poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=ssh,
@@ -298,21 +297,20 @@ class TestPollForNotificationsLoopBody:
         except asyncio.CancelledError:
             pass
 
-        # Card file written to watch_dir — poll_for_notifications uses
-        # analysis.model_dump() as payload, so the file is named <notification_id>.json
-        # (no "notif_" prefix — unlike run_notifications which adds that prefix)
-        card_file = watch_dir / "http_login.json"
+        # Card file uses "notif_<id>" prefix so the dashboard can find it
+        card_file = watch_dir / "notif_http-login.json"
         assert card_file.exists(), "Card file not written to watch_dir"
         card = json.loads(card_file.read_text())
+        assert card["payload"].get("is_notification_card") is True
         assert (
             card["payload"].get("human_explanation")
             == "Someone tried to log into HA from IP 1.2.3.4."
         )
 
-        # notification_history row written
+        # notification_history row written with the real HA notification_id
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT notification_id, hitl_sent_at FROM notification_history WHERE notification_id = 'http_login'"
+                "SELECT notification_id, hitl_sent_at FROM notification_history WHERE notification_id = 'http-login'"
             ).fetchone()
         assert row is not None
         assert row[1] is not None, "hitl_sent_at should be set after card is sent"
@@ -320,12 +318,12 @@ class TestPollForNotificationsLoopBody:
     def test_duplicate_notification_not_resent(self, monkeypatch, tmp_path):
         """Second iteration with same notification: card file NOT re-created (idempotency)."""
         import ha_agent_advanced
-        import ha_log_monitor
+        import ha_log_monitor as hlm
         from ha_notification_manager import (
             mark_notification_hitl_sent,
             record_notification_seen,
         )
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
         from utils.ollama_client import FakeLLMClient
         from utils.ssh_client import FakeSSHClient
@@ -338,13 +336,10 @@ class TestPollForNotificationsLoopBody:
         ha_agent_advanced.init_local_database()
 
         # Pre-populate: notification already seen and HITL card already sent
-        record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
-        mark_notification_hitl_sent("http_login", db_path=db_path)
-
-        # No card file exists yet (it was sent via ntfy, not file, in that scenario)
+        record_notification_seen("http-login", "security", "HIGH", db_path=db_path)
+        mark_notification_hitl_sent("http-login", db_path=db_path)
 
         call_count = {"n": 0}
-        import ha_log_monitor as hlm
 
         async def fake_sleep(_t):
             call_count["n"] += 1
@@ -354,7 +349,7 @@ class TestPollForNotificationsLoopBody:
         monkeypatch.setattr(hlm.asyncio, "sleep", fake_sleep)
         monkeypatch.setattr(hlm, "HA_NOTIFICATION_POLL_INTERVAL_MINUTES", 0)
 
-        rest = FakeHARestClient(states=[self._ENTITY])
+        ws = FakeHAWebSocketClient(notifications=[self._NOTIF])
         llm = FakeLLMClient(self._make_llm_json())
         ssh = FakeSSHClient(
             file_contents={
@@ -366,7 +361,7 @@ class TestPollForNotificationsLoopBody:
         try:
             asyncio.run(
                 hlm.poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=ssh,
@@ -377,4 +372,4 @@ class TestPollForNotificationsLoopBody:
             pass
 
         # No new card file — notification was already handled
-        assert not (watch_dir / "notif_http_login.json").exists()
+        assert not (watch_dir / "notif_http-login.json").exists()
