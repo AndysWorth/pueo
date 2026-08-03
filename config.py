@@ -53,6 +53,7 @@ NOTIFY_URL: str = _agent.get("notify_url", "")
 NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", "hitl/")
 HITL_ALWAYS: bool = bool(_agent.get("hitl_always", False))
 DASHBOARD_PORT: int = int(_agent.get("dashboard_port", 8080))
+TIMELINE_PAGE_SIZE: int = int(_agent.get("timeline_page_size", 25))
 RESOURCE_POLL_INTERVAL_SECONDS: float = float(
     _agent.get("resource_poll_interval_seconds", 300)
 )

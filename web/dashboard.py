@@ -149,6 +149,17 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "restart_required": False,
         "min_val": 1,
     },
+    # ── Dashboard ─────────────────────────────────────────────────────────────
+    "timeline_page_size": {
+        "yaml_section": "agent",
+        "yaml_key": "timeline_page_size",
+        "config_attr": "TIMELINE_PAGE_SIZE",
+        "val_type": "int",
+        "description": "Number of events shown per page on the Timeline tab",
+        "group": "Dashboard",
+        "restart_required": False,
+        "min_val": 1,
+    },
     # ── Notifications ─────────────────────────────────────────────────────────
     "notifier": {
         "yaml_section": "agent",
@@ -968,9 +979,6 @@ async def notifications_tab(
     )
 
 
-_PAGE_SIZE = 25
-
-
 @app.get("/timeline", response_class=HTMLResponse)
 async def timeline(
     request: Request,
@@ -979,16 +987,17 @@ async def timeline(
     source: str = Query(default=""),
 ) -> HTMLResponse:
     from utils.timeline import count_timeline_events, load_timeline_events
+    from config import TIMELINE_PAGE_SIZE
 
-    offset = (page - 1) * _PAGE_SIZE
+    offset = (page - 1) * TIMELINE_PAGE_SIZE
     events = load_timeline_events(
-        limit=_PAGE_SIZE,
+        limit=TIMELINE_PAGE_SIZE,
         offset=offset,
         level_filter=level,
         source_filter=source,
     )
     total = count_timeline_events(level_filter=level, source_filter=source)
-    total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    total_pages = max(1, (total + TIMELINE_PAGE_SIZE - 1) // TIMELINE_PAGE_SIZE)
     return templates.TemplateResponse(
         request,
         "timeline.html",
