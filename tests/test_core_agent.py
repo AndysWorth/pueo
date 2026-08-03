@@ -591,6 +591,25 @@ class TestBackupInventory:
             count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
         assert count == 0
 
+    def test_reconcile_skips_deleted_from_ha_in_orphan_check(self, db_path, caplog):
+        import logging
+
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("already-gone")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET deleted_from_ha_at = ? WHERE backup_slug = ?",
+                (1234567890.0, "already-gone"),
+            )
+            conn.commit()
+        backup_json = '{"result":"ok","data":{"backups":[]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        assert not any("orphan" in r.message for r in caplog.records)
+
 
 # ── Backup offloading ─────────────────────────────────────────────────────────────
 
@@ -604,6 +623,16 @@ class TestBackupOffloading:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         ha_agent_advanced.init_local_database()
         return path
+
+    @pytest.fixture(autouse=True)
+    def _patch_resolve_direct(self, monkeypatch):
+        """Make _resolve_backup_remote_path return the direct {slug}.tar path by default."""
+        import ha_agent_advanced
+
+        async def _direct(slug, client):
+            return f"/backup/{slug}.tar"
+
+        monkeypatch.setattr(ha_agent_advanced, "_resolve_backup_remote_path", _direct)
 
     def _insert_slug(self, db_path, slug):
         import sqlite3
@@ -724,6 +753,134 @@ class TestBackupOffloading:
                 "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
             ).fetchone()
         assert row[0] == "both"
+
+    def test_offload_uses_fallback_path_for_descriptive_filename(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import hashlib
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        self._insert_slug(db_path, slug)
+        descriptive_path = "/backup/Automatic_backup_2026.7.2_2026-08-03.tar"
+        content = b"ha-auto-backup content"
+        remote_hash = hashlib.sha256(content).hexdigest()
+        local_dir = tmp_path / "backups"
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_LOCAL_DIR", str(local_dir))
+
+        async def _fallback_resolve(s, client):
+            return descriptive_path if s == slug else None
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "_resolve_backup_remote_path", _fallback_resolve
+        )
+        ssh = FakeSSHClient(
+            download_contents={descriptive_path: content},
+            command_results={
+                "sha256sum": (0, f"{remote_hash}  {descriptive_path}\n", "")
+            },
+        )
+        asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+
+        assert ssh.downloaded_files[0][0] == descriptive_path
+        assert (local_dir / f"{slug}.tar").exists()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "both"
+
+    def test_offload_returns_false_when_no_remote_path(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        import asyncio
+        import sqlite3
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        self._insert_slug(db_path, slug)
+        monkeypatch.setattr(
+            ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "backups")
+        )
+
+        async def _not_found(s, client):
+            return None
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "_resolve_backup_remote_path", _not_found
+        )
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh)
+        )
+
+        assert result is False
+        assert ssh.downloaded_files == []
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+            ).fetchone()
+        assert row[0] == "ha"
+
+
+# ── _resolve_backup_remote_path ───────────────────────────────────────────────────
+
+
+class TestResolveBackupRemotePath:
+    def test_direct_path_returned_when_slug_tar_exists(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        ssh = FakeSSHClient(
+            command_results={f"[ -f /backup/{slug}.tar ]": (0, "found", "")}
+        )
+        result = asyncio.run(ha_agent_advanced._resolve_backup_remote_path(slug, ssh))
+        assert result == f"/backup/{slug}.tar"
+
+    def test_fallback_ssh_search_when_direct_not_found(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        slug = "abc123"
+        descriptive = "/backup/Automatic_backup_2026.7.2.tar"
+        ssh = FakeSSHClient(
+            command_results={
+                f"[ -f /backup/{slug}.tar ]": (0, "", ""),
+                "for f in": (0, descriptive, ""),
+            }
+        )
+        result = asyncio.run(ha_agent_advanced._resolve_backup_remote_path(slug, ssh))
+        assert result == descriptive
+
+    def test_returns_none_when_not_found_anywhere(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced._resolve_backup_remote_path("abc123", ssh)
+        )
+        assert result is None
+
+    def test_returns_none_for_non_hex_slug(self):
+        import asyncio
+        import ha_agent_advanced
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            ha_agent_advanced._resolve_backup_remote_path("slug-abc", ssh)
+        )
+        assert result is None
+        assert ssh.commands_run == []
 
 
 # ── ha_agent_sandbox_engine SQLite layer ─────────────────────────────────────────
@@ -4745,6 +4902,56 @@ class TestRecordNotificationSeen:
             ).fetchone()
         assert row is not None
         assert row[0] is None
+
+    def test_newer_ha_created_at_resets_hitl_sent_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        # First occurrence: recorded and HITL card sent
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        # Second occurrence with a newer ha_created_at: hitl_sent_at should be cleared
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=2000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at, ha_created_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert (
+            row[0] is None
+        ), "hitl_sent_at must be reset for a new notification occurrence"
+        assert row[1] == 2000.0
+
+    def test_same_ha_created_at_does_not_reset_hitl_sent_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+
+        # Same ha_created_at: hitl_sent_at should remain set (already processed)
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert (
+            row[0] is not None
+        ), "hitl_sent_at must not be reset for same notification"
 
 
 # ── ha_agent_advanced — migration v6 (notification_history) ──────────────────────
