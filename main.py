@@ -170,7 +170,8 @@ async def supervisor_main(config_path: Path) -> None:
     ha_agent_advanced.init_local_database()
     try:
         await ha_agent_advanced.reconcile_backup_inventory()
-    except Exception:  # nosec B110 — reconcile failure must not block startup
+        await ha_agent_advanced.offload_pending_backups()
+    except Exception:  # nosec B110 — reconcile/offload failure must not block startup
         pass
 
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)

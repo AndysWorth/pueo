@@ -182,3 +182,184 @@ class TestSandboxEngineReexports:
             ha_agent_sandbox_engine.execute_remote_backup
             is ha_agent_advanced.execute_remote_backup
         )
+
+
+# ---------------------------------------------------------------------------
+# offload_pending_backups
+# ---------------------------------------------------------------------------
+
+
+class TestOffloadPendingBackups:
+    @pytest.fixture
+    def db_path(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE backup_registry "
+                "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
+                "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
+                "deleted_from_ha_at REAL)"
+            )
+            conn.executemany(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 1000000, 'ha')",
+                [(1000, "slug-old"), (2000, "slug-new")],
+            )
+        return db
+
+    def test_offload_pending_calls_offload_for_each_ha_slug(self, db_path):
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch(
+                "ha_agent_advanced.offload_backup_to_local",
+                new=AsyncMock(return_value=True),
+            ) as mock_offload,
+            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("ha_agent_advanced.purge_local_backups"),
+        ):
+            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+
+        assert mock_offload.call_count == 2
+        called_slugs = {c.args[0] for c in mock_offload.call_args_list}
+        assert called_slugs == {"slug-old", "slug-new"}
+
+    def test_offload_pending_skips_already_offloaded(self, db_path):
+        import time
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET offloaded_at = ?, location = 'both'"
+                " WHERE backup_slug = 'slug-old'",
+                (time.time(),),
+            )
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch(
+                "ha_agent_advanced.offload_backup_to_local",
+                new=AsyncMock(return_value=True),
+            ) as mock_offload,
+            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("ha_agent_advanced.purge_local_backups"),
+        ):
+            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+
+        assert mock_offload.call_count == 1
+        assert mock_offload.call_args.args[0] == "slug-new"
+
+    def test_offload_pending_noop_when_all_offloaded(self, db_path):
+        import time
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET offloaded_at = ?, location = 'both'",
+                (time.time(),),
+            )
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch(
+                "ha_agent_advanced.offload_backup_to_local",
+                new=AsyncMock(return_value=True),
+            ) as mock_offload,
+            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("ha_agent_advanced.purge_local_backups"),
+        ):
+            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+
+        mock_offload.assert_not_called()
+
+    def test_offload_pending_partial_failure_continues(self, db_path):
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch(
+                "ha_agent_advanced.offload_backup_to_local",
+                new=AsyncMock(side_effect=[False, True]),
+            ) as mock_offload,
+            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("ha_agent_advanced.purge_local_backups"),
+        ):
+            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+
+        assert mock_offload.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# purge_local_backups location tracking
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeLocalBackupsLocation:
+    @pytest.fixture
+    def db_path(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE backup_registry "
+                "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
+                "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
+                "deleted_from_ha_at REAL)"
+            )
+        return db
+
+    def _insert_offloaded(self, conn, slug, offload_age_days, deleted_from_ha=False):
+        import time
+
+        ts = time.time() - (offload_age_days * 86400)
+        deleted = ts if deleted_from_ha else None
+        conn.execute(
+            "INSERT INTO backup_registry"
+            " (timestamp, backup_slug, status, size_bytes, location,"
+            "  offloaded_at, deleted_from_ha_at)"
+            " VALUES (?, ?, 'ACTIVE', 0, 'both', ?, ?)",
+            (int(ts), slug, ts, deleted),
+        )
+
+    def test_purge_sets_location_ha_when_still_on_ha(self, tmp_path, db_path):
+        from ha_agent_advanced import purge_local_backups
+
+        # Need two slugs: purge skips the most-recent one, so "old" must not be newest.
+        with sqlite3.connect(db_path) as conn:
+            self._insert_offloaded(conn, "newer-slug", offload_age_days=31)
+            self._insert_offloaded(conn, "old-still-on-ha", offload_age_days=40)
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
+            patch("ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
+        ):
+            purge_local_backups()
+
+        with sqlite3.connect(db_path) as conn:
+            loc = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?",
+                ("old-still-on-ha",),
+            ).fetchone()[0]
+        assert loc == "ha"
+
+    def test_purge_sets_location_purged_when_also_deleted_from_ha(
+        self, tmp_path, db_path
+    ):
+        from ha_agent_advanced import purge_local_backups
+
+        # Need two slugs for the same reason; target has deleted_from_ha set.
+        with sqlite3.connect(db_path) as conn:
+            self._insert_offloaded(conn, "newer-slug", offload_age_days=31)
+            self._insert_offloaded(
+                conn, "gone-everywhere", offload_age_days=40, deleted_from_ha=True
+            )
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
+            patch("ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
+        ):
+            purge_local_backups()
+
+        with sqlite3.connect(db_path) as conn:
+            loc = conn.execute(
+                "SELECT location FROM backup_registry WHERE backup_slug = ?",
+                ("gone-everywhere",),
+            ).fetchone()[0]
+        assert loc == "purged"
