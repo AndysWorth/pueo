@@ -303,7 +303,6 @@ async def poll_for_updates(
 
 
 async def poll_for_notifications(
-    ha_rest_client: Optional[HARestClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -318,11 +317,12 @@ async def poll_for_notifications(
         mark_notification_hitl_sent,
         record_notification_seen,
     )
+    from utils.ha_ws_client import HAWebSocketClient
 
     interval = HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60
-    _client: HARestClientProtocol = ha_rest_client or HARestClient(
+    _ws: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
-    )
+    )  # pragma: no cover
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     _llm: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
     _ssh: SSHClientProtocol = ssh_client or AsyncSSHClient(
@@ -332,17 +332,15 @@ async def poll_for_notifications(
     while True:
         await asyncio.sleep(interval)
         try:
-            entities = await _client.get_states(prefix="persistent_notification.")
+            notifications = await _ws.get_persistent_notifications()
         except Exception as exc:
             log.warning("notification_poll_failed", error=str(exc))
             continue
 
-        for entity in entities:
-            entity_id = entity.get("entity_id", "")
-            nid = entity_id.removeprefix("persistent_notification.")
-            attrs = entity.get("attributes", {})
-            title = attrs.get("title")
-            message = attrs.get("message", "")
+        for notif in notifications:
+            nid: str = notif.get("notification_id", "")
+            title: Optional[str] = notif.get("title")
+            message: str = notif.get("message", "")
 
             category, severity = classify_notification(nid)
             is_new = record_notification_seen(nid, category, severity, db_path=db_path)
@@ -426,7 +424,6 @@ async def main(
     if HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and HA_API_TOKEN:
         asyncio.create_task(
             poll_for_notifications(
-                ha_rest_client=ha_rest_client,
                 notifier=_notifier,
                 llm_client=llm_client,
                 ssh_client=_ssh,

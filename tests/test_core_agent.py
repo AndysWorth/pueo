@@ -4787,13 +4787,9 @@ class TestPollForNotifications:
         message: str = "test message",
     ) -> dict:
         return {
-            "entity_id": f"persistent_notification.{nid}",
-            "state": "notifying",
-            "attributes": {
-                "notification_id": nid,
-                "title": title,
-                "message": message,
-            },
+            "notification_id": nid,
+            "title": title,
+            "message": message,
         }
 
     @staticmethod
@@ -4823,14 +4819,14 @@ class TestPollForNotifications:
     def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "http_login", "Login attempt", "Bad creds"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4838,7 +4834,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
@@ -4856,19 +4852,19 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         from ha_notification_manager import record_notification_seen
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
-        entity = self._make_notification_entity("http_login", "Login attempt")
-        rest = FakeHARestClient(states=[entity])
+        notif = self._make_notification_entity("http_login", "Login attempt")
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest, notifier=notifier, db_path=db_path
+                    ha_ws_client=ws, notifier=notifier, db_path=db_path
                 )
             )
 
@@ -4879,16 +4875,11 @@ class TestPollForNotifications:
         from ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
-        class ExplodingRestClient:
-            async def get_states(self, prefix: str | None = None) -> list:
+        class ExplodingWSClient:
+            async def get_persistent_notifications(self) -> list:
                 raise RuntimeError("network down")
 
-            async def get_state(self, entity_id: str) -> dict:
-                raise RuntimeError("network down")
-
-            async def call_service(
-                self, domain: str, service: str, payload: dict
-            ) -> dict:
+            async def get_device_registry(self) -> list:
                 raise RuntimeError("network down")
 
         notifier = FakeNotifier()
@@ -4897,7 +4888,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=ExplodingRestClient(),
+                    ha_ws_client=ExplodingWSClient(),
                     notifier=notifier,
                     db_path=db_path,
                 )
@@ -4908,14 +4899,14 @@ class TestPollForNotifications:
     def test_unknown_notification_id_classified_as_other(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "some_integration_abc", message="Something failed"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4923,7 +4914,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
@@ -4939,22 +4930,22 @@ class TestPollForNotifications:
         """If enrich_and_analyze_notification raises, the notification is skipped."""
         import asyncio as asyncio_mod
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         class ExplodingLLM:
             async def chat(self, model, messages, options, format):
                 raise RuntimeError("LLM exploded")
 
-        entity = self._make_notification_entity("http_login", "Login", "Bad creds")
-        rest = FakeHARestClient(states=[entity])
+        notif = self._make_notification_entity("http_login", "Login", "Bad creds")
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=ExplodingLLM(),
                     db_path=db_path,
@@ -4968,14 +4959,14 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         import sqlite3
         from ha_log_monitor import poll_for_notifications
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        entity = self._make_notification_entity(
+        notif = self._make_notification_entity(
             "invalid_config", "Config error", "Bad YAML"
         )
-        rest = FakeHARestClient(states=[entity])
+        ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
         llm = self._make_llm_client()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
@@ -4983,7 +4974,7 @@ class TestPollForNotifications:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_notifications(
-                    ha_rest_client=rest,
+                    ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
                     ssh_client=FakeSSHClient(),
