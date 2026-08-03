@@ -4553,6 +4553,14 @@ class TestClassifyNotification:
         assert category == "security"
         assert severity == "HIGH"
 
+    def test_http_login_hyphen_is_security_high(self):
+        # HA WebSocket API returns "http-login" (hyphen), not "http_login"
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("http-login")
+        assert category == "security"
+        assert severity == "HIGH"
+
     def test_invalid_config_is_config_error_high(self):
         from ha_notification_manager import classify_notification
 
@@ -4843,10 +4851,13 @@ class TestPollForNotifications:
             )
 
         assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["notification_id"] == "http_login"
-        assert notifier.sent[0]["payload"]["category"] == "security"
-        assert notifier.sent[0]["payload"]["severity"] == "HIGH"
-        assert notifier.sent[0]["payload"]["human_explanation"] == "Test explanation."
+        payload = notifier.sent[0]["payload"]
+        assert payload["notification_id"] == "notif_http_login"
+        assert payload["ha_notification_id"] == "http_login"
+        assert payload["is_notification_card"] is True
+        assert payload["category"] == "security"
+        assert payload["severity"] == "HIGH"
+        assert payload["human_explanation"] == "Test explanation."
 
     def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
         import asyncio as asyncio_mod

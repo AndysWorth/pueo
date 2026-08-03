@@ -57,6 +57,7 @@ class _NotificationLLMOutput(BaseModel):
 
 _CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
     "http_login": ("security", "HIGH"),
+    "http-login": ("security", "HIGH"),
     "invalid_config": ("config_error", "HIGH"),
 }
 
@@ -219,7 +220,10 @@ async def enrich_and_analyze_notification(
     enriched_context: dict = {}
     config_content = ""
 
-    if notification_id == "http_login" and HA_NOTIFICATION_ENRICH_AUTH_FAILURES:
+    if (
+        notification_id in ("http_login", "http-login")
+        and HA_NOTIFICATION_ENRICH_AUTH_FAILURES
+    ):
         ip = extract_ip_from_message(message)
         if ip:
             enriched_context = await enrich_http_login(ip, netalertx_client, ws_client)
@@ -330,7 +334,7 @@ def get_pending_notifications(
 
 def _format_notification_subject(analysis: "NotificationAnalysis") -> str:
     """Build the HITL card subject line for a notification."""
-    if analysis.notification_id == "http_login":
+    if analysis.notification_id in ("http_login", "http-login"):
         ec = analysis.enriched_context
         if not ec.get("is_known_device", True):
             return "⚠ Unknown source IP — Failed login attempt"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# pueo — start the Pueo supervisor in the background.
-# Logs go to pueo.log via Python's file handler; terminal output is suppressed.
+# pueo — manage the Pueo supervisor process.
+# Usage: pueo [start|stop|status]  (default: start)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,17 +9,48 @@ PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG="$PROJECT_DIR/pueo.log"
 PID_FILE="$PROJECT_DIR/pueo.pid"
 
-if [ ! -f "$PYTHON" ]; then
-    echo "Error: .venv not found. Run setup.sh first." >&2
-    exit 1
-fi
+CMD="${1:-start}"
 
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "Pueo is already running (PID $(cat "$PID_FILE")). Log: $LOG" >&2
-    exit 1
-fi
+_running() {
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
 
-cd "$PROJECT_DIR"
-"$PYTHON" main.py > /dev/null 2>&1 &
-echo $! > "$PID_FILE"
-echo "Pueo started (PID $!). Log: $LOG"
+case "$CMD" in
+    start)
+        if [ ! -f "$PYTHON" ]; then
+            echo "Error: .venv not found. Run setup.sh first." >&2
+            exit 1
+        fi
+        if _running; then
+            echo "Pueo is already running (PID $(cat "$PID_FILE")). Log: $LOG" >&2
+            exit 1
+        fi
+        cd "$PROJECT_DIR"
+        "$PYTHON" main.py > /dev/null 2>&1 &
+        echo $! > "$PID_FILE"
+        echo "Pueo started (PID $!). Log: $LOG"
+        ;;
+    stop)
+        if ! _running; then
+            echo "Pueo is not running." >&2
+            [ -f "$PID_FILE" ] && rm "$PID_FILE"
+            exit 0
+        fi
+        PID="$(cat "$PID_FILE")"
+        kill "$PID"
+        rm "$PID_FILE"
+        echo "Pueo stopped (PID $PID)."
+        ;;
+    status)
+        if _running; then
+            echo "Pueo is running (PID $(cat "$PID_FILE")). Log: $LOG"
+        else
+            echo "Pueo is not running."
+            [ -f "$PID_FILE" ] && rm "$PID_FILE"
+        fi
+        ;;
+    *)
+        echo "Usage: pueo [start|stop|status]" >&2
+        exit 1
+        ;;
+esac
