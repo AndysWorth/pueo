@@ -5,6 +5,7 @@ import asyncio
 import collections
 import datetime
 import re
+import sqlite3
 import uuid
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -355,11 +356,18 @@ async def poll_for_notifications(
                     pass
 
             category, severity = classify_notification(nid)
-            is_new = record_notification_seen(
+            record_notification_seen(
                 nid, category, severity, db_path=db_path, ha_created_at=ha_created_at
             )
 
-            if is_new:
+            with sqlite3.connect(db_path) as _conn:
+                _row = _conn.execute(
+                    "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
+                    (nid,),
+                ).fetchone()
+            should_send = _row is not None and _row[0] is None
+
+            if should_send:
                 try:
                     analysis = await enrich_and_analyze_notification(
                         nid,

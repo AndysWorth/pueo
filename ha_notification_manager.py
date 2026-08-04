@@ -57,8 +57,8 @@ class _NotificationLLMOutput(BaseModel):
 
 
 _CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
-    "http_login": ("security", "HIGH"),
     "http-login": ("security", "HIGH"),
+    "ip-ban": ("security", "HIGH"),
     "invalid_config": ("config_error", "HIGH"),
 }
 
@@ -346,7 +346,7 @@ async def enrich_and_analyze_notification(
     config_content = ""
 
     if (
-        notification_id in ("http_login", "http-login")
+        notification_id in ("http-login", "ip-ban")
         and HA_NOTIFICATION_ENRICH_AUTH_FAILURES
     ):
         ip = extract_ip_from_message(message)
@@ -402,7 +402,8 @@ def record_notification_seen(
             if is_new_occurrence:
                 conn.execute(
                     """UPDATE notification_history
-                       SET last_seen_at = ?, ha_created_at = ?, hitl_sent_at = NULL
+                       SET last_seen_at = ?, ha_created_at = ?, hitl_sent_at = NULL,
+                           dismissed_at = NULL, dismissed_by = NULL
                        WHERE notification_id = ?""",
                     (now, ha_created_at, notification_id),
                 )
@@ -478,7 +479,7 @@ def get_pending_notifications(
 
 def _format_notification_subject(analysis: "NotificationAnalysis") -> str:
     """Build the HITL card subject line for a notification."""
-    if analysis.notification_id in ("http_login", "http-login"):
+    if analysis.notification_id in ("http-login", "ip-ban"):
         ec = analysis.enriched_context
         if not ec.get("is_known_device", True):
             return "⚠ Unknown source IP — Failed login attempt"
