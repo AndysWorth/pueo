@@ -526,7 +526,16 @@ async def run_notifications(
 
     Returns the count of new HITL cards sent.
     """
-    from config import HA_API_PORT, HA_API_TOKEN, HA_HOST, NOTIFY_WATCH_DIR
+    from config import (
+        HA_API_PORT,
+        HA_API_TOKEN,
+        HA_HOST,
+        NETALERTX_API_PORT,
+        NETALERTX_API_TOKEN,
+        NETALERTX_HOST,
+        NOTIFY_WATCH_DIR,
+    )
+    from netalertx.api_client import NetAlertXAPIClient
     from utils.ha_rest_client import HARestClient
     from utils.ha_ws_client import HAWebSocketClient
     from utils.notify import FileNotifier
@@ -536,6 +545,12 @@ async def run_notifications(
     )
     _ws: HAWebSocketClientProtocol = ws_client or HAWebSocketClient(  # pragma: no cover
         HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _nax: NetAlertXClientProtocol = (
+        netalertx_client
+        or NetAlertXAPIClient(  # pragma: no cover
+            f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}", NETALERTX_API_TOKEN
+        )
     )
     card_notifier: "NotifierProtocol" = notifier or FileNotifier(  # pragma: no cover
         watch_dir=NOTIFY_WATCH_DIR
@@ -582,8 +597,8 @@ async def run_notifications(
                 message,
                 ssh_client,
                 llm_client,
-                netalertx_client,
-                ws_client,
+                _nax,
+                _ws,
             )
         except Exception as exc:
             log.error(
