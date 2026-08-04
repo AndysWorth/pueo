@@ -382,11 +382,10 @@ async def _execute_queued_update(
     import config as _config
     from ha_update_manager import execute_update
     from utils.autonomy import AutonomyGate
-    from utils.ha_rest_client import UpdateStatus
+    from utils.ha_rest_client import HARestClient, UpdateStatus
     from utils.notify import get_notifier
     from utils.ssh_client import AsyncSSHClient
 
-    (watch_dir / f"{nid}.in_progress").touch()
     try:
         payload = data.get("payload", {})
         component = payload.get("component", "")
@@ -406,7 +405,12 @@ async def _execute_queued_update(
         notifier = get_notifier(
             _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
         )
-        success = await execute_update(update, ssh, notifier, gate)
+        ha_rest = HARestClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+        success = await execute_update(
+            update, ssh, notifier, gate, ha_rest_client=ha_rest
+        )
         if success:
             data["fix_applied"] = True
             json_path.write_text(json.dumps(data, indent=2))
@@ -718,14 +722,18 @@ async def approve(nid: str) -> RedirectResponse:
             # Repair card (typed) or legacy card with pending_fix_yaml
             yaml_content = payload.get("pending_fix_yaml", "")
             description = payload.get("pending_fix_description", "")
-            await _execute_queued_fix(
-                nid, yaml_content, description, data, json_path, watch_dir
+            (watch_dir / f"{nid}.in_progress").touch()
+            asyncio.create_task(
+                _execute_queued_fix(
+                    nid, yaml_content, description, data, json_path, watch_dir
+                )
             )
             return RedirectResponse(url="/queue", status_code=303)
 
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
-            await handler(nid, data, json_path, watch_dir)
+            (watch_dir / f"{nid}.in_progress").touch()
+            asyncio.create_task(handler(nid, data, json_path, watch_dir))
         else:
             (watch_dir / f"{nid}.approved").touch()
     return RedirectResponse(url="/queue", status_code=303)

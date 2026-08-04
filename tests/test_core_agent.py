@@ -3862,15 +3862,17 @@ class TestExecuteAddonUpdate:
 
         return _ctx()
 
-    def test_calls_backup_and_issues_curl(self):
+    def test_calls_backup_and_calls_rest_service(self):
         from ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
+        rest = FakeHARestClient()
 
         async def fake_poll(slug, version, client, timeout_seconds=180):
             return True
@@ -3878,25 +3880,32 @@ class TestExecuteAddonUpdate:
         with self._patch_backup():
             result = asyncio.run(
                 execute_addon_update(
-                    self._make_update("my_addon"), ssh, notifier, gate, _poll=fake_poll
+                    self._make_update("my_addon"),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=rest,
                 )
             )
 
         assert result is True
-        assert any(
-            "supervisor/store/addons/my_addon/update" in cmd for cmd in ssh.commands_run
-        )
+        assert rest.service_calls == [
+            ("update", "install", {"entity_id": "update.my_addon_update"})
+        ]
         assert notifier.sent[0]["payload"]["success"] is True
 
     def test_returns_false_on_timeout(self):
         from ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
+        rest = FakeHARestClient()
 
         async def fake_poll_fail(slug, version, client, timeout_seconds=180):
             return False
@@ -3904,22 +3913,29 @@ class TestExecuteAddonUpdate:
         with self._patch_backup():
             result = asyncio.run(
                 execute_addon_update(
-                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll_fail,
+                    ha_rest_client=rest,
                 )
             )
 
         assert result is False
         assert notifier.sent[0]["payload"]["success"] is False
 
-    def test_curl_slug_uses_component_name(self):
+    def test_rest_service_uses_entity_id(self):
         from ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
+        rest = FakeHARestClient()
 
         async def fake_poll(slug, version, client, timeout_seconds=180):
             return True
@@ -3932,36 +3948,60 @@ class TestExecuteAddonUpdate:
                     notifier,
                     gate,
                     _poll=fake_poll,
+                    ha_rest_client=rest,
                 )
             )
 
-        curl_cmds = [cmd for cmd in ssh.commands_run if "supervisor/store" in cmd]
-        assert len(curl_cmds) == 1
-        assert "special_addon" in curl_cmds[0]
+        assert len(rest.service_calls) == 1
+        domain, service, payload = rest.service_calls[0]
+        assert domain == "update"
+        assert service == "install"
+        assert "special_addon" in payload["entity_id"]
 
-    def test_curl_failure_logged_but_poll_continues(self):
+    def test_rest_failure_returns_false_immediately(self):
+        """When call_service raises, return False without polling."""
+        import httpx
+
         from ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
 
-        ssh = FakeSSHClient(command_results={"supervisor/store": (1, "", "curl error")})
+        ssh = FakeSSHClient()
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
+        poll_called = []
+
+        class _FailingRestClient(FakeHARestClient):
+            async def call_service(self, domain, service, payload):
+                raise httpx.HTTPStatusError(
+                    "403 Forbidden",
+                    request=httpx.Request(
+                        "POST", "http://fake/api/services/update/install"
+                    ),
+                    response=httpx.Response(403),
+                )
 
         async def fake_poll(slug, version, client, timeout_seconds=180):
-            return (
-                False  # poll fails regardless; just testing the curl-fail branch is hit
-            )
+            poll_called.append(slug)
+            return False
 
         with self._patch_backup():
             result = asyncio.run(
                 execute_addon_update(
-                    self._make_update("my_addon"), ssh, notifier, gate, _poll=fake_poll
+                    self._make_update("my_addon"),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=_FailingRestClient(),
                 )
             )
 
-        assert result is False  # poll timed out, but curl-fail branch was exercised
+        assert result is False
+        assert poll_called == [], "poll must not be called when REST trigger fails"
+        assert notifier.sent[0]["payload"]["success"] is False
 
 
 # ── execute_update dispatch ────────────────────────────────────────────────────
@@ -4034,7 +4074,7 @@ class TestExecuteUpdate:
         notifier = FakeNotifier()
         called = []
 
-        async def fake_addon(update, ssh, notifier, gate):
+        async def fake_addon(update, ssh, notifier, gate, ha_rest_client=None):
             called.append("addon")
             return True
 
