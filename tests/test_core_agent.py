@@ -5177,6 +5177,133 @@ class TestNotificationHistoryMigration:
         assert "ha_created_at" in cols
 
 
+# ── ha_log_monitor — poll_for_updates ────────────────────────────────────────────
+
+
+class TestPollForUpdates:
+    @staticmethod
+    def _make_update_entity(
+        entity_id: str,
+        installed: str = "2026.1.0",
+        latest: str = "2026.2.0",
+        update_available: bool = True,
+    ) -> dict:
+        return {
+            "entity_id": entity_id,
+            "state": "on" if update_available else "off",
+            "attributes": {
+                "installed_version": installed,
+                "latest_version": latest,
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+
+    @staticmethod
+    def _one_shot_sleep() -> object:
+        """No-op on first call (after the first poll), CancelledError on second."""
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise asyncio.CancelledError()
+
+        return fake_sleep
+
+    def test_notifies_on_first_poll_without_sleeping_first(self, monkeypatch):
+        """Updates available at startup must trigger a notification on the first iteration."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.1.0",
+            latest="2026.2.0",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_updates(ha_rest_client=client, notifier=notifier)
+            )
+
+        assert len(notifier.sent) == 1
+        assert "2026.2.0" in notifier.sent[0]["subject"]
+
+    def test_no_duplicate_notification_for_same_entity(self, monkeypatch):
+        """An entity already in _notified must not fire a second notification."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_update_entity("update.home_assistant_core_update")
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_updates(ha_rest_client=client, notifier=notifier)
+            )
+
+        assert len(notifier.sent) == 1
+
+    def test_clears_notified_when_update_no_longer_available(self, monkeypatch):
+        """Once an entity flips back to off, it should be removable from _notified."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        states: list[dict] = [
+            self._make_update_entity("update.home_assistant_core_update")
+        ]
+        client = FakeHARestClient(states=states)
+        notifier = FakeNotifier()
+
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # flip the entity off so the second poll clears _notified
+                states[0]["state"] = "off"
+                states[0]["attributes"]["installed_version"] = "2026.2.0"
+            if call_count[0] >= 3:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_updates(ha_rest_client=client, notifier=notifier)
+            )
+
+        # Only one notification sent (for the first poll when update was available)
+        assert len(notifier.sent) == 1
+
+
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
 
 
