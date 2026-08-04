@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
 from config import AGENT_MAX_WALL_SECONDS, DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
+from utils.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CODE_PROPOSAL,
     CARD_TYPE_NETALERTX_HEAL,
@@ -27,6 +28,8 @@ from utils.card_types import (
     CARD_TYPE_RESOURCE_ACTION,
     CARD_TYPE_UPDATE,
 )
+
+log = get_logger("dashboard")
 
 app = FastAPI(title="Pueo HITL Dashboard")
 app.mount(
@@ -814,10 +817,19 @@ async def dismiss_notification(card_id: str) -> RedirectResponse:
                 await rest.call_service(
                     "persistent_notification", "dismiss", {"notification_id": ha_nid}
                 )
-            except Exception:  # nosec B110
-                pass
-            mark_notification_dismissed(ha_nid, dismissed_by="user")
-        (watch_dir / f"{card_id}.approved").touch()
+                mark_notification_dismissed(ha_nid, dismissed_by="user")
+                (watch_dir / f"{card_id}.approved").touch()
+            except Exception as exc:
+                log.error(
+                    "notification_dismiss_failed",
+                    ha_notification_id=ha_nid,
+                    error=str(exc),
+                )
+                return RedirectResponse(
+                    url="/notifications?dismiss_error=1", status_code=303
+                )
+        else:
+            (watch_dir / f"{card_id}.approved").touch()
     return RedirectResponse(url="/notifications", status_code=303)
 
 

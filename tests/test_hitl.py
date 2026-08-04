@@ -100,6 +100,37 @@ class TestFileNotifier:
         result = asyncio.run(n.wait_for_approval("nid-no"))
         assert result is False
 
+    def test_resend_clears_stale_approved(self, tmp_path):
+        from utils.notify import FileNotifier
+
+        n = FileNotifier(watch_dir=str(tmp_path))
+        asyncio.run(n.send("s", "b", {"notification_id": "card-1"}))
+        (tmp_path / "card-1.approved").touch()
+        asyncio.run(n.send("s2", "b2", {"notification_id": "card-1"}))
+        assert not (tmp_path / "card-1.approved").exists()
+        assert (tmp_path / "card-1.json").exists()
+
+    def test_resend_clears_stale_rejected(self, tmp_path):
+        from utils.notify import FileNotifier
+
+        n = FileNotifier(watch_dir=str(tmp_path))
+        asyncio.run(n.send("s", "b", {"notification_id": "card-2"}))
+        (tmp_path / "card-2.rejected").touch()
+        asyncio.run(n.send("s2", "b2", {"notification_id": "card-2"}))
+        assert not (tmp_path / "card-2.rejected").exists()
+
+    def test_resend_clears_multiple_stale_files(self, tmp_path):
+        from utils.notify import FileNotifier
+
+        n = FileNotifier(watch_dir=str(tmp_path))
+        asyncio.run(n.send("s", "b", {"notification_id": "card-3"}))
+        (tmp_path / "card-3.approved").touch()
+        (tmp_path / "card-3.deferred").touch()
+        asyncio.run(n.send("s2", "b2", {"notification_id": "card-3"}))
+        assert not (tmp_path / "card-3.approved").exists()
+        assert not (tmp_path / "card-3.deferred").exists()
+        assert (tmp_path / "card-3.json").exists()
+
 
 class TestGetNotifier:
     def test_default_returns_file_notifier(self, tmp_path):
