@@ -5486,6 +5486,45 @@ class TestPollForNotifications:
             len(notifier.sent) == 2
         ), "re-appearing notification must trigger a second card"
 
+    def test_netalertx_name_included_in_enrichment(self, db_path, monkeypatch):
+        """NetAlertX device name must appear in enriched_context when a client is provided."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        class FakeNetAlertXClient:
+            async def get_devices(self):
+                return [{"devLastIP": "10.0.0.168", "devName": "iPhony 5G"}]
+
+        notif = self._make_notification_entity(
+            "http-login",
+            "Login attempt failed",
+            "Login attempt or request with invalid authentication from 10.0.0.168 (10.0.0.168).",
+        )
+        ws = FakeHAWebSocketClient(notifications=[notif])
+        notifier = FakeNotifier()
+        llm = self._make_llm_client()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_ws_client=ws,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    netalertx_client=FakeNetAlertXClient(),
+                    db_path=db_path,
+                )
+            )
+
+        assert len(notifier.sent) == 1
+        ctx = notifier.sent[0]["payload"]["enriched_context"]
+        assert ctx["netalertx_name"] == "iPhony 5G"
+        assert ctx["is_known_device"] is True
+
 
 # ── ha_notification_manager — extract_ip_from_message ────────────────────────────
 

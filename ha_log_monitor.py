@@ -24,6 +24,9 @@ from config import (
     HA_USER,
     MAX_PROMPT_TOKENS,
     MAX_REPAIRS_PER_HOUR,
+    NETALERTX_API_PORT,
+    NETALERTX_API_TOKEN,
+    NETALERTX_HOST,
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
@@ -321,6 +324,7 @@ async def poll_for_notifications(
         mark_notification_hitl_sent,
         record_notification_seen,
     )
+    from netalertx.api_client import NetAlertXAPIClient
     from utils.ha_ws_client import HAWebSocketClient
 
     interval = HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60
@@ -332,6 +336,12 @@ async def poll_for_notifications(
     _ssh: SSHClientProtocol = ssh_client or AsyncSSHClient(
         HA_HOST, HA_USER, SSH_KEY_PATH
     )  # pragma: no cover
+    _nax: NetAlertXClientProtocol = (
+        netalertx_client
+        or NetAlertXAPIClient(  # pragma: no cover
+            f"http://{NETALERTX_HOST}:{NETALERTX_API_PORT}", NETALERTX_API_TOKEN
+        )
+    )
 
     while True:
         try:
@@ -375,8 +385,8 @@ async def poll_for_notifications(
                         message,
                         ssh_client=_ssh,
                         llm_client=_llm,
-                        netalertx_client=netalertx_client,
-                        ws_client=ha_ws_client,
+                        netalertx_client=_nax,
+                        ws_client=_ws,
                     )
                 except Exception as exc:
                     log.warning(
