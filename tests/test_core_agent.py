@@ -4936,6 +4936,37 @@ class TestRecordNotificationSeen:
         ), "hitl_sent_at must be reset for a new notification occurrence"
         assert row[1] == 2000.0
 
+    def test_newer_ha_created_at_resets_first_seen_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_hitl_sent,
+        )
+
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_hitl_sent("http_login", db_path=db_path)
+        with sqlite3.connect(db_path) as conn:
+            original_first_seen = conn.execute(
+                "SELECT first_seen_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()[0]
+
+        import time
+
+        time.sleep(0.01)
+        record_notification_seen(
+            "http_login", "security", "HIGH", db_path=db_path, ha_created_at=2000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT first_seen_at FROM notification_history WHERE notification_id = ?",
+                ("http_login",),
+            ).fetchone()
+        assert (
+            row[0] > original_first_seen
+        ), "first_seen_at must be reset to now when a new occurrence is detected"
+
     def test_same_ha_created_at_does_not_reset_hitl_sent_at(self, db_path):
         from ha_notification_manager import (
             record_notification_seen,

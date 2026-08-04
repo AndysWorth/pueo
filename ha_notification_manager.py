@@ -408,10 +408,10 @@ def record_notification_seen(
             if is_new_occurrence:
                 conn.execute(
                     """UPDATE notification_history
-                       SET last_seen_at = ?, ha_created_at = ?, hitl_sent_at = NULL,
-                           dismissed_at = NULL, dismissed_by = NULL
+                       SET first_seen_at = ?, last_seen_at = ?, ha_created_at = ?,
+                           hitl_sent_at = NULL, dismissed_at = NULL, dismissed_by = NULL
                        WHERE notification_id = ?""",
-                    (now, ha_created_at, notification_id),
+                    (now, now, ha_created_at, notification_id),
                 )
             else:
                 conn.execute(
