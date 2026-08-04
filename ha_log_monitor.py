@@ -254,11 +254,11 @@ async def poll_for_updates(
     _notified: set[str] = set()
 
     while True:
-        await asyncio.sleep(interval)
         try:
             updates = await get_update_status(_client)
         except Exception as exc:
             log.warning("update_poll_failed", error=str(exc))
+            await asyncio.sleep(interval)
             continue
 
         for u in updates:
@@ -305,6 +305,8 @@ async def poll_for_updates(
             elif not u.update_available:
                 # Clear the flag once the update entity goes back to "off"
                 _notified.discard(u.entity_id)
+
+        await asyncio.sleep(interval)
 
 
 async def poll_for_notifications(
