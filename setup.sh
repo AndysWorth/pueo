@@ -216,6 +216,13 @@ if $WRITE_CONFIG; then
     ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
     echo "  (Create at: HA Profile → Security → Long-Lived Access Tokens)"
     ask "HA long-lived access token"        ""                              HA_API_TOKEN
+    echo
+    echo "  ── HA polling features (require api_token) ──"
+    echo "  When an api_token is set, Pueo can poll for HA updates and surface"
+    echo "  persistent HA notifications as HITL cards on the dashboard."
+    echo "  Set the update check interval to 0 to disable update checking."
+    ask "Update check interval (hours, 0 = disabled)"  "6"  HA_UPDATE_CHECK_INTERVAL_HOURS
+    echo
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
     ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
     ask "Local SQLite database path"        "ha_agent_state.db"             DB_PATH
@@ -403,7 +410,8 @@ agent:
   # backup_local_dir: "./backups/"
   # backup_retain_on_ha: 2
   # backup_retain_local_days: 30
-  # update_check_interval_hours: 0    # Set >0 to poll for HA updates (requires api_token)
+  update_check_interval_hours: ${HA_UPDATE_CHECK_INTERVAL_HOURS}
+  notification_poll_interval_minutes: 5
   # update_notify_on_available: true
 EOF
     ok "config.yaml written"
