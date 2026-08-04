@@ -363,16 +363,9 @@ async def run_update_check(
 
     for update in available:
         readiness = reports.get(update.component)
-        approved = await request_update_approval(update, _gate, _notifier, readiness)
-        if approved:
-            if ssh_client is not None:
-                await execute_update(update, ssh_client, _notifier, _gate, llm_client)
-            else:
-                log.warning(
-                    "update_approved_no_ssh",
-                    component=update.component,
-                    detail="Approved but no SSH client available — skipping execution",
-                )
+        await request_update_approval(update, _gate, _notifier, readiness)
+        # Execution is handled by the dashboard's _execute_queued_update on approve.
+        # run_update_check() only creates the HITL card; it never calls execute_update().
 
     return updates
 
