@@ -2099,7 +2099,12 @@ class TestCardTypeDispatch:
                 "pending_fix_description": "test fix",
             },
         )
-        asyncio.run(dashboard.approve("r1"))
+
+        async def _run():
+            await dashboard.approve("r1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
         assert "r1" in called
 
     def test_legacy_repair_card_routes_to_execute_queued_fix(
@@ -2123,7 +2128,12 @@ class TestCardTypeDispatch:
                 "pending_fix_description": "legacy fix",
             },
         )
-        asyncio.run(dashboard.approve("legacy1"))
+
+        async def _run():
+            await dashboard.approve("legacy1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
         assert "legacy1" in called
 
     def test_update_card_routes_to_execute_queued_update(self, watch_dir, monkeypatch):
@@ -2144,7 +2154,12 @@ class TestCardTypeDispatch:
             "u1",
             {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
         )
-        asyncio.run(dashboard.approve("u1"))
+
+        async def _run():
+            await dashboard.approve("u1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
         assert "u1" in called
         assert (watch_dir / "u1.approved").exists()
 
@@ -2168,7 +2183,12 @@ class TestCardTypeDispatch:
             "nh1",
             {"card_type": "netalertx_heal", "heal_action": "fix_webhook_fields"},
         )
-        asyncio.run(dashboard.approve("nh1"))
+
+        async def _run():
+            await dashboard.approve("nh1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
         assert "nh1" in called
         assert (watch_dir / "nh1.approved").exists()
 
@@ -2192,7 +2212,12 @@ class TestCardTypeDispatch:
             "ra1",
             {"card_type": "resource_action", "action": "offload_backups"},
         )
-        asyncio.run(dashboard.approve("ra1"))
+
+        async def _run():
+            await dashboard.approve("ra1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
         assert "ra1" in called
         assert (watch_dir / "ra1.approved").exists()
 
@@ -2204,6 +2229,35 @@ class TestCardTypeDispatch:
         self._write_card(watch_dir, "x1", {"card_type": "future_unknown_type"})
         asyncio.run(dashboard.approve("x1"))
         assert (watch_dir / "x1.approved").exists()
+
+    def test_approve_sets_in_progress_synchronously(self, watch_dir, monkeypatch):
+        """approve() marks in_progress before the handler coroutine runs, so the
+        redirect lands on a queue page that already shows the spinner."""
+        import web.dashboard as dashboard
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        in_progress_at_task_start = []
+
+        async def _slow_handler(nid, data, json_path, wd):
+            in_progress_at_task_start.append((wd / f"{nid}.in_progress").exists())
+            (wd / f"{nid}.approved").touch()
+
+        monkeypatch.setitem(dashboard._CARD_DISPATCH, CARD_TYPE_UPDATE, _slow_handler)
+        self._write_card(
+            watch_dir,
+            "ip1",
+            {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
+        )
+
+        async def _run():
+            await dashboard.approve("ip1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+        assert in_progress_at_task_start == [
+            True
+        ], ".in_progress must be set before the handler task begins"
 
     def test_card_type_constants_exist(self):
         """Verify all four card type constants are importable."""

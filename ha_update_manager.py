@@ -832,8 +832,9 @@ async def execute_addon_update(
     notifier: "NotifierProtocol",
     gate: "AutonomyGate | FakeAutonomyGate",
     _poll: Optional[Callable] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
-    """Execute add-on update: backup → Supervisor API curl → poll → result card."""
+    """Execute add-on update: backup → update.install REST service → poll → result card."""
     from ha_agent_advanced import execute_remote_backup, record_backup_slug
 
     log.info("addon_update_start", slug=update.component, version=update.latest_version)
@@ -841,18 +842,29 @@ async def execute_addon_update(
     record_backup_slug(backup_slug)
     log.info("addon_update_backup_complete", slug=backup_slug)
 
-    curl_cmd = (
-        f"curl -sf -X POST "
-        f'-H "Authorization: Bearer $SUPERVISOR_TOKEN" '
-        f"http://supervisor/store/addons/{update.component}/update"
-    )
-    ec, _, curl_err = await ssh_client.run(curl_cmd, check=False)
-    if ec != 0:
-        log.warning(
-            "addon_update_curl_failed",
+    rest: HARestClientProtocol
+    if ha_rest_client is not None:
+        rest = ha_rest_client
+    else:
+        from utils.ha_rest_client import HARestClient
+
+        rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+
+    try:
+        await rest.call_service("update", "install", {"entity_id": update.entity_id})
+        log.info(
+            "addon_update_install_service_called",
             slug=update.component,
-            error=curl_err[:200] if curl_err else "",
+            entity_id=update.entity_id,
         )
+    except Exception as exc:
+        log.warning(
+            "addon_update_service_failed",
+            slug=update.component,
+            error=str(exc)[:200],
+        )
+        await _send_post_update_card(update, notifier, False, "", "")
+        return False
 
     poll_fn = _poll or _poll_addon_version
     success = await poll_fn(
@@ -880,10 +892,13 @@ async def execute_update(
     notifier: "NotifierProtocol",
     gate: "AutonomyGate | FakeAutonomyGate",
     llm_client: Optional[LLMClientProtocol] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Dispatch update execution by component type."""
     if update.component == "core":
         return await execute_core_update(update, ssh_client, notifier, gate, llm_client)
     if update.component == "os":
         return await execute_os_update(update, ssh_client, notifier, gate)
-    return await execute_addon_update(update, ssh_client, notifier, gate)
+    return await execute_addon_update(
+        update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
+    )

@@ -184,4 +184,11 @@
   </div>
   {% endfor %}
 {% endif %}
+<script>
+(function () {
+  if (document.querySelector('.spinner')) {
+    setTimeout(function () { location.reload(); }, 5000);
+  }
+})();
+</script>
 {% endblock %}
