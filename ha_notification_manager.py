@@ -400,14 +400,11 @@ def record_notification_seen(
                 and stored_ha_created_at is not None
                 and ha_created_at > stored_ha_created_at
             )
-            # Dismissed but still in HA's active list — re-issued or dismiss
-            # raced with the poller; re-open unless ha_created_at is older.
-            is_dismissed_and_back = stored_dismissed_at is not None and (
-                ha_created_at is None
-                or stored_ha_created_at is None
-                or ha_created_at >= stored_ha_created_at
-            )
-            is_new_occurrence = is_newer_timestamp or is_dismissed_and_back
+            # Only treat as a new occurrence when ha_created_at is strictly newer.
+            # Using >= would reset dismissed_at during the window between Pueo
+            # calling the HA dismiss service and HA removing the notification from
+            # its active list (a common race that caused cards to reappear).
+            is_new_occurrence = is_newer_timestamp
             if is_new_occurrence:
                 conn.execute(
                     """UPDATE notification_history

@@ -1492,7 +1492,8 @@ class TestDismissNotificationRoute:
         client.post("/dismiss-notification/notif_http_login", follow_redirects=False)
         assert not fake_rest.service_calls
 
-    def test_notification_card_shows_dismiss_button(self, tmp_path, monkeypatch):
+    def test_notification_card_excluded_from_queue(self, tmp_path, monkeypatch):
+        """Notification cards must not appear in the Queue tab — they belong in Notifications."""
         import json as _json
         import time as _time
 
@@ -1522,8 +1523,52 @@ class TestDismissNotificationRoute:
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         response = client.get("/queue")
-        assert "Dismiss in HA" in response.text
-        assert "Keep" in response.text
+        assert "notif_http_login" not in response.text
+        assert "Failed login" not in response.text
+
+    def test_dismiss_redirects_to_notifications(self, tmp_path, monkeypatch):
+        """After dismissing, user is sent to /notifications, not /queue."""
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_http_login", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/notifications"
+
+    def test_notifications_keep_touches_rejected_sentinel(self, tmp_path, monkeypatch):
+        """POST /notifications/keep/{card_id} marks the card rejected."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        self._write_notification_card(tmp_path, "notif_http_login", "http_login")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/notifications/keep/notif_http_login", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/notifications"
+        assert (tmp_path / "notif_http_login.rejected").exists()
+
+    def test_notifications_keep_missing_json_is_noop(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/notifications/keep/notif_none", follow_redirects=False)
+        assert response.status_code == 303
+        assert not (tmp_path / "notif_none.rejected").exists()
 
     def test_repair_card_shows_approve_reject_buttons(self, tmp_path, monkeypatch):
         import json as _json

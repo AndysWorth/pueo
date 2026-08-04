@@ -4983,8 +4983,14 @@ class TestRecordNotificationSeen:
         assert row[0] is None, "dismissed_at must be reset for a new occurrence"
         assert row[1] is None, "dismissed_by must be reset for a new occurrence"
 
-    def test_dismissed_and_same_timestamp_treated_as_new(self, db_path):
-        """Dismissed notification still active in HA with same ha_created_at is re-opened."""
+    def test_dismissed_and_same_timestamp_stays_dismissed(self, db_path):
+        """Dismissed notification seen again with same ha_created_at should stay dismissed.
+
+        This guards the race condition where the poller fires between Pueo calling the
+        HA dismiss service and HA actually removing the notification from its active list.
+        Same timestamp means it's the same occurrence, not a new one — dismissed_at must
+        not be reset.
+        """
         import sqlite3
 
         from ha_notification_manager import (
@@ -4997,23 +5003,26 @@ class TestRecordNotificationSeen:
         )
         mark_notification_dismissed("http-login", dismissed_by="user", db_path=db_path)
 
-        # Poller sees same notification still in HA (same ha_created_at — HA re-issued
-        # it with same ID before we could confirm it was gone).
+        # Poller fires before HA removes the notification — same ha_created_at.
         record_notification_seen(
             "http-login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
         )
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT dismissed_at, dismissed_by, hitl_sent_at FROM notification_history"
+                "SELECT dismissed_at, dismissed_by FROM notification_history"
                 " WHERE notification_id = ?",
                 ("http-login",),
             ).fetchone()
-        assert row[0] is None, "dismissed_at must be cleared"
-        assert row[1] is None, "dismissed_by must be cleared"
-        assert row[2] is None, "hitl_sent_at must be cleared so a new card is sent"
+        assert row[0] is not None, "dismissed_at must not be cleared for same timestamp"
+        assert row[1] == "user", "dismissed_by must not be cleared for same timestamp"
 
-    def test_dismissed_and_no_stored_timestamp_treated_as_new(self, db_path):
-        """Dismissed notification re-seen when stored ha_created_at is NULL is re-opened."""
+    def test_dismissed_and_no_stored_timestamp_stays_dismissed(self, db_path):
+        """Dismissed notification re-seen when stored ha_created_at is NULL stays dismissed.
+
+        Without a stored timestamp we cannot confirm the incoming timestamp is newer, so
+        we conservatively leave dismissed_at intact rather than risk re-opening a
+        notification the user already handled.
+        """
         import sqlite3
 
         from ha_notification_manager import (
@@ -5032,14 +5041,13 @@ class TestRecordNotificationSeen:
         )
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT dismissed_at, hitl_sent_at FROM notification_history"
+                "SELECT dismissed_at FROM notification_history"
                 " WHERE notification_id = ?",
                 ("http-login",),
             ).fetchone()
         assert (
-            row[0] is None
-        ), "dismissed_at must be cleared when stored timestamp is NULL"
-        assert row[1] is None, "hitl_sent_at must be cleared"
+            row[0] is not None
+        ), "dismissed_at must not be cleared when stored timestamp is NULL"
 
     def test_dismissed_older_timestamp_not_reopened(self, db_path):
         """Dismissed notification with an older ha_created_at is not treated as new."""
