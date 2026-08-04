@@ -814,9 +814,9 @@ async def dismiss_notification(card_id: str) -> RedirectResponse:
                 await rest.call_service(
                     "persistent_notification", "dismiss", {"notification_id": ha_nid}
                 )
-                mark_notification_dismissed(ha_nid, dismissed_by="user")
             except Exception:  # nosec B110
                 pass
+            mark_notification_dismissed(ha_nid, dismissed_by="user")
         (watch_dir / f"{card_id}.approved").touch()
     return RedirectResponse(url="/notifications", status_code=303)
 

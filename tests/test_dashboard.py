@@ -1456,7 +1456,8 @@ class TestDismissNotificationRoute:
         assert not (tmp_path / "notif_none.approved").exists()
 
     def test_dismiss_ha_service_exception_is_swallowed(self, tmp_path, monkeypatch):
-        """If the HA service call raises, the notification is still marked approved."""
+        """If the HA service call raises, the approved file is created and DB is still updated."""
+        import ha_notification_manager
         import utils.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
@@ -1471,9 +1472,16 @@ class TestDismissNotificationRoute:
         monkeypatch.setattr(
             utils.ha_rest_client, "HARestClient", lambda *a, **kw: _FailingRest()
         )
+        dismissed_calls: list[str] = []
+        monkeypatch.setattr(
+            ha_notification_manager,
+            "mark_notification_dismissed",
+            lambda nid, dismissed_by="user": dismissed_calls.append(nid),
+        )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         client.post("/dismiss-notification/notif_exc", follow_redirects=False)
         assert (tmp_path / "notif_exc.approved").exists()
+        assert "http_login" in dismissed_calls
 
     def test_dismiss_already_resolved_is_noop(self, tmp_path, monkeypatch):
         import utils.ha_rest_client
