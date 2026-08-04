@@ -4703,18 +4703,25 @@ class TestNotificationAnalysis:
 
 
 class TestClassifyNotification:
-    def test_http_login_is_security_high(self):
-        from ha_notification_manager import classify_notification
-
-        category, severity = classify_notification("http_login")
-        assert category == "security"
-        assert severity == "HIGH"
-
     def test_http_login_hyphen_is_security_high(self):
-        # HA WebSocket API returns "http-login" (hyphen), not "http_login"
         from ha_notification_manager import classify_notification
 
         category, severity = classify_notification("http-login")
+        assert category == "security"
+        assert severity == "HIGH"
+
+    def test_http_login_underscore_falls_through(self):
+        # HA sends "http-login" (hyphen); underscore variant is never sent by HA
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("http_login")
+        assert category == "other"
+        assert severity == "MEDIUM"
+
+    def test_ip_ban_is_security_high(self):
+        from ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("ip-ban")
         assert category == "security"
         assert severity == "HIGH"
 
@@ -4953,6 +4960,29 @@ class TestRecordNotificationSeen:
             row[0] is not None
         ), "hitl_sent_at must not be reset for same notification"
 
+    def test_new_occurrence_resets_dismissed_at(self, db_path):
+        from ha_notification_manager import (
+            record_notification_seen,
+            mark_notification_dismissed,
+        )
+
+        record_notification_seen(
+            "http-login", "security", "HIGH", db_path=db_path, ha_created_at=1000.0
+        )
+        mark_notification_dismissed("http-login", dismissed_by="user", db_path=db_path)
+
+        # New occurrence: dismissed_at and dismissed_by must be cleared
+        record_notification_seen(
+            "http-login", "security", "HIGH", db_path=db_path, ha_created_at=2000.0
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT dismissed_at, dismissed_by FROM notification_history WHERE notification_id = ?",
+                ("http-login",),
+            ).fetchone()
+        assert row[0] is None, "dismissed_at must be reset for a new occurrence"
+        assert row[1] is None, "dismissed_by must be reset for a new occurrence"
+
 
 # ── ha_agent_advanced — migration v6 (notification_history) ──────────────────────
 
@@ -5080,7 +5110,7 @@ class TestPollForNotifications:
         from utils.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
-            "http_login", "Login attempt", "Bad creds"
+            "http-login", "Login attempt", "Bad creds"
         )
         ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
@@ -5100,21 +5130,26 @@ class TestPollForNotifications:
 
         assert len(notifier.sent) == 1
         payload = notifier.sent[0]["payload"]
-        assert payload["notification_id"] == "notif_http_login"
-        assert payload["ha_notification_id"] == "http_login"
+        assert payload["notification_id"] == "notif_http-login"
+        assert payload["ha_notification_id"] == "http-login"
         assert payload["is_notification_card"] is True
         assert payload["category"] == "security"
         assert payload["severity"] == "HIGH"
         assert payload["human_explanation"] == "Test explanation."
 
     def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
+        """Notification already seen AND card already sent must not produce another card."""
         import asyncio as asyncio_mod
-        from ha_notification_manager import record_notification_seen
+        from ha_notification_manager import (
+            mark_notification_hitl_sent,
+            record_notification_seen,
+        )
         from ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
+        mark_notification_hitl_sent("http_login", db_path=db_path)
         notif = self._make_notification_entity("http_login", "Login attempt")
         ws = FakeHAWebSocketClient(notifications=[notif])
         notifier = FakeNotifier()
@@ -5247,6 +5282,85 @@ class TestPollForNotifications:
                 ("invalid_config",),
             ).fetchone()
         assert row[0] is not None
+
+    def test_poll_sends_card_on_reappearing_notification(self, db_path, monkeypatch):
+        """Re-appearing notification (same ID, newer ha_created_at) must generate a second card."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
+        from ha_notification_manager import mark_notification_hitl_sent
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        created_at_1 = "2024-08-01T10:00:00+00:00"
+        created_at_2 = "2024-08-02T10:00:00+00:00"
+
+        notif_first = self._make_notification_entity(
+            "http-login", "Login attempt", "Bad creds"
+        )
+        notif_first["created_at"] = created_at_1
+
+        ws = FakeHAWebSocketClient(notifications=[notif_first])
+        notifier = FakeNotifier()
+        llm = self._make_llm_client()
+
+        # --- First poll: notification appears for the first time ---
+        call_count = [0]
+        notifications_by_call = [[notif_first], []]
+
+        async def fake_sleep_first(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep_first)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_ws_client=ws,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    db_path=db_path,
+                )
+            )
+
+        assert len(notifier.sent) == 1, "first occurrence must trigger a card"
+
+        # Simulate HITL card sent (mark it in DB)
+        mark_notification_hitl_sent("http-login", db_path=db_path)
+
+        # --- Second poll: same notification re-appears with a newer created_at ---
+        notif_second = self._make_notification_entity(
+            "http-login", "Login attempt", "Bad creds again"
+        )
+        notif_second["created_at"] = created_at_2
+
+        ws2 = FakeHAWebSocketClient(notifications=[notif_second])
+        call_count2 = [0]
+
+        async def fake_sleep_second(seconds: float) -> None:
+            call_count2[0] += 1
+            if call_count2[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep_second)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_ws_client=ws2,
+                    notifier=notifier,
+                    llm_client=llm,
+                    ssh_client=FakeSSHClient(),
+                    db_path=db_path,
+                )
+            )
+
+        assert (
+            len(notifier.sent) == 2
+        ), "re-appearing notification must trigger a second card"
 
 
 # ── ha_notification_manager — extract_ip_from_message ────────────────────────────
@@ -5607,7 +5721,7 @@ class TestEnrichAndAnalyzeNotification:
 
         result = asyncio.run(
             enrich_and_analyze_notification(
-                "http_login",
+                "http-login",
                 "Login attempt",
                 "Invalid auth from 192.168.1.99",
                 llm_client=self._make_llm_client(),
@@ -5627,7 +5741,7 @@ class TestEnrichAndAnalyzeNotification:
 
         result = asyncio.run(
             enrich_and_analyze_notification(
-                "http_login",
+                "http-login",
                 "Login attempt",
                 "Invalid auth from 192.168.1.42",
                 llm_client=self._make_llm_client(),
@@ -5642,7 +5756,7 @@ class TestEnrichAndAnalyzeNotification:
 
         result = asyncio.run(
             enrich_and_analyze_notification(
-                "http_login",
+                "http-login",
                 "Login attempt",
                 "Bad credentials supplied",
                 llm_client=self._make_llm_client(),
@@ -5798,7 +5912,7 @@ class TestFormatNotificationSubject:
         from ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
-            "http_login",
+            "http-login",
             enriched_context={
                 "source_ip": "1.2.3.4",
                 "hostname": None,
@@ -5814,7 +5928,7 @@ class TestFormatNotificationSubject:
         from ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
-            "http_login",
+            "http-login",
             enriched_context={
                 "source_ip": "192.168.1.10",
                 "hostname": None,
@@ -5830,7 +5944,7 @@ class TestFormatNotificationSubject:
         from ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
-            "http_login",
+            "http-login",
             enriched_context={
                 "source_ip": "192.168.1.10",
                 "hostname": None,
@@ -5846,7 +5960,7 @@ class TestFormatNotificationSubject:
         from ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
-            "http_login",
+            "http-login",
             enriched_context={
                 "source_ip": "192.168.1.20",
                 "hostname": "my-laptop.local",
@@ -6049,7 +6163,7 @@ class TestRunNotifications:
         ws = FakeHAWebSocketClient(
             notifications=[
                 {
-                    "notification_id": "http_login",
+                    "notification_id": "http-login",
                     "title": None,
                     "message": "Invalid login from 8.8.8.8",
                     "status": "unread",
