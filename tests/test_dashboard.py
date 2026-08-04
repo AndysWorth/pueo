@@ -1455,8 +1455,10 @@ class TestDismissNotificationRoute:
         assert response.status_code == 303
         assert not (tmp_path / "notif_none.approved").exists()
 
-    def test_dismiss_ha_service_exception_is_swallowed(self, tmp_path, monkeypatch):
-        """If the HA service call raises, the approved file is created and DB is still updated."""
+    def test_dismiss_ha_service_exception_returns_error_redirect(
+        self, tmp_path, monkeypatch
+    ):
+        """If the HA service call raises, no .approved file is written and DB is not updated."""
         import ha_notification_manager
         import utils.ha_rest_client
         import web.dashboard as dashboard
@@ -1479,9 +1481,13 @@ class TestDismissNotificationRoute:
             lambda nid, dismissed_by="user": dismissed_calls.append(nid),
         )
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        client.post("/dismiss-notification/notif_exc", follow_redirects=False)
-        assert (tmp_path / "notif_exc.approved").exists()
-        assert "http_login" in dismissed_calls
+        response = client.post(
+            "/dismiss-notification/notif_exc", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert "dismiss_error=1" in response.headers["location"]
+        assert not (tmp_path / "notif_exc.approved").exists()
+        assert dismissed_calls == []
 
     def test_dismiss_already_resolved_is_noop(self, tmp_path, monkeypatch):
         import utils.ha_rest_client
@@ -1499,6 +1505,85 @@ class TestDismissNotificationRoute:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         client.post("/dismiss-notification/notif_http_login", follow_redirects=False)
         assert not fake_rest.service_calls
+
+    def test_dismiss_after_reoccurrence(self, tmp_path, monkeypatch):
+        """Dismiss works on a new card occurrence even when stale .approved file exists."""
+        import asyncio as _asyncio
+
+        import ha_notification_manager
+        import utils.ha_rest_client
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FileNotifier
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        fake_rest = FakeHARestClient()
+        monkeypatch.setattr(
+            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+        )
+        dismissed_calls: list[str] = []
+        monkeypatch.setattr(
+            ha_notification_manager,
+            "mark_notification_dismissed",
+            lambda nid, dismissed_by="user": dismissed_calls.append(nid),
+        )
+        # Simulate a new card being written for a notification that was previously dismissed.
+        # FileNotifier.send() must clear the stale .approved so dismiss can proceed.
+        notifier = FileNotifier(watch_dir=str(tmp_path))
+        _asyncio.run(
+            notifier.send(
+                "Login attempt",
+                "Someone tried to log in.",
+                {
+                    "notification_id": "notif_http_login",
+                    "ha_notification_id": "http_login",
+                    "is_notification_card": True,
+                },
+            )
+        )
+        # Before the fix this stale file would block the dismiss handler.
+        # After the fix, FileNotifier.send() already removed it above.
+        assert not (tmp_path / "notif_http_login.approved").exists()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_http_login", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert (
+            "persistent_notification",
+            "dismiss",
+            {"notification_id": "http_login"},
+        ) in fake_rest.service_calls
+        assert (tmp_path / "notif_http_login.approved").exists()
+        assert "http_login" in dismissed_calls
+
+    def test_dismiss_empty_ha_nid_still_approves(self, tmp_path, monkeypatch):
+        """Card with no ha_notification_id: no HA service call but .approved is written."""
+        import json as _json
+        import time as _time
+
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        (tmp_path / "notif_no_nid.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif_no_nid",
+                    "subject": "Something",
+                    "body": "body",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/dismiss-notification/notif_no_nid", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert (tmp_path / "notif_no_nid.approved").exists()
 
     def test_notification_card_excluded_from_queue(self, tmp_path, monkeypatch):
         """Notification cards must not appear in the Queue tab — they belong in Notifications."""
