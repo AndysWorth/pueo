@@ -5231,9 +5231,7 @@ class TestPollForUpdates:
         monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                poll_for_updates(ha_rest_client=client, notifier=notifier)
-            )
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
         assert len(notifier.sent) == 1
         assert "2026.2.0" in notifier.sent[0]["subject"]
@@ -5261,9 +5259,7 @@ class TestPollForUpdates:
         monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                poll_for_updates(ha_rest_client=client, notifier=notifier)
-            )
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
         assert len(notifier.sent) == 1
 
@@ -5296,9 +5292,7 @@ class TestPollForUpdates:
         monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                poll_for_updates(ha_rest_client=client, notifier=notifier)
-            )
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
         # Only one notification sent (for the first poll when update was available)
         assert len(notifier.sent) == 1
