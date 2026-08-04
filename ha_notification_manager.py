@@ -389,16 +389,25 @@ def record_notification_seen(
     now = time.time()
     with sqlite3.connect(db_path) as conn:
         existing = conn.execute(
-            "SELECT ha_created_at FROM notification_history WHERE notification_id = ?",
+            "SELECT ha_created_at, dismissed_at FROM notification_history"
+            " WHERE notification_id = ?",
             (notification_id,),
         ).fetchone()
         if existing:
-            stored_ha_created_at = existing[0]
-            is_new_occurrence = (
+            stored_ha_created_at, stored_dismissed_at = existing
+            is_newer_timestamp = (
                 ha_created_at is not None
                 and stored_ha_created_at is not None
                 and ha_created_at > stored_ha_created_at
             )
+            # Dismissed but still in HA's active list — re-issued or dismiss
+            # raced with the poller; re-open unless ha_created_at is older.
+            is_dismissed_and_back = stored_dismissed_at is not None and (
+                ha_created_at is None
+                or stored_ha_created_at is None
+                or ha_created_at >= stored_ha_created_at
+            )
+            is_new_occurrence = is_newer_timestamp or is_dismissed_and_back
             if is_new_occurrence:
                 conn.execute(
                     """UPDATE notification_history
