@@ -71,7 +71,7 @@
       <form method="POST" action="/dismiss-notification/{{ n.card_id }}">
         <button class="btn btn-approve" type="submit">Dismiss in HA</button>
       </form>
-      <form method="POST" action="/reject/{{ n.card_id }}">
+      <form method="POST" action="/notifications/keep/{{ n.card_id }}">
         <button class="btn btn-reject" type="submit">Keep</button>
       </form>
     </div>

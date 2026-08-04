@@ -266,7 +266,11 @@ def _load_requests(watch_dir: Path) -> list[HITLRequest]:
             continue
 
     pending = sorted(
-        [r for r in requests if r.status == "PENDING"],
+        [
+            r
+            for r in requests
+            if r.status == "PENDING" and not r.payload.get("is_notification_card")
+        ],
         key=lambda r: r.sent_at,
     )
     return pending
@@ -814,7 +818,16 @@ async def dismiss_notification(card_id: str) -> RedirectResponse:
             except Exception:  # nosec B110
                 pass
         (watch_dir / f"{card_id}.approved").touch()
-    return RedirectResponse(url="/queue", status_code=303)
+    return RedirectResponse(url="/notifications", status_code=303)
+
+
+@app.post("/notifications/keep/{card_id}")
+async def notifications_keep(card_id: str) -> RedirectResponse:
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{card_id}.json"
+    if json_path.exists() and _status(card_id, watch_dir) == "PENDING":
+        (watch_dir / f"{card_id}.rejected").touch()
+    return RedirectResponse(url="/notifications", status_code=303)
 
 
 def _load_backup_inventory() -> list[dict]:
