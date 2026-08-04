@@ -21,6 +21,7 @@ from config import (
     HA_NOTIFICATION_POLL_INTERVAL_MINUTES,
     HA_UPDATE_CHECK_INTERVAL_HOURS,
     HA_UPDATE_NOTIFY_ON_AVAILABLE,
+    HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
     HA_USER,
     MAX_PROMPT_TOKENS,
     MAX_REPAIRS_PER_HOUR,
@@ -243,13 +244,28 @@ async def tail_remote_log_stream(
 async def poll_for_updates(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
+    cache_dir: Optional[str] = None,
 ) -> None:
-    """Periodically checks for available HA updates and fires a HITL notification."""
+    """Periodically checks for available HA updates and fires full HITL approval cards."""
+    from ha_update_manager import (
+        UpdateReadinessReport,
+        analyze_breaking_changes,
+        fetch_release_notes_cached,
+    )
+    from utils.card_types import CARD_TYPE_UPDATE
+
     interval = HA_UPDATE_CHECK_INTERVAL_HOURS * 3600
     _client: HARestClientProtocol = ha_rest_client or HARestClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    _ssh: Optional[SSHClientProtocol] = ssh_client  # None → no config fetch (soft)
+    _llm: Optional[LLMClientProtocol] = (
+        llm_client  # None → OllamaClient() inside analyze
+    )
+    _cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
     # Track which entity_ids have already triggered a notification so we don't repeat
     _notified: set[str] = set()
 
@@ -269,19 +285,92 @@ async def poll_for_updates(
                     installed=u.installed_version,
                     latest=u.latest_version,
                 )
+
+                # Run breaking-change analysis for core updates.
+                readiness: Optional[UpdateReadinessReport] = None
+                if u.component == "core":
+                    config_yaml_content = ""
+                    if _ssh is not None:
+                        try:
+                            from config import CONFIG_REMOTE_PATH
+
+                            config_yaml_content = await _ssh.read_file(
+                                CONFIG_REMOTE_PATH
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "update_poll_config_fetch_failed", error=str(exc)
+                            )
+
+                    release_notes = ""
+                    try:
+                        release_notes = await fetch_release_notes_cached(
+                            u.latest_version, _cache_dir
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "update_poll_release_notes_failed",
+                            version=u.latest_version,
+                            error=str(exc),
+                        )
+
+                    if release_notes:
+                        try:
+                            readiness = await analyze_breaking_changes(
+                                u, config_yaml_content, release_notes, _llm
+                            )
+                        except Exception as exc:
+                            log.warning("update_poll_analysis_failed", error=str(exc))
+
                 if HA_UPDATE_NOTIFY_ON_AVAILABLE:
+                    risk = (
+                        "CRITICAL"
+                        if u.component in ("core", "os")
+                        else "HIGH" if u.component == "supervisor" else "MEDIUM"
+                    )
+                    body_parts = [
+                        f"Component: {u.component}",
+                        f"Risk: {risk}",
+                    ]
+                    if u.release_summary:
+                        body_parts.append(f"Summary: {u.release_summary}")
+                    if readiness:
+                        advisory = (
+                            "SAFE" if readiness.safe_to_update else "REVIEW REQUIRED"
+                        )
+                        body_parts.append(
+                            f"Advisory: {advisory} — {readiness.recommendation}"
+                        )
+
                     await _notifier.send(
-                        subject=f"Pueo: Update available — {u.component} {u.latest_version}",
-                        body=(
-                            f"{u.component}: {u.installed_version} → {u.latest_version}"
+                        subject=(
+                            f"Update available: {u.component}"
+                            f" {u.installed_version} → {u.latest_version}"
                         ),
+                        body="\n".join(body_parts),
                         payload={
+                            "card_type": CARD_TYPE_UPDATE,
                             "component": u.component,
                             "entity_id": u.entity_id,
                             "installed_version": u.installed_version,
                             "latest_version": u.latest_version,
                             "release_url": u.release_url,
                             "release_summary": u.release_summary,
+                            "risk": risk,
+                            "severity": risk,
+                            "breaking_changes": (
+                                readiness.breaking_changes if readiness else []
+                            ),
+                            "affected_config_keys": (
+                                readiness.affected_config_keys if readiness else []
+                            ),
+                            "pueo_command_risks": (
+                                readiness.pueo_command_risks if readiness else []
+                            ),
+                            "advisory": readiness.recommendation if readiness else None,
+                            "safe_to_update": (
+                                readiness.safe_to_update if readiness else None
+                            ),
                         },
                     )
                 try:  # pragma: no cover

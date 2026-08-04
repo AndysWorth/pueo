@@ -2906,8 +2906,13 @@ class TestRunUpdateCheckWithAnalysis:
         assert len(gate.require_approval_calls) == 1
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
 
-    def test_hitl_approval_triggers_execute_update(self, tmp_path):
-        """When the HITL card is approved, execute_update is called."""
+    def test_hitl_card_sent_on_approval_but_execute_not_called(self, tmp_path):
+        """run_update_check sends the HITL card but never calls execute_update.
+
+        Execution is the dashboard's responsibility via _execute_queued_update.
+        Keeping execute_update out of run_update_check prevents double-execution
+        when both the dashboard and the one-shot subprocess see the approval sentinel.
+        """
         import unittest.mock as mock
         from ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
@@ -2916,10 +2921,6 @@ class TestRunUpdateCheckWithAnalysis:
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
 
-        class MinimalSSH:
-            async def read_file(self, path):
-                return ""
-
         with mock.patch(
             "ha_update_manager.execute_update",
             new=mock.AsyncMock(return_value=True),
@@ -2927,14 +2928,14 @@ class TestRunUpdateCheckWithAnalysis:
             asyncio.run(
                 run_update_check(
                     ha_rest_client=self._fake_rest(),
-                    ssh_client=MinimalSSH(),
                     cache_dir=str(tmp_path),
                     gate=gate,
                     notifier=notifier,
                 )
             )
 
-        assert mock_exec.call_count == 1
+        assert mock_exec.call_count == 0
+        assert len(gate.require_approval_calls) == 1
 
     def test_hitl_rejection_skips_execute_update(self, tmp_path):
         """When the HITL card is rejected, execute_update is not called."""
@@ -2953,32 +2954,6 @@ class TestRunUpdateCheckWithAnalysis:
             asyncio.run(
                 run_update_check(
                     ha_rest_client=self._fake_rest(),
-                    cache_dir=str(tmp_path),
-                    gate=gate,
-                    notifier=notifier,
-                )
-            )
-
-        assert mock_exec.call_count == 0
-
-    def test_hitl_approval_without_ssh_skips_execute(self, tmp_path):
-        """When approved but no ssh_client is provided, execute_update is not called."""
-        import unittest.mock as mock
-        from ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-
-        with mock.patch(
-            "ha_update_manager.execute_update",
-            new=mock.AsyncMock(return_value=True),
-        ) as mock_exec:
-            asyncio.run(
-                run_update_check(
-                    ha_rest_client=self._fake_rest(),
-                    ssh_client=None,
                     cache_dir=str(tmp_path),
                     gate=gate,
                     notifier=notifier,
@@ -5296,6 +5271,127 @@ class TestPollForUpdates:
 
         # Only one notification sent (for the first poll when update was available)
         assert len(notifier.sent) == 1
+
+    def test_notification_payload_has_card_type_update(self, monkeypatch):
+        """Notification payload must include card_type='update' so the dashboard
+        dispatch routes approve() to _execute_queued_update."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.1.0",
+            latest="2026.2.0",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "update"
+        assert payload["component"] == "core"
+        assert payload["installed_version"] == "2026.1.0"
+        assert payload["latest_version"] == "2026.2.0"
+        assert payload["risk"] == "CRITICAL"
+        assert payload["severity"] == "CRITICAL"
+        assert "breaking_changes" in payload
+
+    def test_breaking_change_analysis_included_for_core_update(
+        self, tmp_path, monkeypatch
+    ):
+        """For core updates, breaking-change analysis runs and populates the payload."""
+        import asyncio as asyncio_mod
+        import unittest.mock as mock
+
+        from ha_update_manager import UpdateReadinessReport
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.6.0",
+            latest="2026.7.0",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+
+        report = UpdateReadinessReport(
+            target_version="2026.7.0",
+            safe_to_update=False,
+            breaking_changes=["Template syntax changed"],
+            affected_config_keys=["template"],
+            pueo_command_risks=["ha apps info"],
+            recommendation="Review before updating.",
+        )
+        llm = FakeLLMClient(report.model_dump_json())
+
+        # Pre-populate release notes cache so no WAN fetch is needed.
+        notes_dir = tmp_path / "release_notes"
+        notes_dir.mkdir()
+        (notes_dir / "2026.7.0.txt").write_text(
+            "## Breaking changes\n- Template syntax changed"
+        )
+
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_updates(
+                    ha_rest_client=client,
+                    notifier=notifier,
+                    llm_client=llm,
+                    cache_dir=str(notes_dir),
+                )
+            )
+
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "update"
+        assert payload["breaking_changes"] == ["Template syntax changed"]
+        assert payload["safe_to_update"] is False
+        assert payload["advisory"] == "Review before updating."
+
+    def test_breaking_change_analysis_skipped_for_addon_update(self, monkeypatch):
+        """Add-on updates do not run breaking-change analysis (only core does)."""
+        import asyncio as asyncio_mod
+        import unittest.mock as mock
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_update_entity(
+            "update.some_addon_update",
+            installed="1.0.0",
+            latest="1.1.0",
+        )
+        # Override entity attributes so component is recognized as an add-on
+        entity["attributes"]["installed_version"] = "1.0.0"
+        entity["attributes"]["latest_version"] = "1.1.0"
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with mock.patch("ha_update_manager.analyze_breaking_changes") as mock_analyze:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        mock_analyze.assert_not_called()
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "update"
+        assert payload["risk"] == "MEDIUM"
 
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
