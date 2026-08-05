@@ -975,7 +975,7 @@ def _pending_higher_priority_components(component: str, watch_dir: Path) -> list
             other_payload = (
                 __import__("json").loads(json_path.read_text()).get("payload", {})
             )
-        except Exception:
+        except Exception:  # nosec B112
             continue
         from utils.card_types import CARD_TYPE_UPDATE
 
