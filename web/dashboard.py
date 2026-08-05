@@ -1010,6 +1010,37 @@ async def trigger_backup_now() -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+@app.post("/backups/preflight")
+async def run_backup_preflight() -> JSONResponse:
+    """Run an on-demand update pre-flight: disk clearance and Supervisor status check."""
+    from ha_update_manager import run_update_preflight
+    from utils.ha_rest_client import HARestClient
+    from utils.ssh_client import AsyncSSHClient
+    import config as _config
+
+    ssh = AsyncSSHClient()
+    rest = (
+        HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        if _config.HA_API_TOKEN
+        else None
+    )
+    try:
+        result = await run_update_preflight(ssh_client=ssh, rest_client=rest)
+        return JSONResponse(
+            {
+                "ok": True,
+                "disk_before_gb": round(result.disk_before_gb, 2),
+                "disk_after_gb": round(result.disk_after_gb, 2),
+                "backups_purged_count": result.backups_purged_count,
+                "disk_ok": result.disk_ok,
+                "supervisor_status": result.supervisor_status,
+                "problems": result.problems,
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 def _load_notification_dashboard_data(
     watch_dir: Path,
     category_filter: str = "",

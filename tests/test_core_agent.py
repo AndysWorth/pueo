@@ -9514,3 +9514,299 @@ class TestRepairPollBackoff:
         assert sleep_calls[3] == 120
         assert sleep_calls[4] == 120
         assert sleep_calls[5] == 120
+
+
+# ── UpdatePreflight ───────────────────────────────────────────────────────────────
+
+
+class TestEnforceHaRetentionReturnsCount:
+    """enforce_ha_retention() must return an int count of successfully purged slugs."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_returns_zero_when_nothing_to_delete(self, db_path):
+        import ha_agent_advanced
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        assert result == 0
+
+    def test_returns_zero_when_below_retention_limit(self, db_path, monkeypatch):
+        import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 10)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location) VALUES (?, ?, ?)",
+                ("slug-a", 1000, "both"),
+            )
+        ssh = FakeSSHClient()
+        result = asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        assert result == 0
+
+    def test_returns_purge_count_when_slugs_deleted(self, db_path, monkeypatch):
+        import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location) VALUES (?, ?, ?)",
+                ("slug-recent", 2000, "both"),
+            )
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location) VALUES (?, ?, ?)",
+                ("slug-old", 1000, "both"),
+            )
+        ssh = FakeSSHClient(command_results={"ha backups remove": (0, "", "")})
+        result = asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
+        assert result == 1
+
+
+_MEMINFO_SAMPLE = "MemAvailable: 524288 kB\nMemTotal: 1048576 kB\n"
+
+
+class TestUpdatePreflightLogic:
+    """Tests for run_update_preflight() in ha_update_manager."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+        import ha_update_manager
+        import utils.resource as _res
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        # Reset resource cache so tests don't leak disk state into each other.
+        monkeypatch.setattr(_res, "_last_resource_status", None)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _good_disk(self):
+        from utils.resource import ResourceStatus
+
+        return ResourceStatus(
+            disk_free_gb=5.0,
+            disk_total_gb=32.0,
+            disk_used_gb=27.0,
+            mem_available_mb=512.0,
+            mem_total_mb=1024.0,
+            disk_warn=False,
+            disk_critical=False,
+            mem_warn=False,
+        )
+
+    def _low_disk(self):
+        from utils.resource import ResourceStatus
+
+        return ResourceStatus(
+            disk_free_gb=1.8,
+            disk_total_gb=32.0,
+            disk_used_gb=30.2,
+            mem_available_mb=512.0,
+            mem_total_mb=1024.0,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+
+    def test_disk_ok_supervisor_current(self, db_path, monkeypatch):
+        """Disk is fine and Supervisor is current — no problems, no enforcement."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import run_update_preflight
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+        monkeypatch.setattr(_res, "_last_resource_status", self._good_disk())
+        result = asyncio.run(
+            run_update_preflight(rest_client=FakeHARestClient(states=[]))
+        )
+
+        assert result.disk_ok is True
+        assert result.backups_purged_count == 0
+        assert result.supervisor_status == "current"
+        assert result.problems == []
+
+    def test_disk_still_low_after_cleanup(self, db_path, monkeypatch):
+        """Disk low, no eligible slugs — enforcement is no-op, problem reported."""
+        import ha_agent_advanced
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import run_update_preflight
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 10)
+        monkeypatch.setattr(_res, "_last_resource_status", self._low_disk())
+
+        async def fake_run(command, check=False):
+            if "ha host info" in command:
+                return 0, "disk_free: 1.8\ndisk_total: 32.0\ndisk_used: 30.2\n", ""
+            if "/proc/meminfo" in command:
+                return 0, _MEMINFO_SAMPLE, ""
+            return 0, "", ""
+
+        ssh = FakeSSHClient()
+        ssh.run = fake_run  # type: ignore[method-assign]
+
+        result = asyncio.run(
+            run_update_preflight(
+                ssh_client=ssh, rest_client=FakeHARestClient(states=[])
+            )
+        )
+
+        assert result.backups_purged_count == 0
+        assert result.disk_ok is False
+        assert any("free disk manually" in p for p in result.problems)
+
+    def test_supervisor_update_available_via_rest(self, db_path, monkeypatch):
+        """REST shows a Supervisor update available — supervisor_status='update_available'."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import run_update_preflight
+        from utils.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+        monkeypatch.setattr(_res, "_last_resource_status", self._good_disk())
+
+        rest = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_supervisor_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2024.06.0",
+                        "latest_version": "2024.07.0",
+                        "friendly_name": "Home Assistant Supervisor Update",
+                    },
+                }
+            ]
+        )
+        result = asyncio.run(run_update_preflight(rest_client=rest))
+
+        assert result.supervisor_status == "update_available"
+        assert any("Supervisor" in p for p in result.problems)
+
+    def test_preflight_embedded_in_core_update_card(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        """request_update_approval() for Core calls preflight and card body has component info."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import request_update_approval
+        from utils.ha_rest_client import FakeHARestClient, UpdateStatus
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+        monkeypatch.setattr(_res, "_last_resource_status", self._good_disk())
+
+        captured_body: list[str] = []
+
+        class CapturingGate:
+            async def require_approval(self, subject, body, payload, notifier, risk):
+                captured_body.append(body)
+                return False
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.7.0",
+            latest_version="2026.8.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        asyncio.run(
+            request_update_approval(
+                update=update,
+                gate=CapturingGate(),  # type: ignore[arg-type]
+                notifier=FakeNotifier(),
+                rest_client=FakeHARestClient(states=[]),
+                watch_dir=tmp_path,
+            )
+        )
+
+        assert captured_body, "gate.require_approval was not called"
+        body = captured_body[0]
+        assert "Component: core" in body
+        assert "Risk: CRITICAL" in body
+
+    def test_preflight_purge_message_in_card_body(self, db_path, monkeypatch, tmp_path):
+        """When backups are purged during preflight, card body includes the freed-space note."""
+        import ha_agent_advanced
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import request_update_approval
+        from utils.ha_rest_client import FakeHARestClient, UpdateStatus
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        monkeypatch.setattr(_res, "_last_resource_status", self._low_disk())
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location) VALUES (?, ?, ?)",
+                ("slug-recent", 2000, "both"),
+            )
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location) VALUES (?, ?, ?)",
+                ("slug-old", 1000, "both"),
+            )
+
+        async def fake_run(command, check=False):
+            if "ha host info" in command:
+                return 0, "disk_free: 4.5\ndisk_total: 32.0\ndisk_used: 27.5\n", ""
+            if "/proc/meminfo" in command:
+                return 0, _MEMINFO_SAMPLE, ""
+            if "ha backups remove" in command:
+                return 0, "", ""
+            return 0, "", ""
+
+        ssh = FakeSSHClient()
+        ssh.run = fake_run  # type: ignore[method-assign]
+
+        captured_body: list[str] = []
+
+        class CapturingGate:
+            async def require_approval(self, subject, body, payload, notifier, risk):
+                captured_body.append(body)
+                return False
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.7.0",
+            latest_version="2026.8.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        asyncio.run(
+            request_update_approval(
+                update=update,
+                gate=CapturingGate(),  # type: ignore[arg-type]
+                notifier=FakeNotifier(),
+                ssh_client=ssh,
+                rest_client=FakeHARestClient(states=[]),
+                watch_dir=tmp_path,
+            )
+        )
+
+        assert captured_body, "gate.require_approval was not called"
+        assert "Pre-flight:" in captured_body[0]
+        assert "old backup" in captured_body[0]

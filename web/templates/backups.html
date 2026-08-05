@@ -2,11 +2,18 @@
 {% block content %}
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
   <h2 style="font-size:1rem;color:#555;margin:0;">Backup Inventory</h2>
-  <button id="trigger-btn" onclick="triggerBackup()"
-    style="padding:0.4rem 1rem;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
-    Run Backup Now
-  </button>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button id="preflight-btn" onclick="runPreflight()"
+      style="padding:0.4rem 1rem;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
+      Run Pre-flight
+    </button>
+    <button id="trigger-btn" onclick="triggerBackup()"
+      style="padding:0.4rem 1rem;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
+      Run Backup Now
+    </button>
+  </div>
 </div>
+<div id="preflight-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
 <div id="trigger-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
 
 {% if not inventory %}
@@ -43,6 +50,45 @@
 {% endif %}
 
 <script>
+async function runPreflight() {
+  const btn = document.getElementById('preflight-btn');
+  const result = document.getElementById('preflight-result');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  result.style.display = 'none';
+  try {
+    const resp = await fetch('/backups/preflight', {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+      let msg = `Disk: ${data.disk_before_gb} GB → ${data.disk_after_gb} GB`;
+      if (data.backups_purged_count > 0) {
+        msg += ` (freed space by removing ${data.backups_purged_count} old backup(s) from HA)`;
+      }
+      msg += `. Supervisor: ${data.supervisor_status}.`;
+      if (data.problems && data.problems.length > 0) {
+        msg += ' ⚠️ ' + data.problems.join(' | ');
+        result.style.background = '#fff3cd';
+        result.style.color = '#856404';
+      } else {
+        result.style.background = '#d4edda';
+        result.style.color = '#155724';
+      }
+      result.textContent = msg;
+    } else {
+      result.textContent = 'Pre-flight error: ' + (data.error || 'unknown error');
+      result.style.background = '#f8d7da';
+      result.style.color = '#721c24';
+    }
+  } catch (e) {
+    result.textContent = 'Request failed: ' + e.message;
+    result.style.background = '#f8d7da';
+    result.style.color = '#721c24';
+  }
+  result.style.display = 'block';
+  btn.disabled = false;
+  btn.textContent = 'Run Pre-flight';
+}
+
 async function triggerBackup() {
   const btn = document.getElementById('trigger-btn');
   const result = document.getElementById('trigger-result');
