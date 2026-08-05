@@ -327,7 +327,7 @@ Phase 16 (Evals) complete.
 
 ---
 
-### Phase 17.5 — Conversational Agent (8 items)
+### Phase 17.5 — Conversational Agent (8 items) ✅ Complete (2026-07-31)
 Items 65–72. Adds a Chat tab to the HITL dashboard, persistent agent memory (SQLite), and an interactive code-sandbox flow for proposing and registering new tools. The same `AgentLoop` that drives repair sessions drives the conversational agent — with a different system prompt, a chat-specific tool registry, and `terminal_tool_name="finish_chat"`. Also implements the shared sandbox infrastructure (`read_source`, `propose_patch`, `sandbox_code`) that Phase 21 will reuse for its autonomous code-proposal path. Prerequisite: Phase 17 complete.
 
 | Items | Concern |
