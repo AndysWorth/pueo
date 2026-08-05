@@ -627,6 +627,59 @@ async def _poll_os_online(
     return False
 
 
+async def _wait_for_ha_down(
+    ha_host: str,
+    ha_port: int,
+    timeout_seconds: int = 60,
+    _sleep: Optional[Callable] = None,
+    _connect: Optional[Callable] = None,
+) -> bool:
+    """Poll TCP until connection is refused (HA has started shutting down)."""
+    sleep_fn = _sleep or asyncio.sleep
+    connect_fn = _connect or asyncio.open_connection
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            reader, writer = await connect_fn(ha_host, ha_port)
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionRefusedError, OSError):
+            return True
+        await sleep_fn(2)
+    return False
+
+
+async def _poll_ha_api_ready(
+    ha_host: str,
+    ha_port: int,
+    token: str,
+    timeout_seconds: int = 120,
+    interval: int = 5,
+    _sleep: Optional[Callable] = None,
+    _get: Optional[Callable] = None,
+) -> bool:
+    """Poll GET /api/ until HA HTTP API returns 200 or 401 (API layer is up)."""
+    sleep_fn = _sleep or asyncio.sleep
+    url = f"http://{ha_host}:{ha_port}/api/"
+    headers = {"Authorization": f"Bearer {token}"}
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        try:
+            if _get is not None:
+                status = await _get(url, headers)
+            else:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, headers=headers)
+                    status = resp.status_code
+            if status in (200, 401):
+                return True
+        except Exception:  # nosec B110 — connection errors expected during boot
+            pass
+        await sleep_fn(interval)
+        elapsed += interval
+    return False
+
+
 async def _poll_addon_version(
     slug: str,
     target_version: str,
@@ -994,8 +1047,10 @@ async def execute_ha_reboot(
     ha_host: Optional[str] = None,
     ha_port: Optional[int] = None,
     _poll: Optional[Callable] = None,
+    _api_poll: Optional[Callable] = None,
+    _down_poll: Optional[Callable] = None,
 ) -> bool:
-    """Reboot HA host: backup → ha host reboot → TCP poll until online → result card."""
+    """Reboot HA host: backup → reboot → wait for down → TCP poll → API ready → card."""
     from ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
@@ -1012,8 +1067,24 @@ async def execute_ha_reboot(
 
     host = ha_host or HA_HOST
     port = ha_port or HA_API_PORT
+
+    # Wait 10 s for ha-supervisor to begin shutdown, then confirm TCP drops.
+    await asyncio.sleep(10)
+    down_fn = _down_poll or _wait_for_ha_down
+    await down_fn(host, port, timeout_seconds=60)
+
+    # Wait for TCP to accept connections again.
     poll_fn = _poll or _poll_os_online
     success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
+
+    # Confirm the HTTP API layer is actually ready (TCP open ≠ API ready).
+    if success:
+        api_fn = _api_poll or _poll_ha_api_ready
+        success = await api_fn(host, port, HA_API_TOKEN, timeout_seconds=120)
+        if not success:
+            log.warning(
+                "ha_reboot_api_not_ready", detail="TCP up but HTTP API timed out"
+            )
 
     reboot_update = UpdateStatus(
         component="reboot",

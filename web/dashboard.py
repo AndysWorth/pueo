@@ -463,6 +463,22 @@ async def _execute_queued_update(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _post_reboot_repair_scan(settle_seconds: int = 20) -> None:
+    """After a reboot succeeds, wake the repair_poll loop early to catch new issues."""
+    await asyncio.sleep(settle_seconds)
+    try:
+        from utils.supervisor import get_supervisor_instance
+
+        sv = get_supervisor_instance()
+        if sv is not None:
+            sv.run_now("repair_poll")
+            log.info("post_reboot_repair_scan_triggered")
+    except (
+        Exception
+    ) as exc:  # nosec B110 — best-effort; the scheduled poll is the fallback
+        log.warning("post_reboot_repair_scan_failed", error=str(exc))
+
+
 async def _execute_queued_ha_repair(
     nid: str,
     data: dict,
@@ -497,6 +513,8 @@ async def _execute_queued_ha_repair(
                 data["fix_applied"] = True
                 json_path.write_text(json.dumps(data, indent=2))
                 (watch_dir / f"{nid}.approved").touch()
+                # Wake the repair poller immediately so new post-reboot issues surface fast.
+                asyncio.create_task(_post_reboot_repair_scan(settle_seconds=20))
             else:
                 data["fix_error"] = "HA did not come back online after reboot"
                 json_path.write_text(json.dumps(data, indent=2))

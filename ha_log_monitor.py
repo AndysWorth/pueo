@@ -435,12 +435,15 @@ async def poll_for_notifications(
         )
     )
 
+    backoff: int = 0  # seconds; 0 means use normal interval
     while True:
+        await asyncio.sleep(backoff if backoff else interval)
         try:
             notifications = await _ws.get_persistent_notifications()
+            backoff = 0  # reset on success
         except Exception as exc:
             log.warning("notification_poll_failed", error=str(exc))
-            await asyncio.sleep(interval)
+            backoff = min(backoff * 2 if backoff else 30, 120)
             continue
 
         for notif in notifications:
@@ -515,8 +518,6 @@ async def poll_for_notifications(
                 )
                 mark_notification_hitl_sent(nid, db_path=db_path)
 
-        await asyncio.sleep(interval)
-
 
 async def poll_for_repairs(
     ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
@@ -539,12 +540,15 @@ async def poll_for_repairs(
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
+    repair_backoff: int = 0  # seconds; 0 means use normal interval
     while True:
+        await asyncio.sleep(repair_backoff if repair_backoff else interval)
         try:
             issues = await get_ha_repair_issues(_client)
+            repair_backoff = 0  # reset on success
         except Exception as exc:
             log.warning("repair_poll_failed", error=str(exc))
-            await asyncio.sleep(interval)
+            repair_backoff = min(repair_backoff * 2 if repair_backoff else 30, 120)
             continue
 
         active_keys: set[str] = set()
@@ -612,8 +616,6 @@ async def poll_for_repairs(
             if issue_key not in active_keys:
                 mark_repair_resolved(issue_key)
                 log.info("repair_resolved", issue_key=issue_key)
-
-        await asyncio.sleep(interval)
 
 
 async def trigger_remediation_pipeline() -> None:

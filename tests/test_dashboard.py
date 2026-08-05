@@ -4488,3 +4488,110 @@ class TestExecuteQueuedHARepair:
 
         assert resp.status_code == 303
         assert nid in dispatched
+
+    def test_reboot_action_triggers_post_reboot_scan(self, tmp_path, monkeypatch):
+        """After a successful reboot, _post_reboot_repair_scan is scheduled as a task."""
+        import asyncio
+        import ha_agent_advanced
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import web.dashboard as dashboard
+        from utils.ssh_client import AsyncSSHClient
+        from utils.notify import get_notifier
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        nid = "repair-reboot-scan-1"
+        self._write_repair_card(watch_dir, nid, action="reboot")
+        json_path = watch_dir / f"{nid}.json"
+        data = __import__("json").loads(json_path.read_text())
+
+        tasks_created = []
+
+        def fake_create_task(coro, **kwargs):
+            tasks_created.append(
+                coro.__name__ if hasattr(coro, "__name__") else str(coro)
+            )
+            # Close the coroutine to avoid ResourceWarning
+            coro.close()
+            return MagicMock()
+
+        mock_resolve = MagicMock()
+        monkeypatch.setattr(ha_agent_advanced, "mark_repair_resolved", mock_resolve)
+        monkeypatch.setattr(dashboard.asyncio, "create_task", fake_create_task)
+
+        with patch(
+            "ha_update_manager.execute_ha_reboot", new=AsyncMock(return_value=True)
+        ):
+            asyncio.run(
+                dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
+            )
+
+        assert (watch_dir / f"{nid}.approved").exists()
+        # A post-reboot scan task must have been scheduled.
+        assert len(tasks_created) == 1
+
+    def test_reboot_failure_does_not_trigger_post_reboot_scan(
+        self, tmp_path, monkeypatch
+    ):
+        """If the reboot fails, no post-reboot scan task is created."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import web.dashboard as dashboard
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        nid = "repair-reboot-fail-1"
+        self._write_repair_card(watch_dir, nid, action="reboot")
+        json_path = watch_dir / f"{nid}.json"
+        data = __import__("json").loads(json_path.read_text())
+
+        tasks_created = []
+
+        def fake_create_task(coro, **kwargs):
+            tasks_created.append(coro)
+            coro.close()
+            return MagicMock()
+
+        monkeypatch.setattr(dashboard.asyncio, "create_task", fake_create_task)
+
+        with patch(
+            "ha_update_manager.execute_ha_reboot", new=AsyncMock(return_value=False)
+        ):
+            asyncio.run(
+                dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
+            )
+
+        assert (watch_dir / f"{nid}.rejected").exists()
+        assert len(tasks_created) == 0
+
+
+class TestPostRebootRepairScan:
+    def test_calls_supervisor_run_now(self, monkeypatch):
+        """_post_reboot_repair_scan triggers run_now('repair_poll') on the supervisor."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        import web.dashboard as dashboard
+
+        mock_sv = MagicMock()
+        import utils.supervisor as _sup
+
+        monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: mock_sv)
+
+        asyncio.run(dashboard._post_reboot_repair_scan(settle_seconds=0))
+
+        mock_sv.run_now.assert_called_once_with("repair_poll")
+
+    def test_handles_supervisor_unavailable(self, monkeypatch):
+        """_post_reboot_repair_scan does not raise when the supervisor is None."""
+        import asyncio
+
+        import web.dashboard as dashboard
+        import utils.supervisor as _sup
+
+        monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: None)
+
+        # Should not raise.
+        asyncio.run(dashboard._post_reboot_repair_scan(settle_seconds=0))
