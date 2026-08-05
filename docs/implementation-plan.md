@@ -52,6 +52,8 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 30   | Backup Inventory Tracking                                            | ✅ Done (2026-07-24) |
 | 31   | Backup Offloading                                                    | ✅ Done (2026-07-24) |
 | 32   | Retention Policy & Cleanup                                           | ✅ Done (2026-07-27) |
+| 12.5A | HA Repairs polling: `poll_for_repairs()`; `execute_ha_reboot()`; `ha_repair_history` migration v12; `CARD_TYPE_HA_REPAIR`; `_execute_queued_ha_repair` dashboard handler | ✅ Done (2026-08-05) |
+| 12.5B | Update ordering enforcement: `_update_priority()`; ordering guard in `approve()`; advisory note in `request_update_approval()`; `is_reboot_required_active()` preflight in `execute_update()` | ✅ Done (2026-08-05) |
 | 33   | HARestClient + HARestClientProtocol; update entity polling; --mode update-check | ✅ Done (2026-07-27) |
 | 34   | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema | ✅ Done (2026-07-27) |
 | 35   | HITL update approval card: per-component, advisory breaking-changes section | ✅ Done (2026-07-27) |
@@ -232,6 +234,16 @@ Items 33–37. Detects available Core, OS, and add-on updates via `update.*` RES
 | 37 | Pueo self-check after Core update: command catalog smoke-test + LLM cross-reference |
 
 → [plan/ha-update-manager.md](plan/ha-update-manager.md)
+
+---
+
+### Phase 12.5 — HA Repairs & Update Orchestration (2 items) ✅ Complete (2026-08-05)
+Items 12.5A–12.5B. Two gaps discovered after the HAOS 18.1 → 18.2 update: Pueo had zero visibility into `/api/repairs/issues`, so the post-OS-update `reboot_required` signal was invisible; and nothing prevented approving Core before OS in the HITL queue. This phase closes both gaps.
+
+| Item | Concern |
+|------|---------|
+| 12.5A | `poll_for_repairs()` daemon polls `GET /api/repairs/issues` every `HA_REPAIR_POLL_INTERVAL_MINUTES` (default 5 min); fires `CARD_TYPE_HA_REPAIR` HITL cards; `execute_ha_reboot()` (backup → `ha host reboot` → TCP poll); dismiss via `DELETE /api/repairs/issues/{domain}/{issue_id}`; `ha_repair_history` DB table (migration v12); `record_repair_seen`, `mark_repair_hitl_sent`, `mark_repair_resolved`, `is_reboot_required_active()` helpers |
+| 12.5B | `_update_priority()` (OS=0, Supervisor=1, Core=2, add-ons=3); `_pending_higher_priority_components()` scans watch dir; ordering guard in `approve()` redirects to `/queue?order_error=<component>` with dismissible banner; advisory note appended to update card body; `execute_update()` preflights `is_reboot_required_active()` and aborts if reboot unresolved |
 
 ---
 

@@ -15,6 +15,7 @@ Strategic capabilities in delivery order.
 | 4.5. HA Resource Stewardship                  | ✅ Complete (2026-07-27) | `ha_agent_advanced.py`, `web/dashboard.py` |
 | 4.6. HA Update Manager                        | ✅ Complete (2026-07-27) | `utils/ha_rest_client.py`                  |
 | 4.7. HA Notification Intelligence             | ✅ Complete (2026-07-27) | `utils/ha_ws_client.py`, `web/dashboard.py`|
+| 4.8. HA Repairs & Update Orchestration        | ✅ Complete (2026-08-05) | `ha_update_manager.py`, `ha_log_monitor.py`|
 | 5. Agent quality & evaluation                 | ✅ Complete (2026-07-28) | `evals/`                                   |
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
 | 6.5. Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | `main.py`, `web/dashboard.py`              |
@@ -41,6 +42,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27     |
 | Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
 | Phase 12: HA Update Manager                        | ✅ Complete (2026-07-27) | 33–37  |
+| Phase 12.5: HA Repairs & Update Orchestration      | ✅ Complete (2026-08-05) | 12.5A–B|
 | Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41  |
 | Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
 | Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
