@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "code_proposal") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "code_proposal", "ha_repair") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -158,6 +158,14 @@
         {% elif ct == "code_proposal" %}
           {% set hint_approve = "Write tool code to user_tools/, import it, and register it for future agent loop calls" %}
           {% set hint_reject = "Discard; the proposed tool is not registered" %}
+        {% elif ct == "ha_repair" %}
+          {% if r.payload.get("action") == "reboot" %}
+            {% set hint_approve = "Create HA backup, then reboot the HA host; Pueo will poll until HA is back online" %}
+            {% set hint_reject = "Skip this reboot; the repair issue stays open in HA" %}
+          {% else %}
+            {% set hint_approve = "Dismiss this repair issue in HA" %}
+            {% set hint_reject = "Keep the repair issue open in HA" %}
+          {% endif %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
