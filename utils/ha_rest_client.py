@@ -23,6 +23,7 @@ class UpdateStatus:
 _COMPONENT_MAP = {
     "home_assistant_core": "core",
     "home_assistant_os": "os",
+    "home_assistant_operating_system": "os",  # actual entity name on modern HAOS
     "home_assistant_supervisor": "supervisor",
 }
 

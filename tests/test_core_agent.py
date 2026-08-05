@@ -2354,6 +2354,25 @@ class TestUpdateStatus:
         status = _entity_to_update_status(entity)
         assert status.component == "supervisor"
 
+    def test_os_component_mapped_for_modern_entity_name(self):
+        # HAOS entity is update.home_assistant_operating_system_update on modern HA,
+        # not update.home_assistant_os_update. Without this map entry the component
+        # falls through to the raw string and execute_update routes it to the add-on
+        # executor instead of execute_os_update.
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.home_assistant_operating_system_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "18.1",
+                "latest_version": "18.2",
+            },
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "os"
+        assert status.update_available is True
+
 
 class TestFakeHARestClient:
     def test_get_states_returns_all(self):
