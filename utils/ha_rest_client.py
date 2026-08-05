@@ -131,10 +131,7 @@ async def get_ha_repair_issues(
     WebSocket is the canonical source for repair data.
     """
     result: list[HARepairIssue] = []
-    try:
-        items = await ws_client.get_repair_issues()
-    except Exception:
-        return result
+    items = await ws_client.get_repair_issues()
     for item in items:
         domain = item.get("domain", "")
         issue_id = item.get("issue_id", "")

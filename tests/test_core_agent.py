@@ -3409,6 +3409,317 @@ class TestPollOsOnline:
         assert result is True
 
 
+# ── _wait_for_ha_down ──────────────────────────────────────────────────────────
+class TestWaitForHaDown:
+    def test_returns_true_immediately_on_connection_refused(self):
+        from ha_update_manager import _wait_for_ha_down
+
+        async def refused_connect(host, port):
+            raise ConnectionRefusedError("no server")
+
+        result = asyncio.run(
+            _wait_for_ha_down(
+                "ha.local",
+                8123,
+                timeout_seconds=30,
+                _sleep=_noop_sleep,
+                _connect=refused_connect,
+            )
+        )
+        assert result is True
+
+    def test_returns_false_on_timeout_when_tcp_always_succeeds(self):
+        from ha_update_manager import _wait_for_ha_down
+
+        async def always_up(host, port):
+            class FakeWriter:
+                def close(self):
+                    pass
+
+                async def wait_closed(self):
+                    pass
+
+            return object(), FakeWriter()
+
+        result = asyncio.run(
+            _wait_for_ha_down(
+                "ha.local",
+                8123,
+                timeout_seconds=0,
+                _sleep=_noop_sleep,
+                _connect=always_up,
+            )
+        )
+        assert result is False
+
+    def test_returns_true_after_several_successes_then_refused(self):
+        from ha_update_manager import _wait_for_ha_down
+
+        calls = [0]
+
+        async def flaky(host, port):
+            calls[0] += 1
+            if calls[0] >= 3:
+                raise OSError("host down")
+
+            class FakeWriter:
+                def close(self):
+                    pass
+
+                async def wait_closed(self):
+                    pass
+
+            return object(), FakeWriter()
+
+        result = asyncio.run(
+            _wait_for_ha_down(
+                "ha.local",
+                8123,
+                timeout_seconds=60,
+                _sleep=_noop_sleep,
+                _connect=flaky,
+            )
+        )
+        assert result is True
+        assert calls[0] == 3
+
+
+# ── _poll_ha_api_ready ─────────────────────────────────────────────────────────
+class TestPollHaApiReady:
+    def test_returns_true_on_http_200(self):
+        from ha_update_manager import _poll_ha_api_ready
+
+        async def ok_get(url, headers):
+            return 200
+
+        result = asyncio.run(
+            _poll_ha_api_ready(
+                "ha.local",
+                8123,
+                "token",
+                timeout_seconds=30,
+                _sleep=_noop_sleep,
+                _get=ok_get,
+            )
+        )
+        assert result is True
+
+    def test_returns_true_on_http_401(self):
+        from ha_update_manager import _poll_ha_api_ready
+
+        async def unauth_get(url, headers):
+            return 401
+
+        result = asyncio.run(
+            _poll_ha_api_ready(
+                "ha.local",
+                8123,
+                "token",
+                timeout_seconds=30,
+                _sleep=_noop_sleep,
+                _get=unauth_get,
+            )
+        )
+        assert result is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import _poll_ha_api_ready
+
+        async def error_get(url, headers):
+            raise ConnectionRefusedError("down")
+
+        result = asyncio.run(
+            _poll_ha_api_ready(
+                "ha.local",
+                8123,
+                "token",
+                timeout_seconds=0,
+                _sleep=_noop_sleep,
+                _get=error_get,
+            )
+        )
+        assert result is False
+
+    def test_retries_on_connection_error_then_succeeds(self):
+        from ha_update_manager import _poll_ha_api_ready
+
+        calls = [0]
+
+        async def flaky_get(url, headers):
+            calls[0] += 1
+            if calls[0] < 3:
+                raise OSError("boot in progress")
+            return 200
+
+        result = asyncio.run(
+            _poll_ha_api_ready(
+                "ha.local",
+                8123,
+                "token",
+                timeout_seconds=60,
+                interval=1,
+                _sleep=_noop_sleep,
+                _get=flaky_get,
+            )
+        )
+        assert result is True
+        assert calls[0] == 3
+
+
+# ── execute_ha_reboot ─────────────────────────────────────────────────────────
+class TestExecuteHaReboot:
+    def _make_ssh(self):
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient()
+
+    def test_sends_success_card_after_api_ready(self, tmp_path, monkeypatch):
+        from ha_update_manager import execute_ha_reboot
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
+
+        ssh = self._make_ssh()
+        notifier = FakeNotifier()
+        api_calls = [0]
+
+        async def fake_poll(host, port, timeout_seconds):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds):
+            api_calls[0] += 1
+            return True
+
+        async def fake_down(host, port, timeout_seconds):
+            return True
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.execute_remote_backup",
+                return_value="abc123",
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.record_backup_slug"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.offload_backup_to_local"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
+        ):
+            result = asyncio.run(
+                execute_ha_reboot(
+                    ssh,
+                    notifier,
+                    ha_host="ha.local",
+                    ha_port=8123,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                    _down_poll=fake_down,
+                )
+            )
+
+        assert result is True
+        assert api_calls[0] == 1
+        assert len(notifier.sent) == 1
+        assert "succeeded" in notifier.sent[0]["subject"].lower()
+
+    def test_sends_failure_card_when_api_poll_times_out(self, tmp_path, monkeypatch):
+        from ha_update_manager import execute_ha_reboot
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
+
+        ssh = self._make_ssh()
+        notifier = FakeNotifier()
+
+        async def fake_poll(host, port, timeout_seconds):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds):
+            return False  # API never comes up
+
+        async def fake_down(host, port, timeout_seconds):
+            return True
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.execute_remote_backup",
+                return_value="abc123",
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.record_backup_slug"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.offload_backup_to_local"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
+        ):
+            result = asyncio.run(
+                execute_ha_reboot(
+                    ssh,
+                    notifier,
+                    ha_host="ha.local",
+                    ha_port=8123,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                    _down_poll=fake_down,
+                )
+            )
+
+        assert result is False
+        assert len(notifier.sent) == 1
+        assert "timed out" in notifier.sent[0]["subject"].lower()
+
+    def test_skips_api_poll_when_tcp_poll_fails(self, tmp_path, monkeypatch):
+        """If TCP poll times out, _api_poll must not be called."""
+        from ha_update_manager import execute_ha_reboot
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
+
+        ssh = self._make_ssh()
+        notifier = FakeNotifier()
+        api_calls = [0]
+
+        async def fake_poll(host, port, timeout_seconds):
+            return False
+
+        async def fake_api(host, port, token, timeout_seconds):
+            api_calls[0] += 1
+            return True
+
+        async def fake_down(host, port, timeout_seconds):
+            return True
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.execute_remote_backup",
+                return_value="abc123",
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.record_backup_slug"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ha_agent_advanced.offload_backup_to_local"
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
+        ):
+            result = asyncio.run(
+                execute_ha_reboot(
+                    ssh,
+                    notifier,
+                    ha_host="ha.local",
+                    ha_port=8123,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                    _down_poll=fake_down,
+                )
+            )
+
+        assert result is False
+        assert api_calls[0] == 0
+
+
 # ── _poll_addon_version ────────────────────────────────────────────────────────
 class TestPollAddonVersion:
     def test_returns_true_when_version_and_state_match(self):
@@ -8804,7 +9115,8 @@ class TestHARepairIssue:
         issues = asyncio.run(get_ha_repair_issues(client))
         assert issues == []
 
-    def test_get_ha_repair_issues_empty_on_ws_error(self):
+    def test_get_ha_repair_issues_propagates_ws_error(self):
+        """WebSocket errors propagate so callers can apply their own retry/backoff logic."""
         from utils.ha_rest_client import get_ha_repair_issues
         from utils.ha_ws_client import FakeHAWebSocketClient
 
@@ -8812,8 +9124,8 @@ class TestHARepairIssue:
             async def get_repair_issues(self) -> list[dict]:
                 raise RuntimeError("connection refused")
 
-        issues = asyncio.run(get_ha_repair_issues(ErrorClient()))
-        assert issues == []
+        with pytest.raises(RuntimeError, match="connection refused"):
+            asyncio.run(get_ha_repair_issues(ErrorClient()))
 
     def test_dismiss_ha_repair_issue_calls_delete(self):
         from utils.ha_rest_client import FakeHARestClient, dismiss_ha_repair_issue
@@ -9018,3 +9330,187 @@ class TestExecuteUpdatePreflight:
         mock_exec.assert_not_called()
         assert len(notifier.sent) == 1
         assert "reboot" in notifier.sent[0]["body"].lower()
+
+
+# ── poll_for_notifications backoff ────────────────────────────────────────────
+class TestNotificationPollBackoff:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_backoff_grows_on_consecutive_failures(self, db_path, monkeypatch):
+        """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
+        from utils.notify import FakeNotifier
+
+        sleep_calls: list[float] = []
+        iteration = [0]
+
+        async def tracking_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            iteration[0] += 1
+            if iteration[0] >= 5:
+                raise asyncio.CancelledError()
+
+        class FlakyWS:
+            attempt = 0
+
+            async def get_persistent_notifications(self) -> list:
+                FlakyWS.attempt += 1
+                if FlakyWS.attempt <= 3:
+                    raise RuntimeError("connection refused")
+                return []  # success on 4th attempt
+
+            async def get_device_registry(self) -> list:
+                return []
+
+        monkeypatch.setattr(asyncio_mod, "sleep", tracking_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_ws_client=FlakyWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # Verify the backoff sequence: normal-interval, 30, 60, 120, then normal-interval again.
+        assert len(sleep_calls) == 5
+        assert sleep_calls[1] == 30
+        assert sleep_calls[2] == 60
+        assert sleep_calls[3] == 120
+        assert sleep_calls[4] == sleep_calls[0]  # reset to normal interval
+
+    def test_backoff_caps_at_120(self, db_path, monkeypatch):
+        """After the third failure the backoff stays at 120 — it does not grow beyond that."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_notifications
+        from utils.notify import FakeNotifier
+
+        sleep_calls: list[float] = []
+        iteration = [0]
+
+        async def tracking_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            iteration[0] += 1
+            if iteration[0] >= 6:
+                raise asyncio.CancelledError()
+
+        class AlwaysFailWS:
+            async def get_persistent_notifications(self) -> list:
+                raise RuntimeError("down")
+
+            async def get_device_registry(self) -> list:
+                return []
+
+        monkeypatch.setattr(asyncio_mod, "sleep", tracking_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_notifications(
+                    ha_ws_client=AlwaysFailWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # sleep_calls: [interval, 30, 60, 120, 120, 120]
+        assert sleep_calls[3] == 120
+        assert sleep_calls[4] == 120
+        assert sleep_calls[5] == 120
+
+
+# ── poll_for_repairs backoff ──────────────────────────────────────────────────
+class TestRepairPollBackoff:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_backoff_grows_on_consecutive_failures(self, db_path, monkeypatch):
+        """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_repairs
+        from utils.notify import FakeNotifier
+
+        sleep_calls: list[float] = []
+        iteration = [0]
+
+        async def tracking_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            iteration[0] += 1
+            if iteration[0] >= 5:
+                raise asyncio.CancelledError()
+
+        class FlakyWS:
+            attempt = 0
+
+            async def get_repair_issues(self) -> list:
+                FlakyWS.attempt += 1
+                if FlakyWS.attempt <= 3:
+                    raise RuntimeError("connection refused")
+                return []  # success on 4th attempt
+
+        monkeypatch.setattr(asyncio_mod, "sleep", tracking_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FlakyWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # Verify: normal-interval, 30, 60, 120, then normal-interval again.
+        assert len(sleep_calls) == 5
+        assert sleep_calls[1] == 30
+        assert sleep_calls[2] == 60
+        assert sleep_calls[3] == 120
+        assert sleep_calls[4] == sleep_calls[0]  # reset to normal interval
+
+    def test_backoff_caps_at_120(self, db_path, monkeypatch):
+        """Backoff does not grow beyond 120 seconds on sustained failures."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_repairs
+        from utils.notify import FakeNotifier
+
+        sleep_calls: list[float] = []
+        iteration = [0]
+
+        async def tracking_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            iteration[0] += 1
+            if iteration[0] >= 6:
+                raise asyncio.CancelledError()
+
+        class AlwaysFailWS:
+            async def get_repair_issues(self) -> list:
+                raise RuntimeError("down")
+
+        monkeypatch.setattr(asyncio_mod, "sleep", tracking_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=AlwaysFailWS(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # sleep_calls: [interval, 30, 60, 120, 120, 120]
+        assert sleep_calls[3] == 120
+        assert sleep_calls[4] == 120
+        assert sleep_calls[5] == 120
