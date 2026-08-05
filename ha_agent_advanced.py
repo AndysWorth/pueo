@@ -201,6 +201,10 @@ def _migrate_v10(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE notification_history ADD COLUMN ha_created_at REAL")
 
 
+def _migrate_v11(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN name TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -212,6 +216,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (8, _migrate_v8),
     (9, _migrate_v9),
     (10, _migrate_v10),
+    (11, _migrate_v11),
 ]
 
 
@@ -258,25 +263,31 @@ def record_state_memory(
         conn.commit()
 
 
-def record_backup_slug(slug: str) -> None:
+def record_backup_slug(slug: str, name: str = "") -> None:
     """Registers an active backup point locally before executing a repair strategy."""
+    backup_name = name or f"Pueo_{time.strftime('%Y-%m-%d_%H%M')}"
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO backup_registry (timestamp, backup_slug, status, size_bytes, location)"
-            " VALUES (?, ?, 'ACTIVE', 0, 'ha')",
-            (int(time.time()), slug),
+            "INSERT INTO backup_registry"
+            " (timestamp, backup_slug, status, size_bytes, location, name)"
+            " VALUES (?, ?, 'ACTIVE', 0, 'ha', ?)",
+            (int(time.time()), slug, backup_name),
         )
         conn.commit()
 
 
 def _parse_backup_list(output: str) -> list[dict]:
-    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes}."""
+    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes, name}."""
     try:
         data = json.loads(output)
         backups = data.get("data", {}).get("backups", [])
         return [
-            {"slug": b["slug"], "size_bytes": b.get("size_bytes", 0)}
+            {
+                "slug": b["slug"],
+                "size_bytes": b.get("size_bytes", 0),
+                "name": b.get("name", ""),
+            }
             for b in backups
             if "slug" in b
         ]
@@ -303,7 +314,10 @@ async def reconcile_backup_inventory(
         log.warning("backup_reconcile_skipped", error=str(e))
         return
 
-    ha_slugs = {b["slug"]: b["size_bytes"] for b in ha_backups}
+    ha_slugs = {
+        b["slug"]: {"size_bytes": b["size_bytes"], "name": b.get("name", "")}
+        for b in ha_backups
+    }
 
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -321,14 +335,25 @@ async def reconcile_backup_inventory(
             ).fetchall()
         }
 
-        for slug, size_bytes in ha_slugs.items():
+        for slug, info in ha_slugs.items():
+            size_bytes = info["size_bytes"]
+            ha_name = info["name"]
             if slug not in db_slugs_all:
                 log.info("backup_inventory_add", slug=slug, size_bytes=size_bytes)
                 cursor.execute(
                     "INSERT INTO backup_registry"
-                    " (timestamp, backup_slug, status, size_bytes, location)"
-                    " VALUES (?, ?, 'ACTIVE', ?, 'ha')",
-                    (int(time.time()), slug, size_bytes),
+                    " (timestamp, backup_slug, status, size_bytes, location, name)"
+                    " VALUES (?, ?, 'ACTIVE', ?, 'ha', ?)",
+                    (int(time.time()), slug, size_bytes, ha_name),
+                )
+            else:
+                # Back-fill size_bytes and name for rows recorded with zero/null defaults
+                cursor.execute(
+                    "UPDATE backup_registry"
+                    " SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END,"
+                    "     name = CASE WHEN name IS NULL OR name = '' THEN ? ELSE name END"
+                    " WHERE backup_slug = ? AND (size_bytes = 0 OR name IS NULL OR name = '')",
+                    (size_bytes, ha_name, slug),
                 )
 
         for slug in db_slugs_active:
@@ -458,11 +483,13 @@ async def offload_backup_to_local(
                 remote_hash=remote_hash,
             )
             return False
+        local_size = local_path.stat().st_size
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "UPDATE backup_registry SET location = 'both', offloaded_at = ?"
+                "UPDATE backup_registry"
+                " SET location = 'both', offloaded_at = ?, size_bytes = ?"
                 " WHERE backup_slug = ?",
-                (time.time(), slug),
+                (time.time(), local_size, slug),
             )
             conn.commit()
         log.info("backup_offloaded", slug=slug, local_path=str(local_path))
