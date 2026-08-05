@@ -378,13 +378,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_11_after_init(self, db_path):
+    def test_schema_version_is_current_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 12
+        assert version == 13
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 12
+        assert rows[0][0] == 13
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 12
+        assert version == 13
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -1036,13 +1036,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_11_after_init(self, db_path):
+    def test_schema_version_is_current_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 12
+        assert version == 13
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1052,7 +1052,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 12
+        assert rows[0][0] == 13
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1080,7 +1080,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 12
+        assert version == 13
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -8730,16 +8730,17 @@ class TestHARepairIssue:
         from utils.ha_rest_client import HARepairIssue
 
         issue = HARepairIssue(
-            domain="homeassistant",
-            issue_id="reboot_required",
-            severity="critical",
-            issue_key="homeassistant/reboot_required",
-            breaks_in_ha_version="2026.8.0",
+            domain="hassio",
+            issue_id="abc123",
+            severity="warning",
+            issue_key="hassio/abc123",
+            breaks_in_ha_version=None,
+            translation_key="issue_system_reboot_required",
             data={"foo": "bar"},
         )
-        assert issue.domain == "homeassistant"
-        assert issue.issue_key == "homeassistant/reboot_required"
-        assert issue.breaks_in_ha_version == "2026.8.0"
+        assert issue.domain == "hassio"
+        assert issue.issue_key == "hassio/abc123"
+        assert issue.translation_key == "issue_system_reboot_required"
 
     def test_dataclass_defaults(self):
         from utils.ha_rest_client import HARepairIssue
@@ -8753,39 +8754,62 @@ class TestHARepairIssue:
         )
         assert issue.data == {}
         assert issue.breaks_in_ha_version is None
+        assert issue.translation_key is None
 
     def test_get_ha_repair_issues_parses_response(self):
-        from utils.ha_rest_client import FakeHARestClient, get_ha_repair_issues
+        from utils.ha_rest_client import get_ha_repair_issues
+        from utils.ha_ws_client import FakeHAWebSocketClient
 
-        raw = {
-            "/api/repairs/issues": {
-                "issues": [
-                    {
-                        "domain": "homeassistant",
-                        "issue_id": "reboot_required",
-                        "severity": "critical",
-                        "breaks_in_ha_version": None,
-                    },
-                    {
-                        "domain": "zha",
-                        "issue_id": "missing_config",
-                        "severity": "warning",
-                        "breaks_in_ha_version": "2026.9.0",
-                    },
-                ]
-            }
-        }
-        client = FakeHARestClient(raw_responses=raw)
+        client = FakeHAWebSocketClient(
+            repair_issues=[
+                {
+                    "domain": "hassio",
+                    "issue_id": "abc123",
+                    "severity": "warning",
+                    "breaks_in_ha_version": None,
+                    "translation_key": "issue_system_reboot_required",
+                    "ignored": False,
+                },
+                {
+                    "domain": "zha",
+                    "issue_id": "missing_config",
+                    "severity": "warning",
+                    "breaks_in_ha_version": "2026.9.0",
+                    "translation_key": "missing_config_entry",
+                    "ignored": False,
+                },
+            ]
+        )
         issues = asyncio.run(get_ha_repair_issues(client))
         assert len(issues) == 2
-        assert issues[0].issue_key == "homeassistant/reboot_required"
+        assert issues[0].issue_key == "hassio/abc123"
+        assert issues[0].translation_key == "issue_system_reboot_required"
         assert issues[1].breaks_in_ha_version == "2026.9.0"
 
-    def test_get_ha_repair_issues_empty_on_http_error(self):
-        from utils.ha_rest_client import FakeHARestClient, get_ha_repair_issues
+    def test_get_ha_repair_issues_skips_ignored(self):
+        from utils.ha_rest_client import get_ha_repair_issues
+        from utils.ha_ws_client import FakeHAWebSocketClient
 
-        class ErrorClient(FakeHARestClient):
-            async def get_raw(self, path: str) -> dict:
+        client = FakeHAWebSocketClient(
+            repair_issues=[
+                {
+                    "domain": "hassio",
+                    "issue_id": "abc123",
+                    "severity": "warning",
+                    "ignored": True,
+                    "translation_key": "something",
+                },
+            ]
+        )
+        issues = asyncio.run(get_ha_repair_issues(client))
+        assert issues == []
+
+    def test_get_ha_repair_issues_empty_on_ws_error(self):
+        from utils.ha_rest_client import get_ha_repair_issues
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        class ErrorClient(FakeHAWebSocketClient):
+            async def get_repair_issues(self) -> list[dict]:
                 raise RuntimeError("connection refused")
 
         issues = asyncio.run(get_ha_repair_issues(ErrorClient()))
@@ -8856,7 +8880,9 @@ class TestHARepairDB:
     def test_is_reboot_required_active_false_before_hitl_sent(self, db_path):
         from ha_agent_advanced import is_reboot_required_active, record_repair_seen
 
-        record_repair_seen("homeassistant/reboot_required")
+        record_repair_seen(
+            "hassio/abc123", translation_key="issue_system_reboot_required"
+        )
         assert is_reboot_required_active() is False
 
     def test_is_reboot_required_active_true_after_hitl_sent(self, db_path):
@@ -8866,8 +8892,10 @@ class TestHARepairDB:
             record_repair_seen,
         )
 
-        record_repair_seen("homeassistant/reboot_required")
-        mark_repair_hitl_sent("homeassistant/reboot_required")
+        record_repair_seen(
+            "hassio/abc123", translation_key="issue_system_reboot_required"
+        )
+        mark_repair_hitl_sent("hassio/abc123")
         assert is_reboot_required_active() is True
 
     def test_is_reboot_required_active_false_after_resolved(self, db_path):
@@ -8878,9 +8906,23 @@ class TestHARepairDB:
             record_repair_seen,
         )
 
-        record_repair_seen("homeassistant/reboot_required")
-        mark_repair_hitl_sent("homeassistant/reboot_required")
-        mark_repair_resolved("homeassistant/reboot_required")
+        record_repair_seen(
+            "hassio/abc123", translation_key="issue_system_reboot_required"
+        )
+        mark_repair_hitl_sent("hassio/abc123")
+        mark_repair_resolved("hassio/abc123")
+        assert is_reboot_required_active() is False
+
+    def test_is_reboot_required_active_false_without_translation_key(self, db_path):
+        """A row with no translation_key does not trigger is_reboot_required_active."""
+        from ha_agent_advanced import (
+            is_reboot_required_active,
+            mark_repair_hitl_sent,
+            record_repair_seen,
+        )
+
+        record_repair_seen("hassio/abc123")  # no translation_key
+        mark_repair_hitl_sent("hassio/abc123")
         assert is_reboot_required_active() is False
 
 

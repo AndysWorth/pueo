@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from interfaces import HARestClientProtocol
+from interfaces import HARestClientProtocol, HAWebSocketClientProtocol
 
 
 @dataclass
@@ -118,22 +118,29 @@ class HARepairIssue:
     severity: str
     issue_key: str
     breaks_in_ha_version: Optional[str]
+    translation_key: Optional[str] = None
     data: dict = field(default_factory=dict)
 
 
 async def get_ha_repair_issues(
-    rest: HARestClientProtocol,
+    ws_client: HAWebSocketClientProtocol,
 ) -> list[HARepairIssue]:
-    """GET /api/repairs/issues — return all non-ignored active repair issues."""
+    """Fetch active repair issues via the HA WebSocket API (repairs/list_issues).
+
+    The REST endpoint /api/repairs/issues does not exist on all HA versions;
+    WebSocket is the canonical source for repair data.
+    """
     result: list[HARepairIssue] = []
     try:
-        raw = await rest.get_raw("/api/repairs/issues")
+        items = await ws_client.get_repair_issues()
     except Exception:
         return result
-    for item in raw.get("issues", []):
+    for item in items:
         domain = item.get("domain", "")
         issue_id = item.get("issue_id", "")
         if not domain or not issue_id:
+            continue
+        if item.get("ignored"):
             continue
         result.append(
             HARepairIssue(
@@ -142,6 +149,7 @@ async def get_ha_repair_issues(
                 severity=item.get("severity", "warning"),
                 issue_key=f"{domain}/{issue_id}",
                 breaks_in_ha_version=item.get("breaks_in_ha_version"),
+                translation_key=item.get("translation_key"),
                 data=item,
             )
         )

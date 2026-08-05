@@ -519,21 +519,22 @@ async def poll_for_notifications(
 
 
 async def poll_for_repairs(
-    ha_rest_client: Optional[HARestClientProtocol] = None,
+    ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     db_path: str = DB_PATH,
 ) -> None:
-    """Periodically polls /api/repairs/issues and fires HITL cards for new repair issues."""
+    """Periodically polls HA repairs via WebSocket and fires HITL cards for new issues."""
     from ha_agent_advanced import (
         mark_repair_hitl_sent,
         mark_repair_resolved,
         record_repair_seen,
     )
     from utils.card_types import CARD_TYPE_HA_REPAIR
-    from utils.ha_rest_client import HARestClient, get_ha_repair_issues
+    from utils.ha_rest_client import get_ha_repair_issues
+    from utils.ha_ws_client import HAWebSocketClient
 
     interval = HA_REPAIR_POLL_INTERVAL_MINUTES * 60
-    _client: HARestClientProtocol = ha_rest_client or HARestClient(
+    _client: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
@@ -549,7 +550,7 @@ async def poll_for_repairs(
         active_keys: set[str] = set()
         for issue in issues:
             active_keys.add(issue.issue_key)
-            is_new = record_repair_seen(issue.issue_key)
+            record_repair_seen(issue.issue_key, translation_key=issue.translation_key)
             import sqlite3 as _sqlite3
 
             with _sqlite3.connect(db_path) as _conn:
@@ -560,11 +561,9 @@ async def poll_for_repairs(
             already_sent = _row is not None and _row[0] is not None
 
             if not already_sent:
+                is_reboot = "reboot" in (issue.translation_key or "").lower()
                 action = (
-                    "reboot"
-                    if issue.issue_id == "reboot_required"
-                    or issue.severity == "critical"
-                    else "dismiss"
+                    "reboot" if is_reboot or issue.severity == "critical" else "dismiss"
                 )
                 title = f"HA repair: {issue.domain}/{issue.issue_id}"
                 body_parts = [
@@ -572,6 +571,8 @@ async def poll_for_repairs(
                     f"Issue: {issue.issue_id}",
                     f"Severity: {issue.severity}",
                 ]
+                if issue.translation_key:
+                    body_parts.append(f"Type: {issue.translation_key}")
                 if issue.breaks_in_ha_version:
                     body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
                 payload: dict = {
@@ -584,6 +585,7 @@ async def poll_for_repairs(
                     "title": title,
                     "body": "\n".join(body_parts),
                     "breaks_in_ha_version": issue.breaks_in_ha_version,
+                    "translation_key": issue.translation_key,
                 }
                 await _notifier.send(
                     subject=title,
@@ -595,6 +597,7 @@ async def poll_for_repairs(
                     "repair_hitl_card_sent",
                     issue_key=issue.issue_key,
                     action=action,
+                    translation_key=issue.translation_key,
                 )
 
         # Reconcile: mark resolved any previously-sent repairs no longer in HA's list.
@@ -665,7 +668,7 @@ async def main(
         )
     if HA_REPAIR_POLL_INTERVAL_MINUTES > 0 and HA_API_TOKEN:
         asyncio.create_task(
-            poll_for_repairs(ha_rest_client=ha_rest_client, notifier=_notifier)
+            poll_for_repairs(ha_ws_client=ha_ws_client, notifier=_notifier)
         )
     await tail_remote_log_stream(
         ssh_client=_ssh,

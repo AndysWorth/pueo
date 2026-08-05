@@ -219,6 +219,10 @@ def _migrate_v12(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v13(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE ha_repair_history ADD COLUMN translation_key TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -232,6 +236,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (10, _migrate_v10),
     (11, _migrate_v11),
     (12, _migrate_v12),
+    (13, _migrate_v13),
 ]
 
 
@@ -292,7 +297,7 @@ def record_backup_slug(slug: str, name: str = "") -> None:
         conn.commit()
 
 
-def record_repair_seen(issue_key: str) -> bool:
+def record_repair_seen(issue_key: str, translation_key: str | None = None) -> bool:
     """Insert or update a repair issue row. Returns True if this is the first sighting."""
     now = time.time()
     with sqlite3.connect(DB_PATH) as conn:
@@ -303,11 +308,17 @@ def record_repair_seen(issue_key: str) -> bool:
         ).fetchone()
         if row is None:
             cursor.execute(
-                "INSERT INTO ha_repair_history (issue_key, first_seen_at) VALUES (?, ?)",
-                (issue_key, now),
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at, translation_key)"
+                " VALUES (?, ?, ?)",
+                (issue_key, now, translation_key),
             )
             conn.commit()
             return True
+        if translation_key is not None:
+            cursor.execute(
+                "UPDATE ha_repair_history SET translation_key = ? WHERE issue_key = ?",
+                (translation_key, issue_key),
+            )
         conn.commit()
         return False
 
@@ -331,11 +342,15 @@ def mark_repair_resolved(issue_key: str) -> None:
 
 
 def is_reboot_required_active() -> bool:
-    """True when ha_repair_history has an unresolved reboot_required row with a sent HITL card."""
+    """True when ha_repair_history has an unresolved reboot repair with a sent HITL card.
+
+    Matches on translation_key containing 'reboot' — HA uses UUID issue_ids so there is no
+    stable issue_id string to match against.
+    """
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             "SELECT 1 FROM ha_repair_history"
-            " WHERE issue_key = 'homeassistant/reboot_required'"
+            " WHERE translation_key LIKE '%reboot%'"
             " AND hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
         ).fetchone()
     return row is not None
