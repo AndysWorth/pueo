@@ -234,6 +234,7 @@ async def request_update_approval(
         "notification_id": nid,
         "card_type": CARD_TYPE_UPDATE,
         "component": update.component,
+        "entity_id": update.entity_id,
         "installed_version": update.installed_version,
         "latest_version": update.latest_version,
         "release_url": update.release_url,
@@ -645,6 +646,31 @@ async def _poll_addon_version(
     return False
 
 
+async def _poll_addon_update_via_rest(
+    entity_id: str,
+    ha_rest_client: HARestClientProtocol,
+    timeout_seconds: int = _ADDON_UPDATE_TIMEOUT,
+    interval: int = _POLL_INTERVAL_ADDON,
+    _sleep: Optional[Callable] = None,
+) -> bool:
+    """Poll the HA REST update entity until state flips to 'off' (update applied)."""
+    sleep_fn = _sleep or asyncio.sleep
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        try:
+            entity = await ha_rest_client.get_state(entity_id)
+            state = entity.get("state", "on")
+            in_progress = bool(entity.get("attributes", {}).get("in_progress", False))
+            if state == "off" and not in_progress:
+                log.info("poll_addon_rest_success", entity_id=entity_id)
+                return True
+        except Exception as exc:
+            log.warning("poll_addon_rest_error", entity_id=entity_id, error=str(exc))
+        await sleep_fn(interval)
+        elapsed += interval
+    return False
+
+
 async def _send_post_update_card(
     update: UpdateStatus,
     notifier: "NotifierProtocol",
@@ -716,11 +742,16 @@ async def execute_core_update(
     cache_dir: Optional[str] = None,
 ) -> bool:
     """Execute Core update: backup → ha core update → poll → post-check → result card."""
-    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+    from ha_agent_advanced import (
+        execute_remote_backup,
+        offload_backup_to_local,
+        record_backup_slug,
+    )
 
     log.info("core_update_start", version=update.latest_version)
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
+    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("core_update_backup_complete", slug=backup_slug)
 
     _, _, update_stderr = await ssh_client.run(
@@ -801,11 +832,16 @@ async def execute_os_update(
     _poll: Optional[Callable] = None,
 ) -> bool:
     """Execute OS update: backup → ha os update → TCP poll → result card."""
-    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+    from ha_agent_advanced import (
+        execute_remote_backup,
+        offload_backup_to_local,
+        record_backup_slug,
+    )
 
     log.info("os_update_start", version=update.latest_version)
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
+    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("os_update_backup_complete", slug=backup_slug)
 
     await ssh_client.run("ha os update --no-progress", check=False)
@@ -835,11 +871,16 @@ async def execute_addon_update(
     ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Execute add-on update: backup → update.install REST service → poll → result card."""
-    from ha_agent_advanced import execute_remote_backup, record_backup_slug
+    from ha_agent_advanced import (
+        execute_remote_backup,
+        offload_backup_to_local,
+        record_backup_slug,
+    )
 
     log.info("addon_update_start", slug=update.component, version=update.latest_version)
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
+    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("addon_update_backup_complete", slug=backup_slug)
 
     rest: HARestClientProtocol
@@ -848,7 +889,7 @@ async def execute_addon_update(
     else:
         from utils.ha_rest_client import HARestClient
 
-        rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+        rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout=30.0)
 
     try:
         await rest.call_service("update", "install", {"entity_id": update.entity_id})
@@ -857,22 +898,38 @@ async def execute_addon_update(
             slug=update.component,
             entity_id=update.entity_id,
         )
+    except httpx.TimeoutException:
+        # HA holds the connection open while the update runs; a timeout here is expected
+        # behaviour, not a failure. The update may already be in progress — proceed to
+        # the poll, which will determine the actual outcome.
+        log.warning(
+            "addon_update_service_timeout",
+            slug=update.component,
+            entity_id=update.entity_id,
+            detail="service call timed out; update may be in progress — proceeding to poll",
+        )
     except Exception as exc:
         log.warning(
             "addon_update_service_failed",
             slug=update.component,
-            error=str(exc)[:200],
+            error=str(exc)[:200] or repr(exc),
         )
         await _send_post_update_card(update, notifier, False, "", "")
         return False
 
-    poll_fn = _poll or _poll_addon_version
-    success = await poll_fn(
-        update.component,
-        update.latest_version,
-        ssh_client,
-        timeout_seconds=_ADDON_UPDATE_TIMEOUT,
-    )
+    if _poll is not None:
+        success = await _poll(
+            update.component,
+            update.latest_version,
+            ssh_client,
+            timeout_seconds=_ADDON_UPDATE_TIMEOUT,
+        )
+    else:
+        success = await _poll_addon_update_via_rest(
+            update.entity_id,
+            rest,
+            timeout_seconds=_ADDON_UPDATE_TIMEOUT,
+        )
 
     await _send_post_update_card(update, notifier, success, "", "")
 

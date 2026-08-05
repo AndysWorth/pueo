@@ -221,6 +221,10 @@ def _migrate_v10(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE notification_history ADD COLUMN ha_created_at REAL")
 
 
+def _migrate_v11(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN name TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -232,6 +236,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (8, _migrate_v8),
     (9, _migrate_v9),
     (10, _migrate_v10),
+    (11, _migrate_v11),
 ]
 
 

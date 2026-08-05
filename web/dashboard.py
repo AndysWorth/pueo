@@ -392,7 +392,7 @@ async def _execute_queued_update(
         latest_version = payload.get("latest_version", "")
         update = UpdateStatus(
             component=component,
-            entity_id=f"update.{component}",
+            entity_id=payload.get("entity_id") or f"update.{component}",
             installed_version=payload.get("installed_version", ""),
             latest_version=latest_version,
             update_available=True,
@@ -856,7 +856,7 @@ def _load_backup_inventory() -> list[dict]:
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT backup_slug, size_bytes, timestamp, location,"
-                " deleted_from_ha_at, offloaded_at"
+                " deleted_from_ha_at, offloaded_at, name"
                 " FROM backup_registry ORDER BY timestamp DESC"
             ).fetchall()
     except Exception:
@@ -864,13 +864,14 @@ def _load_backup_inventory() -> list[dict]:
 
     now = time.time()
     result = []
-    for slug, size_bytes, ts, location, deleted_from_ha_at, offloaded_at in rows:
+    for slug, size_bytes, ts, location, deleted_from_ha_at, offloaded_at, name in rows:
         age_secs = now - (ts or now)
         age_days = age_secs / 86400
         age_str = f"{age_days:.0f}d" if age_days >= 1 else f"{age_days * 24:.0f}h"
         result.append(
             {
                 "slug": slug,
+                "name": name or slug,
                 "size_mb": round((size_bytes or 0) / (1024 * 1024), 1),
                 "age": age_str,
                 "on_ha": deleted_from_ha_at is None,

@@ -378,13 +378,13 @@ class TestAdvancedDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_10_after_init(self, db_path):
+    def test_schema_version_is_11_after_init(self, db_path):
         import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 10
+        assert rows[0][0] == 11
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -496,12 +496,36 @@ class TestBackupInventory:
             ).fetchone()[0]
         assert size == 0
 
+    def test_record_backup_slug_stores_explicit_name(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-named", name="Pueo_2026-08-05_1430")
+        with sqlite3.connect(db_path) as conn:
+            name = conn.execute(
+                "SELECT name FROM backup_registry WHERE backup_slug = 'slug-named'"
+            ).fetchone()[0]
+        assert name == "Pueo_2026-08-05_1430"
+
+    def test_record_backup_slug_auto_generates_name(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("slug-auto")
+        with sqlite3.connect(db_path) as conn:
+            name = conn.execute(
+                "SELECT name FROM backup_registry WHERE backup_slug = 'slug-auto'"
+            ).fetchone()[0]
+        assert name is not None and name.startswith("Pueo_")
+
     def test_parse_backup_list_valid_json(self):
         import ha_agent_advanced
 
-        output = '{"result":"ok","data":{"backups":[{"slug":"abc123","size_bytes":56760320}]}}'
+        output = '{"result":"ok","data":{"backups":[{"slug":"abc123","size_bytes":56760320,"name":"Pueo_2026-08-05_1430"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
-        assert result == [{"slug": "abc123", "size_bytes": 56760320}]
+        assert result == [
+            {"slug": "abc123", "size_bytes": 56760320, "name": "Pueo_2026-08-05_1430"}
+        ]
 
     def test_parse_backup_list_multiple_backups(self):
         import ha_agent_advanced
@@ -530,7 +554,7 @@ class TestBackupInventory:
 
         output = '{"result":"ok","data":{"backups":[{"slug":"xyz"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
-        assert result == [{"slug": "xyz", "size_bytes": 0}]
+        assert result == [{"slug": "xyz", "size_bytes": 0, "name": ""}]
 
     def test_reconcile_inserts_ha_only_slug(self, db_path):
         import ha_agent_advanced
@@ -563,6 +587,29 @@ class TestBackupInventory:
                 "SELECT COUNT(*) FROM backup_registry WHERE backup_slug = 'existing-slug'"
             ).fetchone()[0]
         assert count == 1
+
+    def test_reconcile_backfills_size_and_name_for_zero_byte_rows(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug(
+            "zero-slug"
+        )  # inserts size_bytes=0, name=auto
+        # Override name to NULL to simulate pre-v11 rows
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE backup_registry SET size_bytes = 0, name = NULL WHERE backup_slug = 'zero-slug'"
+            )
+            conn.commit()
+        backup_json = '{"result":"ok","data":{"backups":[{"slug":"zero-slug","size_bytes":54321,"name":"HA Auto Backup"}]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT size_bytes, name FROM backup_registry WHERE backup_slug = 'zero-slug'"
+            ).fetchone()
+        assert row[0] == 54321
+        assert row[1] == "HA Auto Backup"
 
     def test_reconcile_warns_on_orphaned_slug(self, db_path, caplog):
         import logging
@@ -670,9 +717,11 @@ class TestBackupOffloading:
 
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT location FROM backup_registry WHERE backup_slug = ?", (slug,)
+                "SELECT location, size_bytes FROM backup_registry WHERE backup_slug = ?",
+                (slug,),
             ).fetchone()
         assert row[0] == "both"
+        assert row[1] == len(content)
 
     def test_offload_checksum_mismatch_leaves_location_ha(
         self, db_path, monkeypatch, tmp_path
@@ -987,13 +1036,13 @@ class TestSandboxDB:
             ]
         assert "schema_version" in tables
 
-    def test_schema_version_is_10_after_init(self, db_path):
+    def test_schema_version_is_11_after_init(self, db_path):
         import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1003,7 +1052,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 10
+        assert rows[0][0] == 11
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1031,7 +1080,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 10
+        assert version == 11
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -2305,6 +2354,25 @@ class TestUpdateStatus:
         status = _entity_to_update_status(entity)
         assert status.component == "supervisor"
 
+    def test_os_component_mapped_for_modern_entity_name(self):
+        # HAOS entity is update.home_assistant_operating_system_update on modern HA,
+        # not update.home_assistant_os_update. Without this map entry the component
+        # falls through to the raw string and execute_update routes it to the add-on
+        # executor instead of execute_os_update.
+        from utils.ha_rest_client import _entity_to_update_status
+
+        entity = {
+            "entity_id": "update.home_assistant_operating_system_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "18.1",
+                "latest_version": "18.2",
+            },
+        }
+        status = _entity_to_update_status(entity)
+        assert status.component == "os"
+        assert status.update_available is True
+
 
 class TestFakeHARestClient:
     def test_get_states_returns_all(self):
@@ -3416,6 +3484,83 @@ class TestPollAddonVersion:
         assert result is False
 
 
+# ── _poll_addon_update_via_rest ───────────────────────────────────────────────
+class TestPollAddonUpdateViaRest:
+    def _make_rest_client(self, states: list[dict]):
+        """Returns a fake REST client that cycles through the given entity states."""
+        from utils.ha_rest_client import FakeHARestClient
+
+        queue = list(states)
+
+        class _QueuedClient(FakeHARestClient):
+            async def get_state(self, entity_id: str) -> dict:  # type: ignore[override]
+                if queue:
+                    return queue.pop(0)
+                return {"state": "on", "attributes": {"in_progress": False}}
+
+        return _QueuedClient()
+
+    def test_returns_true_when_state_flips_off(self):
+        from ha_update_manager import _poll_addon_update_via_rest
+
+        client = self._make_rest_client(
+            [
+                {"state": "on", "attributes": {"in_progress": True}},
+                {"state": "off", "attributes": {"in_progress": False}},
+            ]
+        )
+        result = asyncio.run(
+            _poll_addon_update_via_rest(
+                "update.file_editor",
+                client,
+                timeout_seconds=60,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is True
+
+    def test_returns_false_on_timeout(self):
+        from ha_update_manager import _poll_addon_update_via_rest
+
+        client = self._make_rest_client([])
+        result = asyncio.run(
+            _poll_addon_update_via_rest(
+                "update.file_editor",
+                client,
+                timeout_seconds=0,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is False
+
+    def test_tolerates_get_state_exception(self):
+        from ha_update_manager import _poll_addon_update_via_rest
+        from utils.ha_rest_client import FakeHARestClient
+
+        call_count = [0]
+
+        class _ErrThenSuccessClient(FakeHARestClient):
+            async def get_state(self, entity_id: str) -> dict:  # type: ignore[override]
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("transient error")
+                return {"state": "off", "attributes": {"in_progress": False}}
+
+        client = _ErrThenSuccessClient()
+        result = asyncio.run(
+            _poll_addon_update_via_rest(
+                "update.file_editor",
+                client,
+                timeout_seconds=60,
+                interval=5,
+                _sleep=_noop_sleep,
+            )
+        )
+        assert result is True
+
+
 # ── _send_post_update_card ────────────────────────────────────────────────────
 class TestSendPostUpdateCard:
     def _make_update(self, component: str = "core"):
@@ -3521,18 +3666,24 @@ class TestExecuteCoreUpdate:
                 called.append(slug)
                 return slug
 
-            def mock_record(s):
+            def mock_record(s, name=""):
                 recorded.append(s)
+
+            async def mock_offload(slug, ssh_client=None):
+                pass
 
             orig_b = ha_agent_advanced.execute_remote_backup
             orig_r = ha_agent_advanced.record_backup_slug
+            orig_o = ha_agent_advanced.offload_backup_to_local
             ha_agent_advanced.execute_remote_backup = mock_backup
             ha_agent_advanced.record_backup_slug = mock_record
+            ha_agent_advanced.offload_backup_to_local = mock_offload
             try:
                 yield called, recorded
             finally:
                 ha_agent_advanced.execute_remote_backup = orig_b
                 ha_agent_advanced.record_backup_slug = orig_r
+                ha_agent_advanced.offload_backup_to_local = orig_o
 
         return _ctx()
 
@@ -3765,15 +3916,21 @@ class TestExecuteOsUpdate:
             async def mock_backup(ssh_client=None):
                 return slug
 
+            async def mock_offload(slug, ssh_client=None):
+                pass
+
             orig_b = ha_agent_advanced.execute_remote_backup
             orig_r = ha_agent_advanced.record_backup_slug
+            orig_o = ha_agent_advanced.offload_backup_to_local
             ha_agent_advanced.execute_remote_backup = mock_backup
-            ha_agent_advanced.record_backup_slug = lambda s: None
+            ha_agent_advanced.record_backup_slug = lambda s, name="": None
+            ha_agent_advanced.offload_backup_to_local = mock_offload
             try:
                 yield
             finally:
                 ha_agent_advanced.execute_remote_backup = orig_b
                 ha_agent_advanced.record_backup_slug = orig_r
+                ha_agent_advanced.offload_backup_to_local = orig_o
 
         return _ctx()
 
@@ -3850,15 +4007,21 @@ class TestExecuteAddonUpdate:
             async def mock_backup(ssh_client=None):
                 return slug
 
+            async def mock_offload(slug, ssh_client=None):
+                pass
+
             orig_b = ha_agent_advanced.execute_remote_backup
             orig_r = ha_agent_advanced.record_backup_slug
+            orig_o = ha_agent_advanced.offload_backup_to_local
             ha_agent_advanced.execute_remote_backup = mock_backup
-            ha_agent_advanced.record_backup_slug = lambda s: None
+            ha_agent_advanced.record_backup_slug = lambda s, name="": None
+            ha_agent_advanced.offload_backup_to_local = mock_offload
             try:
                 yield
             finally:
                 ha_agent_advanced.execute_remote_backup = orig_b
                 ha_agent_advanced.record_backup_slug = orig_r
+                ha_agent_advanced.offload_backup_to_local = orig_o
 
         return _ctx()
 
@@ -4001,6 +4164,84 @@ class TestExecuteAddonUpdate:
 
         assert result is False
         assert poll_called == [], "poll must not be called when REST trigger fails"
+        assert notifier.sent[0]["payload"]["success"] is False
+
+    def test_timeout_on_service_call_falls_through_to_poll(self):
+        """httpx.TimeoutException must not abort — fall through to the poll."""
+        import httpx
+
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        poll_called = []
+
+        class _TimeoutRestClient(FakeHARestClient):
+            async def call_service(self, domain, service, payload):
+                raise httpx.ReadTimeout("")
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            poll_called.append(slug)
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update("file_editor"),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=_TimeoutRestClient(),
+                )
+            )
+
+        assert (
+            result is True
+        ), "poll result must propagate even when service call timed out"
+        assert poll_called == ["file_editor"], "poll must be called after timeout"
+        assert notifier.sent[0]["payload"]["success"] is True
+
+    def test_non_timeout_exception_sends_failure_card(self):
+        """Non-timeout exceptions abort immediately without calling the poll."""
+        from ha_update_manager import execute_addon_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        poll_called = []
+
+        class _ErrorRestClient(FakeHARestClient):
+            async def call_service(self, domain, service, payload):
+                raise RuntimeError("connection refused")
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            poll_called.append(slug)
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update("file_editor"),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=_ErrorRestClient(),
+                )
+            )
+
+        assert result is False
+        assert poll_called == [], "poll must not be called on non-timeout error"
         assert notifier.sent[0]["payload"]["success"] is False
 
 
@@ -4538,18 +4779,21 @@ class TestExecuteCoreUpdateSelfCheck:
             async def mock_backup(ssh_client=None):
                 return slug
 
-            def mock_record(s):
+            async def mock_offload(slug, ssh_client=None):
                 pass
 
             orig_b = ha_agent_advanced.execute_remote_backup
             orig_r = ha_agent_advanced.record_backup_slug
+            orig_o = ha_agent_advanced.offload_backup_to_local
             ha_agent_advanced.execute_remote_backup = mock_backup
-            ha_agent_advanced.record_backup_slug = mock_record
+            ha_agent_advanced.record_backup_slug = lambda s, name="": None
+            ha_agent_advanced.offload_backup_to_local = mock_offload
             try:
                 yield
             finally:
                 ha_agent_advanced.execute_remote_backup = orig_b
                 ha_agent_advanced.record_backup_slug = orig_r
+                ha_agent_advanced.offload_backup_to_local = orig_o
 
         return _ctx()
 
