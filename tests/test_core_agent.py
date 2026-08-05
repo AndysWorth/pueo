@@ -384,7 +384,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 11
+        assert rows[0][0] == 12
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -1042,7 +1042,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1052,7 +1052,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 11
+        assert rows[0][0] == 12
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1080,7 +1080,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -4277,7 +4277,9 @@ class TestExecuteUpdate:
             called.append("core")
             return True
 
-        with patch("ha_update_manager.execute_core_update", fake_core):
+        with patch("ha_update_manager.execute_core_update", fake_core), patch(
+            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        ):
             asyncio.run(execute_update(self._make_update("core"), ssh, notifier, gate))
 
         assert called == ["core"]
@@ -4298,7 +4300,9 @@ class TestExecuteUpdate:
             called.append("os")
             return True
 
-        with patch("ha_update_manager.execute_os_update", fake_os):
+        with patch("ha_update_manager.execute_os_update", fake_os), patch(
+            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        ):
             asyncio.run(execute_update(self._make_update("os"), ssh, notifier, gate))
 
         assert called == ["os"]
@@ -4319,7 +4323,9 @@ class TestExecuteUpdate:
             called.append("addon")
             return True
 
-        with patch("ha_update_manager.execute_addon_update", fake_addon):
+        with patch("ha_update_manager.execute_addon_update", fake_addon), patch(
+            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        ):
             asyncio.run(
                 execute_update(self._make_update("my_addon"), ssh, notifier, gate)
             )
@@ -8714,3 +8720,259 @@ class TestLoopCrashTimeline:
         detail = json.loads(rows[0][3])
         assert detail["loop"] == "test_loop"
         assert "boom" in detail["error"]
+
+
+# ── Phase 12.5 — HA Repairs + Update Ordering ─────────────────────────────────
+
+
+class TestHARepairIssue:
+    def test_dataclass_construction(self):
+        from utils.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            domain="homeassistant",
+            issue_id="reboot_required",
+            severity="critical",
+            issue_key="homeassistant/reboot_required",
+            breaks_in_ha_version="2026.8.0",
+            data={"foo": "bar"},
+        )
+        assert issue.domain == "homeassistant"
+        assert issue.issue_key == "homeassistant/reboot_required"
+        assert issue.breaks_in_ha_version == "2026.8.0"
+
+    def test_dataclass_defaults(self):
+        from utils.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            domain="d",
+            issue_id="i",
+            severity="warning",
+            issue_key="d/i",
+            breaks_in_ha_version=None,
+        )
+        assert issue.data == {}
+        assert issue.breaks_in_ha_version is None
+
+    def test_get_ha_repair_issues_parses_response(self):
+        from utils.ha_rest_client import FakeHARestClient, get_ha_repair_issues
+
+        raw = {
+            "/api/repairs/issues": {
+                "issues": [
+                    {
+                        "domain": "homeassistant",
+                        "issue_id": "reboot_required",
+                        "severity": "critical",
+                        "breaks_in_ha_version": None,
+                    },
+                    {
+                        "domain": "zha",
+                        "issue_id": "missing_config",
+                        "severity": "warning",
+                        "breaks_in_ha_version": "2026.9.0",
+                    },
+                ]
+            }
+        }
+        client = FakeHARestClient(raw_responses=raw)
+        issues = asyncio.run(get_ha_repair_issues(client))
+        assert len(issues) == 2
+        assert issues[0].issue_key == "homeassistant/reboot_required"
+        assert issues[1].breaks_in_ha_version == "2026.9.0"
+
+    def test_get_ha_repair_issues_empty_on_http_error(self):
+        from utils.ha_rest_client import FakeHARestClient, get_ha_repair_issues
+
+        class ErrorClient(FakeHARestClient):
+            async def get_raw(self, path: str) -> dict:
+                raise RuntimeError("connection refused")
+
+        issues = asyncio.run(get_ha_repair_issues(ErrorClient()))
+        assert issues == []
+
+    def test_dismiss_ha_repair_issue_calls_delete(self):
+        from utils.ha_rest_client import FakeHARestClient, dismiss_ha_repair_issue
+
+        client = FakeHARestClient()
+        asyncio.run(dismiss_ha_repair_issue(client, "homeassistant", "reboot_required"))
+        assert "/api/repairs/issues/homeassistant/reboot_required" in client.deleted
+
+
+class TestHARepairDB:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        return str(db)
+
+    def test_record_repair_seen_first_time_returns_true(self, db_path):
+        from ha_agent_advanced import record_repair_seen
+
+        is_new = record_repair_seen("homeassistant/reboot_required")
+        assert is_new is True
+
+    def test_record_repair_seen_second_time_returns_false(self, db_path):
+        from ha_agent_advanced import record_repair_seen
+
+        record_repair_seen("homeassistant/reboot_required")
+        is_new = record_repair_seen("homeassistant/reboot_required")
+        assert is_new is False
+
+    def test_mark_repair_hitl_sent_sets_timestamp(self, db_path):
+        import sqlite3
+
+        from ha_agent_advanced import mark_repair_hitl_sent, record_repair_seen
+
+        record_repair_seen("d/i")
+        mark_repair_hitl_sent("d/i")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key='d/i'"
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_mark_repair_resolved_sets_timestamp(self, db_path):
+        import sqlite3
+
+        from ha_agent_advanced import mark_repair_resolved, record_repair_seen
+
+        record_repair_seen("d/i")
+        mark_repair_resolved("d/i")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM ha_repair_history WHERE issue_key='d/i'"
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_is_reboot_required_active_false_when_no_row(self, db_path):
+        from ha_agent_advanced import is_reboot_required_active
+
+        assert is_reboot_required_active() is False
+
+    def test_is_reboot_required_active_false_before_hitl_sent(self, db_path):
+        from ha_agent_advanced import is_reboot_required_active, record_repair_seen
+
+        record_repair_seen("homeassistant/reboot_required")
+        assert is_reboot_required_active() is False
+
+    def test_is_reboot_required_active_true_after_hitl_sent(self, db_path):
+        from ha_agent_advanced import (
+            is_reboot_required_active,
+            mark_repair_hitl_sent,
+            record_repair_seen,
+        )
+
+        record_repair_seen("homeassistant/reboot_required")
+        mark_repair_hitl_sent("homeassistant/reboot_required")
+        assert is_reboot_required_active() is True
+
+    def test_is_reboot_required_active_false_after_resolved(self, db_path):
+        from ha_agent_advanced import (
+            is_reboot_required_active,
+            mark_repair_hitl_sent,
+            mark_repair_resolved,
+            record_repair_seen,
+        )
+
+        record_repair_seen("homeassistant/reboot_required")
+        mark_repair_hitl_sent("homeassistant/reboot_required")
+        mark_repair_resolved("homeassistant/reboot_required")
+        assert is_reboot_required_active() is False
+
+
+class TestUpdatePriority:
+    def test_os_is_highest_priority(self):
+        from ha_update_manager import _update_priority
+
+        assert _update_priority("os") == 0
+
+    def test_supervisor_priority(self):
+        from ha_update_manager import _update_priority
+
+        assert _update_priority("supervisor") == 1
+
+    def test_core_priority(self):
+        from ha_update_manager import _update_priority
+
+        assert _update_priority("core") == 2
+
+    def test_addon_fallback_priority(self):
+        from ha_update_manager import _update_priority
+
+        assert _update_priority("my_addon") == 3
+
+    def test_pending_higher_returns_empty_when_no_others(self, tmp_path):
+        from ha_update_manager import _pending_higher_priority_components
+
+        result = _pending_higher_priority_components("core", tmp_path)
+        assert result == []
+
+    def test_pending_higher_detects_os_when_approving_core(self, tmp_path):
+        import json
+
+        from ha_update_manager import _pending_higher_priority_components
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        card = tmp_path / "abc.json"
+        card.write_text(
+            json.dumps({"payload": {"card_type": CARD_TYPE_UPDATE, "component": "os"}})
+        )
+        result = _pending_higher_priority_components("core", tmp_path)
+        assert "os" in result
+
+    def test_pending_higher_ignores_approved_card(self, tmp_path):
+        import json
+
+        from ha_update_manager import _pending_higher_priority_components
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        card = tmp_path / "abc.json"
+        card.write_text(
+            json.dumps({"payload": {"card_type": CARD_TYPE_UPDATE, "component": "os"}})
+        )
+        (tmp_path / "abc.approved").touch()
+        result = _pending_higher_priority_components("core", tmp_path)
+        assert result == []
+
+
+class TestExecuteUpdatePreflight:
+    def _make_update(self, component: str = "core"):
+        from utils.ha_rest_client import UpdateStatus
+
+        return UpdateStatus(
+            component=component,
+            entity_id=f"update.{component}",
+            installed_version="1.0",
+            latest_version="2.0",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+    def test_blocked_when_reboot_required_active(self):
+        from ha_update_manager import execute_update
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from unittest.mock import patch
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        with patch(
+            "ha_agent_advanced.is_reboot_required_active", return_value=True
+        ), patch("ha_update_manager.execute_core_update") as mock_exec:
+            result = asyncio.run(
+                execute_update(self._make_update("core"), ssh, notifier, gate)
+            )
+
+        assert result is False
+        mock_exec.assert_not_called()
+        assert len(notifier.sent) == 1
+        assert "reboot" in notifier.sent[0]["body"].lower()

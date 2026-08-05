@@ -19,6 +19,7 @@ from config import (
     HA_HOST,
     HA_MEM_WARN_MB,
     HA_NOTIFICATION_POLL_INTERVAL_MINUTES,
+    HA_REPAIR_POLL_INTERVAL_MINUTES,
     HA_UPDATE_CHECK_INTERVAL_HOURS,
     HA_UPDATE_NOTIFY_ON_AVAILABLE,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
@@ -517,6 +518,101 @@ async def poll_for_notifications(
         await asyncio.sleep(interval)
 
 
+async def poll_for_repairs(
+    ha_rest_client: Optional[HARestClientProtocol] = None,
+    notifier: Optional[NotifierProtocol] = None,
+    db_path: str = DB_PATH,
+) -> None:
+    """Periodically polls /api/repairs/issues and fires HITL cards for new repair issues."""
+    from ha_agent_advanced import (
+        mark_repair_hitl_sent,
+        mark_repair_resolved,
+        record_repair_seen,
+    )
+    from utils.card_types import CARD_TYPE_HA_REPAIR
+    from utils.ha_rest_client import HARestClient, get_ha_repair_issues
+
+    interval = HA_REPAIR_POLL_INTERVAL_MINUTES * 60
+    _client: HARestClientProtocol = ha_rest_client or HARestClient(
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+
+    while True:
+        try:
+            issues = await get_ha_repair_issues(_client)
+        except Exception as exc:
+            log.warning("repair_poll_failed", error=str(exc))
+            await asyncio.sleep(interval)
+            continue
+
+        active_keys: set[str] = set()
+        for issue in issues:
+            active_keys.add(issue.issue_key)
+            is_new = record_repair_seen(issue.issue_key)
+            import sqlite3 as _sqlite3
+
+            with _sqlite3.connect(db_path) as _conn:
+                _row = _conn.execute(
+                    "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                    (issue.issue_key,),
+                ).fetchone()
+            already_sent = _row is not None and _row[0] is not None
+
+            if not already_sent:
+                action = (
+                    "reboot"
+                    if issue.issue_id == "reboot_required"
+                    or issue.severity == "critical"
+                    else "dismiss"
+                )
+                title = f"HA repair: {issue.domain}/{issue.issue_id}"
+                body_parts = [
+                    f"Domain: {issue.domain}",
+                    f"Issue: {issue.issue_id}",
+                    f"Severity: {issue.severity}",
+                ]
+                if issue.breaks_in_ha_version:
+                    body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
+                payload: dict = {
+                    "card_type": CARD_TYPE_HA_REPAIR,
+                    "action": action,
+                    "domain": issue.domain,
+                    "issue_id": issue.issue_id,
+                    "issue_key": issue.issue_key,
+                    "severity": issue.severity.upper(),
+                    "title": title,
+                    "body": "\n".join(body_parts),
+                    "breaks_in_ha_version": issue.breaks_in_ha_version,
+                }
+                await _notifier.send(
+                    subject=title,
+                    body="\n".join(body_parts),
+                    payload=payload,
+                )
+                mark_repair_hitl_sent(issue.issue_key)
+                log.info(
+                    "repair_hitl_card_sent",
+                    issue_key=issue.issue_key,
+                    action=action,
+                )
+
+        # Reconcile: mark resolved any previously-sent repairs no longer in HA's list.
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(db_path) as _conn:
+            open_rows = _conn.execute(
+                "SELECT issue_key FROM ha_repair_history"
+                " WHERE hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
+            ).fetchall()
+        for (issue_key,) in open_rows:
+            if issue_key not in active_keys:
+                mark_repair_resolved(issue_key)
+                log.info("repair_resolved", issue_key=issue_key)
+
+        await asyncio.sleep(interval)
+
+
 async def trigger_remediation_pipeline() -> None:
     """Invokes the Sandbox & Swap Engine with a fresh correlation ID for this repair cycle."""
     cid = str(uuid.uuid4())
@@ -566,6 +662,10 @@ async def main(
                 ssh_client=_ssh,
                 ha_ws_client=ha_ws_client,
             )
+        )
+    if HA_REPAIR_POLL_INTERVAL_MINUTES > 0 and HA_API_TOKEN:
+        asyncio.create_task(
+            poll_for_repairs(ha_rest_client=ha_rest_client, notifier=_notifier)
         )
     await tail_remote_log_stream(
         ssh_client=_ssh,

@@ -207,6 +207,7 @@ async def request_update_approval(
     disk_warn: bool = False,
     disk_critical: bool = False,
     notification_id: Optional[str] = None,
+    watch_dir: Optional[Path] = None,
 ) -> bool:
     """Send a per-component HITL update approval card and wait for a decision.
 
@@ -226,6 +227,15 @@ async def request_update_approval(
     if readiness_report:
         advisory = "SAFE" if readiness_report.safe_to_update else "REVIEW REQUIRED"
         body_parts.append(f"Advisory: {advisory} — {readiness_report.recommendation}")
+
+    _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
+    pending_higher = _pending_higher_priority_components(update.component, _watch_dir)
+    if pending_higher:
+        body_parts.append(
+            f"⚠️ Apply {', '.join(pending_higher)} update(s) first — "
+            "correct order: OS → Supervisor → Core → Add-ons"
+        )
+
     body = "\n".join(body_parts)
 
     from utils.card_types import CARD_TYPE_UPDATE
@@ -943,6 +953,85 @@ async def execute_addon_update(
     return success
 
 
+_UPDATE_PRIORITY: dict[str, int] = {"os": 0, "supervisor": 1, "core": 2}
+
+
+def _update_priority(component: str) -> int:
+    return _UPDATE_PRIORITY.get(component, 3)
+
+
+def _pending_higher_priority_components(component: str, watch_dir: Path) -> list[str]:
+    """Return component names of PENDING update cards with higher priority than ``component``."""
+    this_priority = _update_priority(component)
+    higher: list[str] = []
+    for json_path in watch_dir.glob("*.json"):
+        stem = json_path.stem
+        if any(
+            (watch_dir / f"{stem}.{s}").exists()
+            for s in ("approved", "rejected", "deferred", "in_progress")
+        ):
+            continue
+        try:
+            other_payload = (
+                __import__("json").loads(json_path.read_text()).get("payload", {})
+            )
+        except Exception:
+            continue
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        if other_payload.get("card_type") != CARD_TYPE_UPDATE:
+            continue
+        other_component = other_payload.get("component", "")
+        if _update_priority(other_component) < this_priority:
+            higher.append(other_component)
+    higher.sort(key=_update_priority)
+    return higher
+
+
+async def execute_ha_reboot(
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    ha_host: Optional[str] = None,
+    ha_port: Optional[int] = None,
+    _poll: Optional[Callable] = None,
+) -> bool:
+    """Reboot HA host: backup → ha host reboot → TCP poll until online → result card."""
+    from ha_agent_advanced import (
+        execute_remote_backup,
+        offload_backup_to_local,
+        record_backup_slug,
+    )
+
+    log.info("ha_reboot_start")
+    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+    record_backup_slug(backup_slug)
+    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
+    log.info("ha_reboot_backup_complete", slug=backup_slug)
+
+    await ssh_client.run("ha host reboot", check=False)
+
+    host = ha_host or HA_HOST
+    port = ha_port or HA_API_PORT
+    poll_fn = _poll or _poll_os_online
+    success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
+
+    reboot_update = UpdateStatus(
+        component="reboot",
+        entity_id="",
+        installed_version="",
+        latest_version="rebooted",
+        update_available=False,
+        release_url=None,
+        release_summary=None,
+        in_progress=False,
+    )
+    await _send_post_update_card(reboot_update, notifier, success, "", "")
+
+    if not success:
+        log.warning("ha_reboot_timed_out", detail="HA did not come back online")
+    return success
+
+
 async def execute_update(
     update: UpdateStatus,
     ssh_client: SSHClientProtocol,
@@ -952,6 +1041,20 @@ async def execute_update(
     ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Dispatch update execution by component type."""
+    from ha_agent_advanced import is_reboot_required_active
+
+    if is_reboot_required_active():
+        log.warning("update_blocked_reboot_required", component=update.component)
+        await notifier.send(
+            subject=f"Update blocked: {update.component}",
+            body=(
+                "HA requires a reboot before this update can proceed. "
+                "Approve the reboot repair card first."
+            ),
+            payload={},
+        )
+        return False
+
     if update.component == "core":
         return await execute_core_update(update, ssh_client, notifier, gate, llm_client)
     if update.component == "os":

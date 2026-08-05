@@ -81,6 +81,11 @@ HA_NOTIFICATION_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("notification_poll_interval_minutes", 5)
 )
 
+# HA Repairs polling
+HA_REPAIR_POLL_INTERVAL_MINUTES: float = float(
+    _agent.get("ha_repair_poll_interval_minutes", 5)
+)
+
 # RAG knowledge layer
 CHROMADB_PATH: str = _agent.get("chromadb_path", "./chromadb/")
 RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
