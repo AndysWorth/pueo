@@ -412,6 +412,7 @@ agent:
   # backup_retain_local_days: 30
   update_check_interval_hours: ${HA_UPDATE_CHECK_INTERVAL_HOURS}
   notification_poll_interval_minutes: 5
+  ha_repair_poll_interval_minutes: 5
   # update_notify_on_available: true
 EOF
     ok "config.yaml written"

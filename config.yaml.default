@@ -70,6 +70,7 @@ agent:
   # update_notify_on_available: true  # Send HITL notification when any update entity flips to on
   # update_release_notes_cache_dir: ".cache/ha_release_notes/"  # Local cache for fetched HA release notes
   notification_poll_interval_minutes: 5  # How often to poll for HA persistent notifications (requires api_token)
+  ha_repair_poll_interval_minutes: 5   # How often to poll for HA repair issues (0 = off; requires api_token)
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
   agent_max_tool_calls: 20            # Hard cap on tool invocations per agent loop run
   agent_max_wall_seconds: 120.0       # Wall-clock timeout for the entire agent loop (seconds)

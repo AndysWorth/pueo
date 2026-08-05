@@ -205,6 +205,20 @@ def _migrate_v11(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE backup_registry ADD COLUMN name TEXT")
 
 
+def _migrate_v12(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ha_repair_history (
+            issue_key    TEXT PRIMARY KEY,
+            first_seen_at REAL NOT NULL,
+            hitl_sent_at  REAL,
+            resolved_at   REAL,
+            dismissed_at  REAL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -217,6 +231,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (9, _migrate_v9),
     (10, _migrate_v10),
     (11, _migrate_v11),
+    (12, _migrate_v12),
 ]
 
 
@@ -275,6 +290,55 @@ def record_backup_slug(slug: str, name: str = "") -> None:
             (int(time.time()), slug, backup_name),
         )
         conn.commit()
+
+
+def record_repair_seen(issue_key: str) -> bool:
+    """Insert or update a repair issue row. Returns True if this is the first sighting."""
+    now = time.time()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT first_seen_at FROM ha_repair_history WHERE issue_key = ?",
+            (issue_key,),
+        ).fetchone()
+        if row is None:
+            cursor.execute(
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at) VALUES (?, ?)",
+                (issue_key, now),
+            )
+            conn.commit()
+            return True
+        conn.commit()
+        return False
+
+
+def mark_repair_hitl_sent(issue_key: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE ha_repair_history SET hitl_sent_at = ? WHERE issue_key = ?",
+            (time.time(), issue_key),
+        )
+        conn.commit()
+
+
+def mark_repair_resolved(issue_key: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE ha_repair_history SET resolved_at = ? WHERE issue_key = ?",
+            (time.time(), issue_key),
+        )
+        conn.commit()
+
+
+def is_reboot_required_active() -> bool:
+    """True when ha_repair_history has an unresolved reboot_required row with a sent HITL card."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ha_repair_history"
+            " WHERE issue_key = 'homeassistant/reboot_required'"
+            " AND hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
+        ).fetchone()
+    return row is not None
 
 
 def _parse_backup_list(output: str) -> list[dict]:

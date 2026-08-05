@@ -23,6 +23,7 @@ from config import AGENT_MAX_WALL_SECONDS, DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_
 from utils.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CODE_PROPOSAL,
+    CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
@@ -335,14 +336,14 @@ async def overview(request: Request) -> HTMLResponse:
 
 
 @app.get("/queue", response_class=HTMLResponse)
-async def queue(request: Request) -> HTMLResponse:
+async def queue(request: Request, order_error: str = "") -> HTMLResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
     hitl_requests = _load_requests(watch_dir)
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"requests": hitl_requests},
+        {"requests": hitl_requests, "order_error": order_error},
     )
 
 
@@ -458,6 +459,63 @@ async def _execute_queued_update(
             )
         except Exception:  # nosec B110  # pragma: no cover
             pass
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
+async def _execute_queued_ha_repair(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Handle an approved HA repair card — reboot or dismiss."""
+    import config as _config
+    from utils.ha_rest_client import HARestClient, dismiss_ha_repair_issue
+    from utils.notify import get_notifier
+    from utils.ssh_client import AsyncSSHClient
+
+    try:
+        payload = data.get("payload", {})
+        action = payload.get("action", "dismiss")
+        domain = payload.get("domain", "")
+        issue_id = payload.get("issue_id", "")
+        issue_key = payload.get("issue_key", f"{domain}/{issue_id}")
+
+        if action == "reboot":
+            from ha_update_manager import execute_ha_reboot
+
+            ssh = AsyncSSHClient()
+            notifier = get_notifier(
+                _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+            )
+            success = await execute_ha_reboot(ssh, notifier)
+            if success:
+                from ha_agent_advanced import mark_repair_resolved
+
+                mark_repair_resolved(issue_key)
+                data["fix_applied"] = True
+                json_path.write_text(json.dumps(data, indent=2))
+                (watch_dir / f"{nid}.approved").touch()
+            else:
+                data["fix_error"] = "HA did not come back online after reboot"
+                json_path.write_text(json.dumps(data, indent=2))
+                (watch_dir / f"{nid}.rejected").touch()
+        else:
+            rest = HARestClient(
+                _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+            )
+            await dismiss_ha_repair_issue(rest, domain, issue_id)
+            from ha_agent_advanced import mark_repair_resolved
+
+            mark_repair_resolved(issue_key)
+            data["fix_applied"] = True
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -701,6 +759,7 @@ _CARD_DISPATCH: dict[
     Any,
 ] = {
     CARD_TYPE_UPDATE: _execute_queued_update,
+    CARD_TYPE_HA_REPAIR: _execute_queued_ha_repair,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
@@ -729,6 +788,19 @@ async def approve(nid: str) -> RedirectResponse:
                 )
             )
             return RedirectResponse(url="/queue", status_code=303)
+
+        # Update ordering guard: block approving a lower-priority update if a
+        # higher-priority update card is still pending.
+        if card_type == CARD_TYPE_UPDATE:
+            from ha_update_manager import _pending_higher_priority_components
+
+            this_component = payload.get("component", "")
+            blockers = _pending_higher_priority_components(this_component, watch_dir)
+            if blockers:
+                blocker = blockers[0]
+                return RedirectResponse(
+                    url=f"/queue?order_error={blocker}", status_code=303
+                )
 
         handler = _CARD_DISPATCH.get(card_type)
         if handler:

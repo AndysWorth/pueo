@@ -158,6 +158,7 @@ async def supervisor_main(config_path: Path) -> None:
     import uvicorn
     from ha_log_monitor import (
         poll_for_notifications,
+        poll_for_repairs,
         poll_for_updates,
         tail_remote_log_stream,
     )
@@ -219,6 +220,13 @@ async def supervisor_main(config_path: Path) -> None:
         supervisor.start(
             "notification_poll",
             lambda: poll_for_notifications(notifier=notifier),
+        )
+
+    # HA Repairs polling loop (only if interval > 0 and token is configured)
+    if cfg.HA_REPAIR_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
+        supervisor.start(
+            "repair_poll",
+            lambda: poll_for_repairs(notifier=notifier),
         )
 
     # NetAlertX log monitor (only if host is configured — non-empty means NetAlertX active)

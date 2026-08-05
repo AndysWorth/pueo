@@ -1,6 +1,6 @@
 """HA REST API client, update entity polling, and FakeHARestClient test double."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
@@ -97,13 +97,78 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def get_raw(self, path: str) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(f"{base}{path}", headers=self._headers)
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def delete(self, path: str) -> None:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.delete(f"{base}{path}", headers=self._headers)
+            resp.raise_for_status()
+
+
+@dataclass
+class HARepairIssue:
+    domain: str
+    issue_id: str
+    severity: str
+    issue_key: str
+    breaks_in_ha_version: Optional[str]
+    data: dict = field(default_factory=dict)
+
+
+async def get_ha_repair_issues(
+    rest: HARestClientProtocol,
+) -> list[HARepairIssue]:
+    """GET /api/repairs/issues — return all non-ignored active repair issues."""
+    result: list[HARepairIssue] = []
+    try:
+        raw = await rest.get_raw("/api/repairs/issues")
+    except Exception:
+        return result
+    for item in raw.get("issues", []):
+        domain = item.get("domain", "")
+        issue_id = item.get("issue_id", "")
+        if not domain or not issue_id:
+            continue
+        result.append(
+            HARepairIssue(
+                domain=domain,
+                issue_id=issue_id,
+                severity=item.get("severity", "warning"),
+                issue_key=f"{domain}/{issue_id}",
+                breaks_in_ha_version=item.get("breaks_in_ha_version"),
+                data=item,
+            )
+        )
+    return result
+
+
+async def dismiss_ha_repair_issue(
+    rest: HARestClientProtocol,
+    domain: str,
+    issue_id: str,
+) -> None:
+    """DELETE /api/repairs/issues/{domain}/{issue_id} — dismiss the repair."""
+    await rest.delete(f"/api/repairs/issues/{domain}/{issue_id}")
+
 
 class FakeHARestClient:
     """Test double for HARestClientProtocol."""
 
-    def __init__(self, states: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        states: list[dict] | None = None,
+        raw_responses: dict[str, dict] | None = None,
+    ) -> None:
         self._states: list[dict] = states or []
+        self._raw: dict[str, dict] = raw_responses or {}
         self.service_calls: list[tuple[str, str, dict]] = []
+        self.deleted: list[str] = []
 
     async def get_states(self, prefix: str | None = None) -> list[dict]:
         if prefix:
@@ -125,3 +190,9 @@ class FakeHARestClient:
     async def call_service(self, domain: str, service: str, payload: dict) -> dict:
         self.service_calls.append((domain, service, payload))
         return {}
+
+    async def get_raw(self, path: str) -> dict:
+        return self._raw.get(path, {})
+
+    async def delete(self, path: str) -> None:
+        self.deleted.append(path)

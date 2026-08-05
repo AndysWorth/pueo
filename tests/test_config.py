@@ -864,3 +864,18 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.CHAT_ALLOW_TOOL_REGISTRATION is True
+
+    def test_ha_repair_poll_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_REPAIR_POLL_INTERVAL_MINUTES == 5.0
+
+    def test_ha_repair_poll_interval_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_repair_poll_interval_minutes": 10}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_REPAIR_POLL_INTERVAL_MINUTES == 10.0

@@ -4316,3 +4316,175 @@ class TestControlTab:
         resp = client.get("/control")
         assert resp.status_code == 200
         assert b"nav-link active" in resp.content
+
+
+# ── Phase 12.5 — Update Ordering Guard ────────────────────────────────────────
+
+
+class TestUpdateOrderingGuard:
+    """The approve() endpoint must block approving a lower-priority update when
+    a higher-priority update card is still PENDING in the watch directory."""
+
+    def _write_update_card(self, watch_dir: Path, nid: str, component: str) -> None:
+        import json
+
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        card = {
+            "subject": f"Update: {component}",
+            "body": "",
+            "payload": {
+                "card_type": CARD_TYPE_UPDATE,
+                "component": component,
+                "entity_id": f"update.{component}",
+                "installed_version": "1.0",
+                "latest_version": "2.0",
+            },
+        }
+        (watch_dir / f"{nid}.json").write_text(json.dumps(card))
+
+    def test_order_error_redirects_when_higher_priority_pending(
+        self, tmp_path, monkeypatch
+    ):
+        import web.dashboard as dashboard
+        from starlette.testclient import TestClient
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        os_nid = "os-card-1111"
+        core_nid = "core-card-2222"
+        self._write_update_card(watch_dir, os_nid, "os")
+        self._write_update_card(watch_dir, core_nid, "core")
+
+        client = TestClient(dashboard.app, follow_redirects=False)
+        resp = client.post(f"/approve/{core_nid}")
+        assert resp.status_code == 303
+        assert "order_error=os" in resp.headers["location"]
+
+    def test_approve_proceeds_when_no_higher_priority_pending(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        import web.dashboard as dashboard
+        from starlette.testclient import TestClient
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        os_nid = "os-card-1111"
+        self._write_update_card(watch_dir, os_nid, "os")
+
+        with patch(
+            "web.dashboard._execute_queued_update", new_callable=AsyncMock
+        ) as mock_exec:
+            client = TestClient(dashboard.app, follow_redirects=False)
+            resp = client.post(f"/approve/{os_nid}")
+
+        assert resp.status_code == 303
+        # Should NOT have an order_error param
+        assert "order_error" not in resp.headers.get("location", "")
+
+    def test_order_error_banner_rendered_in_queue(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from starlette.testclient import TestClient
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        client = TestClient(dashboard.app)
+        resp = client.get("/queue?order_error=os")
+        assert resp.status_code == 200
+        assert b"order-banner" in resp.content
+        assert b"os" in resp.content
+
+
+class TestExecuteQueuedHARepair:
+    def _write_repair_card(
+        self, watch_dir: Path, nid: str, action: str = "dismiss"
+    ) -> None:
+        import json
+
+        from utils.card_types import CARD_TYPE_HA_REPAIR
+
+        card = {
+            "subject": "HA repair: homeassistant/reboot_required",
+            "body": "Reboot required",
+            "payload": {
+                "card_type": CARD_TYPE_HA_REPAIR,
+                "action": action,
+                "domain": "homeassistant",
+                "issue_id": "reboot_required",
+                "issue_key": "homeassistant/reboot_required",
+                "severity": "CRITICAL",
+            },
+        }
+        (watch_dir / f"{nid}.json").write_text(json.dumps(card))
+
+    def test_dismiss_action_calls_dismiss_and_marks_resolved(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        import ha_agent_advanced
+        import utils.ha_rest_client as hrc
+        from unittest.mock import AsyncMock, MagicMock
+
+        import web.dashboard as dashboard
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        nid = "repair-test-1"
+        self._write_repair_card(watch_dir, nid, action="dismiss")
+        json_path = watch_dir / f"{nid}.json"
+        data = __import__("json").loads(json_path.read_text())
+
+        mock_dismiss = AsyncMock()
+        mock_resolve = MagicMock()
+        fake_rest = hrc.FakeHARestClient()
+
+        monkeypatch.setattr(hrc, "HARestClient", lambda *a, **kw: fake_rest)
+        monkeypatch.setattr(hrc, "dismiss_ha_repair_issue", mock_dismiss)
+        monkeypatch.setattr(ha_agent_advanced, "mark_repair_resolved", mock_resolve)
+
+        asyncio.run(
+            dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
+        )
+
+        mock_dismiss.assert_called_once()
+        mock_resolve.assert_called_once_with("homeassistant/reboot_required")
+        assert (watch_dir / f"{nid}.approved").exists()
+        assert not (watch_dir / f"{nid}.in_progress").exists()
+
+    def test_repair_card_approved_via_queue(self, tmp_path, monkeypatch):
+        """Approve endpoint dispatches ha_repair cards to _execute_queued_ha_repair."""
+        import asyncio
+        import json
+
+        import web.dashboard as dashboard
+        from starlette.testclient import TestClient
+        from utils.card_types import CARD_TYPE_HA_REPAIR
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+
+        nid = "repair-queue-1"
+        self._write_repair_card(watch_dir, nid, action="dismiss")
+
+        dispatched = []
+
+        async def fake_handler(nid_, data_, jpath_, wdir_):
+            dispatched.append(nid_)
+
+        monkeypatch.setitem(dashboard._CARD_DISPATCH, CARD_TYPE_HA_REPAIR, fake_handler)
+
+        client = TestClient(dashboard.app, follow_redirects=False)
+        resp = client.post(f"/approve/{nid}")
+
+        assert resp.status_code == 303
+        assert nid in dispatched
