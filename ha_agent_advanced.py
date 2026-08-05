@@ -580,8 +580,11 @@ async def offload_backup_to_local(
 
 async def enforce_ha_retention(
     ssh_client: Optional[SSHClientProtocol] = None,
-) -> None:
-    """Delete oldest HA backups beyond BACKUP_RETAIN_ON_HA; only slugs confirmed location='both'."""
+) -> int:
+    """Delete oldest HA backups beyond BACKUP_RETAIN_ON_HA; only slugs confirmed location='both'.
+
+    Returns the number of backups successfully deleted from HA.
+    """
     with sqlite3.connect(DB_PATH) as conn:
         ha_rows = conn.execute(
             "SELECT backup_slug FROM backup_registry"
@@ -590,7 +593,7 @@ async def enforce_ha_retention(
 
     ha_count = len(ha_rows)
     if ha_count <= BACKUP_RETAIN_ON_HA:
-        return
+        return 0
 
     most_recent_slug = ha_rows[0][0]
     to_delete_count = ha_count - BACKUP_RETAIN_ON_HA
@@ -605,6 +608,7 @@ async def enforce_ha_retention(
 
     to_delete = [r[0] for r in candidates[:to_delete_count]]
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+    purged = 0
     for slug in to_delete:
         try:
             await client.run(f"ha backups remove {slug}", check=True)
@@ -615,8 +619,10 @@ async def enforce_ha_retention(
                 )
                 conn.commit()
             log.info("backup_deleted_from_ha", slug=slug)
+            purged += 1
         except Exception as e:
             log.warning("backup_delete_ha_failed", slug=slug, error=str(e))
+    return purged
 
 
 async def offload_pending_backups(

@@ -15,14 +15,18 @@ from config import (
     AUTONOMY_LEVEL,
     HA_API_PORT,
     HA_API_TOKEN,
+    HA_DISK_CRITICAL_GB,
     HA_DISK_WARN_GB,
     HA_HOST,
+    HA_MEM_WARN_MB,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
     MAX_PROMPT_TOKENS,
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
     OLLAMA_MODEL,
+    SSH_KEY_PATH,
+    HA_USER,
 )
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
 from utils.autonomy import RiskLevel
@@ -184,6 +188,127 @@ def _format_readiness_report(report: UpdateReadinessReport) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class UpdatePreflight:
+    """Result of a pre-update preflight check."""
+
+    disk_before_gb: float
+    disk_after_gb: float
+    backups_purged_count: int
+    disk_ok: bool  # True when disk_after_gb >= HA_DISK_WARN_GB + 1.5
+    supervisor_status: str  # "current" | "update_available" | "unknown"
+    problems: list = field(default_factory=list)
+
+
+# Extra disk headroom required beyond HA_DISK_WARN_GB before an update is considered safe.
+_PREFLIGHT_DISK_BUFFER_GB = 1.5
+
+
+async def run_update_preflight(
+    ssh_client: Optional[SSHClientProtocol] = None,
+    rest_client: Optional[HARestClientProtocol] = None,
+    watch_dir: Optional[Path] = None,
+) -> UpdatePreflight:
+    """Pre-flight check before a Core or OS update HITL card is sent.
+
+    1. Read cached (or live) disk free on the HA host.
+    2. If disk is below HA_DISK_WARN_GB + 1.5 GB, run enforce_ha_retention() to delete
+       confirmed-offloaded backups from HA, then re-poll disk.
+    3. Check whether the Supervisor has a pending update via REST or watch-dir scan.
+    Returns a structured summary that is embedded in the update HITL card body.
+    """
+    from ha_agent_advanced import enforce_ha_retention
+    from utils.resource import get_resource_status, poll_host_resources
+    from utils.ssh_client import AsyncSSHClient
+
+    disk_threshold = HA_DISK_WARN_GB + _PREFLIGHT_DISK_BUFFER_GB
+
+    # --- Step 1: get current disk reading ---
+    cached = get_resource_status()
+    if cached is not None:
+        disk_before_gb = cached.disk_free_gb
+    else:
+        ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+        status = await poll_host_resources(
+            ssh, HA_DISK_WARN_GB, HA_DISK_CRITICAL_GB, HA_MEM_WARN_MB
+        )
+        disk_before_gb = status.disk_free_gb
+
+    problems: list[str] = []
+    purged = 0
+    disk_after_gb = disk_before_gb
+
+    # --- Step 2: enforce retention if disk is low ---
+    if disk_before_gb < disk_threshold:
+        ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+        purged = await enforce_ha_retention(ssh_client=ssh)
+        if purged == 0:
+            problems.append(
+                "No confirmed-offloaded backups available to delete — "
+                "free disk manually before updating"
+            )
+        # Re-poll after enforcement to get a fresh reading
+        fresh = await poll_host_resources(
+            ssh, HA_DISK_WARN_GB, HA_DISK_CRITICAL_GB, HA_MEM_WARN_MB
+        )
+        disk_after_gb = fresh.disk_free_gb
+        if disk_after_gb < disk_threshold:
+            problems.append(
+                f"Disk still at {disk_after_gb:.1f} GB after cleanup — "
+                "update may not have enough space"
+            )
+
+    disk_ok = disk_after_gb >= disk_threshold
+
+    # --- Step 3: check Supervisor update status ---
+    supervisor_status = "unknown"
+    try:
+        if rest_client is not None:
+            updates = await get_update_status(rest_client)
+            sup_updates = [
+                u for u in updates if "supervisor" in u.entity_id and u.update_available
+            ]
+            if sup_updates:
+                supervisor_status = "update_available"
+                problems.append(
+                    "Supervisor update available — approve Supervisor before Core"
+                )
+            else:
+                supervisor_status = "current"
+        else:
+            # Fallback: scan watch-dir for a pending Supervisor update card
+            _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
+            pending = _pending_higher_priority_components("core", _watch_dir)
+            if "supervisor" in pending:
+                supervisor_status = "update_available"
+                problems.append(
+                    "Supervisor update pending — approve Supervisor before Core"
+                )
+            else:
+                supervisor_status = "current"
+    except Exception as exc:
+        log.warning("update_preflight_supervisor_check_failed", error=str(exc))
+        supervisor_status = "unknown"
+
+    log.info(
+        "update_preflight_complete",
+        disk_before_gb=round(disk_before_gb, 2),
+        disk_after_gb=round(disk_after_gb, 2),
+        backups_purged=purged,
+        disk_ok=disk_ok,
+        supervisor_status=supervisor_status,
+        problems=problems,
+    )
+    return UpdatePreflight(
+        disk_before_gb=disk_before_gb,
+        disk_after_gb=disk_after_gb,
+        backups_purged_count=purged,
+        disk_ok=disk_ok,
+        supervisor_status=supervisor_status,
+        problems=problems,
+    )
+
+
 def _component_risk_level(component: str) -> RiskLevel:
     """Return the risk level for a component update.
 
@@ -208,11 +333,15 @@ async def request_update_approval(
     disk_critical: bool = False,
     notification_id: Optional[str] = None,
     watch_dir: Optional[Path] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Send a per-component HITL update approval card and wait for a decision.
 
     Returns True if the update should proceed, False if rejected or deferred.
     Risk is always CRITICAL for core/os, HIGH for supervisor, MEDIUM for add-ons.
+    For Core and OS updates, runs a pre-flight check (disk clearance + Supervisor status)
+    and embeds the result in the card body.
     """
     risk = _component_risk_level(update.component)
     nid = notification_id or str(uuid.uuid4())
@@ -235,6 +364,36 @@ async def request_update_approval(
             f"⚠️ Apply {', '.join(pending_higher)} update(s) first — "
             "correct order: OS → Supervisor → Core → Add-ons"
         )
+
+    # Run pre-flight for Core and OS updates: disk clearance + Supervisor check.
+    preflight: Optional[UpdatePreflight] = None
+    if update.component in ("core", "os"):
+        try:
+            preflight = await run_update_preflight(
+                ssh_client=ssh_client,
+                rest_client=rest_client,
+                watch_dir=_watch_dir,
+            )
+            if preflight.backups_purged_count > 0:
+                body_parts.append(
+                    f"Pre-flight: freed space by removing "
+                    f"{preflight.backups_purged_count} old backup(s) from HA — "
+                    f"disk now {preflight.disk_after_gb:.1f} GB"
+                )
+            if not preflight.disk_ok:
+                body_parts.append(
+                    f"⚠️ Disk still low ({preflight.disk_after_gb:.1f} GB) — "
+                    "update may not have enough space"
+                )
+            if (
+                preflight.supervisor_status == "update_available"
+                and update.component == "core"
+            ):
+                body_parts.append(
+                    "⚠️ Supervisor update available — approve Supervisor before Core"
+                )
+        except Exception as exc:
+            log.warning("update_preflight_failed", error=str(exc))
 
     body = "\n".join(body_parts)
 
@@ -265,6 +424,14 @@ async def request_update_approval(
         "disk_free_gb": disk_free_gb,
         "disk_warn": disk_warn,
         "disk_critical": disk_critical,
+        "preflight_disk_before_gb": preflight.disk_before_gb if preflight else None,
+        "preflight_disk_after_gb": preflight.disk_after_gb if preflight else None,
+        "preflight_backups_purged": preflight.backups_purged_count if preflight else 0,
+        "preflight_disk_ok": preflight.disk_ok if preflight else None,
+        "preflight_supervisor_status": (
+            preflight.supervisor_status if preflight else None
+        ),
+        "preflight_problems": preflight.problems if preflight else [],
     }
 
     log.info(
