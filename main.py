@@ -184,11 +184,33 @@ async def supervisor_main(config_path: Path) -> None:
     from utils.autonomy import AutonomyGate
     from utils.tool_executor import ToolExecutor
 
+    knowledge_store = None
+    try:
+        from utils.knowledge_store import ChromaKnowledgeStore
+        from utils.logging import get_logger as _get_logger
+
+        _ks_log = _get_logger("main")
+        chroma_path = Path(cfg.CHROMADB_PATH)
+        if chroma_path.exists():
+            knowledge_store = ChromaKnowledgeStore(
+                str(chroma_path), cfg.RAG_EMBED_MODEL, cfg.OLLAMA_ENDPOINT
+            )
+            _ks_log.info("knowledge_store_ready", path=str(chroma_path))
+        else:
+            _ks_log.warning(
+                "knowledge_store_missing",
+                path=str(chroma_path),
+                hint="Run --mode rag-refresh to populate it",
+            )
+    except Exception as exc:  # pragma: no cover
+        _get_logger("main").warning("knowledge_store_init_failed", error=str(exc))
+
     _shared_executor = ToolExecutor(
         ha_ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
         gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
         notifier=notifier,
         db_path=cfg.DB_PATH,
+        knowledge_store=knowledge_store,
     )
     supervisor._tool_executor = _shared_executor
     _load_registered_tools(_shared_executor, cfg.DB_PATH)
