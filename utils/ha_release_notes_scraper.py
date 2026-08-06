@@ -21,26 +21,34 @@ _GITHUB_RELEASES_URL = "https://api.github.com/repos/home-assistant/core/release
 
 
 def fetch_ha_release_notes(
-    cache_dir: str, n_versions: int = 12
-) -> int:  # pragma: no cover
+    cache_dir: str, n_versions: int = 12, *, _releases=None
+) -> int:
     """Fetch the last n_versions HA releases from GitHub and cache as .txt files.
 
     Skips versions that are already cached (idempotent).  Returns the number
-    of newly downloaded files.
+    of newly downloaded files.  Stub bodies (<500 chars) are written with a
+    ``STUB:`` prefix so ``chunk_release_notes`` and ``scrape_cached_release_notes``
+    can detect and skip them.
     """
-    import json
-    import urllib.request
-
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    url = f"{_GITHUB_RELEASES_URL}?per_page={n_versions}"
-    req = urllib.request.Request(url, headers={"User-Agent": "pueo-rag-refresh/1.0"})
-    try:
-        with urllib.request.urlopen(
-            req, timeout=20
-        ) as resp:  # nosec B310 — hardcoded GitHub API URL
-            releases = json.loads(resp.read())
-    except Exception:
-        return 0
+
+    if _releases is None:  # pragma: no cover
+        import json
+        import urllib.request
+
+        url = f"{_GITHUB_RELEASES_URL}?per_page={n_versions}"
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pueo-rag-refresh/1.0"}
+        )
+        try:
+            with urllib.request.urlopen(
+                req, timeout=20
+            ) as resp:  # nosec B310 — hardcoded GitHub API URL
+                releases = json.loads(resp.read())
+        except Exception:
+            return 0
+    else:
+        releases = _releases
 
     fetched = 0
     for release in releases:
@@ -52,7 +60,8 @@ def fetch_ha_release_notes(
         if cache_path.exists():
             continue
         try:
-            cache_path.write_text(body, encoding="utf-8")
+            content = f"STUB:{body}" if len(body.strip()) < 500 else body
+            cache_path.write_text(content, encoding="utf-8")
             fetched += 1
         except OSError:
             continue
@@ -101,7 +110,11 @@ def chunk_release_notes(
 
     If collected_ids is provided, all generated IDs are added to it — useful
     for the caller to track which IDs belong to this refresh run for pruning.
+    Files whose content starts with ``STUB:`` are skipped (blog-URL stubs with
+    no real changelog content).
     """
+    if release_notes.startswith("STUB:"):
+        return [], [], []
     chunks = parse_release_sections(release_notes)
     ids = [f"ha-{version}-{i}" for i in range(len(chunks))]
     metadatas = [
@@ -131,6 +144,8 @@ def scrape_cached_release_notes(
         try:
             content = fp.read_text(encoding="utf-8")
         except OSError:
+            continue
+        if content.startswith("STUB:"):
             continue
         ids, docs, metas = chunk_release_notes(content, version, collected_ids)
         if ids:
