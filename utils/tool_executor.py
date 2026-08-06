@@ -132,7 +132,10 @@ class ToolExecutor:
                     output=args.get("summary", ""),
                 )
             if name == "query_knowledge":
-                return await self._query_knowledge(args.get("query", ""))
+                return await self._query_knowledge(
+                    args.get("query", ""),
+                    integration_filter=args.get("integration_filter"),
+                )
             if name == "remember":
                 return await self._remember(
                     args.get("key", ""),
@@ -268,7 +271,11 @@ class ToolExecutor:
                 tool_name="read_file", success=False, output="", error=str(exc)
             )
 
-    async def _query_knowledge(self, query: str) -> ToolResult:
+    async def _query_knowledge(
+        self,
+        query: str,
+        integration_filter: list[str] | None = None,
+    ) -> ToolResult:
         if self._knowledge_store is None:
             return ToolResult(
                 tool_name="query_knowledge",
@@ -278,7 +285,10 @@ class ToolExecutor:
             )
         from config import RAG_TOP_K
 
-        chunks = self._knowledge_store.query(query, top_k=RAG_TOP_K)
+        where = None
+        if integration_filter:
+            where = {"impacted_integration": {"$in": integration_filter}}
+        chunks = self._knowledge_store.query(query, top_k=RAG_TOP_K, where=where)
         if not chunks:
             return ToolResult(
                 tool_name="query_knowledge",

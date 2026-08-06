@@ -69,6 +69,7 @@ class KnowledgeStoreClientProtocol(Protocol):
         query_text: str,
         top_k: int,
         collections: list[str] | None = None,
+        where: dict | None = None,
     ) -> list[Any]: ...
 
     def prune(self, collection: str, keep_ids: set[str]) -> int: ...

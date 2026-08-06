@@ -3,7 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+
+def _matches_where(meta: dict, where: Optional[dict]) -> bool:
+    """Return True if meta satisfies the ChromaDB-style where clause."""
+    if not where:
+        return True
+    for key, condition in where.items():
+        value = meta.get(key)
+        if isinstance(condition, dict):
+            if "$in" in condition and value not in condition["$in"]:
+                return False
+            if "$eq" in condition and value != condition["$eq"]:
+                return False
+        elif value != condition:
+            return False
+    return True
 
 
 @dataclass
@@ -51,6 +67,7 @@ class FakeKnowledgeStore:
         query_text: str,
         top_k: int,
         collections: Optional[list[str]] = None,
+        where: Optional[dict] = None,
     ) -> list[KnowledgeChunk]:
         target_cols = collections or list(self._docs.keys())
         results: list[KnowledgeChunk] = []
@@ -58,6 +75,8 @@ class FakeKnowledgeStore:
             if col not in self._docs:
                 continue
             for _, doc, meta in self._docs[col]:
+                if not _matches_where(meta, where):
+                    continue
                 if query_text.lower() in doc.lower():
                     results.append(
                         KnowledgeChunk(
@@ -111,13 +130,17 @@ class ChromaKnowledgeStore:  # pragma: no cover
         query_text: str,
         top_k: int,
         collections: Optional[list[str]] = None,
+        where: Optional[dict] = None,
     ) -> list[KnowledgeChunk]:
         target_cols = collections or list(COLLECTIONS)
         results: list[KnowledgeChunk] = []
         for col in target_cols:
             if col not in self._cols:
                 continue
-            res = self._cols[col].query(query_texts=[query_text], n_results=top_k)
+            kwargs: dict[str, Any] = {"query_texts": [query_text], "n_results": top_k}
+            if where:
+                kwargs["where"] = where
+            res = self._cols[col].query(**kwargs)
             docs = (res.get("documents") or [[]])[0]
             metas = (res.get("metadatas") or [[]])[0]
             dists = (res.get("distances") or [[]])[0]

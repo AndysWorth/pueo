@@ -16,6 +16,37 @@ if TYPE_CHECKING:
 
 _BREAKING_KEYWORDS = re.compile(r"break|deprecat|remov|rename", re.IGNORECASE)
 _SECTION_SPLIT = re.compile(r"\n#+\s+")
+_BREAKING_CATEGORY_RE = re.compile(
+    r"backward.incompatible|breaking.change", re.IGNORECASE
+)
+_NEW_INTEGRATION_RE = re.compile(r"new.integration", re.IGNORECASE)
+_DEPRECATION_RE = re.compile(r"deprecat", re.IGNORECASE)
+_CODE_SPAN_RE = re.compile(r"`([a-z][a-z0-9_]+)`")
+
+
+def _release_type(version: str) -> str:
+    if re.search(r"b\d+$", version):
+        return "beta"
+    parts = version.split(".")
+    if len(parts) >= 3 and parts[2] != "0":
+        return "patch"
+    return "ga"
+
+
+def _section_category(heading: str) -> str:
+    if _BREAKING_CATEGORY_RE.search(heading):
+        return "breaking_change"
+    if _NEW_INTEGRATION_RE.search(heading):
+        return "new_integration"
+    if _DEPRECATION_RE.search(heading):
+        return "deprecation"
+    return "general"
+
+
+def _extract_impacted_integration(section_text: str) -> str:
+    m = _CODE_SPAN_RE.search(section_text)
+    return m.group(1) if m else ""
+
 
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/home-assistant/core/releases"
 
@@ -117,9 +148,23 @@ def chunk_release_notes(
         return [], [], []
     chunks = parse_release_sections(release_notes)
     ids = [f"ha-{version}-{i}" for i in range(len(chunks))]
-    metadatas = [
-        {"source": f"ha_release_notes/{version}", "version": version} for _ in chunks
-    ]
+    rt = _release_type(version)
+    metadatas = []
+    for chunk in chunks:
+        heading = chunk.split("\n")[0]
+        cat = _section_category(heading)
+        domain = (
+            _extract_impacted_integration(chunk) if cat == "breaking_change" else ""
+        )
+        metadatas.append(
+            {
+                "source": f"ha_release_notes/{version}",
+                "version": version,
+                "release_type": rt,
+                "category": cat,
+                "impacted_integration": domain,
+            }
+        )
     if collected_ids is not None:
         collected_ids.update(ids)
     return ids, chunks, metadatas
