@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol, SSHClientProtocol
     from netalertx.api_client import NetAlertXAPIClient
     from utils.autonomy import AutonomyGate
+    from utils.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
 
 log = get_logger("tool_executor")
@@ -82,6 +83,7 @@ class ToolExecutor:
         self._sandbox_passed: bool = False
         self._sandbox_output: str = ""
         self._dynamic_tools: dict[str, Callable[..., Any]] = {}
+        self._ha_profile: Optional["HAEnvironmentProfile"] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -94,6 +96,10 @@ class ToolExecutor:
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
         """Register a user-approved dynamic tool callable by name."""
         self._dynamic_tools[name] = fn
+
+    def set_ha_profile(self, profile: "HAEnvironmentProfile") -> None:
+        """Cache the HA environment profile so get_ha_profile tool can return it."""
+        self._ha_profile = profile
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -144,6 +150,8 @@ class ToolExecutor:
                 )
             if name == "recall":
                 return await self._recall(args.get("query", ""))
+            if name == "get_ha_profile":
+                return await self._get_ha_profile()
             if name == "read_source":
                 return await self._read_source(args.get("path", ""))
             if name == "propose_patch":
@@ -336,6 +344,24 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="recall", success=False, output="", error=str(exc)
             )
+
+    async def _get_ha_profile(self) -> ToolResult:
+        if self._ha_profile is None:
+            return ToolResult(
+                tool_name="get_ha_profile",
+                success=True,
+                output=(
+                    "HA environment profile not yet available. "
+                    "Restart the supervisor to build it."
+                ),
+            )
+        import dataclasses
+
+        return ToolResult(
+            tool_name="get_ha_profile",
+            success=True,
+            output=json.dumps(dataclasses.asdict(self._ha_profile), indent=2),
+        )
 
     # ------------------------------------------------------------------
     # Code sandbox tools (item 70)
