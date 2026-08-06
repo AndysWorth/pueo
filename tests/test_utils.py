@@ -1881,9 +1881,9 @@ class TestParseChangelog:
     def test_truncates_long_sections(self):
         from utils.hacs_scraper import parse_changelog
 
-        text = "## 1.0.0\n" + "a" * 3000
+        text = "## 1.0.0\n" + "a" * 4000
         result = parse_changelog(text)
-        assert all(len(c) <= 2000 for c in result)
+        assert all(len(c) <= 3000 for c in result)
 
 
 class TestChunkChangelog:
@@ -2001,6 +2001,32 @@ class TestChunkChangelogCollectedIds:
 
         ids, docs, metas = chunk_changelog("## 1.0.0\nfoo", "myint", None)
         assert len(ids) == 1
+
+
+class TestHACSChunkVersion:
+    def test_version_extracted_from_semver_heading(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        _, _, metas = chunk_changelog(
+            "## 1.2.3\nFixed a bug.\n## 0.9.0\nAdded feature.", "myint"
+        )
+        assert metas[0]["version"] == "1.2.3"
+        assert metas[1]["version"] == "0.9.0"
+
+    def test_version_empty_when_no_semver_heading(self):
+        from utils.hacs_scraper import chunk_changelog
+
+        # Section heading that isn't a version number
+        _, _, metas = chunk_changelog("## Unreleased\nWIP stuff.", "myint")
+        assert metas[0]["version"] == ""
+
+    def test_chunk_max_size_is_3000(self):
+        from utils.hacs_scraper import parse_changelog
+
+        long_text = "## 1.0.0\n" + ("word " * 1000)
+        result = parse_changelog(long_text)
+        assert len(result) == 1
+        assert len(result[0]) <= 3000
 
 
 class TestEmbedCachedChangelogsCollectedIds:
@@ -2137,6 +2163,27 @@ class TestEmbedCachedIntegrationDocs:
         embed_cached_integration_docs(str(cache), store, collected)
         assert len(collected) == 2
         assert "ha-docs-hue-0" in collected
+
+    def test_is_installed_in_metadata(self, tmp_path):
+        from utils.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "zha.md").write_text("## Overview\nZHA integration docs.")
+
+        store = FakeKnowledgeStore()
+        embed_cached_integration_docs(str(cache), store)
+        hits = store.query("ZHA integration", top_k=5)
+        assert hits
+        assert hits[0].metadata.get("is_installed") is True
+
+
+class TestCommunityCollectionRemoved:
+    def test_community_cases_not_in_collections(self):
+        from utils.knowledge_store import COLLECTIONS
+
+        assert "community_cases" not in COLLECTIONS
 
 
 class TestFetchIntegrationDocReturnValues:
