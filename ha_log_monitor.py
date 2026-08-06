@@ -290,19 +290,6 @@ async def poll_for_updates(
                 # Run breaking-change analysis for core updates.
                 readiness: Optional[UpdateReadinessReport] = None
                 if u.component == "core":
-                    config_yaml_content = ""
-                    if _ssh is not None:
-                        try:
-                            from config import CONFIG_REMOTE_PATH
-
-                            config_yaml_content = await _ssh.read_file(
-                                CONFIG_REMOTE_PATH
-                            )
-                        except Exception as exc:
-                            log.warning(
-                                "update_poll_config_fetch_failed", error=str(exc)
-                            )
-
                     release_notes = ""
                     try:
                         release_notes = await fetch_release_notes_cached(
@@ -318,7 +305,7 @@ async def poll_for_updates(
                     if release_notes:
                         try:
                             readiness = await analyze_breaking_changes(
-                                u, config_yaml_content, release_notes, _llm
+                                u, release_notes, _llm
                             )
                         except Exception as exc:
                             log.warning("update_poll_analysis_failed", error=str(exc))

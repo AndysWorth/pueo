@@ -315,6 +315,15 @@ RECALL = ToolDefinition(
     },
 )
 
+GET_HA_PROFILE = ToolDefinition(
+    name="get_ha_profile",
+    description=(
+        "Return the current HA environment profile: installed version, OS version, "
+        "installed integrations, HACS components, and top-level config keys."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
 FINISH_CHAT = ToolDefinition(
     name="finish_chat",
     description=(
@@ -509,6 +518,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         QUERY_NETALERTX,
         REMEMBER,
         RECALL,
+        GET_HA_PROFILE,
         READ_SOURCE,
         PROPOSE_PATCH,
         SANDBOX_CODE,

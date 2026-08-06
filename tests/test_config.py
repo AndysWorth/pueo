@@ -879,3 +879,18 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.HA_REPAIR_POLL_INTERVAL_MINUTES == 10.0
+
+    def test_ha_profile_refresh_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_PROFILE_REFRESH_HOURS == 24
+
+    def test_ha_profile_refresh_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_profile_refresh_hours": 12}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_PROFILE_REFRESH_HOURS == 12

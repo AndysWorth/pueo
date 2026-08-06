@@ -3057,7 +3057,7 @@ class TestFetchReleaseNotesCached:
             in_progress=False,
         )
         stub = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
-        report = asyncio.run(analyze_breaking_changes(update, "", stub))
+        report = asyncio.run(analyze_breaking_changes(update, stub))
         assert report.breaking_changes == []
         assert "home-assistant.io" in report.recommendation
 
@@ -3127,9 +3127,7 @@ class TestAnalyzeBreakingChanges:
 
         update = self._make_core_update()
         llm = self._fake_llm()
-        report = asyncio.run(
-            analyze_breaking_changes(update, "homeassistant: ~", "x" * 600, llm)
-        )
+        report = asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
         assert report.target_version == "2026.7.0"
         assert report.safe_to_update is True
 
@@ -3138,7 +3136,7 @@ class TestAnalyzeBreakingChanges:
 
         update = self._make_core_update()
         llm = self._fake_llm()
-        asyncio.run(analyze_breaking_changes(update, "config: {}", "x" * 600, llm))
+        asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
         assert len(llm.calls) == 1
         messages = llm.calls[0]["messages"]
         user_content = messages[-1]["content"]
@@ -3154,10 +3152,31 @@ class TestAnalyzeBreakingChanges:
             breaking_changes=["Template syntax changed"],
             pueo_command_risks=["ha apps list renamed"],
         )
-        report = asyncio.run(analyze_breaking_changes(update, "", "x" * 600, llm))
+        report = asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
         assert report.safe_to_update is False
         assert "Template syntax changed" in report.breaking_changes
         assert len(report.pueo_command_risks) == 1
+
+    def test_analyze_breaking_changes_uses_profile(self):
+        from ha_update_manager import analyze_breaking_changes
+        from utils.ha_environment import HAEnvironmentProfile
+
+        update = self._make_core_update()
+        llm = self._fake_llm()
+        profile = HAEnvironmentProfile(
+            ha_version="2026.6.0",
+            installed_integrations=["zha", "mqtt"],
+            config_yaml_top_keys=["homeassistant", "http", "zha"],
+        )
+        asyncio.run(analyze_breaking_changes(update, "x" * 600, llm, profile=profile))
+        assert len(llm.calls) == 1
+        user_content = llm.calls[0]["messages"][-1]["content"]
+        # Profile summary should appear, not raw YAML
+        assert "zha" in user_content
+        assert "mqtt" in user_content
+        assert "homeassistant" in user_content
+        # Should not contain raw YAML block header
+        assert "configuration.yaml" not in user_content
 
 
 # ── run_update_check + analysis integration ───────────────────────────────────────
@@ -8573,6 +8592,51 @@ class TestToolExecutor:
         assert result.success
         assert "zha" in result.output
         assert "mqtt" not in result.output
+
+    def test_get_ha_profile_tool_returns_profile(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_environment import HAEnvironmentProfile
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.6.0",
+            installed_integrations=["zha", "mqtt"],
+            config_yaml_top_keys=["homeassistant", "http"],
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        executor.set_ha_profile(profile)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_ha_profile", arguments={}))
+        )
+        assert result.success
+        assert "zha" in result.output
+        assert "mqtt" in result.output
+        assert "2026.6.0" in result.output
+
+    def test_get_ha_profile_tool_when_no_profile(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_ha_profile", arguments={}))
+        )
+        assert result.success
+        assert "not yet available" in result.output
 
     # -- apply_fix HITL non-blocking queuing path --------------------------------
 

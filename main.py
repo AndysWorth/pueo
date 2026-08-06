@@ -220,6 +220,36 @@ async def supervisor_main(config_path: Path) -> None:
     supervisor._tool_executor = _shared_executor
     _load_registered_tools(_shared_executor, cfg.DB_PATH)
 
+    # Build the initial HA environment profile and register a periodic refresh loop.
+    if cfg.HA_API_TOKEN:
+        from utils.ha_environment import (
+            build_environment_profile,
+            save_environment_profile,
+        )
+        from utils.ha_rest_client import HARestClient
+        from utils.ha_ws_client import HAWebSocketClient
+
+        _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+        _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
+
+        async def _profile_refresh_loop() -> None:
+            while True:
+                try:
+                    _p = await build_environment_profile(
+                        ssh_client=_profile_ssh,
+                        ws_client=_profile_ws,
+                        ha_token=cfg.HA_API_TOKEN,
+                        ha_url=f"http://{cfg.HA_HOST}:{cfg.HA_API_PORT}",
+                        config_remote_path=cfg.CONFIG_REMOTE_PATH,
+                    )
+                    _shared_executor.set_ha_profile(_p)
+                    save_environment_profile(_p, cfg.DB_PATH)
+                except Exception as exc:  # pragma: no cover
+                    pass
+                await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
+
+        supervisor.start("profile_refresh", _profile_refresh_loop)
+
     # HA log monitor loop (SSH tail + AI triage)
     supervisor.start(
         "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)

@@ -37,6 +37,7 @@ from utils.logging import get_logger
 
 if TYPE_CHECKING:
     from utils.autonomy import AutonomyGate, FakeAutonomyGate
+    from utils.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
 
 log = get_logger("ha_update_manager")
@@ -119,11 +120,16 @@ async def fetch_release_notes_cached(
 
 async def analyze_breaking_changes(
     update_status: UpdateStatus,
-    config_yaml_content: str,
     release_notes: str,
     llm_client: Optional[LLMClientProtocol] = None,
+    profile: Optional["HAEnvironmentProfile"] = None,
 ) -> UpdateReadinessReport:
-    """LLM advisory analysis of release notes against the current installation."""
+    """LLM advisory analysis of release notes against the current installation.
+
+    When profile is provided, a structured installation summary is used in the
+    prompt instead of raw configuration YAML.  When profile is None, the prompt
+    omits installation context.
+    """
     if len(release_notes.strip()) < 500:
         url_match = re.search(r"https?://\S+", release_notes)
         url_hint = (
@@ -146,11 +152,31 @@ async def analyze_breaking_changes(
     client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
 
     command_catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
-    config_budget = MAX_PROMPT_TOKENS // 2
-    notes_budget = MAX_PROMPT_TOKENS - 400 - config_budget  # 400 for system + catalog
+    notes_content = truncate_to_budget(release_notes, MAX_PROMPT_TOKENS - 400)
 
-    config_content = truncate_to_budget(config_yaml_content, config_budget)
-    notes_content = truncate_to_budget(release_notes, notes_budget)
+    if profile is not None:
+        domains = ", ".join(profile.installed_integrations) or "unknown"
+        keys = ", ".join(profile.config_yaml_top_keys) or "unknown"
+        installation_section = (
+            f"=== Installed integrations ===\n{domains}\n\n"
+            f"HA version: {profile.ha_version}\n"
+            f"Top-level config keys: {keys}"
+        )
+    else:
+        installation_section = ""
+
+    user_content_parts = [
+        f"Target version: {update_status.latest_version}",
+        f"Installed version: {update_status.installed_version}",
+    ]
+    if installation_section:
+        user_content_parts.append(f"\n{installation_section}")
+    user_content_parts += [
+        f"\n=== Release notes ===\n{notes_content}",
+        f"\n=== Pueo SSH command catalog ===\n{command_catalog}",
+        "\nList breaking changes, affected config keys, and any Pueo commands "
+        "that appear in breaking changes or migration notes.",
+    ]
 
     messages = [
         {
@@ -165,15 +191,7 @@ async def analyze_breaking_changes(
         },
         {
             "role": "user",
-            "content": (
-                f"Target version: {update_status.latest_version}\n"
-                f"Installed version: {update_status.installed_version}\n\n"
-                f"=== Current configuration.yaml ===\n{config_content}\n\n"
-                f"=== Release notes ===\n{notes_content}\n\n"
-                f"=== Pueo SSH command catalog ===\n{command_catalog}\n\n"
-                "List breaking changes, affected config keys, and any Pueo commands "
-                "that appear in breaking changes or migration notes."
-            ),
+            "content": "\n".join(user_content_parts),
         },
     ]
 
@@ -523,15 +541,6 @@ async def run_update_check(
     reports: dict[str, UpdateReadinessReport] = {}
     core_updates = [u for u in available if u.component == "core"]
     for core_update in core_updates:
-        config_yaml_content = ""
-        if ssh_client:
-            try:
-                from config import CONFIG_REMOTE_PATH
-
-                config_yaml_content = await ssh_client.read_file(CONFIG_REMOTE_PATH)
-            except Exception as exc:
-                log.warning("config_fetch_skipped", error=str(exc))
-
         release_notes = ""
         resolved_cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
         try:
@@ -553,7 +562,7 @@ async def run_update_check(
 
         try:
             report = await analyze_breaking_changes(
-                core_update, config_yaml_content, release_notes, llm_client
+                core_update, release_notes, llm_client
             )
             reports[core_update.component] = report
             print(_format_readiness_report(report))
