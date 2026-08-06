@@ -53,6 +53,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79  |
 | Phase 20: Federated Case Library                   | ❌ Not started           | 80–82  |
 | Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86  |
+| Phase 22: HA RAG Strategy                          | ❌ Not started           | 87–93  |
 
 ---
 

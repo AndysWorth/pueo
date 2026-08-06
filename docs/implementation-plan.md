@@ -10,7 +10,7 @@ Pick up the next incomplete item at the start of a new session: find it in the S
 
 Plan detail files use a **Phase Deliverables** table (item number + one-line description) to link items to spec text. Do not introduce new "Feature N" labels — reference items by number.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/conversational-agent.md](plan/conversational-agent.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/conversational-agent.md](plan/conversational-agent.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md) · [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
 
 ---
 
@@ -108,6 +108,13 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 84   | Autonomous gap detection: finish_repair with capability_gap=True triggers propose_patch → sandbox_code → code_proposal HITL card automatically | ☐ TODO |
 | 85   | Security review: sandbox escape vectors, safety-critical file block list (utils/autonomy.py, interfaces.py, config.py, backup chain), read_source path traversal | ☐ TODO |
 | 86   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
+| 87   | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory in `analyze_breaking_changes`; stub sentinel in `fetch_ha_release_notes` | ☐ TODO |
+| 88   | `utils/ha_blog_scraper.py`: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes`; hooked into `run_rag_refresh` | ☐ TODO |
+| 89   | Enriched chunk metadata (`release_type`, `category`, `impacted_integration`); `where` clause in `KnowledgeStore.query`; `integration_filter` in `query_knowledge` tool | ☐ TODO |
+| 90   | `HAEnvironmentProfile` dataclass + `build_environment_profile`; `get_config_entries` WS method; DB migration v14; save/load helpers | ☐ TODO |
+| 91   | Wire profile into supervisor; `get_ha_profile` chat tool; use profile in `analyze_breaking_changes` and `request_update_approval` | ☐ TODO |
+| 92   | Wire `ChromaKnowledgeStore` into `supervisor_main()` so `query_knowledge` is functional in production | ☐ TODO |
+| 93   | HACS version metadata; HA docs `is_installed` flag; `release_type` on bulk-fetched chunks; remove empty `community_cases` collection | ☐ TODO |
 
 ---
 
@@ -396,6 +403,25 @@ Items 83–86. The sandbox infrastructure (`read_source`, `propose_patch`, `sand
 | 86    | ADR 007: agent-generated code proposals with sandboxed CI gate |
 
 → [plan/code-proposals.md](plan/code-proposals.md)
+
+---
+
+### Phase 22 — HA RAG Strategy (7 items)
+Items 87–93. Fixes structural gaps in the RAG knowledge layer that cause hallucinated breaking-change advisories and leave the chat agent without knowledge access in production. Prerequisite: Phase 17.5 complete.
+
+**Implementation order:** 92 (supervisor wiring, bug fix) → 87 (stub fix) → 88–89 (blog scraper + metadata) → 90–91 (environment profile) → 93 (enrichment).
+
+| Item | Concern |
+|------|---------|
+| 87 | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory when notes unavailable |
+| 88 | HA blog scraper: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes` |
+| 89 | Enriched chunk metadata + `where` clause support + `integration_filter` in `query_knowledge` |
+| 90 | `HAEnvironmentProfile` dataclass + build/save/load + `get_config_entries` WS + migration v14 |
+| 91 | Profile wired into supervisor; `get_ha_profile` chat tool; profile-aware `analyze_breaking_changes` |
+| 92 | `ChromaKnowledgeStore` wired into `supervisor_main()` — unblocks `query_knowledge` in production |
+| 93 | HACS version metadata; HA docs `is_installed` flag; `release_type` tags; remove empty `community_cases` |
+
+→ [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
 
 ---
 
