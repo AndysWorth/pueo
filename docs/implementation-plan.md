@@ -113,7 +113,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 89   | Enriched chunk metadata (`release_type`, `category`, `impacted_integration`); `where` clause in `KnowledgeStore.query`; `integration_filter` in `query_knowledge` tool | ☐ TODO |
 | 90   | `HAEnvironmentProfile` dataclass + `build_environment_profile`; `get_config_entries` WS method; DB migration v14; save/load helpers | ☐ TODO |
 | 91   | Wire profile into supervisor; `get_ha_profile` chat tool; use profile in `analyze_breaking_changes` and `request_update_approval` | ☐ TODO |
-| 92   | Wire `ChromaKnowledgeStore` into `supervisor_main()` so `query_knowledge` is functional in production | ☐ TODO |
+| 92   | Wire `ChromaKnowledgeStore` into `supervisor_main()` so `query_knowledge` is functional in production | ✅ Done (2026-08-06) |
 | 93   | HACS version metadata; HA docs `is_installed` flag; `release_type` on bulk-fetched chunks; remove empty `community_cases` collection | ☐ TODO |
 
 ---

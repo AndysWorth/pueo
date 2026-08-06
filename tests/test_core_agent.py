@@ -1428,6 +1428,71 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "netalertx_setup" not in started
 
+    def test_supervisor_wires_knowledge_store_when_path_exists(
+        self, monkeypatch, tmp_path
+    ):
+        """ToolExecutor receives a ChromaKnowledgeStore when CHROMADB_PATH exists."""
+        config_path = self._make_config(tmp_path)
+        self._patch_all(monkeypatch, config_path)
+
+        chroma_dir = tmp_path / "chromadb"
+        chroma_dir.mkdir()
+
+        import config as cfg_mod
+        import main as m
+        import utils.knowledge_store as ks_mod
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(cfg_mod, "CHROMADB_PATH", str(chroma_dir))
+
+        received_store = []
+
+        class _FakeChroma:
+            def __init__(self, *a, **kw):
+                pass
+
+        orig_init = te_mod.ToolExecutor.__init__
+
+        def _tracking_init(self_te, *a, **kw):
+            received_store.append(kw.get("knowledge_store"))
+            orig_init(self_te, *a, **kw)
+
+        monkeypatch.setattr(ks_mod, "ChromaKnowledgeStore", _FakeChroma)
+        monkeypatch.setattr(te_mod.ToolExecutor, "__init__", _tracking_init)
+
+        asyncio.run(m.supervisor_main(config_path))
+
+        assert len(received_store) == 1
+        assert isinstance(received_store[0], _FakeChroma)
+
+    def test_supervisor_skips_knowledge_store_when_path_missing(
+        self, monkeypatch, tmp_path
+    ):
+        """ToolExecutor receives knowledge_store=None when CHROMADB_PATH does not exist."""
+        config_path = self._make_config(tmp_path)
+        self._patch_all(monkeypatch, config_path)
+
+        import config as cfg_mod
+        import main as m
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(cfg_mod, "CHROMADB_PATH", str(tmp_path / "nonexistent"))
+
+        received_store = []
+
+        orig_init = te_mod.ToolExecutor.__init__
+
+        def _tracking_init(self_te, *a, **kw):
+            received_store.append(kw.get("knowledge_store"))
+            orig_init(self_te, *a, **kw)
+
+        monkeypatch.setattr(te_mod.ToolExecutor, "__init__", _tracking_init)
+
+        asyncio.run(m.supervisor_main(config_path))
+
+        assert len(received_store) == 1
+        assert received_store[0] is None
+
 
 # ── check_ha_version ─────────────────────────────────────────────────────────────
 
