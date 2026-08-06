@@ -384,7 +384,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 13
+        assert rows[0][0] == 14
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -446,6 +446,167 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             cid = conn.execute("SELECT correlation_id FROM state_history").fetchone()[0]
         assert cid == "test-cid-adv"
+
+
+# ── HA Environment Profile (item 90) ────────────────────────────────────────────
+
+
+class TestHAEnvironmentProfile:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_migration_v14_creates_table(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "ha_environment_profile" in tables
+
+    def test_save_load_round_trip(self, db_path):
+        from utils.ha_environment import (
+            HAEnvironmentProfile,
+            load_environment_profile,
+            save_environment_profile,
+        )
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.8.0",
+            os_version="18.2",
+            supervisor_version="2024.11.0",
+            installed_integrations=["zha", "mqtt"],
+            hacs_integrations=["hacs_integration"],
+            config_yaml_top_keys=["homeassistant", "http"],
+            config_entries=[
+                {"domain": "zha", "title": "Zigbee Home Automation", "state": "loaded"}
+            ],
+            last_updated=1234567890.0,
+        )
+        save_environment_profile(profile, db_path)
+        loaded = load_environment_profile(db_path)
+
+        assert loaded is not None
+        assert loaded.ha_version == "2026.8.0"
+        assert loaded.os_version == "18.2"
+        assert loaded.installed_integrations == ["zha", "mqtt"]
+        assert loaded.config_entries == profile.config_entries
+        assert loaded.last_updated == 1234567890.0
+
+    def test_load_returns_none_when_empty(self, db_path):
+        from utils.ha_environment import load_environment_profile
+
+        result = load_environment_profile(db_path)
+        assert result is None
+
+    def test_save_overwrites_on_second_call(self, db_path):
+        from utils.ha_environment import (
+            HAEnvironmentProfile,
+            load_environment_profile,
+            save_environment_profile,
+        )
+
+        save_environment_profile(HAEnvironmentProfile(ha_version="old"), db_path)
+        save_environment_profile(HAEnvironmentProfile(ha_version="new"), db_path)
+        loaded = load_environment_profile(db_path)
+        assert loaded is not None
+        assert loaded.ha_version == "new"
+
+    def test_build_environment_profile_all_sources(self, db_path):
+        from utils.ha_environment import build_environment_profile
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            file_contents={
+                "/config/configuration.yaml": "homeassistant:\n  name: Home\nhttp:\n"
+            },
+            command_results={
+                "ha core info": (0, "version: 2026.8.0\narch: aarch64\n", ""),
+                "ha os info": (0, "version: 18.2\nsupervisor: 2024.11.0\n", ""),
+            },
+        )
+        ws = FakeHAWebSocketClient(
+            config_entries=[
+                {"domain": "zha", "title": "Zigbee", "state": "loaded"},
+                {"domain": "broken", "title": "Broken", "state": "not_loaded"},
+            ]
+        )
+
+        profile = asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://homeassistant.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda url, token: ["zha", "mqtt"],
+                _discover_hacs=lambda url, token: [("hacs_integ", "owner/repo")],
+            )
+        )
+
+        assert profile.ha_version == "2026.8.0"
+        assert profile.os_version == "18.2"
+        assert profile.supervisor_version == "2024.11.0"
+        assert "zha" in profile.installed_integrations
+        assert profile.hacs_integrations == ["hacs_integ"]
+        assert "homeassistant" in profile.config_yaml_top_keys
+        assert "http" in profile.config_yaml_top_keys
+        # only loaded entries returned
+        assert len(profile.config_entries) == 1
+        assert profile.config_entries[0]["domain"] == "zha"
+
+    def test_build_environment_profile_ssh_failure(self):
+        from utils.ha_environment import build_environment_profile
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={"ha core info": (1, "", "error")},
+        )
+        ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "mqtt", "title": "MQTT", "state": "loaded"}]
+        )
+
+        profile = asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://homeassistant.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda url, token: ["mqtt"],
+                _discover_hacs=lambda url, token: [],
+            )
+        )
+
+        # SSH failure for ha core info → ha_version empty (exit 1 doesn't raise for check=False)
+        # but ha core info returns exit 1 with empty stdout so no version parsed
+        assert profile.ha_version == ""
+        # ws_client still worked
+        assert len(profile.config_entries) == 1
+
+    def test_get_config_entries_ws_filters_loaded(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            config_entries=[
+                {"domain": "zha", "state": "loaded"},
+                {"domain": "broken", "state": "not_loaded"},
+                {"domain": "mqtt", "state": "loaded"},
+            ]
+        )
+        entries = asyncio.run(ws.get_config_entries())
+        assert len(entries) == 2
+        assert all(e["state"] == "loaded" for e in entries)
+        assert "get_config_entries" in ws.calls
 
 
 # ── Backup inventory (item 30) ───────────────────────────────────────────────────
@@ -1042,7 +1203,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1052,7 +1213,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 13
+        assert rows[0][0] == 14
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1080,7 +1241,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 13
+        assert version == 14
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
