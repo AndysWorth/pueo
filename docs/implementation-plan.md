@@ -109,7 +109,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 85   | Security review: sandbox escape vectors, safety-critical file block list (utils/autonomy.py, interfaces.py, config.py, backup chain), read_source path traversal | ☐ TODO |
 | 86   | ADR 007: agent-generated code proposals with sandboxed CI gate       | ☐ TODO |
 | 87   | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory in `analyze_breaking_changes`; stub sentinel in `fetch_ha_release_notes` | ✅ Done (2026-08-06) |
-| 88   | `utils/ha_blog_scraper.py`: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes`; hooked into `run_rag_refresh` | ☐ TODO |
+| 88   | `utils/ha_blog_scraper.py`: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes`; hooked into `run_rag_refresh` | ✅ Done (2026-08-06) |
 | 89   | Enriched chunk metadata (`release_type`, `category`, `impacted_integration`); `where` clause in `KnowledgeStore.query`; `integration_filter` in `query_knowledge` tool | ☐ TODO |
 | 90   | `HAEnvironmentProfile` dataclass + `build_environment_profile`; `get_config_entries` WS method; DB migration v14; save/load helpers | ☐ TODO |
 | 91   | Wire profile into supervisor; `get_ha_profile` chat tool; use profile in `analyze_breaking_changes` and `request_update_approval` | ☐ TODO |
