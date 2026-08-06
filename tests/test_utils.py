@@ -1585,6 +1585,127 @@ class TestScrapeCachedReleaseNotes:
         assert result == 0
 
 
+class TestHABlogScraper:
+    def test_extract_blog_url_from_stub(self):
+        from utils.ha_blog_scraper import extract_blog_url_from_stub
+
+        stub = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        assert extract_blog_url_from_stub(stub) == stub
+
+    def test_extract_blog_url_missing_returns_none(self):
+        from utils.ha_blog_scraper import extract_blog_url_from_stub
+
+        assert extract_blog_url_from_stub("no url here") is None
+
+    def test_extract_blog_url_ignores_non_blog_urls(self):
+        from utils.ha_blog_scraper import extract_blog_url_from_stub
+
+        assert (
+            extract_blog_url_from_stub("https://github.com/home-assistant/core") is None
+        )
+
+    def test_fetch_blog_post_strips_html(self):
+        from utils.ha_blog_scraper import fetch_blog_post
+
+        html = (
+            b"<html><body>"
+            b"<article>"
+            b"<h2>Backward Incompatible Changes</h2>"
+            b"<p>The battery_level attribute was removed.</p>"
+            b"<h3>Details</h3>"
+            b"<ul><li>Affects LG ThinQ</li><li>Affects Shark IQ</li></ul>"
+            b"</article>"
+            b"</body></html>"
+        )
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "## Backward Incompatible Changes" in result
+        assert "### Details" in result
+        assert "battery_level" in result
+        assert "- Affects LG ThinQ" in result
+        assert "<" not in result
+
+    def test_fetch_blog_post_ignores_content_outside_article(self):
+        from utils.ha_blog_scraper import fetch_blog_post
+
+        html = (
+            b"<html><body>"
+            b"<nav>Navigation text</nav>"
+            b"<article><p>Article text here.</p></article>"
+            b"<footer>Footer text</footer>"
+            b"</body></html>"
+        )
+        result = fetch_blog_post("http://example.com", _fetcher=lambda url: html)
+        assert "Article text here." in result
+        assert "Navigation text" not in result
+        assert "Footer text" not in result
+
+    def test_fetch_blog_release_notes_replaces_stub(self, tmp_path):
+        from utils.ha_blog_scraper import fetch_blog_release_notes
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        blog_url = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        (cache / "2026.8.0.txt").write_text(f"STUB:{blog_url}", encoding="utf-8")
+
+        real_content = "## Backward Incompatible Changes\n" + "x" * 600
+
+        def fake_fetcher(url: str) -> bytes:
+            return f"<article><h2>Backward Incompatible Changes</h2><p>{'x' * 600}</p></article>".encode()
+
+        count = fetch_blog_release_notes(str(cache), _fetcher=fake_fetcher)
+        assert count == 1
+        written = (cache / "2026.8.0.txt").read_text(encoding="utf-8")
+        assert not written.startswith("STUB:")
+        assert "Backward Incompatible Changes" in written
+
+    def test_fetch_blog_release_notes_skips_real_files(self, tmp_path):
+        from utils.ha_blog_scraper import fetch_blog_release_notes
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        real_content = "## Breaking Changes\n" + "real content " * 50
+        stub_file = cache / "2026.7.0.txt"
+        stub_file.write_text(real_content, encoding="utf-8")
+
+        count = fetch_blog_release_notes(
+            str(cache), _fetcher=lambda url: b"should not be called"
+        )
+        assert count == 0
+        assert stub_file.read_text(encoding="utf-8") == real_content
+
+    def test_fetch_blog_release_notes_skips_stub_with_no_url(self, tmp_path):
+        from utils.ha_blog_scraper import fetch_blog_release_notes
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        (cache / "2026.8.0.txt").write_text("STUB:no url here", encoding="utf-8")
+
+        count = fetch_blog_release_notes(
+            str(cache), _fetcher=lambda url: b"unreachable"
+        )
+        assert count == 0
+
+    def test_fetch_blog_release_notes_skips_short_blog_content(self, tmp_path):
+        from utils.ha_blog_scraper import fetch_blog_release_notes
+
+        cache = tmp_path / "notes"
+        cache.mkdir()
+        blog_url = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        (cache / "2026.8.0.txt").write_text(f"STUB:{blog_url}", encoding="utf-8")
+
+        def fake_fetcher(url: str) -> bytes:
+            return b"<article><p>Too short.</p></article>"
+
+        count = fetch_blog_release_notes(str(cache), _fetcher=fake_fetcher)
+        assert count == 0
+
+    def test_fetch_blog_release_notes_missing_dir(self):
+        from utils.ha_blog_scraper import fetch_blog_release_notes
+
+        count = fetch_blog_release_notes("/nonexistent/path")
+        assert count == 0
+
+
 class TestParseReleaseSections:
     def test_embeds_all_sections_not_just_breaking(self):
         from utils.ha_release_notes_scraper import parse_release_sections
