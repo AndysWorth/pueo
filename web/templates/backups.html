@@ -3,6 +3,10 @@
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
   <h2 style="font-size:1rem;color:#555;margin:0;">Backup Inventory</h2>
   <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button id="sync-btn" onclick="syncInventory()"
+      style="padding:0.4rem 1rem;background:#17a2b8;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
+      Sync with HA
+    </button>
     <button id="preflight-btn" onclick="runPreflight()"
       style="padding:0.4rem 1rem;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;">
       Run Pre-flight
@@ -13,6 +17,7 @@
     </button>
   </div>
 </div>
+<div id="sync-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
 <div id="preflight-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
 <div id="trigger-result" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
 
@@ -50,6 +55,38 @@
 {% endif %}
 
 <script>
+async function syncInventory() {
+  const btn = document.getElementById('sync-btn');
+  const result = document.getElementById('sync-result');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  result.style.display = 'none';
+  try {
+    const resp = await fetch('/backups/sync', {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+      const parts = [];
+      if (data.added > 0) parts.push(`${data.added} backup(s) added from HA`);
+      if (data.marked_deleted > 0) parts.push(`${data.marked_deleted} removed from HA`);
+      result.textContent = parts.length ? parts.join(', ') + '.' : 'Already in sync — no changes.';
+      result.style.background = '#d4edda';
+      result.style.color = '#155724';
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      result.textContent = 'Sync error: ' + (data.error || 'unknown error');
+      result.style.background = '#f8d7da';
+      result.style.color = '#721c24';
+    }
+  } catch (e) {
+    result.textContent = 'Request failed: ' + e.message;
+    result.style.background = '#f8d7da';
+    result.style.color = '#721c24';
+  }
+  result.style.display = 'block';
+  btn.disabled = false;
+  btn.textContent = 'Sync with HA';
+}
+
 async function runPreflight() {
   const btn = document.getElementById('preflight-btn');
   const result = document.getElementById('preflight-result');

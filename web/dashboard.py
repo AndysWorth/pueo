@@ -946,16 +946,27 @@ def _load_backup_inventory() -> list[dict]:
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT backup_slug, size_bytes, timestamp, location,"
-                " deleted_from_ha_at, offloaded_at, name"
-                " FROM backup_registry ORDER BY timestamp DESC"
+                " deleted_from_ha_at, offloaded_at, name, ha_created_at"
+                " FROM backup_registry ORDER BY COALESCE(ha_created_at, timestamp) DESC"
             ).fetchall()
     except Exception:
         return []
 
     now = time.time()
     result = []
-    for slug, size_bytes, ts, location, deleted_from_ha_at, offloaded_at, name in rows:
-        age_secs = now - (ts or now)
+    for (
+        slug,
+        size_bytes,
+        ts,
+        location,
+        deleted_from_ha_at,
+        offloaded_at,
+        name,
+        ha_created_at,
+    ) in rows:
+        # Prefer HA-reported creation time; fall back to when Pueo recorded the backup
+        age_ref = ha_created_at or ts or now
+        age_secs = now - age_ref
         age_days = age_secs / 86400
         age_str = f"{age_days:.0f}d" if age_days >= 1 else f"{age_days * 24:.0f}h"
         result.append(
@@ -1036,6 +1047,22 @@ async def run_backup_preflight() -> JSONResponse:
                 "supervisor_status": result.supervisor_status,
                 "problems": result.problems,
             }
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/backups/sync")
+async def sync_backup_inventory() -> JSONResponse:
+    """Reconcile the local backup registry against HA and return a change summary."""
+    from ha_agent_advanced import reconcile_backup_inventory
+    from utils.ssh_client import AsyncSSHClient
+
+    ssh = AsyncSSHClient()
+    try:
+        added, marked_deleted = await reconcile_backup_inventory(ssh_client=ssh)
+        return JSONResponse(
+            {"ok": True, "added": added, "marked_deleted": marked_deleted}
         )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

@@ -250,6 +250,23 @@ async def supervisor_main(config_path: Path) -> None:
 
         supervisor.start("profile_refresh", _profile_refresh_loop)
 
+    # Periodic backup reconciliation loop — keeps the inventory in sync with HA
+    async def _backup_reconcile_loop() -> None:
+        from utils.ssh_client import AsyncSSHClient as _SSH
+
+        while True:
+            await asyncio.sleep(
+                30 * 60
+            )  # 30-minute interval; startup reconcile already ran
+            try:
+                await ha_agent_advanced.reconcile_backup_inventory(
+                    ssh_client=_SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+                )
+            except Exception:  # pragma: no cover
+                pass
+
+    supervisor.start("backup_sync", _backup_reconcile_loop)
+
     # HA log monitor loop (SSH tail + AI triage)
     supervisor.start(
         "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)

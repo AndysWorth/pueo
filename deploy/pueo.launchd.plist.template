@@ -36,6 +36,6 @@
   <string>{{ PUEO_DIR }}/pueo.log</string>
 
   <key>StandardErrorPath</key>
-  <string>{{ PUEO_DIR }}/pueo.log</string>
+  <string>{{ PUEO_DIR }}/pueo-stderr.log</string>
 </dict>
 </plist>
