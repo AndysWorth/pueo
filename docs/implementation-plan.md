@@ -111,7 +111,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 87   | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory in `analyze_breaking_changes`; stub sentinel in `fetch_ha_release_notes` | ✅ Done (2026-08-06) |
 | 88   | `utils/ha_blog_scraper.py`: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes`; hooked into `run_rag_refresh` | ✅ Done (2026-08-06) |
 | 89   | Enriched chunk metadata (`release_type`, `category`, `impacted_integration`); `where` clause in `KnowledgeStore.query`; `integration_filter` in `query_knowledge` tool | ✅ Done (2026-08-06) |
-| 90   | `HAEnvironmentProfile` dataclass + `build_environment_profile`; `get_config_entries` WS method; DB migration v14; save/load helpers | ☐ TODO |
+| 90   | `HAEnvironmentProfile` dataclass + `build_environment_profile`; `get_config_entries` WS method; DB migration v14; save/load helpers | ✅ Done (2026-08-06) |
 | 91   | Wire profile into supervisor; `get_ha_profile` chat tool; use profile in `analyze_breaking_changes` and `request_update_approval` | ☐ TODO |
 | 92   | Wire `ChromaKnowledgeStore` into `supervisor_main()` so `query_knowledge` is functional in production | ✅ Done (2026-08-06) |
 | 93   | HACS version metadata; HA docs `is_installed` flag; `release_type` on bulk-fetched chunks; remove empty `community_cases` collection | ☐ TODO |
