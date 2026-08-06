@@ -121,7 +121,7 @@
           <th>Loop</th>
           <th>Status</th>
           <th>Last run</th>
-          <th>Next run</th>
+          <th>Restart at</th>
           <th>Errors</th>
           <th>Controls</th>
         </tr>
@@ -135,7 +135,7 @@
             <span class="loop-status">{{ ls.status }}</span>
           </td>
           <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
-          <td class="loop-next-run">{{ ls.next_run|epoch_to_iso if ls.next_run else "—" }}</td>
+          <td class="loop-next-run">{{ ls.next_run|epoch_to_iso if ls.next_run and ls.status == "error" else "—" }}</td>
           <td class="loop-errors">{{ ls.error_count }}</td>
           <td class="loop-controls">
             {% if ls.paused %}
@@ -227,7 +227,7 @@
     var lastRunEl = row.querySelector('.loop-last-run');
     if (lastRunEl) lastRunEl.textContent = fmtTime(evt.last_run);
     var nextRunEl = row.querySelector('.loop-next-run');
-    if (nextRunEl) nextRunEl.textContent = evt.next_run ? fmtTime(evt.next_run) : '—';
+    if (nextRunEl) nextRunEl.textContent = (evt.next_run && evt.status === 'error') ? fmtTime(evt.next_run) : '—';
     var errEl = row.querySelector('.loop-errors');
     if (errEl) errEl.textContent = evt.error_count;
     // Update error message row if it follows this row
