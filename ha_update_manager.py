@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,12 +89,29 @@ async def fetch_release_notes_cached(
     *,
     _fetcher=None,  # injectable for tests
 ) -> str:
-    """Return cached release notes; fetch from GitHub API if not yet cached."""
+    """Return cached release notes; fetch from GitHub API if not yet cached.
+
+    GA monthly releases often have a blog-URL stub body (<500 chars).  When
+    detected, tries beta tags (b5→b0) for the same minor version to get the
+    real changelog content.
+    """
     cache_path = Path(cache_dir) / f"{version}.txt"
     if cache_path.exists():
         return cache_path.read_text()
     fetcher = _fetcher or _fetch_github_release_notes
     notes = await fetcher(version)
+    if len(notes.strip()) < 500:
+        parts = version.split(".")
+        if len(parts) >= 2:
+            minor_base = f"{parts[0]}.{parts[1]}.0"
+            for beta_num in range(5, -1, -1):
+                try:
+                    beta_notes = await fetcher(f"{minor_base}b{beta_num}")
+                    if len(beta_notes.strip()) >= 500:
+                        notes = beta_notes
+                        break
+                except Exception:  # nosec B112
+                    continue
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(notes)
     return notes
@@ -106,6 +124,23 @@ async def analyze_breaking_changes(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> UpdateReadinessReport:
     """LLM advisory analysis of release notes against the current installation."""
+    if len(release_notes.strip()) < 500:
+        url_match = re.search(r"https?://\S+", release_notes)
+        url_hint = (
+            url_match.group(0) if url_match else "https://www.home-assistant.io/blog/"
+        )
+        return UpdateReadinessReport(
+            target_version=update_status.latest_version,
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation=(
+                f"Release notes for {update_status.latest_version} are not yet "
+                f"available on GitHub. Review manually: {url_hint}"
+            ),
+        )
+
     from utils.ollama_client import OllamaClient
 
     client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover

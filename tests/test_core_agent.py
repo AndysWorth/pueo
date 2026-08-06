@@ -2847,6 +2847,83 @@ class TestFetchReleaseNotesCached:
         )
         assert (nested / "2026.7.0.txt").exists()
 
+    def test_stub_triggers_beta_fallback(self, tmp_path):
+        """Stub GA body causes beta tags to be tried; first real content wins."""
+        stub = "https://www.home-assistant.io/blog/2026/08/06/"
+        real_content = "x" * 600
+
+        async def fake_fetcher(version: str) -> str:
+            if version == "2026.8.0":
+                return stub
+            if version == "2026.8.0b3":
+                return real_content
+            raise Exception("404")
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(
+            fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
+        )
+        assert result == real_content
+
+    def test_all_stubs_returns_original(self, tmp_path):
+        """When all beta tags also return stubs, the GA stub body is returned."""
+        stub = "https://www.home-assistant.io/blog/2026/08/06/"
+
+        async def fake_fetcher(version: str) -> str:
+            return stub
+
+        from ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(
+            fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
+        )
+        assert result == stub
+
+    def test_neutral_advisory_on_stub_notes(self):
+        """analyze_breaking_changes returns neutral report without LLM when notes are a stub."""
+        from ha_update_manager import analyze_breaking_changes
+        from utils.ha_rest_client import UpdateStatus
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.7.2",
+            latest_version="2026.8.0",
+            update_available=True,
+            release_summary="",
+            release_url=None,
+            in_progress=False,
+        )
+        stub = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        report = asyncio.run(analyze_breaking_changes(update, "", stub))
+        assert report.breaking_changes == []
+        assert "home-assistant.io" in report.recommendation
+
+    def test_stub_sentinel_written_to_cache(self, tmp_path):
+        """fetch_ha_release_notes writes STUB: prefix when body is a short stub."""
+        from utils.ha_release_notes_scraper import fetch_ha_release_notes
+
+        stub_body = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
+        releases = [{"tag_name": "2026.8.0", "body": stub_body}]
+        count = fetch_ha_release_notes(str(tmp_path), _releases=releases)
+        content = (tmp_path / "2026.8.0.txt").read_text()
+        assert count == 1
+        assert content.startswith("STUB:")
+        assert stub_body in content
+
+    def test_stub_sentinel_skipped_by_scraper(self, tmp_path):
+        """scrape_cached_release_notes skips files whose content starts with STUB:."""
+        from utils.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        stub_file = tmp_path / "2026.8.0.txt"
+        stub_file.write_text("STUB:https://www.home-assistant.io/blog/...")
+
+        store = FakeKnowledgeStore()
+        count = scrape_cached_release_notes(str(tmp_path), store)
+        assert count == 0
+
 
 # ── analyze_breaking_changes ─────────────────────────────────────────────────────
 class TestAnalyzeBreakingChanges:
@@ -2890,7 +2967,7 @@ class TestAnalyzeBreakingChanges:
         update = self._make_core_update()
         llm = self._fake_llm()
         report = asyncio.run(
-            analyze_breaking_changes(update, "homeassistant: ~", "release notes", llm)
+            analyze_breaking_changes(update, "homeassistant: ~", "x" * 600, llm)
         )
         assert report.target_version == "2026.7.0"
         assert report.safe_to_update is True
@@ -2900,7 +2977,7 @@ class TestAnalyzeBreakingChanges:
 
         update = self._make_core_update()
         llm = self._fake_llm()
-        asyncio.run(analyze_breaking_changes(update, "config: {}", "notes", llm))
+        asyncio.run(analyze_breaking_changes(update, "config: {}", "x" * 600, llm))
         assert len(llm.calls) == 1
         messages = llm.calls[0]["messages"]
         user_content = messages[-1]["content"]
@@ -2916,7 +2993,7 @@ class TestAnalyzeBreakingChanges:
             breaking_changes=["Template syntax changed"],
             pueo_command_risks=["ha apps list renamed"],
         )
-        report = asyncio.run(analyze_breaking_changes(update, "", "release notes", llm))
+        report = asyncio.run(analyze_breaking_changes(update, "", "x" * 600, llm))
         assert report.safe_to_update is False
         assert "Template syntax changed" in report.breaking_changes
         assert len(report.pueo_command_risks) == 1
@@ -6005,7 +6082,7 @@ class TestPollForUpdates:
         notes_dir = tmp_path / "release_notes"
         notes_dir.mkdir()
         (notes_dir / "2026.7.0.txt").write_text(
-            "## Breaking changes\n- Template syntax changed"
+            "## Breaking changes\n- Template syntax changed\n" + "x" * 500
         )
 
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
