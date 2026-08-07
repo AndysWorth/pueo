@@ -19,6 +19,7 @@ _SECTION_SPLIT = re.compile(r"\n##\s+")
 _GITHUB_REPO_RE = re.compile(
     r"https://github\.com/([^/]+/[^/]+)/releases?", re.IGNORECASE
 )
+_VERSION_HEADING_RE = re.compile(r"^(\d+\.\d+[\.\d]*)")
 
 
 def _repo_from_release_url(release_url: str) -> str | None:
@@ -30,7 +31,14 @@ def _repo_from_release_url(release_url: str) -> str | None:
 def parse_changelog(changelog_text: str) -> list[str]:
     """Split a HACS changelog into per-version sections."""
     sections = _SECTION_SPLIT.split(changelog_text)
-    return [s.strip()[:2000] for s in sections if s.strip()]
+    return [s.strip()[:3000] for s in sections if s.strip()]
+
+
+def _version_from_section(section_text: str) -> str:
+    """Extract semver from the first line of a changelog section, or ''."""
+    first_line = section_text.split("\n", 1)[0].lstrip("#").strip()
+    m = _VERSION_HEADING_RE.match(first_line)
+    return m.group(1) if m else ""
 
 
 def chunk_changelog(
@@ -46,7 +54,14 @@ def chunk_changelog(
     if not chunks:
         return [], [], []
     ids = [f"hacs-{slug}-{i}" for i in range(len(chunks))]
-    metadatas = [{"source": f"hacs/{slug}", "slug": slug} for _ in chunks]
+    metadatas = [
+        {
+            "source": f"hacs/{slug}",
+            "slug": slug,
+            "version": _version_from_section(chunk),
+        }
+        for chunk in chunks
+    ]
     if collected_ids is not None:
         collected_ids.update(ids)
     return ids, chunks, metadatas

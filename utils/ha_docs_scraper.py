@@ -195,7 +195,10 @@ def embed_cached_integration_docs(
         if not chunks:
             continue
         ids = [f"ha-docs-{domain}-{i}" for i in range(len(chunks))]
-        metadatas = [{"source": f"ha_docs/{domain}", "domain": domain} for _ in chunks]
+        metadatas = [
+            {"source": f"ha_docs/{domain}", "domain": domain, "is_installed": True}
+            for _ in chunks
+        ]
         if collected_ids is not None:
             collected_ids.update(ids)
         knowledge_store.upsert(

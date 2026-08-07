@@ -384,7 +384,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 14
+        assert version == 15
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 14
+        assert rows[0][0] == 15
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 14
+        assert version == 15
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -470,6 +470,14 @@ class TestHAEnvironmentProfile:
                 ).fetchall()
             ]
         assert "ha_environment_profile" in tables
+
+    def test_migration_v15_adds_ha_created_at(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(backup_registry)").fetchall()
+            ]
+        assert "ha_created_at" in cols
 
     def test_save_load_round_trip(self, db_path):
         from utils.ha_environment import (
@@ -684,9 +692,27 @@ class TestBackupInventory:
 
         output = '{"result":"ok","data":{"backups":[{"slug":"abc123","size_bytes":56760320,"name":"Pueo_2026-08-05_1430"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
-        assert result == [
-            {"slug": "abc123", "size_bytes": 56760320, "name": "Pueo_2026-08-05_1430"}
-        ]
+        assert len(result) == 1
+        assert result[0]["slug"] == "abc123"
+        assert result[0]["size_bytes"] == 56760320
+        assert result[0]["name"] == "Pueo_2026-08-05_1430"
+        assert result[0]["ha_created_at"] is None  # no date in JSON
+
+    def test_parse_backup_list_extracts_ha_created_at(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"abc","size_bytes":1000,"date":"2026-07-15T10:30:00+00:00"}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result[0]["ha_created_at"] is not None
+        # 2026-07-15T10:30:00+00:00 → check it parses to a reasonable Unix timestamp
+        assert 1752000000 < result[0]["ha_created_at"] < 1800000000
+
+    def test_parse_backup_list_extracts_ha_created_at_zulu(self):
+        import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"abc","size_bytes":1000,"date":"2026-07-15T10:30:00Z"}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result[0]["ha_created_at"] is not None
 
     def test_parse_backup_list_multiple_backups(self):
         import ha_agent_advanced
@@ -715,7 +741,10 @@ class TestBackupInventory:
 
         output = '{"result":"ok","data":{"backups":[{"slug":"xyz"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
-        assert result == [{"slug": "xyz", "size_bytes": 0, "name": ""}]
+        assert result[0]["slug"] == "xyz"
+        assert result[0]["size_bytes"] == 0
+        assert result[0]["name"] == ""
+        assert result[0]["ha_created_at"] is None
 
     def test_reconcile_inserts_ha_only_slug(self, db_path):
         import ha_agent_advanced
@@ -784,6 +813,64 @@ class TestBackupInventory:
         with caplog.at_level(logging.WARNING):
             asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
         assert any("orphan" in r.message for r in caplog.records)
+
+    def test_reconcile_marks_orphan_deleted_from_ha(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("gone-slug")
+        backup_json = '{"result":"ok","data":{"backups":[]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT deleted_from_ha_at FROM backup_registry WHERE backup_slug = 'gone-slug'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None  # deleted_from_ha_at should be set
+
+    def test_reconcile_stores_ha_created_at(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        backup_json = '{"result":"ok","data":{"backups":[{"slug":"dated","size_bytes":1000,"date":"2026-07-15T10:00:00Z"}]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM backup_registry WHERE backup_slug = 'dated'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None
+
+    def test_reconcile_backfills_ha_created_at_on_existing_row(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("old-slug")
+        backup_json = '{"result":"ok","data":{"backups":[{"slug":"old-slug","size_bytes":5000,"date":"2026-06-01T00:00:00Z"}]}}'
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        asyncio.run(ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh))
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT ha_created_at FROM backup_registry WHERE backup_slug = 'old-slug'"
+            ).fetchone()
+        assert row[0] is not None
+
+    def test_reconcile_returns_counts(self, db_path):
+        import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced.record_backup_slug("gone-slug")
+        backup_json = (
+            '{"result":"ok","data":{"backups":[{"slug":"new-slug","size_bytes":1000}]}}'
+        )
+        ssh = FakeSSHClient(command_results={"ha backups list": (0, backup_json, "")})
+        added, marked_deleted = asyncio.run(
+            ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh)
+        )
+        assert added == 1
+        assert marked_deleted == 1
 
     def test_reconcile_skips_on_ssh_error(self, db_path):
         import ha_agent_advanced
@@ -1203,7 +1290,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 14
+        assert version == 15
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1213,7 +1300,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 14
+        assert rows[0][0] == 15
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1241,7 +1328,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 14
+        assert version == 15
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine

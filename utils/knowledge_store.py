@@ -35,7 +35,6 @@ COLLECTIONS: tuple[str, ...] = (
     "ha_release_notes",
     "hacs_changelogs",
     "ha_integration_docs",
-    "community_cases",
 )
 
 

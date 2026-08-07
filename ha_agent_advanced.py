@@ -235,6 +235,10 @@ def _migrate_v14(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v15(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN ha_created_at REAL")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -250,6 +254,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (12, _migrate_v12),
     (13, _migrate_v13),
     (14, _migrate_v14),
+    (15, _migrate_v15),
 ]
 
 
@@ -370,7 +375,18 @@ def is_reboot_required_active() -> bool:
 
 
 def _parse_backup_list(output: str) -> list[dict]:
-    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes, name}."""
+    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes, name, ha_created_at}."""
+    from datetime import datetime, timezone
+
+    def _parse_date(date_str: str) -> Optional[float]:
+        if not date_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            return None
+
     try:
         data = json.loads(output)
         backups = data.get("data", {}).get("backups", [])
@@ -379,6 +395,7 @@ def _parse_backup_list(output: str) -> list[dict]:
                 "slug": b["slug"],
                 "size_bytes": b.get("size_bytes", 0),
                 "name": b.get("name", ""),
+                "ha_created_at": _parse_date(b.get("date", "")),
             }
             for b in backups
             if "slug" in b
@@ -398,19 +415,29 @@ async def list_ha_backups(
 
 async def reconcile_backup_inventory(
     ssh_client: Optional[SSHClientProtocol] = None,
-) -> None:
-    """Compare HA backup list against SQLite. Insert HA-only slugs; warn on orphans."""
+) -> tuple[int, int]:
+    """Compare HA backup list against SQLite.
+
+    Inserts HA-only slugs; marks active slugs no longer on HA as deleted.
+    Returns (added_count, marked_deleted_count).
+    """
     try:
         ha_backups = await list_ha_backups(ssh_client=ssh_client)
     except Exception as e:
         log.warning("backup_reconcile_skipped", error=str(e))
-        return
+        return 0, 0
 
     ha_slugs = {
-        b["slug"]: {"size_bytes": b["size_bytes"], "name": b.get("name", "")}
+        b["slug"]: {
+            "size_bytes": b["size_bytes"],
+            "name": b.get("name", ""),
+            "ha_created_at": b.get("ha_created_at"),
+        }
         for b in ha_backups
     }
 
+    added = 0
+    marked_deleted = 0
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         db_slugs_all = {
@@ -419,7 +446,7 @@ async def reconcile_backup_inventory(
                 "SELECT backup_slug FROM backup_registry"
             ).fetchall()
         }
-        # Only slugs not yet intentionally deleted from HA — skip for orphan check
+        # Only slugs not yet intentionally deleted from HA — candidates for orphan detection
         db_slugs_active = {
             row[0]
             for row in cursor.execute(
@@ -430,29 +457,40 @@ async def reconcile_backup_inventory(
         for slug, info in ha_slugs.items():
             size_bytes = info["size_bytes"]
             ha_name = info["name"]
+            ha_created_at = info["ha_created_at"]
             if slug not in db_slugs_all:
                 log.info("backup_inventory_add", slug=slug, size_bytes=size_bytes)
                 cursor.execute(
                     "INSERT INTO backup_registry"
-                    " (timestamp, backup_slug, status, size_bytes, location, name)"
-                    " VALUES (?, ?, 'ACTIVE', ?, 'ha', ?)",
-                    (int(time.time()), slug, size_bytes, ha_name),
+                    " (timestamp, backup_slug, status, size_bytes, location, name, ha_created_at)"
+                    " VALUES (?, ?, 'ACTIVE', ?, 'ha', ?, ?)",
+                    (int(time.time()), slug, size_bytes, ha_name, ha_created_at),
                 )
+                added += 1
             else:
-                # Back-fill size_bytes and name for rows recorded with zero/null defaults
+                # Back-fill size_bytes, name, and ha_created_at for rows with missing data
                 cursor.execute(
                     "UPDATE backup_registry"
                     " SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END,"
-                    "     name = CASE WHEN name IS NULL OR name = '' THEN ? ELSE name END"
-                    " WHERE backup_slug = ? AND (size_bytes = 0 OR name IS NULL OR name = '')",
-                    (size_bytes, ha_name, slug),
+                    "     name = CASE WHEN name IS NULL OR name = '' THEN ? ELSE name END,"
+                    "     ha_created_at = CASE WHEN ha_created_at IS NULL THEN ? ELSE ha_created_at END"
+                    " WHERE backup_slug = ?",
+                    (size_bytes, ha_name, ha_created_at, slug),
                 )
 
         for slug in db_slugs_active:
             if slug not in ha_slugs:
+                # Backup is gone from HA (manually deleted or purged outside Pueo)
                 log.warning("backup_inventory_orphaned", slug=slug)
+                cursor.execute(
+                    "UPDATE backup_registry SET deleted_from_ha_at = ?"
+                    " WHERE backup_slug = ? AND deleted_from_ha_at IS NULL",
+                    (time.time(), slug),
+                )
+                marked_deleted += 1
 
         conn.commit()
+    return added, marked_deleted
 
 
 # ==========================================
