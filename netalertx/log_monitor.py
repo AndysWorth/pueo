@@ -31,7 +31,7 @@ from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging
 from utils.notify import NotifierProtocol, get_notifier
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 from utils.rate_limiter import Debouncer, RateLimitExceeded, RateLimiter
 from utils.retry import async_retry
@@ -70,7 +70,7 @@ async def analyze_log_line_with_ai(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> tuple[LogEvaluation, LLMTrace]:
     """Uses local Ollama to classify whether recent NetAlertX log context contains an actionable error."""
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
     system_prompt = load_prompt("triage_netalertx_log")
     user_envelope = "Evaluate these NetAlertX log lines:\n```\n\n```"
     overhead = estimate_tokens(system_prompt) + estimate_tokens(user_envelope)

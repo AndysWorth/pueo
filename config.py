@@ -103,6 +103,13 @@ AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
+# LLM provider selection (item 73 — full guards/wizard added in item 74)
+_llm_cfg = _cfg.get("llm", {})
+_cloud_cfg = _cfg.get("cloud", {})
+LLM_PROVIDER: str = _llm_cfg.get("provider", "local")  # "local" | "cloud" | "both"
+CLOUD_MODEL: str = _cloud_cfg.get("model", "claude-sonnet-4-5")
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
 # Conversational agent
 CHAT_MEMORY_TOP_K: int = int(_agent.get("chat_memory_top_k", 10))
 CHAT_ALLOW_TOOL_REGISTRATION: bool = bool(

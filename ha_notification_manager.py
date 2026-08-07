@@ -242,9 +242,9 @@ async def analyze_notification(
     severity: str = "MEDIUM",
 ) -> NotificationAnalysis:
     """LLM plain-English analysis of a notification. Returns a full NotificationAnalysis."""
-    from utils.ollama_client import OllamaClient
+    from utils.llm_factory import make_llm_client
 
-    client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
     context_parts: list[str] = []
     if enriched_context:

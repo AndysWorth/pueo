@@ -1,4 +1,5 @@
 aiomqtt
+anthropic
 asyncssh
 chromadb
 fastapi

@@ -34,7 +34,7 @@ from utils.logging import (
     setup_logging,
     set_correlation_id,
 )
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 from ha_agent_core import DiagnosticsReport
 from utils.resource import DiskCriticalError, check_disk_not_critical
@@ -800,7 +800,7 @@ async def analyze_config_locally(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> DiagnosticsReport:
     """Runs zero-latency local analysis via macOS Ollama environment."""
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
 
     system_prompt = load_prompt("diagnose_config")
     user_prefix = "Analyze this configuration data:\n\n```yaml\n"

@@ -147,9 +147,9 @@ async def analyze_breaking_changes(
             ),
         )
 
-    from utils.ollama_client import OllamaClient
+    from utils.llm_factory import make_llm_client
 
-    client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
     command_catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
     notes_content = truncate_to_budget(release_notes, MAX_PROMPT_TOKENS - 400)
@@ -633,9 +633,9 @@ async def _self_check_llm_cross_reference(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> SelfCheckCommandRisk:
     """Ask the LLM which Pueo SSH commands appear in the update's breaking changes."""
-    from utils.ollama_client import OllamaClient
+    from utils.llm_factory import make_llm_client
 
-    client: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
     catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
     notes_budget = MAX_PROMPT_TOKENS - 300  # 300 for system + catalog text

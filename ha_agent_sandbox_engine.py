@@ -39,7 +39,7 @@ from utils.logging import (
     setup_logging,
     set_correlation_id,
 )
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 from ha_agent_core import DiagnosticsReport
 from utils.retry import async_retry, SSH_RETRY_KWARGS
@@ -421,7 +421,7 @@ async def analyze_config_locally(
     yaml_content: str,
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> tuple[DiagnosticsReport, LLMTrace]:
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
 
     system_prompt = load_prompt("diagnose_config_repair")
     user_prefix = "Analyze this configuration data:\n\n```yaml\n"
@@ -493,7 +493,7 @@ async def main(
         NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
     )
     _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL)
-    _llm = llm_client or OllamaClient()
+    _llm = llm_client or make_llm_client()
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=_ssh)
 

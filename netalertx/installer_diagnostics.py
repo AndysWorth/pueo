@@ -14,7 +14,7 @@ from config import OLLAMA_MODEL
 from utils.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 
 if TYPE_CHECKING:
@@ -137,7 +137,7 @@ async def diagnose_installer_failure(
         evidence_tokens=estimate_tokens(context),
     )
 
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
     try:
         response = await client.chat(
             model=OLLAMA_MODEL,

@@ -1670,7 +1670,7 @@ async def _run_chat_loop(
     from utils.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ollama_client import OllamaClient
+    from utils.llm_factory import make_llm_client
     from utils.supervisor import get_supervisor_instance, publish_chat_event
     from utils.tool_executor import ToolExecutor
     from utils.tool_registry import AgentStep, build_chat_tool_registry
@@ -1725,7 +1725,7 @@ async def _run_chat_loop(
 
     try:
         agent_loop = AgentLoop(
-            llm_client=OllamaClient(),
+            llm_client=make_llm_client(),
             tool_executor=executor,
             tool_registry=build_chat_tool_registry(),
             system_prompt=_CHAT_SYSTEM_PROMPT,
