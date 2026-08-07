@@ -43,10 +43,22 @@
   <div class="card">
     <div class="group-title">
       {{ group.name }}
-      {% if group.name == "HA Connection" %}
+      {% if group.name in ("HA Connection", "LLM Provider") %}
       <span class="restart-badge">restart required</span>
       {% endif %}
     </div>
+    {% if group.name == "LLM Provider" %}
+    <div style="margin-bottom:0.75rem;font-size:0.82rem;">
+      ANTHROPIC_API_KEY:
+      {% if api_key_set %}
+      <span style="color:#16a34a;font-weight:700;">set ✓</span>
+      <span style="color:#888;margin-left:0.35rem;">(env var detected)</span>
+      {% else %}
+      <span style="color:#dc3545;font-weight:700;">not set ✗</span>
+      <span style="color:#888;margin-left:0.35rem;">export in ~/.zshenv to enable cloud/both modes</span>
+      {% endif %}
+    </div>
+    {% endif %}
     {% for p in group.params %}
     <div class="param-row">
       <div>
@@ -130,7 +142,7 @@
 </div>
 
 <div class="restart-banner" id="restart-banner">
-  Restart required — connection parameter changed. Restart Pueo for changes to take effect.
+  Restart required — parameter changed. Restart Pueo for changes to take effect.
 </div>
 
 <script>
