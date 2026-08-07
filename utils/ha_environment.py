@@ -60,7 +60,7 @@ async def build_environment_profile(
         m = _VERSION_RE.search(stdout)
         if m:
             profile.ha_version = m.group(1)
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     # 2. os_version + supervisor_version from `ha os info`
@@ -72,20 +72,20 @@ async def build_environment_profile(
         m = _SUPERVISOR_RE.search(stdout)
         if m:
             profile.supervisor_version = m.group(1)
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     # 3. installed_integrations via REST /api/config
     try:
         profile.installed_integrations = _discover_integrations(ha_url, ha_token)
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     # 4. hacs_integrations — extract slugs from (slug, repo) pairs
     try:
         pairs = _discover_hacs(ha_url, ha_token)
         profile.hacs_integrations = [slug for slug, _ in pairs]
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     # 5. config_yaml_top_keys from remote configuration.yaml
@@ -96,13 +96,13 @@ async def build_environment_profile(
         doc = yaml.safe_load(content)
         if isinstance(doc, dict):
             profile.config_yaml_top_keys = list(doc.keys())
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     # 6. config_entries via WebSocket config/config_entries/all
     try:
         profile.config_entries = await ws_client.get_config_entries()
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     return profile

@@ -894,3 +894,18 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.HA_PROFILE_REFRESH_HOURS == 12
+
+    def test_disk_usage_poll_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_USAGE_POLL_INTERVAL_SECONDS == 300.0
+
+    def test_disk_usage_poll_interval_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"disk_usage_poll_interval_seconds": 60}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_USAGE_POLL_INTERVAL_SECONDS == 60.0

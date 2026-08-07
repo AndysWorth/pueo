@@ -57,6 +57,9 @@ TIMELINE_PAGE_SIZE: int = int(_agent.get("timeline_page_size", 25))
 RESOURCE_POLL_INTERVAL_SECONDS: float = float(
     _agent.get("resource_poll_interval_seconds", 300)
 )
+DISK_USAGE_POLL_INTERVAL_SECONDS: float = float(
+    _agent.get("disk_usage_poll_interval_seconds", 300)
+)
 HA_DISK_WARN_GB: float = float(_agent.get("ha_disk_warn_gb", 5.0))
 HA_DISK_CRITICAL_GB: float = float(_agent.get("ha_disk_critical_gb", 2.0))
 HA_MEM_WARN_MB: float = float(_agent.get("ha_mem_warn_mb", 256.0))

@@ -1093,6 +1093,49 @@ async def sync_backup_inventory() -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+@app.get("/disk", response_class=HTMLResponse)
+async def disk_tab(request: Request) -> HTMLResponse:
+    import time as _time
+
+    import utils.disk_usage as _du
+    from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB
+
+    breakdown = _du.get_disk_breakdown()
+    age_seconds = None
+    disk_warn = False
+    disk_critical = False
+    if breakdown is not None:
+        age_seconds = int(_time.time() - breakdown.fetched_at)
+        disk_warn = breakdown.disk_free_gb < HA_DISK_WARN_GB
+        disk_critical = breakdown.disk_free_gb < HA_DISK_CRITICAL_GB
+    return templates.TemplateResponse(
+        request,
+        "disk.html",
+        {
+            "breakdown": breakdown,
+            "age_seconds": age_seconds,
+            "disk_warn": disk_warn,
+            "disk_critical": disk_critical,
+        },
+    )
+
+
+@app.post("/disk/refresh")
+async def disk_refresh() -> JSONResponse:
+    import utils.disk_usage as _du
+    from utils.ssh_client import AsyncSSHClient
+
+    import config as _config
+
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    try:
+        breakdown = await _du.fetch_disk_breakdown(ssh)
+        _du.update_disk_breakdown(breakdown)
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 def _load_notification_dashboard_data(
     watch_dir: Path,
     category_filter: str = "",

@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .disk-section-label {
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #888;
+  }
+  .disk-item-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.3rem 0; border-bottom: 1px solid #f0f0f0; font-size: 0.85rem;
+  }
+  .disk-item-row:last-child { border-bottom: none; }
+  .disk-item-name {
+    flex: 1; color: #333; word-break: break-all; min-width: 0;
+  }
+  .disk-item-size {
+    white-space: nowrap; color: #555; font-variant-numeric: tabular-nums;
+    min-width: 5.5rem; text-align: right; flex-shrink: 0;
+  }
+  .disk-mini-bar-bg {
+    width: 90px; height: 6px; background: #e9ecef; border-radius: 3px;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .disk-mini-bar { height: 6px; background: #6366f1; border-radius: 3px; }
+  .disk-empty-note { color: #aaa; font-size: 0.85rem; padding: 0.5rem 0; }
+  .db-table-row {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0;
+    font-size: 0.8rem;
+  }
+  .db-table-name { flex: 1; color: #555; min-width: 0; word-break: break-all; }
+  .db-table-size {
+    white-space: nowrap; color: #666; font-variant-numeric: tabular-nums;
+    min-width: 5.5rem; text-align: right; flex-shrink: 0;
+  }
+  .db-mini-bar-bg {
+    width: 70px; height: 4px; background: #e9ecef; border-radius: 2px;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .db-mini-bar { height: 4px; background: #94a3b8; border-radius: 2px; }
+  details > summary { cursor: pointer; }
+  details > summary::-webkit-details-marker { color: #888; }
+</style>
+
+<!-- Header -->
+<div style="display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
+  <h2 style="font-size:1rem;color:#555;margin:0;">Disk Usage</h2>
+  <div style="display:flex;align-items:center;gap:0.75rem;">
+    {% if age_seconds is not none %}
+    <span style="font-size:0.8rem;color:#aaa;">Updated {{ age_seconds }}s ago</span>
+    {% endif %}
+    <button id="refresh-btn" onclick="refreshDisk()"
+      class="btn" style="background:#6c757d;color:#fff;padding:0.35rem 1rem;">
+      Refresh
+    </button>
+  </div>
+</div>
+<div id="refresh-result" style="display:none;margin-bottom:0.75rem;
+  padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
+
+{% if breakdown %}
+
+<!-- Overall disk gauge -->
+<div class="card" style="margin-bottom:1rem;">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;
+    margin-bottom:0.5rem;">
+    <span class="disk-section-label">
+      {{ "%.1f"|format(breakdown.disk_used_gb) }} GB used of
+      {{ "%.1f"|format(breakdown.disk_total_gb) }} GB
+      ({{ breakdown.disk_used_pct }}%)
+      {% if disk_critical %}
+        <span style="color:#dc3545;margin-left:0.4rem;">&#x26A0; CRITICAL</span>
+      {% elif disk_warn %}
+        <span style="color:#fd7e14;margin-left:0.4rem;">&#x26A0; LOW</span>
+      {% endif %}
+    </span>
+    <span style="font-size:0.82rem;color:#555;font-weight:600;">
+      {{ "%.1f"|format(breakdown.disk_free_gb) }} GB free
+    </span>
+  </div>
+  <div class="gauge-bar-bg" style="height:10px;border-radius:5px;background:#e9ecef;">
+    <div class="gauge-bar" style="height:10px;border-radius:5px;
+      width:{{ breakdown.disk_used_pct }}%;
+      background:{% if disk_critical %}#dc3545{% elif disk_warn %}#fd7e14{% else %}#28a745{% endif %};">
+    </div>
+  </div>
+  <p style="font-size:0.75rem;color:#bbb;margin-top:0.5rem;">
+    System OS files (~130 MB, read-only) not shown — managed by HAOS updates.
+  </p>
+</div>
+
+<!-- Four section cards -->
+{% for section in breakdown.sections %}
+<div class="card" style="margin-bottom:1rem;">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;
+    margin-bottom:0.6rem;">
+    <span class="disk-section-label">{{ section.title }}</span>
+    <span style="font-size:0.82rem;color:#555;font-weight:600;">{{ section.total_human }}</span>
+  </div>
+
+  {% if section.is_empty %}
+  <p class="disk-empty-note">(empty — nothing stored here yet)</p>
+  {% else %}
+  {% for item in section.items %}
+  <div class="disk-item-row">
+    <span class="disk-item-name" title="{{ item.path }}">
+      {{ item.name }}
+      {% if item.is_empty %}<span style="color:#ccc;font-size:0.75rem;"> (empty)</span>{% endif %}
+    </span>
+    <span class="disk-item-size">{{ item.size_human }}</span>
+    <div class="disk-mini-bar-bg">
+      <div class="disk-mini-bar" style="width:{{ item.pct_of_section }}%;"></div>
+    </div>
+  </div>
+
+  {# DB table breakdown — only shown under home-assistant_v2.db in the first section #}
+  {% if section.title == "HA Config & Database" and "home-assistant_v2.db" in item.name and not "-wal" in item.name and not "-shm" in item.name %}
+  <div style="margin:0.25rem 0 0.25rem 0.5rem;">
+    {% if breakdown.db_tables %}
+    <details>
+      <summary style="font-size:0.78rem;color:#888;padding:0.15rem 0;">
+        Database tables &#9658;
+      </summary>
+      <div style="padding:0.4rem 0 0.2rem;">
+        {% set db_max = breakdown.db_tables[0][1] if breakdown.db_tables else 1 %}
+        {% for tname, tbytes in breakdown.db_tables %}
+        <div class="db-table-row">
+          <span class="db-table-name">{{ tname }}</span>
+          <span class="db-table-size">{{ (tbytes / 1024 / 1024) | round(1) }} MB</span>
+          <div class="db-mini-bar-bg">
+            <div class="db-mini-bar"
+              style="width:{{ ((tbytes / db_max) * 100) | round(1) }}%;"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <span style="font-size:0.75rem;color:#ccc;">
+      Database tables: sqlite3 not available on this HAOS host
+    </span>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% endfor %}
+  {% endif %}
+</div>
+{% endfor %}
+
+{% else %}
+<div class="card">
+  <p class="empty">No disk usage data yet — waiting for first background poll.<br>
+    <span style="font-size:0.85rem;">Click <strong>Refresh</strong> above for an immediate scan.</span>
+  </p>
+</div>
+{% endif %}
+
+<script>
+async function refreshDisk() {
+  var btn = document.getElementById('refresh-btn');
+  var result = document.getElementById('refresh-result');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  result.style.display = 'none';
+  try {
+    var resp = await fetch('/disk/refresh', {method: 'POST'});
+    var data = await resp.json();
+    if (data.ok) {
+      result.textContent = 'Refreshed successfully.';
+      result.style.background = '#d4edda';
+      result.style.color = '#155724';
+      setTimeout(function() { location.reload(); }, 800);
+    } else {
+      result.textContent = 'Error: ' + (data.error || 'unknown error');
+      result.style.background = '#f8d7da';
+      result.style.color = '#721c24';
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
+    }
+  } catch (e) {
+    result.textContent = 'Request failed: ' + e.message;
+    result.style.background = '#f8d7da';
+    result.style.color = '#721c24';
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
+  result.style.display = 'block';
+}
+</script>
+{% endblock %}
