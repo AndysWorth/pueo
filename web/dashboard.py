@@ -347,6 +347,31 @@ async def queue(request: Request, order_error: str = "") -> HTMLResponse:
     )
 
 
+@app.get("/ha-status")
+async def ha_status_check() -> JSONResponse:  # pragma: no cover
+    """Probe the HA REST API and return reachability + version."""
+    import config as _cfg
+    import httpx
+
+    url = f"http://{_cfg.HA_HOST}:{_cfg.HA_API_PORT}/api/config"
+    headers = {"Authorization": f"Bearer {_cfg.HA_API_TOKEN}"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            version = resp.json().get("version")
+            return JSONResponse(
+                {"reachable": True, "auth_error": False, "version": version}
+            )
+        if resp.status_code in (401, 403):
+            return JSONResponse(
+                {"reachable": True, "auth_error": True, "version": None}
+            )
+        return JSONResponse({"reachable": False, "auth_error": False, "version": None})
+    except Exception:
+        return JSONResponse({"reachable": False, "auth_error": False, "version": None})
+
+
 @app.get("/events")
 async def sse_events() -> StreamingResponse:
     """Server-Sent Events stream — pushes loop_status and resource events to the browser."""
