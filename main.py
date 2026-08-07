@@ -244,7 +244,7 @@ async def supervisor_main(config_path: Path) -> None:
                     )
                     _shared_executor.set_ha_profile(_p)
                     save_environment_profile(_p, cfg.DB_PATH)
-                except Exception as exc:  # pragma: no cover
+                except Exception as exc:  # pragma: no cover  # nosec B110
                     pass
                 await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
 
@@ -262,7 +262,7 @@ async def supervisor_main(config_path: Path) -> None:
                 await ha_agent_advanced.reconcile_backup_inventory(
                     ssh_client=_SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
                 )
-            except Exception:  # pragma: no cover
+            except Exception:  # pragma: no cover  # nosec B110
                 pass
 
     supervisor.start("backup_sync", _backup_reconcile_loop)
