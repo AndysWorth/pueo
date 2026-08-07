@@ -3501,10 +3501,98 @@ class TestConfigEditor:
             "Thresholds",
             "Notifications",
             "HA Connection",
+            "LLM Provider",
         ):
             assert (
                 group_name in html
             ), f"group '{group_name}' missing from settings page"
+
+    def test_settings_llm_provider_params_present(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "llm_provider" in html
+        assert "cloud_model" in html
+        assert "cloud_max_cost_per_incident_usd" in html
+        assert "cloud_max_daily_spend_usd" in html
+
+    def test_settings_api_key_badge_not_set(self, tmp_path, monkeypatch):
+        import config as _config
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(_config, "ANTHROPIC_API_KEY", "")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "not set" in html
+
+    def test_settings_api_key_badge_set(self, tmp_path, monkeypatch):
+        import config as _config
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(_config, "ANTHROPIC_API_KEY", "sk-ant-fake")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "set ✓" in html
+
+    def test_config_update_llm_provider(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        import config as _config
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        # Writing "local" is always safe — no API key guard fires
+        monkeypatch.setattr(_config, "ANTHROPIC_API_KEY", "")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/config", json={"key": "llm_provider", "value": "local"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["restart_required"] is True
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["llm"]["provider"] == "local"
+
+    def test_config_update_cloud_model(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/config", json={"key": "cloud_model", "value": "claude-opus-5"}
+        )
+        assert resp.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["cloud"]["model"] == "claude-opus-5"
+
+    def test_config_update_billing_caps(self, cfg_path, tmp_path, monkeypatch):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/config",
+            json={"key": "cloud_max_cost_per_incident_usd", "value": "1.5"},
+        )
+        assert resp.status_code == 200
+        resp2 = client.post(
+            "/config",
+            json={"key": "cloud_max_daily_spend_usd", "value": "20.0"},
+        )
+        assert resp2.status_code == 200
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert abs(cfg["cloud"]["max_cost_per_incident_usd"] - 1.5) < 1e-9
+        assert abs(cfg["cloud"]["max_daily_spend_usd"] - 20.0) < 1e-9
 
     def test_settings_shows_autonomy_level_param(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient

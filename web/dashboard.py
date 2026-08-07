@@ -184,6 +184,48 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "group": "Notifications",
         "restart_required": False,
     },
+    # ── LLM Provider (restart required) ──────────────────────────────────────
+    "llm_provider": {
+        "yaml_section": "llm",
+        "yaml_key": "provider",
+        "config_attr": "LLM_PROVIDER",
+        "val_type": "str",
+        "description": "local = Ollama only (no WAN) · cloud = Anthropic API · both = Ollama for autonomous cycles + Claude available for HITL escalation",
+        "group": "LLM Provider",
+        "restart_required": True,
+        "options": ["local", "cloud", "both"],
+    },
+    "cloud_model": {
+        "yaml_section": "cloud",
+        "yaml_key": "model",
+        "config_attr": "CLOUD_MODEL",
+        "val_type": "str",
+        "description": "Claude model used in cloud/both modes",
+        "group": "LLM Provider",
+        "restart_required": True,
+    },
+    "cloud_max_cost_per_incident_usd": {
+        "yaml_section": "cloud",
+        "yaml_key": "max_cost_per_incident_usd",
+        "config_attr": "CLOUD_MAX_COST_PER_INCIDENT_USD",
+        "val_type": "float",
+        "description": "Hard per-incident spend cap in USD (cloud/both modes only)",
+        "group": "LLM Provider",
+        "restart_required": False,
+        "min_val": 0.0,
+        "max_val": 50.0,
+    },
+    "cloud_max_daily_spend_usd": {
+        "yaml_section": "cloud",
+        "yaml_key": "max_daily_spend_usd",
+        "config_attr": "CLOUD_MAX_DAILY_SPEND_USD",
+        "val_type": "float",
+        "description": "Rolling 24-hour spend cap in USD (cloud/both modes only)",
+        "group": "LLM Provider",
+        "restart_required": False,
+        "min_val": 0.0,
+        "max_val": 500.0,
+    },
     # ── HA Connection (restart required) ──────────────────────────────────────
     "ha_host": {
         "yaml_section": "home_assistant",
@@ -1298,12 +1340,17 @@ def _build_settings_groups() -> list[dict]:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_tab(request: Request) -> HTMLResponse:
+    import config as _config
     from utils.service import service_status
 
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {"groups": _build_settings_groups(), "service": service_status()},
+        {
+            "groups": _build_settings_groups(),
+            "service": service_status(),
+            "api_key_set": bool(_config.ANTHROPIC_API_KEY),
+        },
     )
 
 
