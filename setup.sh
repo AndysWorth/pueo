@@ -147,6 +147,36 @@ else
     ok "Embedding model ${RAG_EMBED_MODEL} ready"
 fi
 
+# ── 2.5. LLM Provider ───────────────────────────────────────────────────────────
+hdr "2.5. LLM Provider"
+
+echo "  Choose how Pueo runs LLM inference:"
+echo "    local  — Ollama only (default, no WAN; privacy-first)"
+echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
+echo "    both   — Ollama for autonomous cycles + Claude available for HITL escalation"
+echo
+ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
+CLOUD_MODEL_VAL="claude-sonnet-4-5"
+
+if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
+    ask "Claude model" "claude-sonnet-4-5" CLOUD_MODEL_VAL
+    echo
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+        warn "ANTHROPIC_API_KEY is not set in the current environment."
+        warn "Pueo will fail to start until it is exported."
+        warn "Add this line to ~/.zshenv and reload your shell:"
+        warn "  export ANTHROPIC_API_KEY=<your-key>"
+    else
+        ok "ANTHROPIC_API_KEY is set"
+    fi
+    if [[ "$LLM_PROVIDER" == "cloud" ]]; then
+        info "Ollama inference model pull skipped (cloud mode — not needed for inference)."
+        info "nomic-embed-text was already pulled above for RAG embeddings."
+    fi
+else
+    ok "Using local Ollama inference (no cloud API required)"
+fi
+
 # ── 3. SSH Key ──────────────────────────────────────────────────────────────────
 hdr "3. SSH Key"
 
@@ -360,6 +390,15 @@ home_assistant:
 ollama:
   model: "${OLLAMA_MODEL}"
   endpoint: "http://localhost:11434"
+
+llm:
+  provider: "${LLM_PROVIDER}"
+
+cloud:
+  model: "${CLOUD_MODEL_VAL}"
+  max_cost_per_incident_usd: 0.50
+  max_daily_spend_usd: 5.00
+  # ANTHROPIC_API_KEY must be exported in ~/.zshenv — never written here
 
 netalertx:
   setup_desired: ${NAX_SETUP_DESIRED}

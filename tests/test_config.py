@@ -909,3 +909,94 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.DISK_USAGE_POLL_INTERVAL_SECONDS == 60.0
+
+
+class TestLLMProviderBillingConfig:
+    def test_cloud_max_cost_per_incident_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CLOUD_MAX_COST_PER_INCIDENT_USD == 0.50
+
+    def test_cloud_max_cost_per_incident_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"cloud": {"max_cost_per_incident_usd": 1.00}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CLOUD_MAX_COST_PER_INCIDENT_USD == 1.00
+
+    def test_cloud_max_daily_spend_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CLOUD_MAX_DAILY_SPEND_USD == 5.00
+
+    def test_cloud_max_daily_spend_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"cloud": {"max_daily_spend_usd": 10.00}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CLOUD_MAX_DAILY_SPEND_USD == 10.00
+
+    def test_billing_keys_loaded_together(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "cloud": {
+                        "model": "claude-opus-5",
+                        "max_cost_per_incident_usd": 0.25,
+                        "max_daily_spend_usd": 2.50,
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CLOUD_MODEL == "claude-opus-5"
+        assert config.CLOUD_MAX_COST_PER_INCIDENT_USD == 0.25
+        assert config.CLOUD_MAX_DAILY_SPEND_USD == 2.50
+
+
+class TestLLMProviderStartupGuards:
+    def test_cloud_provider_without_api_key_raises(self, isolated_config, monkeypatch):
+        isolated_config.write_text(yaml.dump({"llm": {"provider": "cloud"}}))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            importlib.reload(sys.modules["config"])
+
+    def test_both_provider_without_api_key_raises(self, isolated_config, monkeypatch):
+        isolated_config.write_text(yaml.dump({"llm": {"provider": "both"}}))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            importlib.reload(sys.modules["config"])
+
+    def test_local_provider_without_api_key_ok(self, isolated_config, monkeypatch):
+        isolated_config.write_text(yaml.dump({"llm": {"provider": "local"}}))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.LLM_PROVIDER == "local"
+
+    def test_cloud_provider_with_api_key_ok(self, isolated_config, monkeypatch):
+        isolated_config.write_text(yaml.dump({"llm": {"provider": "cloud"}}))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.LLM_PROVIDER == "cloud"
+
+    def test_credential_in_yaml_raises(self, isolated_config, monkeypatch):
+        isolated_config.write_text("ANTHROPIC_API_KEY: sk-secret\n")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            importlib.reload(sys.modules["config"])
+
+    def test_credential_lowercase_in_yaml_raises(self, isolated_config, monkeypatch):
+        isolated_config.write_text("anthropic_api_key: sk-secret\n")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            importlib.reload(sys.modules["config"])
