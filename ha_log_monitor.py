@@ -52,7 +52,7 @@ from interfaces import (
 from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
@@ -98,7 +98,7 @@ async def analyze_log_line_with_ai(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> tuple[LogEvaluation, LLMTrace]:
     """Uses local Ollama to classify whether recent log context contains a patchable error."""
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
 
     system_prompt = load_prompt("triage_log")
     user_envelope = "Evaluate these log lines:\n```\n\n```"
@@ -411,7 +411,7 @@ async def poll_for_notifications(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )  # pragma: no cover
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
-    _llm: LLMClientProtocol = llm_client or OllamaClient()  # pragma: no cover
+    _llm: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
     _ssh: SSHClientProtocol = ssh_client or AsyncSSHClient(
         HA_HOST, HA_USER, SSH_KEY_PATH
     )  # pragma: no cover

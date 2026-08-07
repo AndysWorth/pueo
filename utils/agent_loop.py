@@ -13,9 +13,11 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
-from config import AGENT_MAX_TOOL_CALLS, AGENT_MAX_WALL_SECONDS, OLLAMA_MODEL
+from config import AGENT_MAX_TOOL_CALLS, AGENT_MAX_WALL_SECONDS
 from utils.logging import get_logger
 from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+
+_UNSET = object()  # sentinel for provider-aware model default
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol
@@ -103,17 +105,21 @@ class AgentLoop:
         llm_client: "LLMClientProtocol",
         tool_executor: "ToolExecutor",
         tool_registry: "ToolRegistry",
-        model: str = OLLAMA_MODEL,
+        model: str | object = _UNSET,
         system_prompt: str = _AGENT_LOOP_SYSTEM_PROMPT,
         max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
         terminal_tool_name: str = "finish_repair",
         step_callback: Optional[Callable[["AgentStep"], None]] = None,
     ) -> None:
+        if model is _UNSET:
+            from utils.llm_factory import _default_model_for_provider
+
+            model = _default_model_for_provider()
         self._llm = llm_client
         self._executor = tool_executor
         self._registry = tool_registry
-        self._model = model
+        self._model: str = model  # type: ignore[assignment]
         self._system_prompt = system_prompt
         self._max_tool_calls = max_tool_calls
         self._max_wall_seconds = max_wall_seconds

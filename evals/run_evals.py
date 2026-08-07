@@ -27,7 +27,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.agent_loop import AgentLoop  # noqa: E402
-from utils.ollama_client import OllamaClient  # noqa: E402
+from utils.llm_factory import make_llm_client  # noqa: E402
 from utils.tool_registry import (  # noqa: E402
     AgentLoopResult,
     ToolCall,
@@ -252,7 +252,7 @@ async def run_scenario(scenario: EvalScenario) -> ScenarioScore:  # pragma: no c
     else:
         registry = build_ha_tool_registry()
 
-    llm = OllamaClient()
+    llm = make_llm_client()
     loop = AgentLoop(
         llm_client=llm,
         tool_executor=executor,  # type: ignore[arg-type]

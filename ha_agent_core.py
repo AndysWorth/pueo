@@ -20,7 +20,7 @@ from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
@@ -111,7 +111,7 @@ async def analyze_config_locally(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> tuple[DiagnosticsReport, LLMTrace]:
     """Uses your local M-series Mac Ollama instance to analyze the config file."""
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
 
     system_prompt = load_prompt("diagnose_config")
     user_prefix = "Analyze this configuration data:\n\n```yaml\n"

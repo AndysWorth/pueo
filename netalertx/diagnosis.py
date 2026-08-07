@@ -14,7 +14,7 @@ from config import OLLAMA_MODEL
 from utils.context import estimate_tokens
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
-from utils.ollama_client import OllamaClient
+from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ async def diagnose_health_report(
     if not report.anomalies and not all_issues:
         return None, None
 
-    client = llm_client or OllamaClient()
+    client = llm_client or make_llm_client()
     system_prompt = load_prompt("diagnose_netalertx")
     context = _build_context(report, all_issues)
     user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
