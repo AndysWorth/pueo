@@ -72,6 +72,19 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def get_config_entries(self) -> list[dict]:
+        """Fetch loaded config entries via HA WebSocket config/config_entries/all."""
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "config/config_entries/all"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"Config entries request failed: {msg}")
+            entries = msg.get("result", [])
+            return [e for e in entries if e.get("state") == "loaded"]
+        finally:
+            await ws.close()
+
 
 class FakeHAWebSocketClient:
     """Test double for HAWebSocketClientProtocol."""
@@ -81,10 +94,12 @@ class FakeHAWebSocketClient:
         devices: list[dict] | None = None,
         notifications: list[dict] | None = None,
         repair_issues: list[dict] | None = None,
+        config_entries: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
         self._repair_issues: list[dict] = repair_issues or []
+        self._config_entries: list[dict] = config_entries or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -98,3 +113,7 @@ class FakeHAWebSocketClient:
     async def get_repair_issues(self) -> list[dict]:
         self.calls.append("get_repair_issues")
         return list(self._repair_issues)
+
+    async def get_config_entries(self) -> list[dict]:
+        self.calls.append("get_config_entries")
+        return [e for e in self._config_entries if e.get("state") == "loaded"]

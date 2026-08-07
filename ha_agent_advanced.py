@@ -223,6 +223,18 @@ def _migrate_v13(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE ha_repair_history ADD COLUMN translation_key TEXT")
 
 
+def _migrate_v14(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ha_environment_profile (
+            id           INTEGER PRIMARY KEY,
+            profile_json TEXT NOT NULL,
+            last_updated REAL NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -237,6 +249,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (11, _migrate_v11),
     (12, _migrate_v12),
     (13, _migrate_v13),
+    (14, _migrate_v14),
 ]
 
 
