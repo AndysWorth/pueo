@@ -250,14 +250,25 @@ FINISH_REPAIR = ToolDefinition(
 
 QUERY_KNOWLEDGE = ToolDefinition(
     name="query_knowledge",
-    description="Query the local RAG knowledge base for HA breaking changes and HACS changelogs.",
+    description=(
+        "Query the local RAG knowledge base for HA breaking changes, integration docs, "
+        "and HACS changelogs. Pass integration_filter to scope results to specific domains."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query for the knowledge base",
-            }
+                "description": "Search query text",
+            },
+            "integration_filter": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of integration domains to filter results "
+                    "(e.g. ['zha', 'mqtt'])"
+                ),
+            },
         },
         "required": ["query"],
     },

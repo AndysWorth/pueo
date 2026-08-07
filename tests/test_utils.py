@@ -1525,6 +1525,87 @@ class TestChunkReleaseNotes:
         ids, _, _ = chunk_release_notes(notes, "2024.2")
         assert len(ids) == len(set(ids))
 
+    def test_chunk_release_notes_release_type(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        _, _, metas_ga = chunk_release_notes("## Changes\nsome text", "2026.8.0")
+        assert all(m["release_type"] == "ga" for m in metas_ga)
+
+        _, _, metas_patch = chunk_release_notes("## Changes\nsome text", "2026.7.2")
+        assert all(m["release_type"] == "patch" for m in metas_patch)
+
+        _, _, metas_beta = chunk_release_notes("## Changes\nsome text", "2026.8.0b4")
+        assert all(m["release_type"] == "beta" for m in metas_beta)
+
+    def test_chunk_release_notes_category(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        notes = (
+            "intro\n"
+            "\n## Backward Incompatible Changes\n"
+            "The `zha` integration changed its config format.\n"
+            "\n## New Integrations\n"
+            "Added `matter` support.\n"
+        )
+        _, _, metas = chunk_release_notes(notes, "2026.8.0")
+        categories = [m["category"] for m in metas]
+        assert "breaking_change" in categories
+        assert "new_integration" in categories
+
+    def test_chunk_release_notes_impacted_integration_extracted(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        notes = "## Backward Incompatible Changes\nThe `zha` integration changed.\n"
+        _, _, metas = chunk_release_notes(notes, "2026.8.0")
+        breaking = [m for m in metas if m["category"] == "breaking_change"]
+        assert any(m["impacted_integration"] == "zha" for m in breaking)
+
+    def test_chunk_release_notes_non_breaking_has_empty_integration(self):
+        from utils.ha_release_notes_scraper import chunk_release_notes
+
+        notes = "## New Integrations\nAdded `matter` support.\n"
+        _, _, metas = chunk_release_notes(notes, "2026.8.0")
+        assert all(m["impacted_integration"] == "" for m in metas)
+
+
+class TestKnowledgeStoreWhereClause:
+    def test_where_in_filters_by_metadata(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-1-0", "ha-1-1"],
+            documents=["zha config changed", "mqtt broker changed"],
+            metadatas=[
+                {"source": "s1", "impacted_integration": "zha"},
+                {"source": "s2", "impacted_integration": "mqtt"},
+            ],
+        )
+        results = store.query(
+            "changed",
+            top_k=5,
+            where={"impacted_integration": {"$in": ["zha"]}},
+        )
+        assert len(results) == 1
+        assert results[0].metadata["impacted_integration"] == "zha"
+
+    def test_where_none_returns_all_matches(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-1-0", "ha-1-1"],
+            documents=["zha config changed", "mqtt broker changed"],
+            metadatas=[
+                {"source": "s1", "impacted_integration": "zha"},
+                {"source": "s2", "impacted_integration": "mqtt"},
+            ],
+        )
+        results = store.query("changed", top_k=5)
+        assert len(results) == 2
+
 
 class TestScrapeCachedReleaseNotes:
     def test_returns_zero_for_missing_dir(self):

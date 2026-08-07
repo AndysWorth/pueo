@@ -8377,6 +8377,42 @@ class TestToolExecutor:
         assert result.success
         assert "Template syntax" in result.output
 
+    def test_query_knowledge_integration_filter(self):
+        from utils.autonomy import FakeAutonomyGate
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolCall
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["ha-2026.8-0", "ha-2026.8-1"],
+            documents=["zha config format changed", "mqtt broker address changed"],
+            metadatas=[
+                {"source": "s1", "impacted_integration": "zha"},
+                {"source": "s2", "impacted_integration": "mqtt"},
+            ],
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            knowledge_store=store,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="query_knowledge",
+                    arguments={"query": "changed", "integration_filter": ["zha"]},
+                )
+            )
+        )
+        assert result.success
+        assert "zha" in result.output
+        assert "mqtt" not in result.output
+
     # -- apply_fix HITL non-blocking queuing path --------------------------------
 
     def test_apply_fix_hitl_queuing_returns_awaiting_approval(self):
