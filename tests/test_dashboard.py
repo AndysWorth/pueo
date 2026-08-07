@@ -4595,3 +4595,113 @@ class TestPostRebootRepairScan:
 
         # Should not raise.
         asyncio.run(dashboard._post_reboot_repair_scan(settle_seconds=0))
+
+
+# ── Disk usage routes ─────────────────────────────────────────────────────────────
+
+
+class TestDiskRoutes:
+    def test_disk_get_no_data_returns_200(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/disk")
+        assert response.status_code == 200
+        assert "No disk usage data" in response.text
+
+    def test_disk_get_with_data_shows_sections(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskBreakdown, DiskSection
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import time
+
+        section = DiskSection(
+            title="HA Config & Database",
+            items=[],
+            total_bytes=0,
+            total_human="0 B",
+            is_empty=True,
+        )
+        bd = DiskBreakdown(
+            sections=[section],
+            disk_used_gb=10.8,
+            disk_total_gb=13.6,
+            disk_free_gb=2.8,
+            disk_used_pct=79.4,
+            fetched_at=time.time(),
+        )
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", bd)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/disk")
+        assert response.status_code == 200
+        assert (
+            "HA Config &amp; Database" in response.text
+            or "HA Config & Database" in response.text
+        )
+        assert "79.4" in response.text
+
+    def test_disk_get_shows_age_seconds(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskBreakdown
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import time
+
+        bd = DiskBreakdown(fetched_at=time.time() - 30)
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", bd)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/disk")
+        assert response.status_code == 200
+        assert "ago" in response.text
+
+    def test_disk_refresh_calls_fetch(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskBreakdown
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        fetch_calls = []
+
+        async def _fake_fetch(ssh):
+            fetch_calls.append(True)
+            return DiskBreakdown(fetched_at=1.0)
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _fake_fetch)
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+
+        # Patch AsyncSSHClient to avoid real SSH
+        import utils.ssh_client as _sc
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/disk/refresh")
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert len(fetch_calls) == 1
+
+    def test_disk_refresh_error_returns_not_ok(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        async def _failing_fetch(ssh):
+            raise OSError("SSH connection refused")
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _failing_fetch)
+
+        import utils.ssh_client as _sc
+        from utils.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        response = client.post("/disk/refresh")
+        assert response.status_code == 500
+        assert response.json()["ok"] is False
+        assert "SSH connection refused" in response.json()["error"]

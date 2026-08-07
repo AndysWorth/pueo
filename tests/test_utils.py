@@ -4017,6 +4017,374 @@ class TestAuditMainEntry:
         assert len(warn_results) == 3  # one per failed async check
 
 
+# ── disk_usage ────────────────────────────────────────────────────────────────────
+
+_DU_OUTPUT = (
+    "94.5M\t/homeassistant/home-assistant_v2.db\n"
+    "52.8M\t/homeassistant/custom_components\n"
+    "4.1M\t/homeassistant/home-assistant_v2.db-wal\n"
+    "644.0K\t/homeassistant/tts\n"
+    "368.0K\t/homeassistant/zigbee.db\n"
+    "58.7M\t/backup/abc123.tar\n"
+    "58.4M\t/backup/def456.tar\n"
+    "15.2M\t/addon_configs/db21ed7f_netalertx_fa\n"
+    "5.4M\t/addon_configs/db21ed7f_netalertx\n"
+    "4.0K\t/addon_configs/another_addon\n"
+    "4.0K\t/share\n"
+    "4.0K\t/media\n"
+    "4.0K\t/ssl\n"
+)
+
+_ADDON_JSON = (
+    '{"result":"ok","data":{"addons":['
+    '{"name":"NetAlertX Full Access","slug":"db21ed7f_netalertx_fa","state":"started"},'
+    '{"name":"NetAlertX","slug":"db21ed7f_netalertx","state":"started"}'
+    "]}}"
+)
+
+_HOST_INFO = (
+    "disk_free: 2.2\ndisk_total: 13.6\ndisk_used: 10.8\nhostname: homeassistant\n"
+)
+
+
+def _make_disk_ssh(du_output=_DU_OUTPUT, addon_json=_ADDON_JSON, host_info=_HOST_INFO):
+    from utils.ssh_client import FakeSSHClient
+
+    return FakeSSHClient(
+        command_results={
+            "ha host info": (0, host_info, ""),
+            "du -sh": (0, du_output, ""),
+            "ha apps list --raw-json": (0, addon_json, ""),
+            "sqlite3": (1, "", "sqlite3: not found"),
+        }
+    )
+
+
+class TestParseSizeToBytes:
+    def test_kilobytes(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("4.0K") == 4096
+
+    def test_integer_megabytes(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("164M") == 164 * 1024**2
+
+    def test_decimal_megabytes(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("94.5M") == int(94.5 * 1024**2)
+
+    def test_gigabytes(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("1.7G") == int(1.7 * 1024**3)
+
+    def test_small_kilobytes(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("644.0K") == int(644.0 * 1024)
+
+    def test_zero_string(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("0") == 0
+
+    def test_empty_string(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("") == 0
+
+    def test_malformed_returns_zero(self):
+        from utils.disk_usage import _parse_size_to_bytes
+
+        assert _parse_size_to_bytes("abc") == 0
+
+
+class TestParseDuOutput:
+    def test_parses_tab_separated_output(self):
+        from utils.disk_usage import _parse_du_output
+
+        result = _parse_du_output(
+            "94.5M\t/homeassistant/home-assistant_v2.db\n4.0K\t/share\n"
+        )
+        assert "/homeassistant/home-assistant_v2.db" in result
+        assert result["/share"] == 4096
+
+    def test_parses_space_separated_fallback(self):
+        from utils.disk_usage import _parse_du_output
+
+        result = _parse_du_output("94.5M  /homeassistant/home-assistant_v2.db\n")
+        assert "/homeassistant/home-assistant_v2.db" in result
+
+    def test_skips_lines_without_separator(self):
+        from utils.disk_usage import _parse_du_output
+
+        result = _parse_du_output("justoneword\n94.5M\t/valid/path\n")
+        assert len(result) == 1
+        assert "/valid/path" in result
+
+    def test_skips_empty_lines(self):
+        from utils.disk_usage import _parse_du_output
+
+        result = _parse_du_output("\n\n94.5M\t/valid/path\n\n")
+        assert len(result) == 1
+
+    def test_empty_output_returns_empty_dict(self):
+        from utils.disk_usage import _parse_du_output
+
+        assert _parse_du_output("") == {}
+
+
+class TestFetchDiskBreakdown:
+    def test_returns_four_sections(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert len(bd.sections) == 4
+
+    def test_section_titles(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        titles = [s.title for s in bd.sections]
+        assert titles == [
+            "HA Config & Database",
+            "Backups",
+            "Addon Data",
+            "Shared Storage",
+        ]
+
+    def test_overall_disk_stats(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.disk_free_gb == pytest.approx(2.2, abs=0.01)
+        assert bd.disk_total_gb == pytest.approx(13.6, abs=0.01)
+        assert bd.disk_used_gb == pytest.approx(10.8, abs=0.01)
+
+    def test_disk_used_pct_computed(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.disk_used_pct == pytest.approx(79.4, abs=1.0)
+
+    def test_addon_slug_mapped_to_friendly_name(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        addon_section = next(s for s in bd.sections if s.title == "Addon Data")
+        names = [item.name for item in addon_section.items]
+        assert "NetAlertX Full Access" in names
+        assert "NetAlertX" in names
+
+    def test_unknown_addon_slug_kept_as_is(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        addon_section = next(s for s in bd.sections if s.title == "Addon Data")
+        names = [item.name for item in addon_section.items]
+        assert "another_addon" in names
+
+    def test_config_section_sorted_largest_first(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        config_section = next(
+            s for s in bd.sections if s.title == "HA Config & Database"
+        )
+        sizes = [item.size_bytes for item in config_section.items]
+        assert sizes == sorted(sizes, reverse=True)
+
+    def test_shared_storage_is_empty(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        shared = next(s for s in bd.sections if s.title == "Shared Storage")
+        assert shared.is_empty is True
+
+    def test_bad_addon_json_falls_back_to_slug(self):
+        ssh = _make_disk_ssh(addon_json="not json at all")
+        from utils.disk_usage import fetch_disk_breakdown
+
+        # Should not raise; slug used as display name
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        addon_section = next(s for s in bd.sections if s.title == "Addon Data")
+        names = [item.name for item in addon_section.items]
+        assert "db21ed7f_netalertx_fa" in names
+
+    def test_fetched_at_is_set(self):
+        import time
+
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        before = time.time()
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.fetched_at >= before
+
+    def test_pct_of_section_sums_near_100(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        for section in bd.sections:
+            if not section.is_empty:
+                total = sum(item.pct_of_section for item in section.items)
+                assert total == pytest.approx(100.0, abs=1.0)
+
+    def test_empty_du_output_all_sections_empty(self):
+        ssh = _make_disk_ssh(du_output="")
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert all(s.is_empty for s in bd.sections)
+
+    def test_sqlite3_unavailable_gives_none_db_tables(self):
+        ssh = _make_disk_ssh()
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.db_tables is None
+
+    def test_sqlite3_available_populates_db_tables(self):
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha host info": (0, _HOST_INFO, ""),
+                "du -sh": (0, _DU_OUTPUT, ""),
+                "ha apps list --raw-json": (0, _ADDON_JSON, ""),
+                "sqlite3": (
+                    0,
+                    "states|52428800\nstatistics|31457280\nevents|10485760\n",
+                    "",
+                ),
+            }
+        )
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.db_tables is not None
+        assert bd.db_tables[0][0] == "states"
+        assert bd.db_tables[0][1] == 52428800
+
+
+class TestParseSqlite3Output:
+    def test_parses_pipe_separated_rows(self):
+        from utils.disk_usage import _parse_sqlite3_output
+
+        rows = _parse_sqlite3_output("states|52428800\nstatistics|31457280\n")
+        assert rows[0] == ("states", 52428800)
+        assert rows[1] == ("statistics", 31457280)
+
+    def test_sorted_descending(self):
+        from utils.disk_usage import _parse_sqlite3_output
+
+        rows = _parse_sqlite3_output("small|1000\nbig|9999\n")
+        assert rows[0][0] == "big"
+
+    def test_skips_malformed_lines(self):
+        from utils.disk_usage import _parse_sqlite3_output
+
+        rows = _parse_sqlite3_output("nopipe\nstates|52428800\n")
+        assert len(rows) == 1
+
+    def test_empty_output_returns_empty(self):
+        from utils.disk_usage import _parse_sqlite3_output
+
+        assert _parse_sqlite3_output("") == []
+
+
+class TestDiskCacheAccessors:
+    def test_get_returns_none_initially(self, monkeypatch):
+        import utils.disk_usage as du_mod
+
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        assert du_mod.get_disk_breakdown() is None
+
+    def test_update_then_get_roundtrip(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskBreakdown
+
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        bd = DiskBreakdown(fetched_at=12345.0)
+        du_mod.update_disk_breakdown(bd)
+        assert du_mod.get_disk_breakdown() is bd
+
+
+class TestDiskUsagePollerRun:
+    def test_polls_and_updates_cache_then_cancels(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskBreakdown, DiskUsagePoller
+
+        fake_bd = DiskBreakdown(fetched_at=9999.0)
+        call_count = 0
+
+        async def _fake_fetch(ssh):
+            nonlocal call_count
+            call_count += 1
+            return fake_bd
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _fake_fetch)
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+
+        ssh = _make_disk_ssh()
+        poller = DiskUsagePoller(ssh_client=ssh, interval_seconds=9999)
+
+        async def _run():
+            task = asyncio.create_task(poller.run())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert call_count >= 1
+        assert du_mod.get_disk_breakdown() is fake_bd
+
+    def test_catches_ssh_error_and_continues(self, monkeypatch):
+        import utils.disk_usage as du_mod
+        from utils.disk_usage import DiskUsagePoller
+
+        call_count = 0
+
+        async def _failing_fetch(ssh):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("SSH error")
+            return du_mod.DiskBreakdown(fetched_at=1.0)
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _failing_fetch)
+
+        ssh = _make_disk_ssh()
+        poller = DiskUsagePoller(ssh_client=ssh, interval_seconds=0.01)
+
+        async def _run():
+            task = asyncio.create_task(poller.run())
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert call_count >= 2  # retried after error
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"

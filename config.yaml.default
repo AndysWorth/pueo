@@ -59,6 +59,7 @@ agent:
   dashboard_port: 8080               # Port for the HITL web dashboard (python main.py --mode dashboard)
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   resource_poll_interval_seconds: 300  # How often to poll HA disk/memory (seconds)
+  # disk_usage_poll_interval_seconds: 300  # How often to scan per-path disk usage (seconds)
   ha_disk_warn_gb: 5.0               # HITL alert when HA disk free drops below this value (GB)
   ha_disk_critical_gb: 2.0           # Block backup creation and escalate to CRITICAL below this value (GB)
   ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)

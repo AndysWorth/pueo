@@ -285,6 +285,17 @@ async def supervisor_main(config_path: Path) -> None:
         ).run(),
     )
 
+    # Per-path disk usage polling loop
+    from utils.disk_usage import DiskUsagePoller
+
+    supervisor.start(
+        "disk_usage_poll",
+        lambda: DiskUsagePoller(
+            ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
+            interval_seconds=cfg.DISK_USAGE_POLL_INTERVAL_SECONDS,
+        ).run(),
+    )
+
     # Update check loop (only if interval > 0 and token is configured)
     if cfg.HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and cfg.HA_API_TOKEN:
         supervisor.start("update_check", lambda: poll_for_updates(notifier=notifier))
