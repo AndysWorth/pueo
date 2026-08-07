@@ -523,3 +523,318 @@ class TestLLMProviderConfigKeys:
         import config
 
         assert config.ANTHROPIC_API_KEY == ""
+
+
+# ── billing guard ─────────────────────────────────────────────────────────────
+
+
+class TestBillingGuard:
+    """Tests for utils/billing.py — estimate_cost, caps, record helpers."""
+
+    def test_estimate_cost_sonnet(self):
+        from utils.billing import estimate_cost
+
+        # Sonnet: $3 input / $15 output per MTok
+        cost = estimate_cost("claude-sonnet-4-5", 1_000_000, 0)
+        assert abs(cost - 3.00) < 0.01
+
+        cost2 = estimate_cost("claude-sonnet-4-5", 0, 1_000_000)
+        assert abs(cost2 - 15.00) < 0.01
+
+    def test_estimate_cost_haiku(self):
+        from utils.billing import estimate_cost
+
+        cost = estimate_cost("claude-haiku-4-5", 1_000_000, 0)
+        assert abs(cost - 0.25) < 0.01
+
+    def test_estimate_cost_opus(self):
+        from utils.billing import estimate_cost
+
+        cost = estimate_cost("claude-opus-5", 1_000_000, 0)
+        assert abs(cost - 15.00) < 0.01
+
+    def test_estimate_cost_unknown_model_uses_fallback(self):
+        from utils.billing import estimate_cost
+
+        # Unknown model → same as sonnet fallback
+        cost = estimate_cost("unknown-model-xyz", 1_000_000, 0)
+        assert cost > 0
+
+    def test_record_and_get_incident_spend(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+
+        # Create table first
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        from utils.billing import get_incident_spend, record_cloud_spend
+
+        record_cloud_spend("inc-1", "claude-sonnet-4-5", 100, 50, 0.001)
+        record_cloud_spend("inc-1", "claude-sonnet-4-5", 200, 100, 0.002)
+        record_cloud_spend("inc-2", "claude-sonnet-4-5", 50, 25, 0.0005)
+
+        assert abs(get_incident_spend("inc-1") - 0.003) < 1e-6
+        assert abs(get_incident_spend("inc-2") - 0.0005) < 1e-6
+        assert get_incident_spend("inc-999") == 0.0
+
+    def test_record_and_get_daily_spend(self, tmp_path, monkeypatch):
+        import sqlite3
+        import time
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        from utils.billing import get_daily_spend, record_cloud_spend
+
+        record_cloud_spend("inc-1", "claude-sonnet-4-5", 100, 50, 1.00)
+        record_cloud_spend("inc-2", "claude-sonnet-4-5", 100, 50, 2.00)
+
+        total = get_daily_spend()
+        assert abs(total - 3.00) < 1e-6
+
+    def test_billing_cap_per_incident_raises(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+        monkeypatch.setattr("config.CLOUD_MAX_COST_PER_INCIDENT_USD", 0.01)
+        monkeypatch.setattr("config.CLOUD_MAX_DAILY_SPEND_USD", 100.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        from utils.billing import (
+            BillingCapError,
+            check_billing_caps,
+            record_cloud_spend,
+        )
+
+        # Record spend near the per-incident cap
+        record_cloud_spend("inc-1", "claude-sonnet-4-5", 1000, 100, 0.009)
+
+        # Next call should push over the $0.01 cap
+        with pytest.raises(BillingCapError, match="Per-incident cap"):
+            check_billing_caps("inc-1", "claude-sonnet-4-5", 1_000_000, 500_000)
+
+    def test_billing_cap_daily_raises(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+        monkeypatch.setattr("config.CLOUD_MAX_COST_PER_INCIDENT_USD", 100.0)
+        monkeypatch.setattr("config.CLOUD_MAX_DAILY_SPEND_USD", 0.01)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        from utils.billing import (
+            BillingCapError,
+            check_billing_caps,
+            record_cloud_spend,
+        )
+
+        record_cloud_spend("inc-1", "claude-sonnet-4-5", 1000, 100, 0.009)
+
+        with pytest.raises(BillingCapError, match="Daily cap"):
+            check_billing_caps("inc-99", "claude-sonnet-4-5", 1_000_000, 500_000)
+
+    def test_billing_no_raise_under_cap(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+        monkeypatch.setattr("config.CLOUD_MAX_COST_PER_INCIDENT_USD", 10.0)
+        monkeypatch.setattr("config.CLOUD_MAX_DAILY_SPEND_USD", 100.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        from utils.billing import check_billing_caps
+
+        # Should not raise — tiny call well under both caps
+        check_billing_caps("inc-1", "claude-sonnet-4-5", 100, 50)
+
+
+# ── ClaudeAPIClient billing integration ──────────────────────────────────────
+
+
+class TestClaudeAPIClientBilling:
+    """Billing is recorded and caps are checked when incident_id is set."""
+
+    def _make_client(self, response: MagicMock, incident_id: str = "") -> Any:
+        from utils.cloud_client import ClaudeAPIClient
+
+        client = ClaudeAPIClient.__new__(ClaudeAPIClient)
+        client._client = FakeAnthropicClient(response)  # type: ignore[assignment]
+        client._incident_id = incident_id
+        return client
+
+    def test_no_billing_when_no_incident_id(self, tmp_path, monkeypatch):
+        """Billing helpers are skipped entirely when incident_id is empty."""
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+
+        tool_use = _make_content_block(
+            "tool_use", name="finish_repair", id="t1", input={}
+        )
+        resp = _make_anthropic_response(tool_use)
+        client = self._make_client(resp, incident_id="")
+
+        # Should not raise even without cloud_spend table
+        result = asyncio.run(
+            client.chat_with_tools("model", [{"role": "user", "content": "go"}], [])
+        )
+        assert "tool_calls" in result
+
+    def test_billing_recorded_after_chat_with_tools(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+        monkeypatch.setattr("config.CLOUD_MAX_COST_PER_INCIDENT_USD", 10.0)
+        monkeypatch.setattr("config.CLOUD_MAX_DAILY_SPEND_USD", 100.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+
+        tool_use = _make_content_block(
+            "tool_use", name="finish_repair", id="t1", input={}
+        )
+        resp = _make_anthropic_response(tool_use)
+        # FakeAnthropicResponse has usage.input_tokens=10, output_tokens=5
+        client = self._make_client(resp, incident_id="inc-test")
+
+        asyncio.run(
+            client.chat_with_tools(
+                "claude-sonnet-4-5",
+                [{"role": "user", "content": "go"}],
+                [],
+            )
+        )
+
+        from utils.billing import get_incident_spend
+
+        assert get_incident_spend("inc-test") > 0
+
+    def test_billing_cap_blocks_chat_with_tools(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr("config.DB_PATH", db)
+        monkeypatch.setattr("config.CLOUD_MAX_COST_PER_INCIDENT_USD", 0.0001)
+        monkeypatch.setattr("config.CLOUD_MAX_DAILY_SPEND_USD", 100.0)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE cloud_spend (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT,
+                    timestamp REAL NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cost_usd REAL NOT NULL
+                )
+                """
+            )
+            # Pre-load spend to push over the cap
+            conn.execute(
+                "INSERT INTO cloud_spend VALUES (NULL, 'inc-cap', ?, ?, 1, 1, 0.0001)",
+                (__import__("time").time(), "claude-sonnet-4-5"),
+            )
+
+        tool_use = _make_content_block(
+            "tool_use", name="finish_repair", id="t1", input={}
+        )
+        resp = _make_anthropic_response(tool_use)
+        client = self._make_client(resp, incident_id="inc-cap")
+
+        from utils.billing import BillingCapError
+
+        with pytest.raises(BillingCapError):
+            asyncio.run(
+                client.chat_with_tools(
+                    "claude-sonnet-4-5",
+                    [{"role": "user", "content": "a" * 1000}],
+                    [],
+                )
+            )

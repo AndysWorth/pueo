@@ -22,6 +22,7 @@ from pydantic import BaseModel, field_validator
 from config import AGENT_MAX_WALL_SECONDS, DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
 from utils.logging import get_logger
 from utils.card_types import (
+    CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
@@ -839,6 +840,79 @@ async def _execute_code_proposal(
         (watch_dir / f"{nid}.rejected").touch()
 
 
+async def _execute_cloud_escalation(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Re-run the HA repair agent loop with ClaudeAPIClient on approved escalation."""
+    from utils.billing import BillingCapError, check_billing_caps, estimate_cost
+    from utils.cloud_client import ClaudeAPIClient
+    from utils.ssh_client import AsyncSSHClient
+
+    payload = data.get("payload", {})
+    initial_context = payload.get("initial_context", "")
+    cloud_model = payload.get("cloud_model", "")
+    per_incident_cap = payload.get("per_incident_cap_usd", 0.50)
+    daily_cap = payload.get("daily_cap_usd", 5.00)
+
+    try:
+        # Pre-flight billing check before starting the loop
+        try:
+            check_billing_caps(nid, cloud_model, 2000, 512)
+        except BillingCapError as exc:
+            data["error"] = f"Billing cap exceeded: {exc}"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+            return
+
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import AutonomyGate
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import build_ha_tool_registry
+        from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
+        from utils.notify import get_notifier
+
+        claude_client = ClaudeAPIClient(incident_id=nid)
+        ssh = AsyncSSHClient()
+        notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+        gate = AutonomyGate(AUTONOMY_LEVEL)
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=gate,
+            notifier=notifier,
+        )
+        registry = build_ha_tool_registry()
+        loop = AgentLoop(
+            llm_client=claude_client,
+            tool_executor=executor,
+            tool_registry=registry,
+            model=cloud_model,
+        )
+
+        if not initial_context:
+            initial_context = (
+                "Analyze the Home Assistant configuration.yaml for issues "
+                "and apply a fix if needed."
+            )
+        result = await loop.run(initial_context)
+
+        data["cloud_outcome"] = result.outcome
+        data["cloud_steps"] = len(result.steps)
+        json_path.write_text(json.dumps(data, indent=2))
+
+        if result.outcome == "success":
+            (watch_dir / f"{nid}.approved").touch()
+        else:
+            (watch_dir / f"{nid}.rejected").touch()
+
+    except Exception as exc:
+        data["error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -848,6 +922,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
+    CARD_TYPE_CLOUD_ESCALATION: _execute_cloud_escalation,
 }
 
 
