@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
+    from utils.ha_blog_scraper import fetch_blog_release_notes
     from utils.ha_docs_scraper import (
         discover_installed_integrations,
         embed_cached_integration_docs,
@@ -45,6 +46,10 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, config.RAG_HA_VERSIONS_TO_FETCH
     )
     print(f"[rag-refresh]   → {n_fetched_notes} new version(s) downloaded")
+
+    print("[rag-refresh] Fetching HA blog posts for stub releases…")
+    n_blog = fetch_blog_release_notes(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR)
+    print(f"[rag-refresh]   → {n_blog} stub(s) replaced with blog content")
 
     print("[rag-refresh] Embedding HA release notes…")
     ha_ids: set[str] = set()
