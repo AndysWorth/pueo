@@ -97,6 +97,9 @@ RAG_HA_DOCS_CACHE_DIR: str = _agent.get("rag_ha_docs_cache_dir", ".cache/ha_docs
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 20))
 AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0))
 
+# HA environment profile
+HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
+
 # Conversational agent
 CHAT_MEMORY_TOP_K: int = int(_agent.get("chat_memory_top_k", 10))
 CHAT_ALLOW_TOOL_REGISTRATION: bool = bool(

@@ -390,6 +390,7 @@ agent:
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
+  ha_profile_refresh_hours: 24        # How often to rebuild the HA environment profile (integrations, versions)
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"
