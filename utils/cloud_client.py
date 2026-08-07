@@ -5,6 +5,7 @@ Translates between Pueo's Ollama-shaped interface and the Anthropic Messages API
   - Response normalizer   : Anthropic content blocks → {tool_calls: [...]} dict
   - History translator    : Ollama-shaped message history → Anthropic messages + system
   - Structured output     : tool-forcing instead of Ollama's format= parameter
+  - Billing guard         : per-incident and daily spend caps enforced per call
 """
 
 from __future__ import annotations
@@ -117,10 +118,26 @@ def _translate_history(messages: list[dict]) -> tuple[str, list[dict]]:
     return system, result
 
 
+def _count_message_chars(messages: list[dict]) -> int:
+    """Rough character count across all message content for token estimation."""
+    total = 0
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(str(block.get("content", ""))) + len(
+                        str(block.get("text", ""))
+                    )
+    return total
+
+
 class ClaudeAPIClient:
     """Anthropic Claude client implementing LLMClientProtocol."""
 
-    def __init__(self) -> None:
+    def __init__(self, incident_id: str = "") -> None:
         import anthropic  # lazy import — only loaded when provider = cloud/both
 
         if not config.ANTHROPIC_API_KEY:
@@ -129,6 +146,34 @@ class ClaudeAPIClient:
                 "Export it in ~/.zshenv and reload your shell."
             )
         self._client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        self._incident_id = incident_id
+
+    def _billing_preflight(
+        self, model: str, messages: list[dict], tools: list[dict] | None = None
+    ) -> None:
+        """Raise BillingCapError before making an API call if caps would be exceeded."""
+        if not getattr(self, "_incident_id", ""):
+            return
+        from utils.billing import check_billing_caps
+
+        char_count = _count_message_chars(messages)
+        if tools:
+            for t in tools:
+                char_count += len(json.dumps(t))
+        estimated_input = char_count // 4
+        estimated_output = 512  # conservative output estimate
+        check_billing_caps(self._incident_id, model, estimated_input, estimated_output)
+
+    def _billing_record(
+        self, model: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        """Record actual token usage after a successful API call."""
+        if not getattr(self, "_incident_id", ""):
+            return
+        from utils.billing import estimate_cost, record_cloud_spend
+
+        cost = estimate_cost(model, input_tokens, output_tokens)
+        record_cloud_spend(self._incident_id, model, input_tokens, output_tokens, cost)
 
     async def chat(
         self,
@@ -151,6 +196,7 @@ class ClaudeAPIClient:
                 "input_schema": format,
             }
         ]
+        self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
         kwargs: dict = dict(
             model=model,
@@ -164,6 +210,11 @@ class ClaudeAPIClient:
 
         response = await asyncio.to_thread(
             lambda: self._client.messages.create(**kwargs)
+        )
+        self._billing_record(
+            model,
+            getattr(response.usage, "input_tokens", 0),
+            getattr(response.usage, "output_tokens", 0),
         )
 
         for block in response.content:
@@ -185,6 +236,7 @@ class ClaudeAPIClient:
         request, then normalizes the response back to the Ollama-shaped dict that
         agent_loop.py expects.
         """
+        self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
         anthropic_tools = [_adapt_tool_schema(t) for t in tools]
         kwargs: dict = dict(
@@ -198,6 +250,11 @@ class ClaudeAPIClient:
 
         response = await asyncio.to_thread(
             lambda: self._client.messages.create(**kwargs)
+        )
+        self._billing_record(
+            model,
+            getattr(response.usage, "input_tokens", 0),
+            getattr(response.usage, "output_tokens", 0),
         )
 
         # Normalize to Ollama-shaped response dict

@@ -25,6 +25,10 @@ from config import (
     AUTONOMY_LEVEL,
     CHROMADB_PATH,
     RAG_EMBED_MODEL,
+    LLM_PROVIDER,
+    CLOUD_MODEL,
+    CLOUD_MAX_COST_PER_INCIDENT_USD,
+    CLOUD_MAX_DAILY_SPEND_USD,
 )
 from interfaces import (
     KnowledgeStoreClientProtocol,
@@ -259,6 +263,22 @@ def _migrate_v15(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE backup_registry ADD COLUMN ha_created_at REAL")
 
 
+def _migrate_v16(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_spend (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id   TEXT,
+            timestamp     REAL NOT NULL,
+            model         TEXT NOT NULL,
+            input_tokens  INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cost_usd      REAL NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -275,6 +295,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (13, _migrate_v13),
     (14, _migrate_v14),
     (15, _migrate_v15),
+    (16, _migrate_v16),
 ]
 
 
@@ -532,6 +553,52 @@ async def main(
         f"Current configuration.yaml:\n```yaml\n{yaml_content}\n```"
     )
     result = await loop.run(initial_context)
+
+    # When running in "both" mode and the local loop is unable to resolve the
+    # issue, offer a cloud escalation HITL card so the user can re-run with
+    # Claude instead of recording an unresolved failure.
+    if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
+        from utils.billing import estimate_cost, get_daily_spend
+        from utils.card_types import CARD_TYPE_CLOUD_ESCALATION
+
+        nid = str(uuid.uuid4())
+        step_lines = [
+            f"  {s.step_number}. {s.tool_call.name}({s.tool_call.arguments}) → "
+            f"{'OK' if s.tool_result.success else 'ERR'}: "
+            f"{(s.tool_result.output or s.tool_result.error or '')[:80]}"
+            for s in result.steps
+        ]
+        step_summary = "\n".join(step_lines) if step_lines else "(no tool calls)"
+        daily_spent = get_daily_spend()
+        est_cost = estimate_cost(CLOUD_MODEL, 2000, 512)
+
+        await _notifier.send(
+            subject=f"Cloud escalation available: local loop {result.outcome}",
+            body=(
+                f"The local Ollama loop ran {len(result.steps)} tool call(s) "
+                f"and {result.outcome}. Approve to re-run with {CLOUD_MODEL}."
+            ),
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_CLOUD_ESCALATION,
+                "outcome": result.outcome,
+                "step_count": len(result.steps),
+                "step_summary": step_summary,
+                "initial_context": initial_context,
+                "cloud_model": CLOUD_MODEL,
+                "estimated_cost_usd": round(est_cost, 4),
+                "daily_spend_usd": round(daily_spent, 4),
+                "daily_cap_usd": CLOUD_MAX_DAILY_SPEND_USD,
+                "per_incident_cap_usd": CLOUD_MAX_COST_PER_INCIDENT_USD,
+            },
+        )
+        log.info(
+            "cloud_escalation_offered",
+            outcome=result.outcome,
+            steps=len(result.steps),
+            nid=nid,
+        )
+        return
 
     action = {
         "success": "Repaired via agent loop",

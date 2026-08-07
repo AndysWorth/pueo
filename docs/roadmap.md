@@ -20,7 +20,7 @@ Strategic capabilities in delivery order.
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
 | 6.5. Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | `main.py`, `web/dashboard.py`              |
 | 6.6. Conversational Agent                     | ✅ Complete (2026-07-31) | `web/templates/chat.html`, `utils/tool_executor.py` |
-| 7. Configurable LLM Provider + Cloud Escalation | ❌ Not started         | `utils/cloud_client.py`, `utils/llm_factory.py` |
+| 7. Configurable LLM Provider + Cloud Escalation | ✅ Complete (2026-08-07) | `utils/cloud_client.py`, `utils/llm_factory.py`, `utils/billing.py` |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
 | 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
 | 10. Self-improving code proposals *(stretch)* | ❌ Not started           | —                                          |
@@ -49,7 +49,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54   |
 | Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64   |
 | Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72   |
-| Phase 18: Configurable LLM Provider + Cloud Escalation | ❌ Not started       | 73–76   |
+| Phase 18: Configurable LLM Provider + Cloud Escalation | ✅ Complete (2026-08-07) | 73–76   |
 | Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79   |
 | Phase 20: Federated Case Library                   | ❌ Not started           | 80–82   |
 | Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86   |

@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "code_proposal", "ha_repair") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "code_proposal", "ha_repair", "cloud_escalation") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -135,6 +135,26 @@
         <details>
           <summary>Sandbox CI output</summary>
           <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("sandbox_output", "") }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if ct == "cloud_escalation" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;">
+          <strong>Local loop:</strong> {{ r.payload.get("step_count", 0) }} tool calls · outcome: <code>{{ r.payload.get("outcome", "") }}</code>
+        </p>
+        <p style="margin:0 0 0.4rem;">
+          <strong>Cloud model:</strong> <code>{{ r.payload.get("cloud_model", "") }}</code>
+          &nbsp;·&nbsp;
+          <strong>Estimated cost:</strong> ${{ "%.4f"|format(r.payload.get("estimated_cost_usd", 0)) }}
+          &nbsp;·&nbsp;
+          <strong>Daily spend:</strong> ${{ "%.4f"|format(r.payload.get("daily_spend_usd", 0)) }} / ${{ r.payload.get("daily_cap_usd", 5.0) }}
+        </p>
+        {% if r.payload.get("step_summary") %}
+        <details>
+          <summary>Local loop steps</summary>
+          <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("step_summary", "") }}</pre>
         </details>
         {% endif %}
       </div>
@@ -166,6 +186,9 @@
             {% set hint_approve = "Dismiss this repair issue in HA" %}
             {% set hint_reject = "Keep the repair issue open in HA" %}
           {% endif %}
+        {% elif ct == "cloud_escalation" %}
+          {% set hint_approve = "Re-run the repair loop with the cloud model; spend is recorded against billing caps" %}
+          {% set hint_reject = "Skip cloud escalation; the incident remains unresolved" %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
