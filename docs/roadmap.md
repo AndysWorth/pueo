@@ -20,7 +20,7 @@ Strategic capabilities in delivery order.
 | 6. Tool-calling agent loop                    | ✅ Complete (2026-07-28) | `utils/agent_loop.py`                      |
 | 6.5. Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | `main.py`, `web/dashboard.py`              |
 | 6.6. Conversational Agent                     | ✅ Complete (2026-07-31) | `web/templates/chat.html`, `utils/tool_executor.py` |
-| 7. HITL cloud escalation                      | ❌ Not started           | `utils/cloud_client.py`                    |
+| 7. Configurable LLM Provider + Cloud Escalation | ❌ Not started         | `utils/cloud_client.py`, `utils/llm_factory.py` |
 | 8. Repair episode recording                   | ❌ Not started           | `ha_agent_advanced.py`                     |
 | 9. Federated case library                     | ❌ Not started           | `rag/`                                     |
 | 10. Self-improving code proposals *(stretch)* | ❌ Not started           | —                                          |
@@ -49,7 +49,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54   |
 | Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64   |
 | Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72   |
-| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 73–76   |
+| Phase 18: Configurable LLM Provider + Cloud Escalation | ❌ Not started       | 73–76   |
 | Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79   |
 | Phase 20: Federated Case Library                   | ❌ Not started           | 80–82   |
 | Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86   |
@@ -226,18 +226,28 @@ Full spec: [plan/evals.md](plan/evals.md)
 
 ---
 
-### Milestone 7 — HITL Cloud Escalation
+### Milestone 7 — Configurable LLM Provider + Cloud Escalation
 
-**Objective:** When the local tool loop exhausts its budget without a fix, offer to escalate to Claude (Anthropic API). User approves per-incident. The cloud model runs with the same tool registry and sees the full step history from the failed local loop.
+**Objective:** Make the LLM inference engine a first-class switchable setting so Pueo can run with local Ollama, an Anthropic cloud API, or both. The "0 WAN during autonomous fix cycles" design constraint is explicitly overridden here — cloud mode routes inference traffic to Anthropic. HITL escalation (the original M7 goal) becomes the natural behavior of `both` mode: local Ollama handles autonomous repair cycles; when the local loop exhausts its budget the user can approve a Claude escalation from the HITL dashboard.
+
+**Key design choices:**
+- `LLM_PROVIDER` setting: `"local"` (default, preserves all existing behavior), `"cloud"` (Anthropic as primary), `"both"` (Ollama for autonomous + Claude for HITL escalation)
+- `LLMClientProtocol` already exists in `interfaces.py` — `ClaudeAPIClient` implements it without changing the interface or any caller that uses DI
+- `make_llm_client()` factory in `utils/llm_factory.py` is the single point that reads `LLM_PROVIDER`; all 20+ `OllamaClient()` fallbacks migrate to it
+- `ANTHROPIC_API_KEY` from environment only — never in `config.yaml`; startup raises if provider requires it and it is absent
+- Billing caps (`CLOUD_MAX_COST_PER_INCIDENT_USD`, `CLOUD_MAX_DAILY_SPEND_USD`) tracked in a `cloud_spend` SQLite table; caps enforced before each API call
+- RAG embeddings always use local Ollama (`nomic-embed-text`) regardless of `LLM_PROVIDER`
+- `setup.sh` asks for provider preference and conditionally skips the Ollama inference model pull when `cloud` is chosen
 
 **Tasks:**
-- `ClaudeAPIClient` implementing `LLMClientProtocol`; tool adapter mapping Pueo's registry to Anthropic tool-use JSON schema; prompt caching on system prompt
-- Escalation HITL card: cost estimate, failed tool-call summary, approve/reject
-- Cloud response dispatched via the same Pueo tool execution layer (no new execution path)
-- Billing guard: `CLOUD_MAX_COST_PER_INCIDENT_USD` (default $0.50), `CLOUD_MAX_DAILY_SPEND_USD` (default $5.00), `cloud_spend` SQLite table
-- `CLOUD_ESCALATION_ENABLED = false` by default; `ANTHROPIC_API_KEY` from environment only
+- `ClaudeAPIClient` in `utils/cloud_client.py`: tool schema adapter, response normalizer, history translator, structured-output via tool-forcing
+- `make_llm_client()` factory + `_default_model_for_provider()` helper in `utils/llm_factory.py`
+- Config: `LLM_PROVIDER`, `CLOUD_MODEL`, billing keys; `ANTHROPIC_API_KEY` env guard + credential guard; `config.yaml.default` `llm:` + `cloud:` sections; `setup.sh` provider wizard
+- Dashboard `LLM Provider` settings group: provider dropdown (`options`), cloud model text, billing thresholds, API key status badge
+- Billing guard: `cloud_spend` DB migration v15; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card; re-run `AgentLoop` with `ClaudeAPIClient` on approval
+- ADR 006: LLM provider abstraction
 
-**Validation gate:** Escalation fires only when user approves; billing caps block over-budget requests; `ANTHROPIC_API_KEY` cannot be set in `config.yaml`.
+**Validation gate:** `LLM_PROVIDER=local` (default): no cloud SDK touched; `LLM_PROVIDER=cloud`: all call-sites use `ClaudeAPIClient`; `LLM_PROVIDER=both` + loop exhaustion: HITL card appears; billing caps block over-budget escalations; `ANTHROPIC_API_KEY` never storable in `config.yaml`.
 
 Full spec: [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
@@ -300,14 +310,15 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 | Inference latency | < 4 seconds per agent step | Quantize model to `q4_K_M`; offload embedding layers to Apple Silicon AMX |
 | Config hallucination | Zero on inputs up to 8,000 tokens | Sliding window log ingestion; pass only relevant config sections, not full directories |
 | Un-backed writes | 0% — no production write without a confirmed backup slug | `execute_remote_backup()` raises on failure; pipeline aborts |
-| WAN packets during fix cycles | 0 — all inference local | All LLM calls route to local Ollama; no external API calls permitted in agent code |
+| LLM inference location | Configurable: `local` (Ollama, default), `cloud` (Anthropic API), or `both` | Set via `LLM_PROVIDER`; cloud and both require `ANTHROPIC_API_KEY` env var; billing caps enforced; WAN only via the designated provider |
+| WAN during autonomous fix cycles | 0 when `LLM_PROVIDER=local` (default) | Cloud mode intentionally sends inference traffic to Anthropic; autonomous cycles in `both` mode still use local Ollama |
 | HA disk free | ≥ `HA_DISK_CRITICAL_GB` at all times | Block backup trigger + offload older backups automatically before new backup fires |
 | Backup location | 100% of slugs confirmed on Pueo before deleting from HA | SHA-256 gate; `location = 'both'` required before any HA-side delete |
 | Tool loop budget | ≤ 20 tool calls per incident | Hard cap in `AgentLoop`; exhaustion triggers escalation offer, not silent failure |
 | Loop wall time | ≤ 120 seconds | `asyncio` timeout wrapping `AgentLoop.run()`; same outcome as budget exhaustion |
 | Local fix rate | ≥ 80% resolved without cloud escalation | Tune tool count + model size if falling below; cloud escalation is the fallback |
 | Episode coverage | 100% of successful repairs recorded | `finish_repair` tool fires serialization unconditionally |
-| WAN during cloud escalation | User-approved only | `CLOUD_ESCALATION_ENABLED = false` default; each escalation requires explicit HITL approval |
+| Cloud spend | Per-incident cap ($0.50) + daily cap ($5.00) | `BillingCapError` before each API call; tracked in `cloud_spend` SQLite table; caps configurable in UI |
 
 ---
 

@@ -94,10 +94,10 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 70   | read_source, propose_patch, sandbox_code tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout | ✅ Done (2026-07-31) |
 | 71   | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup | ✅ Done (2026-07-31) |
 | 72   | Tests: test_chat.py (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); TestConfigDefaults for two new config keys | ✅ Done (2026-07-31) |
-| 73   | ClaudeAPIClient + tool adapter; CLOUD_ESCALATION_ENABLED = false default | ☐ TODO |
-| 74   | Escalation HITL card: cost estimate, tool history summary, approve/reject | ☐ TODO |
-| 75   | Cloud response pipeline: Claude tool calls dispatched via Pueo tool execution layer | ☐ TODO |
-| 76   | Billing guard: per-incident cap, daily cap, cloud_spend SQLite table | ☐ TODO |
+| 73   | `utils/cloud_client.py`: `ClaudeAPIClient` + tool schema adapter + response normalizer + history translator; `utils/llm_factory.py`: `make_llm_client()` + `_default_model_for_provider()`; migrate all 20+ `OllamaClient()` call-sites to `make_llm_client()` | ☐ TODO |
+| 74   | Config: `LLM_PROVIDER` (local/cloud/both), `CLOUD_MODEL`, billing keys in `config.py` + `config.yaml.default`; `ANTHROPIC_API_KEY` env guard + credential guard; `setup.sh` provider wizard section; ADR 006 | ☐ TODO |
+| 75   | Dashboard: `LLM Provider` settings group in `_EDITABLE_PARAMS` (provider dropdown, cloud model, billing thresholds); API key status badge in `settings.html`; update `_run_chat_loop` + `evals/run_evals.py` call-sites | ☐ TODO |
+| 76   | Billing guard: DB migration v15 `cloud_spend` table; `record_cloud_spend`, `get_daily_spend`, `get_incident_spend` helpers; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card (LLM_PROVIDER=both + loop exhausted); re-run with `ClaudeAPIClient` on approval | ☐ TODO |
 | 77   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ☐ TODO |
 | 78   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ☐ TODO |
 | 79   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
@@ -358,15 +358,15 @@ Items 65–72. Adds a Chat tab to the HITL dashboard, persistent agent memory (S
 
 ---
 
-### Phase 18 — HITL Cloud Escalation (4 items)
-Items 73–76. When the local loop exhausts its budget, offer to escalate to Claude (Anthropic API) — user-approved, per-incident. Same tool registry; full failed-loop history passed as context. Billing guards enforced. `CLOUD_ESCALATION_ENABLED = false` default; `ANTHROPIC_API_KEY` from environment only.
+### Phase 18 — Configurable LLM Provider + Cloud Escalation (4 items)
+Items 73–76. Makes the LLM inference engine a first-class switchable setting: `local` (Ollama only, current default), `cloud` (Anthropic API as primary), or `both` (Ollama for autonomous cycles + Claude available via HITL escalation). The "0 WAN during autonomous fix cycles" constraint is overridden by design — cloud mode sends inference traffic to Anthropic. HITL escalation (the original Phase 18 goal) becomes the natural behavior of `both` mode when `AgentLoop` exhausts its budget. `ANTHROPIC_API_KEY` from environment only; billing caps enforced; `LLM_PROVIDER = "local"` default preserves existing behavior.
 
 | Items | Concern |
 |-------|---------|
-| 73 | ClaudeAPIClient + tool adapter |
-| 74 | Escalation HITL card |
-| 75 | Cloud response pipeline via shared tool execution layer |
-| 76 | Billing guard + cloud_spend SQLite table |
+| 73 | `ClaudeAPIClient` (tool schema + response + history adapters); `make_llm_client()` factory; call-site migration |
+| 74 | Config keys (`LLM_PROVIDER`, `CLOUD_MODEL`, billing limits); `ANTHROPIC_API_KEY` env guard; `setup.sh` provider wizard; ADR 006 |
+| 75 | Dashboard `LLM Provider` settings group; API key status badge; remaining call-site updates |
+| 76 | Billing guard (`cloud_spend` DB migration v15); `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card |
 
 → [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
