@@ -10,7 +10,7 @@ Pick up the next incomplete item at the start of a new session: find it in the S
 
 Plan detail files use a **Phase Deliverables** table (item number + one-line description) to link items to spec text. Do not introduce new "Feature N" labels — reference items by number.
 
-Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/conversational-agent.md](plan/conversational-agent.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md) · [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
+Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](plan/autonomy.md) · [plan/netalertx.md](plan/netalertx.md) · [plan/hitl-dashboard.md](plan/hitl-dashboard.md) · [plan/status-logging.md](plan/status-logging.md) · [plan/installer-diagnostics.md](plan/installer-diagnostics.md) · [plan/evidence-trace.md](plan/evidence-trace.md) · [plan/installer-verbose-logging.md](plan/installer-verbose-logging.md) · [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md) · [plan/mqtt-setup.md](plan/mqtt-setup.md) · [plan/resource-stewardship.md](plan/resource-stewardship.md) · [plan/evals.md](plan/evals.md) · [plan/tool-loop.md](plan/tool-loop.md) · [plan/rag-tool.md](plan/rag-tool.md) · [plan/supervisor.md](plan/supervisor.md) · [plan/conversational-agent.md](plan/conversational-agent.md) · [plan/cloud-escalation.md](plan/cloud-escalation.md) · [plan/repair-episodes.md](plan/repair-episodes.md) · [plan/federated-cases.md](plan/federated-cases.md) · [plan/code-proposals.md](plan/code-proposals.md) · [plan/ha-update-manager.md](plan/ha-update-manager.md) · [plan/ha-notifications.md](plan/ha-notifications.md) · [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md) · [plan/disk-usage.md](plan/disk-usage.md)
 
 ---
 
@@ -115,6 +115,12 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 91   | Wire profile into supervisor; `get_ha_profile` chat tool; use profile in `analyze_breaking_changes` and `request_update_approval` | ✅ Done (2026-08-06) |
 | 92   | Wire `ChromaKnowledgeStore` into `supervisor_main()` so `query_knowledge` is functional in production | ✅ Done (2026-08-06) |
 | 93   | HACS version metadata; HA docs `is_installed` flag; `release_type` on bulk-fetched chunks; remove empty `community_cases` collection | ✅ Done (2026-08-06) |
+| DU-1 | `utils/disk_usage.py`: dataclasses, SSH helpers, `fetch_disk_breakdown()`, cache, `DiskUsagePoller` | ✅ Done (2026-08-07) |
+| DU-2 | `config.py` key `DISK_USAGE_POLL_INTERVAL_SECONDS` (default 300); `config.yaml.default` | ✅ Done (2026-08-07) |
+| DU-3 | `web/templates/disk.html`: 4-section layout, disk gauge, mini-bars, refresh button | ✅ Done (2026-08-07) |
+| DU-4 | `web/templates/base.html` nav link; `web/dashboard.py` `GET /disk` + `POST /disk/refresh` routes | ✅ Done (2026-08-07) |
+| DU-5 | `main.py` supervisor registration of `disk_usage_poll` loop | ✅ Done (2026-08-07) |
+| DU-6 | Tests: `test_utils.py` (35 tests), `test_dashboard.py` (5 tests), `test_config.py` (2 tests) | ✅ Done (2026-08-07) |
 
 ---
 
@@ -406,7 +412,7 @@ Items 83–86. The sandbox infrastructure (`read_source`, `propose_patch`, `sand
 
 ---
 
-### Phase 22 — HA RAG Strategy (7 items)
+### Phase 22 — HA RAG Strategy (7 items) ✅ Complete (2026-08-06)
 Items 87–93. Fixes structural gaps in the RAG knowledge layer that cause hallucinated breaking-change advisories and leave the chat agent without knowledge access in production. Prerequisite: Phase 17.5 complete.
 
 **Implementation order:** 92 (supervisor wiring, bug fix) → 87 (stub fix) → 88–89 (blog scraper + metadata) → 90–91 (environment profile) → 93 (enrichment).
@@ -422,6 +428,22 @@ Items 87–93. Fixes structural gaps in the RAG knowledge layer that cause hallu
 | 93 | HACS version metadata; HA docs `is_installed` flag; `release_type` tags; remove empty `community_cases` |
 
 → [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
+
+---
+
+### Phase 23 — Disk Usage Tab (6 items) ✅ Complete (2026-08-07)
+Items DU-1–DU-6. Adds a `/disk` dashboard tab giving operational visibility into per-path HA storage. Surfaces the four user-actionable storage groups (HA Config & Database, Backups, Addon Data, Shared Storage) with a disk gauge, per-item mini-bars, and a live-refresh button. `DiskUsagePoller` registers with the supervisor and appears in the Overview loop health table. No DB migration needed — entirely read-only SSH queries.
+
+| Items | Concern |
+|-------|---------|
+| DU-1 | `utils/disk_usage.py`: dataclasses, SSH helpers, `fetch_disk_breakdown()`, cache, `DiskUsagePoller` |
+| DU-2 | `DISK_USAGE_POLL_INTERVAL_SECONDS` config key |
+| DU-3 | `disk.html` template: disk gauge, 4 section cards, DB table breakdown |
+| DU-4 | Dashboard routes `GET /disk` + `POST /disk/refresh`; base.html nav link |
+| DU-5 | Supervisor registration of `disk_usage_poll` loop |
+| DU-6 | Tests: `test_utils.py`, `test_dashboard.py`, `test_config.py` |
+
+→ [plan/disk-usage.md](plan/disk-usage.md)
 
 ---
 

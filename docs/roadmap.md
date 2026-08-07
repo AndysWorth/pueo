@@ -29,31 +29,32 @@ Strategic capabilities in delivery order.
 
 Tactical delivery batches in execution order. See `docs/implementation-plan.md` for item-level detail.
 
-| Phase                                              | Status                  | Items  |
-| -------------------------------------------------- | ----------------------- | ------ |
-| Phase 1–3: Foundation, Observability, Architecture | ✅ Complete (2026-07-15) | 1–9    |
-| Phase 3.5: Autonomy Control                        | ✅ Complete (2026-07-19) | 9.5    |
-| Phase 4: NetAlertX Integration                     | ✅ Complete (2026-07-20) | 10–19  |
-| Phase 4.5: HITL Web Dashboard                      | ✅ Complete (2026-07-20) | 19.5   |
-| Phase 5: Observability UX                          | ✅ Complete (2026-07-20) | 20     |
-| Phase 6: Installer Intelligence                    | ✅ Complete (2026-07-21) | 21–22  |
-| Phase 7: Evidence Capture & HITL Display           | ✅ Complete (2026-07-21) | 23–24  |
-| Phase 8: NetAlertX Compatibility Maintenance       | ✅ Complete (2026-07-21) | 25     |
-| Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27     |
-| Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32  |
-| Phase 12: HA Update Manager                        | ✅ Complete (2026-07-27) | 33–37  |
-| Phase 12.5: HA Repairs & Update Orchestration      | ✅ Complete (2026-08-05) | 12.5A–B|
-| Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41  |
-| Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48  |
-| Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52  |
-| Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54  |
-| Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64  |
-| Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72  |
-| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 73–76  |
-| Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79  |
-| Phase 20: Federated Case Library                   | ❌ Not started           | 80–82  |
-| Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86  |
-| Phase 22: HA RAG Strategy                          | ✅ Complete (2026-08-06) | 87–93  |
+| Phase                                              | Status                  | Items   |
+| -------------------------------------------------- | ----------------------- | ------- |
+| Phase 1–3: Foundation, Observability, Architecture | ✅ Complete (2026-07-15) | 1–9     |
+| Phase 3.5: Autonomy Control                        | ✅ Complete (2026-07-19) | 9.5     |
+| Phase 4: NetAlertX Integration                     | ✅ Complete (2026-07-20) | 10–19   |
+| Phase 4.5: HITL Web Dashboard                      | ✅ Complete (2026-07-20) | 19.5    |
+| Phase 5: Observability UX                          | ✅ Complete (2026-07-20) | 20      |
+| Phase 6: Installer Intelligence                    | ✅ Complete (2026-07-21) | 21–22   |
+| Phase 7: Evidence Capture & HITL Display           | ✅ Complete (2026-07-21) | 23–24   |
+| Phase 8: NetAlertX Compatibility Maintenance       | ✅ Complete (2026-07-21) | 25      |
+| Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27      |
+| Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32   |
+| Phase 12: HA Update Manager                        | ✅ Complete (2026-07-27) | 33–37   |
+| Phase 12.5: HA Repairs & Update Orchestration      | ✅ Complete (2026-08-05) | 12.5A–B |
+| Phase 13: HA Notification Intelligence             | ✅ Complete (2026-07-27) | 38–41   |
+| Phase 14: Tool-Calling Agent Loop                  | ✅ Complete (2026-07-28) | 42–48   |
+| Phase 15: RAG Knowledge Layer                      | ✅ Complete (2026-07-28) | 49–52   |
+| Phase 16: Evals                                    | ✅ Complete (2026-07-28) | 53–54   |
+| Phase 17: Supervisor + Active Dashboard            | ✅ Complete (2026-07-30) | 55–64   |
+| Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72   |
+| Phase 18: HITL Cloud Escalation                    | ❌ Not started           | 73–76   |
+| Phase 19: Repair Episode Recording                 | ❌ Not started           | 77–79   |
+| Phase 20: Federated Case Library                   | ❌ Not started           | 80–82   |
+| Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86   |
+| Phase 22: HA RAG Strategy                          | ✅ Complete (2026-08-06) | 87–93   |
+| Phase 23: Disk Usage Tab                           | ✅ Complete (2026-08-07) | DU-1–6  |
 
 ---
 
