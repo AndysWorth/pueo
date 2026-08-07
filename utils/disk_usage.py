@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import pathlib
+import sqlite3 as _sqlite3
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -39,9 +42,9 @@ class DiskBreakdown:
     disk_free_gb: float = 0.0
     disk_used_pct: float = 0.0
     fetched_at: float = 0.0
-    db_tables: Optional[list] = (
-        None  # list[tuple[str, int]] — None if sqlite3 unavailable
-    )
+    db_tables: Optional[list] = None  # list[tuple[str, int]]
+    custom_components: Optional[list] = None  # list[DiskItem] — None if absent/empty
+    container_images_estimated_gb: Optional[float] = None  # total_used minus visible
 
 
 def _parse_size_to_bytes(size_str: str) -> int:
@@ -92,25 +95,6 @@ def _parse_du_output(output: str) -> dict:
     return result
 
 
-def _parse_sqlite3_output(output: str) -> list:
-    """Parse 'sqlite3 ... dbstat' pipe-separated output into [(table, bytes)] sorted desc."""
-    rows = []
-    for line in output.splitlines():
-        line = line.strip()
-        if not line or "|" not in line:
-            continue
-        parts = line.split("|", 1)
-        if len(parts) != 2:
-            continue
-        name = parts[0].strip()
-        try:
-            size_bytes = int(parts[1].strip())
-        except ValueError:
-            continue
-        rows.append((name, size_bytes))
-    return sorted(rows, key=lambda r: -r[1])
-
-
 async def _fetch_addon_names(ssh_client: SSHClientProtocol) -> dict:
     """Return {slug: display_name} via 'ha apps list --raw-json'; empty dict on any error."""
     _, stdout, _ = await ssh_client.run("ha apps list --raw-json", check=False)
@@ -123,20 +107,58 @@ async def _fetch_addon_names(ssh_client: SSHClientProtocol) -> dict:
 
 
 async def _fetch_db_tables(ssh_client: SSHClientProtocol) -> Optional[list]:
-    """
-    Query HA SQLite table sizes via sqlite3 CLI on the HA host.
-    Returns None if sqlite3 is not available or the query fails.
-    """
-    db_path = "/homeassistant/home-assistant_v2.db"
-    query = (
-        "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC LIMIT 10;"
-    )
-    cmd = f'sqlite3 {db_path} "{query}" 2>/dev/null'
-    exit_code, stdout, _ = await ssh_client.run(cmd, check=False)
-    if exit_code != 0 or not stdout.strip():
+    """SFTP-pull home-assistant_v2.db and query table sizes locally via Python sqlite3."""
+    remote_db = "/homeassistant/home-assistant_v2.db"
+    with tempfile.NamedTemporaryFile(
+        suffix=".db", prefix="pueo_ha_", delete=False
+    ) as f:
+        tmp = f.name
+    try:
+        await ssh_client.download_file(remote_db, tmp)
+        con = _sqlite3.connect(tmp)
+        try:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT name, SUM(pgsize) as sz FROM dbstat "
+                "GROUP BY name ORDER BY sz DESC LIMIT 15;"
+            )
+            rows = [(r[0], r[1]) for r in cur.fetchall()]
+        finally:
+            con.close()
+        return rows if rows else None
+    except Exception:
         return None
-    rows = _parse_sqlite3_output(stdout)
-    return rows if rows else None
+    finally:
+        try:
+            pathlib.Path(tmp).unlink()
+        except Exception:  # nosec B110
+            pass
+
+
+async def _fetch_custom_components(ssh_client: SSHClientProtocol) -> Optional[list]:
+    """Return per-component DiskItem list from /homeassistant/custom_components/*."""
+    _, out, _ = await ssh_client.run(
+        "du -sh /homeassistant/custom_components/* 2>/dev/null", check=False
+    )
+    path_sizes = _parse_du_output(out)
+    if not path_sizes:
+        return None
+    total = sum(path_sizes.values())
+    items = []
+    for path, size_bytes in sorted(path_sizes.items(), key=lambda kv: -kv[1]):
+        name = path.rstrip("/").rsplit("/", 1)[-1]
+        pct = round(100.0 * size_bytes / total, 1) if total else 0.0
+        items.append(
+            DiskItem(
+                path=path,
+                name=name,
+                size_bytes=size_bytes,
+                size_human=_bytes_to_human(size_bytes),
+                is_empty=size_bytes <= 8192,
+                pct_of_section=pct,
+            )
+        )
+    return items if items else None
 
 
 def _build_section(
@@ -198,13 +220,14 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
     _, du_out, _ = await ssh_client.run(du_cmd, check=False)
     path_sizes = _parse_du_output(du_out)
 
-    # 3. Addon slug → friendly name mapping
-    addon_names = await _fetch_addon_names(ssh_client)
+    # 3. Addon slug → friendly name mapping; custom components; DB tables — run in parallel
+    addon_names, custom_components, db_tables = await asyncio.gather(
+        _fetch_addon_names(ssh_client),
+        _fetch_custom_components(ssh_client),
+        _fetch_db_tables(ssh_client),
+    )
 
-    # 4. DB table breakdown (requires sqlite3 on HA host; graceful fallback to None)
-    db_tables = await _fetch_db_tables(ssh_client)
-
-    # 5. Build the four user-actionable sections
+    # 4. Build the four user-actionable sections
     sections = [
         _build_section(
             "HA Config & Database",
@@ -225,6 +248,15 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
         ),
     ]
 
+    # 5. Estimate container images + system OS as the unaccounted remainder
+    if disk_total > 0:
+        visible_gb = sum(s.total_bytes for s in sections) / 1024**3
+        container_images_estimated_gb: Optional[float] = max(
+            0.0, round(disk_used - visible_gb, 2)
+        )
+    else:
+        container_images_estimated_gb = None
+
     return DiskBreakdown(
         sections=sections,
         disk_used_gb=disk_used,
@@ -233,6 +265,8 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
         disk_used_pct=disk_used_pct,
         fetched_at=time.time(),
         db_tables=db_tables,
+        custom_components=custom_components,
+        container_images_estimated_gb=container_images_estimated_gb,
     )
 
 

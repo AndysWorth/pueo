@@ -4047,16 +4047,61 @@ _HOST_INFO = (
 )
 
 
-def _make_disk_ssh(du_output=_DU_OUTPUT, addon_json=_ADDON_JSON, host_info=_HOST_INFO):
+_CC_DU_OUTPUT = (
+    "51.4M\t/homeassistant/custom_components/hacs\n"
+    "1.4M\t/homeassistant/custom_components/noaa_it_all\n"
+)
+
+
+def _make_sqlite_db_bytes() -> bytes:
+    """Create a minimal valid SQLite DB with one table and return its bytes."""
+    import os
+    import sqlite3 as _s3
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        tmp = f.name
+    try:
+        con = _s3.connect(tmp)
+        con.execute("CREATE TABLE states (id INTEGER PRIMARY KEY, data TEXT)")
+        for i in range(100):
+            con.execute("INSERT INTO states VALUES (?, ?)", (i, "x" * 1000))
+        con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY)")
+        con.commit()
+        con.close()
+        with open(tmp, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def _make_disk_ssh(
+    du_output=_DU_OUTPUT,
+    addon_json=_ADDON_JSON,
+    host_info=_HOST_INFO,
+    cc_du_output=_CC_DU_OUTPUT,
+    db_bytes: "bytes | None" = None,
+    db_download_error: "Exception | None" = None,
+):
     from utils.ssh_client import FakeSSHClient
+
+    download_contents = {}
+    if db_bytes is not None:
+        download_contents["/homeassistant/home-assistant_v2.db"] = db_bytes
 
     return FakeSSHClient(
         command_results={
             "ha host info": (0, host_info, ""),
+            # custom_components key must precede "du -sh" — FakeSSHClient matches first hit
+            "custom_components": (0, cc_du_output, ""),
             "du -sh": (0, du_output, ""),
             "ha apps list --raw-json": (0, addon_json, ""),
-            "sqlite3": (1, "", "sqlite3: not found"),
-        }
+        },
+        download_contents=download_contents,
+        download_error=db_download_error,
     )
 
 
@@ -4250,59 +4295,89 @@ class TestFetchDiskBreakdown:
         assert all(s.is_empty for s in bd.sections)
 
     def test_sqlite3_unavailable_gives_none_db_tables(self):
-        ssh = _make_disk_ssh()
+        ssh = _make_disk_ssh(db_download_error=FileNotFoundError("no db"))
         from utils.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.db_tables is None
 
     def test_sqlite3_available_populates_db_tables(self):
-        from utils.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient(
-            command_results={
-                "ha host info": (0, _HOST_INFO, ""),
-                "du -sh": (0, _DU_OUTPUT, ""),
-                "ha apps list --raw-json": (0, _ADDON_JSON, ""),
-                "sqlite3": (
-                    0,
-                    "states|52428800\nstatistics|31457280\nevents|10485760\n",
-                    "",
-                ),
-            }
-        )
+        db_bytes = _make_sqlite_db_bytes()
+        ssh = _make_disk_ssh(db_bytes=db_bytes)
         from utils.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.db_tables is not None
-        assert bd.db_tables[0][0] == "states"
-        assert bd.db_tables[0][1] == 52428800
+        assert len(bd.db_tables) >= 1
+        # states table should be present (created with 100 rows of 1000-byte data)
+        table_names = [r[0] for r in bd.db_tables]
+        assert "states" in table_names
 
+    def test_db_tables_corrupted_bytes_returns_none(self):
+        ssh = _make_disk_ssh(db_bytes=b"not a sqlite database at all")
+        from utils.disk_usage import fetch_disk_breakdown
 
-class TestParseSqlite3Output:
-    def test_parses_pipe_separated_rows(self):
-        from utils.disk_usage import _parse_sqlite3_output
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.db_tables is None
 
-        rows = _parse_sqlite3_output("states|52428800\nstatistics|31457280\n")
-        assert rows[0] == ("states", 52428800)
-        assert rows[1] == ("statistics", 31457280)
+    def test_custom_components_populated(self):
+        db_bytes = _make_sqlite_db_bytes()
+        ssh = _make_disk_ssh(db_bytes=db_bytes)
+        from utils.disk_usage import fetch_disk_breakdown
 
-    def test_sorted_descending(self):
-        from utils.disk_usage import _parse_sqlite3_output
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.custom_components is not None
+        names = [cc.name for cc in bd.custom_components]
+        assert "hacs" in names
+        assert "noaa_it_all" in names
 
-        rows = _parse_sqlite3_output("small|1000\nbig|9999\n")
-        assert rows[0][0] == "big"
+    def test_custom_components_sorted_largest_first(self):
+        db_bytes = _make_sqlite_db_bytes()
+        ssh = _make_disk_ssh(db_bytes=db_bytes)
+        from utils.disk_usage import fetch_disk_breakdown
 
-    def test_skips_malformed_lines(self):
-        from utils.disk_usage import _parse_sqlite3_output
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.custom_components is not None
+        sizes = [cc.size_bytes for cc in bd.custom_components]
+        assert sizes == sorted(sizes, reverse=True)
 
-        rows = _parse_sqlite3_output("nopipe\nstates|52428800\n")
-        assert len(rows) == 1
+    def test_custom_components_none_on_empty_output(self):
+        ssh = _make_disk_ssh(cc_du_output="")
+        from utils.disk_usage import fetch_disk_breakdown
 
-    def test_empty_output_returns_empty(self):
-        from utils.disk_usage import _parse_sqlite3_output
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.custom_components is None
 
-        assert _parse_sqlite3_output("") == []
+    def test_container_images_estimated_gb_computed(self):
+        db_bytes = _make_sqlite_db_bytes()
+        ssh = _make_disk_ssh(db_bytes=db_bytes)
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        # disk_used=10.8 GB minus visible sections (~300 MB) should be a large positive
+        assert bd.container_images_estimated_gb is not None
+        assert bd.container_images_estimated_gb > 0
+
+    def test_container_images_none_when_host_info_unavailable(self):
+        ssh = _make_disk_ssh(
+            host_info="disk_free: 0.0\ndisk_total: 0.0\ndisk_used: 0.0\n"
+        )
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.container_images_estimated_gb is None
+
+    def test_container_images_floors_at_zero(self):
+        # If sections somehow sum to more than disk_used, floor at 0
+        # Use a host_info where disk_used is tiny
+        ssh = _make_disk_ssh(
+            host_info="disk_free: 13.0\ndisk_total: 13.6\ndisk_used: 0.1\n"
+        )
+        from utils.disk_usage import fetch_disk_breakdown
+
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        assert bd.container_images_estimated_gb is not None
+        assert bd.container_images_estimated_gb >= 0.0
 
 
 class TestDiskCacheAccessors:

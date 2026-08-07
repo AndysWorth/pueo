@@ -44,7 +44,7 @@
 <!-- Header -->
 <div style="display:flex;align-items:center;justify-content:space-between;
   margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
-  <h2 style="font-size:1rem;color:#555;margin:0;">Disk Usage</h2>
+  <h2 style="font-size:1rem;color:#555;margin:0;">Home Assistant Disk Usage</h2>
   <div style="display:flex;align-items:center;gap:0.75rem;">
     {% if age_seconds is not none %}
     <span style="font-size:0.8rem;color:#aaa;">Updated {{ age_seconds }}s ago</span>
@@ -85,7 +85,8 @@
     </div>
   </div>
   <p style="font-size:0.75rem;color:#bbb;margin-top:0.5rem;">
-    System OS files (~130 MB, read-only) not shown — managed by HAOS updates.
+    Sections below cover all directly measurable paths. Docker image layers and HAOS system
+    files appear as the estimated &ldquo;Container Images &amp; System OS&rdquo; section.
   </p>
 </div>
 
@@ -137,8 +138,36 @@
     </details>
     {% else %}
     <span style="font-size:0.75rem;color:#ccc;">
-      Database tables: sqlite3 not available on this HAOS host
+      Database tables unavailable (DB file could not be read)
     </span>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# Custom components drilldown — shown under the custom_components directory item #}
+  {% if section.title == "HA Config & Database" and item.name == "custom_components" %}
+  <div style="margin:0.25rem 0 0.25rem 0.5rem;">
+    {% if breakdown.custom_components %}
+    <details>
+      <summary style="font-size:0.78rem;color:#888;padding:0.15rem 0;">
+        Custom components &#9658;
+      </summary>
+      <div style="padding:0.4rem 0 0.2rem;">
+        {% set cc_max = breakdown.custom_components[0].size_bytes if breakdown.custom_components else 1 %}
+        {% for cc in breakdown.custom_components %}
+        <div class="db-table-row">
+          <span class="db-table-name">{{ cc.name }}</span>
+          <span class="db-table-size">{{ cc.size_human }}</span>
+          <div class="db-mini-bar-bg">
+            <div class="db-mini-bar"
+              style="width:{{ ((cc.size_bytes / cc_max) * 100) | round(1) }}%;"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <span style="font-size:0.75rem;color:#ccc;">(no custom components installed)</span>
     {% endif %}
   </div>
   {% endif %}
@@ -147,6 +176,34 @@
   {% endif %}
 </div>
 {% endfor %}
+
+<!-- Container images + system OS — estimated fifth section -->
+{% if breakdown.container_images_estimated_gb is not none %}
+<div class="card" style="margin-bottom:1rem;">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;
+    margin-bottom:0.6rem;">
+    <span class="disk-section-label">Container Images &amp; System OS</span>
+    <span style="font-size:0.82rem;color:#555;font-weight:600;">
+      ~{{ "%.1f"|format(breakdown.container_images_estimated_gb) }} GB
+    </span>
+  </div>
+  <div class="disk-item-row">
+    <span class="disk-item-name">Docker image layers + HAOS system files</span>
+    <span class="disk-item-size">~{{ "%.1f"|format(breakdown.container_images_estimated_gb) }} GB</span>
+    <div class="disk-mini-bar-bg">
+      {% if breakdown.disk_total_gb > 0 %}
+      {% set img_pct = [(breakdown.container_images_estimated_gb / breakdown.disk_total_gb * 100)|round(1), 100]|min %}
+      <div class="disk-mini-bar" style="width:{{ img_pct }}%;background:#f59e0b;"></div>
+      {% endif %}
+    </div>
+  </div>
+  <p style="font-size:0.75rem;color:#bbb;margin-top:0.5rem;">
+    Estimated — Docker image layers are stored on the HAOS host OS partition and are not
+    accessible from the Supervisor shell. Calculated as total used minus all directly
+    measurable sections.
+  </p>
+</div>
+{% endif %}
 
 {% else %}
 <div class="card">
