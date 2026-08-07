@@ -395,8 +395,9 @@ class TestMakeLLMClient:
         # but we can verify the factory chooses the right branch by inspecting config.
         assert config.LLM_PROVIDER != "cloud"
 
-    def test_both_returns_ollama_client(self, isolated_config):
+    def test_both_returns_ollama_client(self, isolated_config, monkeypatch):
         isolated_config.write_text(yaml.dump({"llm": {"provider": "both"}}))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
         importlib.reload(importlib.import_module("utils.llm_factory"))
         import config
@@ -430,14 +431,8 @@ class TestMakeLLMClient:
     def test_cloud_raises_without_api_key(self, isolated_config, monkeypatch):
         isolated_config.write_text(yaml.dump({"llm": {"provider": "cloud"}}))
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
-        import config
-        from utils.llm_factory import make_llm_client
-
-        assert config.LLM_PROVIDER == "cloud"
         with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-            make_llm_client()
+            importlib.reload(sys.modules["config"])
 
 
 # ── _default_model_for_provider ───────────────────────────────────────────────
@@ -456,17 +451,18 @@ class TestDefaultModelForProvider:
 
         assert _default_model_for_provider() == "qwen2.5-coder:7b"
 
-    def test_both_returns_ollama_model(self, isolated_config):
+    def test_both_returns_ollama_model(self, isolated_config, monkeypatch):
         isolated_config.write_text(
             yaml.dump({"llm": {"provider": "both"}, "ollama": {"model": "llama3:8b"}})
         )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
         importlib.reload(importlib.import_module("utils.llm_factory"))
         from utils.llm_factory import _default_model_for_provider
 
         assert _default_model_for_provider() == "llama3:8b"
 
-    def test_cloud_returns_cloud_model(self, isolated_config):
+    def test_cloud_returns_cloud_model(self, isolated_config, monkeypatch):
         isolated_config.write_text(
             yaml.dump(
                 {
@@ -475,6 +471,7 @@ class TestDefaultModelForProvider:
                 }
             )
         )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
         importlib.reload(importlib.import_module("utils.llm_factory"))
         from utils.llm_factory import _default_model_for_provider
@@ -492,8 +489,9 @@ class TestLLMProviderConfigKeys:
 
         assert config.LLM_PROVIDER == "local"
 
-    def test_llm_provider_from_yaml(self, isolated_config):
+    def test_llm_provider_from_yaml(self, isolated_config, monkeypatch):
         isolated_config.write_text(yaml.dump({"llm": {"provider": "cloud"}}))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
         import config
 

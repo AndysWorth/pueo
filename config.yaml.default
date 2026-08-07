@@ -17,6 +17,19 @@ ollama:
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
   # embed_model: "nomic-embed-text"   # Embedding model for RAG knowledge store (requires `ollama pull nomic-embed-text`)
 
+llm:
+  provider: "local"  # "local" | "cloud" | "both"
+                     # local: Ollama only (default, no WAN for inference)
+                     # cloud: Anthropic API as primary LLM
+                     # both: Ollama for autonomous cycles + Claude available for HITL escalation
+                     # Note: "cloud" and "both" require ANTHROPIC_API_KEY env var — never put it here
+
+cloud:
+  model: "claude-sonnet-4-5"           # Claude model for cloud/both modes
+  max_cost_per_incident_usd: 0.50      # Hard cap per escalation incident
+  max_daily_spend_usd: 5.00            # Rolling 24-hour spend cap
+  # ANTHROPIC_API_KEY must be exported in ~/.zshenv — never written here
+
 netalertx:
   setup_desired: false                        # set true to have Pueo install and configure NetAlertX automatically
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed

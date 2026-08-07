@@ -103,12 +103,33 @@ AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
-# LLM provider selection (item 73 — full guards/wizard added in item 74)
+# LLM provider selection
 _llm_cfg = _cfg.get("llm", {})
 _cloud_cfg = _cfg.get("cloud", {})
 LLM_PROVIDER: str = _llm_cfg.get("provider", "local")  # "local" | "cloud" | "both"
 CLOUD_MODEL: str = _cloud_cfg.get("model", "claude-sonnet-4-5")
+CLOUD_MAX_COST_PER_INCIDENT_USD: float = float(
+    _cloud_cfg.get("max_cost_per_incident_usd", 0.50)
+)
+CLOUD_MAX_DAILY_SPEND_USD: float = float(_cloud_cfg.get("max_daily_spend_usd", 5.00))
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Startup guards — fire at import time so the process fails fast at launch
+if LLM_PROVIDER in ("cloud", "both") and not ANTHROPIC_API_KEY:
+    raise RuntimeError(
+        "ANTHROPIC_API_KEY environment variable is not set. "
+        f"LLM_PROVIDER={LLM_PROVIDER!r} requires it. "
+        "Export it in ~/.zshenv: export ANTHROPIC_API_KEY=<your-key>"
+    )
+
+if _config_path.exists():
+    _raw_yaml = _config_path.read_text()
+    if "ANTHROPIC_API_KEY:" in _raw_yaml or "anthropic_api_key:" in _raw_yaml:
+        raise RuntimeError(
+            f"ANTHROPIC_API_KEY must not appear as a key in {_config_path}. "
+            "Store it in the environment only (e.g. ~/.zshenv). "
+            "Remove it from config.yaml and reload your shell."
+        )
 
 # Conversational agent
 CHAT_MEMORY_TOP_K: int = int(_agent.get("chat_memory_top_k", 10))
