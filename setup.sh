@@ -444,7 +444,7 @@ agent:
   # max_prompt_tokens: 7000
   # resource_poll_interval_seconds: 300
   # ha_disk_warn_gb: 5.0
-  # ha_disk_critical_gb: 2.0
+  # ha_disk_critical_gb: 3.0  # keep above 1.0 (HA Supervisor hard-blocks backups below 1 GB); 3.0 leaves a 2 GB write buffer
   # ha_mem_warn_mb: 256
   # backup_offload_enabled: true
   # backup_local_dir: "./backups/"

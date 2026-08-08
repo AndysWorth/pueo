@@ -74,7 +74,12 @@ agent:
   resource_poll_interval_seconds: 300  # How often to poll HA disk/memory (seconds)
   # disk_usage_poll_interval_seconds: 300  # How often to scan per-path disk usage (seconds)
   ha_disk_warn_gb: 5.0               # HITL alert when HA disk free drops below this value (GB)
-  ha_disk_critical_gb: 2.0           # Block backup creation and escalate to CRITICAL below this value (GB)
+  ha_disk_critical_gb: 3.0           # Block backup creation and escalate to CRITICAL below this value (GB).
+                                     # Must stay well above 1.0: the HA Supervisor independently hard-blocks ALL
+                                     # operations (including backup creation) when free space < 1 GB. The default
+                                     # of 3.0 GB leaves a 2 GB write buffer so a typical 1-2 GB backup can
+                                     # complete without hitting the Supervisor's block. Raise this value if your
+                                     # HA backups are consistently larger than 2 GB.
   ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
   backup_local_dir: "./backups/"     # Local directory for offloaded backup files

@@ -312,7 +312,7 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 | Un-backed writes | 0% — no production write without a confirmed backup slug | `execute_remote_backup()` raises on failure; pipeline aborts |
 | LLM inference location | Configurable: `local` (Ollama, default), `cloud` (Anthropic API), or `both` | Set via `LLM_PROVIDER`; cloud and both require `ANTHROPIC_API_KEY` env var; billing caps enforced; WAN only via the designated provider |
 | WAN during autonomous fix cycles | 0 when `LLM_PROVIDER=local` (default) | Cloud mode intentionally sends inference traffic to Anthropic; autonomous cycles in `both` mode still use local Ollama |
-| HA disk free | ≥ `HA_DISK_CRITICAL_GB` at all times | Block backup trigger + offload older backups automatically before new backup fires |
+| HA disk free | ≥ `HA_DISK_CRITICAL_GB` at all times | Block backup trigger + offload older backups automatically before new backup fires. Note: the HA Supervisor independently hard-blocks **all** operations (including `ha backups new`) when free space < 1 GB — Pueo's threshold must remain above `1 GB + largest expected backup size` or the Supervisor will block Pueo's own backup before Pueo's guard can act. Default is 3.0 GB (2 GB above the Supervisor's floor). |
 | Backup location | 100% of slugs confirmed on Pueo before deleting from HA | SHA-256 gate; `location = 'both'` required before any HA-side delete |
 | Tool loop budget | ≤ 20 tool calls per incident | Hard cap in `AgentLoop`; exhaustion triggers escalation offer, not silent failure |
 | Loop wall time | ≤ 120 seconds | `asyncio` timeout wrapping `AgentLoop.run()`; same outcome as budget exhaustion |
