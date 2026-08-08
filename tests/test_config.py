@@ -530,7 +530,7 @@ class TestResourceSensingConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.HA_DISK_CRITICAL_GB == 2.0
+        assert config.HA_DISK_CRITICAL_GB == 3.0
 
     def test_ha_mem_warn_mb_default(self, isolated_config):
         importlib.reload(sys.modules["config"])

@@ -20,13 +20,34 @@ Poll `ha host info` via SSH on a configurable interval. Extract disk and memory 
 |-----|---------|---------|
 | `RESOURCE_POLL_INTERVAL_SECONDS` | 300 | How often to check disk/memory |
 | `HA_DISK_WARN_GB` | 5 | HITL alert threshold |
-| `HA_DISK_CRITICAL_GB` | 2 | Block new backups; surface as CRITICAL |
+| `HA_DISK_CRITICAL_GB` | 3 | Block new backups; surface as CRITICAL |
 | `HA_MEM_WARN_MB` | 256 | HITL alert threshold |
 
 **Behaviour:**
 - HITL dashboard card when disk < WARN or memory < WARN
 - `execute_remote_backup()` blocks early (before SSH round-trip) when disk < CRITICAL — raises `DiskCriticalError` with the current free-space value in the message
 - Polling runs as an `asyncio.create_task()` alongside the existing monitoring loop
+
+**HA Supervisor interaction — why `HA_DISK_CRITICAL_GB` must stay well above 1 GB:**
+
+The HA Supervisor has its own independent disk space guard at **1 GB free**. When free space falls below this threshold the Supervisor hard-blocks *all* Supervisor-managed operations with a `blocked from execution, not enough free space` error — including:
+
+- `ha backups new` (which Pueo calls via `execute_remote_backup()`)
+- HA Core updates, App installs, Git repo pulls, and observer tasks
+
+This means if `HA_DISK_CRITICAL_GB` is set at or below 1 GB, Pueo's own block would never fire first — the Supervisor would refuse the backup before Pueo's guard could act, breaking the backup-safety invariant silently.
+
+The minimum safe value is `1 GB + largest expected backup size`. A typical HA backup is 1–2 GB, so **the default is 3.0 GB** — leaving a 2 GB write buffer above the Supervisor's floor. Installations with larger backups (many add-ons, significant media) should raise this value.
+
+Disk management is also layered: the Supervisor shows a persistent UI notification "Available space is less than 1GB!" before the hard block fires, and has known false-positive bugs where the block fires even with adequate space (stale measurements / wrong mount-point reads). The `ha repair` CLI command can reset a stale space measurement.
+
+The full three-tier picture for HA disk free:
+
+| Free space | Who acts | Effect |
+|---|---|---|
+| < `HA_DISK_WARN_GB` (default 5 GB) | Pueo | HITL warning card; triggers backup offload + retention cleanup |
+| < `HA_DISK_CRITICAL_GB` (default 3 GB) | Pueo | `DiskCriticalError`; repair pipeline aborted |
+| < 1 GB | HA Supervisor | All Supervisor operations hard-blocked, including `ha backups new` |
 
 **Before implementing:** Run `ha host info` on the live HA instance and lock in the exact JSON field names for `disk_free`, `disk_total`, `memory_free`, `memory_total`. HAOS field names have changed across versions.
 
@@ -94,7 +115,7 @@ After `execute_remote_backup()` confirms a slug, SFTP-pull the `.tar` file to Pu
 
 - `poll_disk_and_memory(ssh_client)` in `ha_agent_advanced.py`: runs `ha host info --raw-json` over SSH; extracts `disk_free` (float GB) and computes `mem_available_mb` from `/proc/meminfo MemAvailable`
 - `DiskCriticalError` exception raised by `execute_remote_backup()` when `disk_free < HA_DISK_CRITICAL_GB`; polling loop surfaces HITL dashboard cards for WARN thresholds
-- Config keys added: `RESOURCE_POLL_INTERVAL_SECONDS` (300), `HA_DISK_WARN_GB` (5), `HA_DISK_CRITICAL_GB` (2), `HA_MEM_WARN_MB` (256)
+- Config keys added: `RESOURCE_POLL_INTERVAL_SECONDS` (300), `HA_DISK_WARN_GB` (5), `HA_DISK_CRITICAL_GB` (3), `HA_MEM_WARN_MB` (256)
 - Verified `ha host info` field names on live HAOS 18.1: `disk_free`, `disk_total`, `disk_used` (float GB); memory from `/proc/meminfo` (no memory fields in `ha host info`)
 
 ### Implementation notes (item 30, 2026-07-24) — PR #62
