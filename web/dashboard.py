@@ -884,11 +884,16 @@ async def _execute_cloud_escalation(
             notifier=notifier,
         )
         registry = build_ha_tool_registry()
+        from config import DB_PATH as _DB_PATH
+
         loop = AgentLoop(
             llm_client=claude_client,
             tool_executor=executor,
             tool_registry=registry,
             model=cloud_model,
+            trigger="escalated",
+            db_path=_DB_PATH,
+            escalated=True,
         )
 
         if not initial_context:

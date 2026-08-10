@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -111,6 +112,9 @@ class AgentLoop:
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
         terminal_tool_name: str = "finish_repair",
         step_callback: Optional[Callable[["AgentStep"], None]] = None,
+        trigger: str = "manual",
+        db_path: Optional[str] = None,
+        escalated: bool = False,
     ) -> None:
         if model is _UNSET:
             from utils.llm_factory import _default_model_for_provider
@@ -125,6 +129,78 @@ class AgentLoop:
         self._max_wall_seconds = max_wall_seconds
         self._terminal_tool_name = terminal_tool_name
         self._step_callback = step_callback
+        self._trigger = trigger
+        self._db_path = db_path
+        self._escalated = escalated
+
+    def _build_episode(
+        self,
+        steps: list[AgentStep],
+        episode_stub: Optional[dict],
+        start_wall: float,
+    ) -> dict[str, Any]:
+        """Extract structured episode data from tool call history."""
+        _DIAGNOSTIC_TOOLS = {"read_config", "read_logs", "read_file"}
+        symptoms: list[str] = []
+        fix_applied: Optional[str] = None
+        verification_result = True
+
+        for step in steps:
+            name = step.tool_call.name
+            if name in _DIAGNOSTIC_TOOLS and step.tool_result.success:
+                out = (step.tool_result.output or "").strip()
+                if out:
+                    symptoms.append(out[:200])
+            elif name == "apply_fix":
+                fix_applied = step.tool_call.arguments.get("yaml_content")
+            elif name == "verify_fix":
+                verification_result = step.tool_result.success
+
+        summary = (episode_stub or {}).get("summary", "")
+        hypothesis_chain = [summary] if summary else []
+
+        return {
+            "symptoms": symptoms,
+            "hypothesis_chain": hypothesis_chain,
+            "fix_applied": fix_applied,
+            "verification_result": verification_result,
+            "duration_seconds": round(time.monotonic() - start_wall, 2),
+        }
+
+    def _record_episode(
+        self,
+        steps: list[AgentStep],
+        episode_stub: Optional[dict],
+        start_wall: float,
+    ) -> str:
+        """Serialize a RepairEpisode to SQLite and return its ID."""
+        from utils.repair_episode import RepairEpisode, serialize_episode
+
+        data = self._build_episode(steps, episode_stub, start_wall)
+        episode = RepairEpisode(
+            id=str(uuid.uuid4()),
+            trigger=self._trigger,
+            symptoms=data["symptoms"],
+            tool_sequence=[step.tool_call for step in steps],
+            hypothesis_chain=data["hypothesis_chain"],
+            fix_applied=data["fix_applied"],
+            verification_result=data["verification_result"],
+            model_used=self._model,
+            escalated=self._escalated,
+            duration_seconds=data["duration_seconds"],
+        )
+        if self._db_path is None:
+            return (
+                episode.id
+            )  # unreachable: _record_episode only called when db_path set
+        serialize_episode(self._db_path, episode)
+        log.info(
+            "repair_episode_recorded",
+            episode_id=episode.id,
+            trigger=self._trigger,
+            fix_applied=episode.fix_applied is not None,
+        )
+        return episode.id
 
     async def run(self, initial_context: str) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
@@ -168,10 +244,19 @@ class AgentLoop:
             steps=len(steps),
             elapsed=round(time.monotonic() - start_time, 2),
         )
+
+        episode_id: Optional[str] = None
+        if outcome == "success" and self._db_path is not None:
+            try:
+                episode_id = self._record_episode(steps, episode_stub, start_time)
+            except Exception as exc:  # nosec B110
+                log.error("repair_episode_record_failed", error=str(exc))
+
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
             episode_stub=episode_stub,
+            episode_id=episode_id,
         )
 
     async def _loop_body(

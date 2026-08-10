@@ -26,12 +26,16 @@ class LLMTrace:
     user_prompt: str
     raw_response: str
     timestamp: int = field(default_factory=lambda: int(time.time()))
+    episode_id: str | None = None
 
     def as_dict(self) -> dict:
-        return {
+        result: dict = {
             "model": self.model,
             "system_prompt": _truncate(self.system_prompt),
             "user_prompt": _truncate(self.user_prompt),
             "raw_response": self.raw_response,
             "timestamp": self.timestamp,
         }
+        if self.episode_id is not None:
+            result["episode_id"] = self.episode_id
+        return result

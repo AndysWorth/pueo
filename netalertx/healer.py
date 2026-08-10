@@ -196,6 +196,8 @@ class NetAlertXHealer:
             tool_executor=executor,
             tool_registry=registry,
             model=OLLAMA_MODEL,
+            trigger="netalertx",
+            db_path=self._db_path,
         )
 
         initial_context = (

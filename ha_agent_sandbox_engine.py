@@ -565,6 +565,8 @@ async def main(
         llm_client=_llm,
         tool_executor=executor,
         tool_registry=registry,
+        trigger="ha_log",
+        db_path=DB_PATH,
     )
 
     initial_context = (
