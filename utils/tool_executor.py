@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import config as _config_mod
 from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH, OLLAMA_MODEL
 from utils.logging import get_correlation_id, get_logger
 from utils.tool_registry import ToolCall, ToolResult
@@ -169,6 +170,8 @@ class ToolExecutor:
                     args.get("parameters_schema", ""),
                     args.get("code", ""),
                 )
+            if name == "switch_model":
+                return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
@@ -784,6 +787,61 @@ class ToolExecutor:
         except Exception as exc:
             return ToolResult(
                 tool_name="query_netalertx", success=False, output="", error=str(exc)
+            )
+
+    async def _switch_model(self, model_name: Optional[str]) -> ToolResult:
+        """Auto-select or explicitly set the active Ollama model."""
+        from utils.hardware import (
+            apply_model_selection,
+            detect_local_hardware,
+            list_ollama_models,
+            recommend_model,
+            select_best_model,
+        )
+
+        previous = _config_mod.OLLAMA_MODEL
+        try:
+            if model_name:
+                available = await asyncio.to_thread(list_ollama_models)
+                names = [m.name for m in available]
+                if model_name not in names:
+                    return ToolResult(
+                        tool_name="switch_model",
+                        success=False,
+                        output="",
+                        error=f"Model {model_name!r} is not installed. "
+                        f"Installed: {', '.join(names) or 'none'}",
+                    )
+                selected = model_name
+            else:
+                profile = await asyncio.to_thread(detect_local_hardware)
+                available = await asyncio.to_thread(list_ollama_models)
+                candidate = recommend_model(profile, available)
+                if candidate is None:
+                    return ToolResult(
+                        tool_name="switch_model",
+                        success=False,
+                        output="",
+                        error="No suitable tools-capable model found for this hardware.",
+                    )
+                selected = candidate
+
+            await asyncio.to_thread(apply_model_selection, selected)
+            profile = await asyncio.to_thread(detect_local_hardware)
+            result = {
+                "previous_model": previous,
+                "selected_model": selected,
+                "hardware": {"chip": profile.chip, "ram_gb": profile.ram_gb},
+                "auto_selected": model_name is None,
+            }
+            import json as _json
+
+            return ToolResult(
+                tool_name="switch_model", success=True, output=_json.dumps(result)
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="switch_model", success=False, output="", error=str(exc)
             )
 
     async def _restart_netalertx(self) -> ToolResult:

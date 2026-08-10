@@ -275,6 +275,32 @@ def _migrate_v17(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v18(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hardware_profile (
+            id          INTEGER PRIMARY KEY,
+            chip        TEXT    NOT NULL DEFAULT 'Unknown',
+            arch        TEXT    NOT NULL DEFAULT 'unknown',
+            ram_gb      REAL    NOT NULL DEFAULT 0,
+            cpu_cores   INTEGER NOT NULL DEFAULT 0,
+            detected_at TEXT    NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ollama_model_cache (
+            model_name     TEXT PRIMARY KEY,
+            size_gb        REAL    NOT NULL DEFAULT 0,
+            has_tools      INTEGER NOT NULL DEFAULT 0,
+            context_length INTEGER NOT NULL DEFAULT 0,
+            last_seen_at   TEXT    NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -293,6 +319,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (15, _migrate_v15),
     (16, _migrate_v16),
     (17, _migrate_v17),
+    (18, _migrate_v18),
 ]
 
 
@@ -314,6 +341,75 @@ def init_local_database() -> None:
                     cursor.execute("UPDATE schema_version SET version = ?", (version,))
                 current = version
         conn.commit()
+
+
+def store_hardware_profile(
+    chip: str, arch: str, ram_gb: float, cpu_cores: int, detected_at: str
+) -> None:
+    """Persist the local hardware profile to SQLite (replaces any prior row)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM hardware_profile")
+        conn.execute(
+            "INSERT INTO hardware_profile (chip, arch, ram_gb, cpu_cores, detected_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (chip, arch, ram_gb, cpu_cores, detected_at),
+        )
+        conn.commit()
+
+
+def load_hardware_profile() -> dict:
+    """Load the most recently stored hardware profile from SQLite."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT chip, arch, ram_gb, cpu_cores, detected_at FROM hardware_profile LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return {}
+    return {
+        "chip": row[0],
+        "arch": row[1],
+        "ram_gb": row[2],
+        "cpu_cores": row[3],
+        "detected_at": row[4],
+    }
+
+
+def store_model_cache(models: list[dict]) -> None:
+    """Upsert Ollama model info into the cache table."""
+    with sqlite3.connect(DB_PATH) as conn:
+        for m in models:
+            conn.execute(
+                "INSERT OR REPLACE INTO ollama_model_cache"
+                " (model_name, size_gb, has_tools, context_length, last_seen_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    m["name"],
+                    m["size_gb"],
+                    int(m["has_tools"]),
+                    m["context_length"],
+                    m["last_seen_at"],
+                ),
+            )
+        conn.commit()
+
+
+def load_model_cache() -> list[dict]:
+    """Load cached Ollama model info from SQLite."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT model_name, size_gb, has_tools, context_length, last_seen_at"
+            " FROM ollama_model_cache ORDER BY size_gb DESC"
+        ).fetchall()
+    return [
+        {
+            "name": r[0],
+            "size_gb": r[1],
+            "has_tools": bool(r[2]),
+            "context_length": r[3],
+            "last_seen_at": r[4],
+        }
+        for r in rows
+    ]
 
 
 def record_state_memory(

@@ -180,6 +180,50 @@ async def supervisor_main(config_path: Path) -> None:
     except Exception:  # nosec B110 — reconcile/offload failure must not block startup
         pass
 
+    # Detect local hardware and populate the model cache; optionally auto-select model
+    try:
+        from utils.hardware import (
+            detect_local_hardware,
+            list_ollama_models,
+            select_best_model,
+        )
+        import asyncio as _asyncio
+
+        _profile = await _asyncio.to_thread(detect_local_hardware)
+        _models = await _asyncio.to_thread(list_ollama_models)
+        ha_agent_advanced.store_hardware_profile(
+            chip=_profile.chip,
+            arch=_profile.arch,
+            ram_gb=_profile.ram_gb,
+            cpu_cores=_profile.cpu_cores,
+            detected_at=_profile.detected_at,
+        )
+        ha_agent_advanced.store_model_cache(
+            [
+                {
+                    "name": m.name,
+                    "size_gb": m.size_gb,
+                    "has_tools": m.has_tools,
+                    "context_length": m.context_length,
+                    "last_seen_at": m.last_seen_at,
+                }
+                for m in _models
+            ]
+        )
+        if cfg.OLLAMA_MODEL_AUTO:
+            _best = await _asyncio.to_thread(select_best_model)
+            if _best != cfg.OLLAMA_MODEL:
+                from utils.logging import get_logger as _get_logger
+
+                _get_logger("main").info(
+                    "model_auto_switch",
+                    previous=cfg.OLLAMA_MODEL,
+                    selected=_best,
+                )
+                cfg.OLLAMA_MODEL = _best
+    except Exception:  # nosec B110 — hardware detection must not block startup
+        pass
+
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)
     set_supervisor_instance(supervisor)

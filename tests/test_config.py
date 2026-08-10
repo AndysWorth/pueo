@@ -155,6 +155,19 @@ class TestRateLimiterConfig:
         assert config.REPAIR_COOLDOWN_SECONDS == 120
         assert config.MAX_REPAIRS_PER_HOUR == 5
 
+    def test_ollama_model_auto_default_false(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_MODEL_AUTO is False
+
+    def test_ollama_model_auto_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"ollama": {"model_auto": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_MODEL_AUTO is True
+
 
 # ── utils/logging.py ─────────────────────────────────────────────────────────────
 
