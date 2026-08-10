@@ -45,6 +45,7 @@ class AgentLoopResult(BaseModel):
     outcome: AgentLoopOutcome
     steps: list[AgentStep] = []
     episode_stub: dict[str, Any] | None = None
+    episode_id: str | None = None
 
 
 class ToolDefinition(BaseModel):

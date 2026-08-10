@@ -895,6 +895,28 @@ class TestLLMTrace:
             "timestamp",
         }
 
+    def test_episode_id_included_in_as_dict_when_set(self):
+        from utils.llm_trace import LLMTrace
+
+        trace = LLMTrace(
+            model="m",
+            system_prompt="sp",
+            user_prompt="up",
+            raw_response="r",
+            episode_id="abc-123",
+        )
+        d = trace.as_dict()
+        assert d["episode_id"] == "abc-123"
+
+    def test_episode_id_absent_from_as_dict_when_none(self):
+        from utils.llm_trace import LLMTrace
+
+        trace = LLMTrace(
+            model="m", system_prompt="sp", user_prompt="up", raw_response="r"
+        )
+        d = trace.as_dict()
+        assert "episode_id" not in d
+
     def test_system_prompt_truncated_in_as_dict(self):
         from utils.llm_trace import LLMTrace
 

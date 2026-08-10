@@ -4614,3 +4614,241 @@ class TestSerializeAndLoadEpisodes:
         results = load_episodes(db_path)
         assert len(results[0].tool_sequence) == 2
         assert results[0].tool_sequence[1].name == "apply_fix"
+
+
+# ── AgentLoop episode recording hook (item 78) ───────────────────────────────
+
+
+class TestAgentLoopEpisodeRecording:
+    """Serialization hook: AgentLoop writes RepairEpisode on finish_repair."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def _make_loop(
+        self,
+        llm,
+        db_path=None,
+        trigger="ha_log",
+        escalated=False,
+    ):
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import build_ha_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            trigger=trigger,
+            db_path=db_path,
+            escalated=escalated,
+        )
+
+    def _finish_call(self, summary="Done", action_taken="no_fix_needed"):
+        return {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_repair",
+                        "arguments": {
+                            "summary": summary,
+                            "action_taken": action_taken,
+                        },
+                    }
+                }
+            ]
+        }
+
+    def test_episode_written_on_success(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient([self._finish_call()])
+        loop = self._make_loop(llm, db_path=db_path)
+        result = asyncio.run(loop.run("Analyze HA config."))
+
+        assert result.outcome == "success"
+        episodes = load_episodes(db_path)
+        assert len(episodes) == 1
+
+    def test_episode_id_returned_in_result(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient([self._finish_call()])
+        loop = self._make_loop(llm, db_path=db_path)
+        result = asyncio.run(loop.run("Analyze HA config."))
+
+        stored = load_episodes(db_path)
+        assert result.episode_id is not None
+        assert result.episode_id == stored[0].id
+
+    def test_no_episode_without_db_path(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient([self._finish_call()])
+        loop = self._make_loop(llm, db_path=None)
+        result = asyncio.run(loop.run("Analyze HA config."))
+
+        assert result.outcome == "success"
+        assert result.episode_id is None
+        assert len(load_episodes(db_path)) == 0
+
+    def test_trigger_stored(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient([self._finish_call()])
+        loop = self._make_loop(llm, db_path=db_path, trigger="netalertx")
+        asyncio.run(loop.run("Diagnose NetAlertX."))
+
+        assert load_episodes(db_path)[0].trigger == "netalertx"
+
+    def test_escalated_flag_stored(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient([self._finish_call()])
+        loop = self._make_loop(llm, db_path=db_path, escalated=True)
+        asyncio.run(loop.run("Escalated repair."))
+
+        assert load_episodes(db_path)[0].escalated is True
+
+    def test_hypothesis_chain_from_summary(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        llm = FakeToolCallingLLMClient(
+            [self._finish_call(summary="Found stale sensor config")]
+        )
+        loop = self._make_loop(llm, db_path=db_path)
+        asyncio.run(loop.run("Analyze HA config."))
+
+        ep = load_episodes(db_path)[0]
+        assert ep.hypothesis_chain == ["Found stale sensor config"]
+
+    def test_build_episode_extracts_fix_applied(self):
+        """_build_episode captures yaml_content from apply_fix step."""
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import (
+            AgentStep,
+            ToolCall,
+            ToolResult,
+            build_ha_tool_registry,
+        )
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient([]),
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(),
+                notifier=FakeNotifier(),
+            ),
+            tool_registry=build_ha_tool_registry(),
+        )
+        fix_yaml = "homeassistant:\n  name: Home\n"
+        steps = [
+            AgentStep(
+                step_number=1,
+                tool_call=ToolCall(
+                    name="apply_fix",
+                    arguments={"yaml_content": fix_yaml, "description": "Fix it"},
+                ),
+                tool_result=ToolResult(
+                    tool_name="apply_fix", success=True, output="Applied"
+                ),
+                timestamp=0.1,
+            ),
+            AgentStep(
+                step_number=2,
+                tool_call=ToolCall(
+                    name="finish_repair",
+                    arguments={"summary": "Fixed", "action_taken": "fixed"},
+                ),
+                tool_result=ToolResult(
+                    tool_name="finish_repair", success=True, output="Done"
+                ),
+                timestamp=0.2,
+            ),
+        ]
+        import time
+
+        data = loop._build_episode(
+            steps, {"summary": "Fixed the config"}, time.monotonic() - 1.0
+        )
+        assert data["fix_applied"] == fix_yaml
+
+    def test_build_episode_extracts_symptoms_from_read_logs(self):
+        """_build_episode includes read_logs output in symptoms."""
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import (
+            AgentStep,
+            ToolCall,
+            ToolResult,
+            build_ha_tool_registry,
+        )
+        from utils.ollama_client import FakeToolCallingLLMClient
+        import time
+
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient([]),
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(),
+                notifier=FakeNotifier(),
+            ),
+            tool_registry=build_ha_tool_registry(),
+        )
+        log_output = "ERROR sensor.pv_power unavailable"
+        steps = [
+            AgentStep(
+                step_number=1,
+                tool_call=ToolCall(name="read_logs", arguments={"lines": 10}),
+                tool_result=ToolResult(
+                    tool_name="read_logs", success=True, output=log_output
+                ),
+                timestamp=0.1,
+            ),
+        ]
+        data = loop._build_episode(
+            steps, {"summary": "Sensor down"}, time.monotonic() - 0.5
+        )
+        assert log_output[:200] in data["symptoms"]
+
+    def test_no_episode_on_exhausted_outcome(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.repair_episode import load_episodes
+
+        # Empty sequence → exhausted after 2 plain-text responses
+        llm = FakeToolCallingLLMClient([{"content": "hmm"}, {"content": "hmm again"}])
+        loop = self._make_loop(llm, db_path=db_path)
+        result = asyncio.run(loop.run("Analyze."))
+
+        assert result.outcome == "exhausted"
+        assert result.episode_id is None
+        assert len(load_episodes(db_path)) == 0
