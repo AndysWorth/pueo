@@ -325,6 +325,16 @@ GET_HA_PROFILE = ToolDefinition(
     parameters={"type": "object", "properties": {}, "required": []},
 )
 
+GET_DISK_USAGE = ToolDefinition(
+    name="get_disk_usage",
+    description=(
+        "Fetch the current HA disk usage breakdown: total/free space and per-path "
+        "sizes for backups, config & DB, addon data, and shared storage. "
+        "Call this first when answering any question about disk space or storage."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
 FINISH_CHAT = ToolDefinition(
     name="finish_chat",
     description=(
@@ -520,6 +530,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         REMEMBER,
         RECALL,
         GET_HA_PROFILE,
+        GET_DISK_USAGE,
         READ_SOURCE,
         PROPOSE_PATCH,
         SANDBOX_CODE,

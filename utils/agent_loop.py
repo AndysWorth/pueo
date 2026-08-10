@@ -67,15 +67,27 @@ TYPICAL FLOW: read_config / read_logs → (apply_fix if broken) → finish_repai
 """
 
 _CHAT_SYSTEM_PROMPT = """\
-You are Pueo, a Home Assistant assistant. Use tools to look up live state,
-answer questions, and investigate problems. Use remember/recall to store and
-retrieve context across sessions. Use read_source, propose_patch, sandbox_code,
-and add_tool to build new capabilities when the user asks.
+You are Pueo, a Home Assistant assistant. You have tools to check live HA
+state, disk usage, logs, config, backups, and more. Use remember/recall to
+store and retrieve context across sessions.
 
-MANDATORY: Always respond by calling a tool — never return plain text.
-For every question, including general ones you can answer from knowledge:
-  call finish_chat(summary="<your answer here>")
-Do not ask clarifying questions. Answer what was asked and call finish_chat.
+MANDATORY RULES — follow exactly:
+1. Always respond by calling a tool — never return plain text.
+2. Always end by calling finish_chat with a complete, helpful answer.
+3. For questions about HA state (disk, backups, config, logs, updates, devices):
+   use investigative tools FIRST, then finish_chat with a data-driven answer.
+4. For general knowledge questions not requiring live HA data:
+   call finish_chat directly with your answer.
+
+DISK SPACE QUESTIONS:
+  1. Call get_disk_usage to see the actual per-path breakdown.
+  2. Optionally call run_ha_command("ha backups list") for individual backup details.
+  3. Call finish_chat with specific, actionable advice based on the real numbers.
+
+OTHER INVESTIGATION FLOWS:
+  read_config / read_logs → finish_chat
+  run_ha_command → finish_chat
+  recall / remember → finish_chat
 """
 
 
@@ -202,7 +214,11 @@ class AgentLoop:
         )
         return episode.id
 
-    async def run(self, initial_context: str) -> AgentLoopResult:
+    async def run(
+        self,
+        initial_context: str,
+        initial_messages: Optional[list[dict]] = None,
+    ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
         The loop drives the model with the tool registry until one of:
@@ -210,13 +226,24 @@ class AgentLoop:
         - tool call budget exhausted → outcome "exhausted"
         - wall clock exceeded → outcome "timeout"
         - apply_fix returned failure → outcome "fix_failed"
+
+        Parameters
+        ----------
+        initial_context:
+            The current user message / task description.
+        initial_messages:
+            Optional prior conversation history as {"role", "content"} dicts.
+            Inserted between the system prompt and the current user message so
+            the model has proper multi-turn context.
         """
         self._executor.reset()
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": initial_context},
         ]
+        if initial_messages:
+            messages.extend(initial_messages)
+        messages.append({"role": "user", "content": initial_context})
         tools = self._registry.get_ollama_tools()
         steps: list[AgentStep] = []
         tool_call_count = 0

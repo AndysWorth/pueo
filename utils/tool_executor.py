@@ -152,6 +152,8 @@ class ToolExecutor:
                 return await self._recall(args.get("query", ""))
             if name == "get_ha_profile":
                 return await self._get_ha_profile()
+            if name == "get_disk_usage":
+                return await self._get_disk_usage()
             if name == "read_source":
                 return await self._read_source(args.get("path", ""))
             if name == "propose_patch":
@@ -361,6 +363,45 @@ class ToolExecutor:
             tool_name="get_ha_profile",
             success=True,
             output=json.dumps(dataclasses.asdict(self._ha_profile), indent=2),
+        )
+
+    async def _get_disk_usage(self) -> ToolResult:
+        """Return disk breakdown — use cached if fresh enough, else fetch via SSH."""
+        import time
+
+        from utils.disk_usage import fetch_disk_breakdown, get_disk_breakdown
+
+        cached = get_disk_breakdown()
+        age = time.time() - (cached.fetched_at if cached is not None else 0)
+        if cached is not None and age < 300:
+            breakdown = cached
+        else:
+            breakdown = await fetch_disk_breakdown(self._ha_ssh)
+
+        lines = [
+            f"Disk: {breakdown.disk_used_gb:.1f} GB used / "
+            f"{breakdown.disk_total_gb:.1f} GB total "
+            f"({breakdown.disk_used_pct:.1f}% full, "
+            f"{breakdown.disk_free_gb:.1f} GB free)",
+            "",
+        ]
+        for section in breakdown.sections:
+            if section.items:
+                lines.append(f"{section.title}: {section.total_human}")
+                for item in section.items[:10]:
+                    lines.append(
+                        f"  {item.name}: {item.size_human} ({item.pct_of_section:.0f}%)"
+                    )
+                lines.append("")
+        if breakdown.container_images_estimated_gb is not None:
+            lines.append(
+                f"OS + container images: ~{breakdown.container_images_estimated_gb:.1f} GB"
+                " (estimated)"
+            )
+        return ToolResult(
+            tool_name="get_disk_usage",
+            success=True,
+            output="\n".join(lines),
         )
 
     # ------------------------------------------------------------------
