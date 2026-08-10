@@ -340,15 +340,26 @@ class AgentLoop:
                         content=content[:120],
                     )
                     messages.append({"role": "assistant", "content": content or ""})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Call {self._terminal_tool_name} NOW with your answer "
-                                f'in the "summary" field. Do not return plain text.'
-                            ),
-                        }
-                    )
+                    # When no tools have been called yet, nudging straight to
+                    # the terminal tool causes the model to skip investigation
+                    # and hallucinate answers.  Instead, demand any tool call
+                    # and let the system prompt guide which one to use first.
+                    if tool_call_count == 0:
+                        nudge = (
+                            "You must call a tool — do not return plain text. "
+                            "For questions requiring live HA data (disk, config, "
+                            "logs, backups), call the appropriate investigative tool "
+                            f"first (e.g. get_disk_usage, read_config, read_logs). "
+                            f"For general knowledge questions, call "
+                            f"{self._terminal_tool_name} with your answer in the "
+                            f'"summary" field.'
+                        )
+                    else:
+                        nudge = (
+                            f"Call {self._terminal_tool_name} NOW with your answer "
+                            f'in the "summary" field. Do not return plain text.'
+                        )
+                    messages.append({"role": "user", "content": nudge})
                     continue
 
             no_tool_streak = 0  # reset: we received tool calls this iteration

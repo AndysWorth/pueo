@@ -9095,6 +9095,147 @@ class TestAgentLoop:
         assert result.outcome == "success"
         assert len(result.steps) == 1  # only finish_repair counts as a step
 
+    def test_nudge_with_no_prior_tools_demands_investigation_first(self):
+        # When the model returns plain text and no tools have been called yet,
+        # the nudge should NOT tell it to call finish_repair immediately — it
+        # should demand an investigative tool call first so data isn't hallucinated.
+        #
+        # FakeToolCallingLLMClient stores a reference to the mutating messages
+        # list, so we use a custom client that snapshots messages at call time.
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolRegistry, ToolDefinition
+
+        responses = [
+            {"role": "assistant", "content": "Here is some advice."},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {
+                                "summary": "done",
+                                "action_taken": "no_fix_needed",
+                            },
+                        }
+                    }
+                ],
+            },
+        ]
+        snapshots: list[list[dict]] = []
+
+        class _CapturingClient:
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                snapshots.append(list(messages))  # snapshot at call time
+                return (
+                    responses.pop(0)
+                    if responses
+                    else {"role": "assistant", "content": ""}
+                )
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_CapturingClient(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=5,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("How much disk space is free?"))
+
+        # Second call receives the nudge as the final user message.
+        nudge_text = snapshots[1][-1]["content"]
+        # Must NOT skip investigation by jumping straight to the terminal tool.
+        assert "finish_repair NOW" not in nudge_text
+        # Must demand any tool call and mention investigative tools.
+        assert "investigative tool" in nudge_text
+
+    def test_nudge_after_prior_tools_directs_to_terminal_tool(self):
+        # When the model has already called at least one tool and then returns
+        # plain text, the nudge should direct it to call the terminal tool.
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolRegistry, ToolDefinition
+
+        responses = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}],
+            },
+            {"role": "assistant", "content": "Looks fine to me."},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {
+                                "summary": "done",
+                                "action_taken": "no_fix_needed",
+                            },
+                        }
+                    }
+                ],
+            },
+        ]
+        snapshots: list[list[dict]] = []
+
+        class _CapturingClient:
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                snapshots.append(list(messages))
+                return (
+                    responses.pop(0)
+                    if responses
+                    else {"role": "assistant", "content": ""}
+                )
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_CapturingClient(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=5,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("Check config"))
+
+        # Third call receives the nudge (injected after read_config result + plain text).
+        nudge_text = snapshots[2][-1]["content"]
+        assert "finish_repair NOW" in nudge_text
+
     def test_budget_exhaustion(self):
         # 6 read_config calls but max_tool_calls=5 → exhausted after 5
         call_sequence = [
