@@ -107,7 +107,7 @@ HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 _llm_cfg = _cfg.get("llm", {})
 _cloud_cfg = _cfg.get("cloud", {})
 LLM_PROVIDER: str = _llm_cfg.get("provider", "local")  # "local" | "cloud" | "both"
-CLOUD_MODEL: str = _cloud_cfg.get("model", "claude-sonnet-4-5")
+CLOUD_MODEL: str = _cloud_cfg.get("model", "claude-sonnet-5")
 CLOUD_MAX_COST_PER_INCIDENT_USD: float = float(
     _cloud_cfg.get("max_cost_per_incident_usd", 0.50)
 )
