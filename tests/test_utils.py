@@ -4463,3 +4463,154 @@ class TestDiskUsagePollerRun:
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
+
+
+# ── utils/repair_episode.py ──────────────────────────────────────────────────────
+
+import ha_agent_advanced as _haa_mod
+from utils.repair_episode import RepairEpisode, load_episodes, serialize_episode
+from utils.tool_registry import ToolCall
+
+
+def _make_episode(**overrides):
+    defaults = dict(
+        trigger="ha_log",
+        symptoms=["sensor went unavailable"],
+        tool_sequence=[ToolCall(name="read_logs", arguments={"lines": 50})],
+        hypothesis_chain=["log suggests sensor timeout"],
+        fix_applied="homeassistant:\n  name: Home\n",
+        verification_result=True,
+        model_used="qwen2.5-coder:7b",
+        escalated=False,
+        duration_seconds=4.2,
+    )
+    defaults.update(overrides)
+    return RepairEpisode(**defaults)
+
+
+class TestRepairEpisodeSchema:
+    def test_valid_construction(self):
+        ep = _make_episode()
+        assert ep.trigger == "ha_log"
+        assert ep.verification_result is True
+        assert len(ep.tool_sequence) == 1
+        assert ep.tool_sequence[0].name == "read_logs"
+
+    def test_missing_required_field_raises(self):
+        with pytest.raises(ValidationError):
+            RepairEpisode(
+                symptoms=[],
+                tool_sequence=[],
+                hypothesis_chain=[],
+                verification_result=True,
+                model_used="qwen2.5-coder:7b",
+                escalated=False,
+                duration_seconds=1.0,
+                # trigger is missing
+            )
+
+    def test_json_round_trip(self):
+        ep = _make_episode()
+        restored = RepairEpisode.model_validate_json(ep.model_dump_json())
+        assert restored.id == ep.id
+        assert restored.trigger == ep.trigger
+        assert restored.tool_sequence[0].name == ep.tool_sequence[0].name
+        assert restored.fix_applied == ep.fix_applied
+
+    def test_defaults_auto_assigned(self):
+        ep = _make_episode()
+        assert ep.id  # UUID assigned
+        assert ep.timestamp > 0
+
+    def test_fix_applied_optional(self):
+        ep = _make_episode(fix_applied=None)
+        assert ep.fix_applied is None
+
+
+class TestMigrationV17:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def test_repair_episodes_table_exists(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='repair_episodes'"
+            ).fetchall()
+        assert rows, "repair_episodes table not created by migration v17"
+
+    def test_repair_episodes_columns(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(repair_episodes)").fetchall()
+            }
+        expected = {
+            "id",
+            "timestamp",
+            "trigger",
+            "symptoms",
+            "tool_sequence",
+            "hypothesis_chain",
+            "fix_applied",
+            "verification_result",
+            "model_used",
+            "escalated",
+            "duration_seconds",
+        }
+        assert expected <= cols
+
+
+class TestSerializeAndLoadEpisodes:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def test_serialize_then_load_roundtrip(self, db_path):
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        results = load_episodes(db_path)
+        assert len(results) == 1
+        r = results[0]
+        assert r.id == ep.id
+        assert r.trigger == ep.trigger
+        assert r.symptoms == ep.symptoms
+        assert r.tool_sequence[0].name == ep.tool_sequence[0].name
+        assert r.fix_applied == ep.fix_applied
+        assert r.verification_result == ep.verification_result
+        assert r.model_used == ep.model_used
+        assert r.escalated == ep.escalated
+        assert abs(r.duration_seconds - ep.duration_seconds) < 1e-9
+
+    def test_load_since_filters_by_timestamp(self, db_path):
+        old = _make_episode(trigger="ha_log", timestamp=1000.0)
+        new = _make_episode(trigger="netalertx", timestamp=9_000_000_000.0)
+        serialize_episode(db_path, old)
+        serialize_episode(db_path, new)
+        results = load_episodes(db_path, since=5000.0)
+        assert len(results) == 1
+        assert results[0].trigger == "netalertx"
+
+    def test_null_fix_applied_survives_roundtrip(self, db_path):
+        ep = _make_episode(fix_applied=None)
+        serialize_episode(db_path, ep)
+        results = load_episodes(db_path)
+        assert results[0].fix_applied is None
+
+    def test_multiple_tool_calls_preserved(self, db_path):
+        ep = _make_episode(
+            tool_sequence=[
+                ToolCall(name="read_logs", arguments={"lines": 50}),
+                ToolCall(name="apply_fix", arguments={"yaml": "x: 1"}),
+            ]
+        )
+        serialize_episode(db_path, ep)
+        results = load_episodes(db_path)
+        assert len(results[0].tool_sequence) == 2
+        assert results[0].tool_sequence[1].name == "apply_fix"

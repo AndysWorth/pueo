@@ -279,6 +279,26 @@ def _migrate_v16(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v17(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repair_episodes (
+            id                  TEXT PRIMARY KEY,
+            timestamp           REAL NOT NULL,
+            trigger             TEXT NOT NULL,
+            symptoms            TEXT NOT NULL,
+            tool_sequence       TEXT NOT NULL,
+            hypothesis_chain    TEXT NOT NULL,
+            fix_applied         TEXT,
+            verification_result INTEGER NOT NULL,
+            model_used          TEXT NOT NULL,
+            escalated           INTEGER NOT NULL,
+            duration_seconds    REAL NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -296,6 +316,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (14, _migrate_v14),
     (15, _migrate_v15),
     (16, _migrate_v16),
+    (17, _migrate_v17),
 ]
 
 
