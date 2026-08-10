@@ -1904,6 +1904,56 @@ async def _run_chat_loop(
         )
 
 
+@app.get("/episodes", response_class=HTMLResponse)
+async def episodes_tab(
+    request: Request,
+    trigger: str = Query(default=""),
+    outcome: str = Query(default=""),
+) -> HTMLResponse:
+    from utils.repair_episode import load_episodes
+
+    episodes = load_episodes(DB_PATH)
+    if trigger:
+        episodes = [ep for ep in episodes if ep.trigger == trigger]
+    if outcome == "passed":
+        episodes = [ep for ep in episodes if ep.verification_result]
+    elif outcome == "failed":
+        episodes = [ep for ep in episodes if not ep.verification_result]
+    return templates.TemplateResponse(
+        request,
+        "episodes.html",
+        {
+            "episodes": episodes,
+            "filter_trigger": trigger,
+            "filter_outcome": outcome,
+        },
+    )
+
+
+@app.get("/episodes/export")
+async def export_episodes(
+    since: str = Query(default=""),
+) -> StreamingResponse:
+    """Return anonymized YAML of all episodes (optionally filtered by --since date)."""
+    from datetime import datetime
+
+    from utils.repair_episode import export_episodes_yaml, load_episodes
+
+    since_ts = None
+    if since:
+        try:
+            since_ts = datetime.fromisoformat(since).timestamp()
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date: {since!r}")
+    episodes = load_episodes(DB_PATH, since=since_ts)
+    content = export_episodes_yaml(episodes) if episodes else "# No episodes found.\n"
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": "attachment; filename=repair-episodes.yaml"},
+    )
+
+
 def run_dashboard() -> None:
     import uvicorn
 

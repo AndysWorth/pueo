@@ -4815,3 +4815,142 @@ class TestDiskRoutes:
         assert response.status_code == 500
         assert response.json()["ok"] is False
         assert "SSH connection refused" in response.json()["error"]
+
+
+# ── Episodes tab ─────────────────────────────────────────────────────────────────
+
+
+class TestEpisodesTab:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert_episode(self, db_path, **overrides):
+        import json
+        import time
+        import sqlite3
+
+        defaults = dict(
+            id="ep-test-1",
+            timestamp=time.time(),
+            trigger="ha_log",
+            symptoms=json.dumps(["Error in sensor"]),
+            tool_sequence=json.dumps([{"name": "read_config", "arguments": {}}]),
+            hypothesis_chain=json.dumps(["Config may be wrong"]),
+            fix_applied=None,
+            verification_result=1,
+            model_used="qwen2.5-coder:7b",
+            escalated=0,
+            duration_seconds=12.5,
+        )
+        defaults.update(overrides)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO repair_episodes"
+                " (id, timestamp, trigger, symptoms, tool_sequence, hypothesis_chain,"
+                "  fix_applied, verification_result, model_used, escalated, duration_seconds)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    defaults["id"],
+                    defaults["timestamp"],
+                    defaults["trigger"],
+                    defaults["symptoms"],
+                    defaults["tool_sequence"],
+                    defaults["hypothesis_chain"],
+                    defaults["fix_applied"],
+                    defaults["verification_result"],
+                    defaults["model_used"],
+                    defaults["escalated"],
+                    defaults["duration_seconds"],
+                ),
+            )
+            conn.commit()
+
+    def test_episodes_route_returns_200(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes")
+        assert resp.status_code == 200
+
+    def test_empty_episodes_shows_message(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes").text
+        assert "no repair episodes" in html.lower()
+
+    def test_episode_row_renders_trigger_and_model(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes").text
+        assert "ha_log" in html
+        assert "qwen2.5-coder:7b" in html
+
+    def test_trigger_filter_limits_results(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_episode(db_path, id="ep1", trigger="ha_log")
+        self._insert_episode(db_path, id="ep2", trigger="netalertx")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes?trigger=netalertx").text
+        assert "netalertx" in html
+        assert html.count("ha_log") <= 2  # may appear in select options
+
+    def test_export_endpoint_returns_yaml(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+        import yaml
+
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes/export")
+        assert resp.status_code == 200
+        assert "application/x-yaml" in resp.headers["content-type"]
+        parsed = yaml.safe_load(resp.content)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+
+    def test_export_endpoint_no_episodes_returns_comment(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes/export")
+        assert resp.status_code == 200
+        assert b"No episodes" in resp.content
+
+    def test_export_endpoint_since_filter(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+        import yaml
+
+        self._insert_episode(db_path, id="old", timestamp=1000.0)
+        self._insert_episode(db_path, id="new", timestamp=9999999999.0)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes/export?since=2030-01-01")
+        parsed = yaml.safe_load(resp.content)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+        assert parsed[0]["id"] == "new"
+
+    def test_export_endpoint_invalid_date_returns_400(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes/export?since=not-a-date")
+        assert resp.status_code == 400
