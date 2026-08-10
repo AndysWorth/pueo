@@ -14,6 +14,7 @@ home_assistant:
 
 ollama:
   model: "qwen2.5-coder:7b"          # Primary model for config analysis and repair
+  model_auto: false                   # If true, select the best-fit model for this hardware at startup
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
   # embed_model: "nomic-embed-text"   # Embedding model for RAG knowledge store (requires `ollama pull nomic-embed-text`)
 

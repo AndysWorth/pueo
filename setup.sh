@@ -122,8 +122,24 @@ else
     ok "Ollama is running"
 fi
 
-# Read model from existing config if present, else use default
-DEFAULT_MODEL="qwen2.5-coder:7b"
+# Detect hardware and recommend the best model for this machine
+RAM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || \
+    awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo 2>/dev/null || echo "0")
+RAM_GB=$(echo "$RAM_BYTES" | awk '{printf "%d", $1/1073741824}')
+CHIP=$(system_profiler SPHardwareDataType 2>/dev/null | \
+    awk -F'Chip: ' 'NF>1{print $2; exit}' | xargs 2>/dev/null || \
+    awk -F': ' '/model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "Unknown")
+info "Hardware: ${CHIP} — ${RAM_GB} GB RAM"
+
+if   [ "${RAM_GB}" -ge 48 ]; then RECOMMENDED_MODEL="qwen2.5-coder:32b"
+elif [ "${RAM_GB}" -ge 20 ]; then RECOMMENDED_MODEL="qwen2.5-coder:14b"
+elif [ "${RAM_GB}" -ge 10 ]; then RECOMMENDED_MODEL="qwen2.5-coder:7b"
+else                               RECOMMENDED_MODEL="qwen2.5-coder:7b"
+fi
+info "Recommended model for your hardware: ${RECOMMENDED_MODEL}"
+
+# Read model from existing config if present, else use hardware recommendation
+DEFAULT_MODEL="${RECOMMENDED_MODEL}"
 if [[ -f config.yaml ]]; then
     CONFIGURED_MODEL=$(grep "model:" config.yaml | head -1 | awk '{print $2}' | tr -d '"' || echo "$DEFAULT_MODEL")
 else
@@ -176,6 +192,11 @@ if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
 else
     ok "Using local Ollama inference (no cloud API required)"
 fi
+
+echo
+echo "  Pueo can automatically select the best Ollama model for your hardware"
+echo "  each time it starts. Useful as you add or remove larger models over time."
+ask "Auto-select best model at startup? (true/false)" "false" OLLAMA_MODEL_AUTO
 
 # ── 3. SSH Key ──────────────────────────────────────────────────────────────────
 hdr "3. SSH Key"
@@ -255,6 +276,17 @@ if $WRITE_CONFIG; then
     echo
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
     ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
+    if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
+        warn "Model ${OLLAMA_MODEL} is not installed locally."
+        read -rp "  Pull it now? [Y/n]: " pull_new_model
+        if [[ "${pull_new_model:-Y}" =~ ^[Yy] ]]; then
+            info "Pulling ${OLLAMA_MODEL} (this may take several minutes)..."
+            ollama pull "${OLLAMA_MODEL}"
+            ok "Model ${OLLAMA_MODEL} ready"
+        else
+            warn "Skipped. Run 'ollama pull ${OLLAMA_MODEL}' before starting Pueo."
+        fi
+    fi
     ask "Local SQLite database path"        "ha_agent_state.db"             DB_PATH
     ask "Log confidence threshold (0–1)"    "0.7"                           LOG_THRESHOLD
     ask "Self-healing enabled"              "true"                          SELF_HEALING
@@ -389,6 +421,7 @@ home_assistant:
 
 ollama:
   model: "${OLLAMA_MODEL}"
+  model_auto: ${OLLAMA_MODEL_AUTO}
   endpoint: "http://localhost:11434"
 
 llm:

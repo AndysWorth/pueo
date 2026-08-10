@@ -299,6 +299,32 @@ def _migrate_v17(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v18(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hardware_profile (
+            id INTEGER PRIMARY KEY,
+            chip TEXT NOT NULL DEFAULT 'Unknown',
+            arch TEXT NOT NULL DEFAULT 'unknown',
+            ram_gb REAL NOT NULL DEFAULT 0,
+            cpu_cores INTEGER NOT NULL DEFAULT 0,
+            detected_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ollama_model_cache (
+            model_name TEXT PRIMARY KEY,
+            size_gb REAL NOT NULL DEFAULT 0,
+            has_tools INTEGER NOT NULL DEFAULT 0,
+            context_length INTEGER NOT NULL DEFAULT 0,
+            last_seen_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -317,6 +343,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (15, _migrate_v15),
     (16, _migrate_v16),
     (17, _migrate_v17),
+    (18, _migrate_v18),
 ]
 
 

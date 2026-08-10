@@ -353,6 +353,29 @@ FINISH_CHAT = ToolDefinition(
     },
 )
 
+SWITCH_MODEL = ToolDefinition(
+    name="switch_model",
+    description=(
+        "Switch the active Ollama model used for reasoning. "
+        "Omit model_name to auto-select the best model for this hardware. "
+        "Pass model_name to switch to a specific installed model. "
+        "The change takes effect immediately and persists to config.yaml."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "model_name": {
+                "type": "string",
+                "description": (
+                    "Exact Ollama model name (e.g. 'qwen2.5-coder:32b'). "
+                    "Omit to auto-select based on hardware."
+                ),
+            }
+        },
+        "required": [],
+    },
+)
+
 # Code sandbox tools — ToolDefinitions defined here; executor methods in items 70–71.
 
 READ_SOURCE = ToolDefinition(
@@ -535,6 +558,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         PROPOSE_PATCH,
         SANDBOX_CODE,
         ADD_TOOL,
+        SWITCH_MODEL,
         FINISH_CHAT,
     ):
         reg.register(tool)

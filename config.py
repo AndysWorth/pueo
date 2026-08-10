@@ -34,6 +34,7 @@ HA_API_PORT: int = int(_ha.get("api_port", 8123))
 CONFIG_REMOTE_PATH: str = _ha.get("config_path", "/config/configuration.yaml")
 
 OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
+OLLAMA_MODEL_AUTO: bool = bool(_ollama.get("model_auto", False))
 OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")
 RAG_EMBED_MODEL: str = _ollama.get("embed_model", "nomic-embed-text")
 

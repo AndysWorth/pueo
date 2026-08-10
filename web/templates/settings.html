@@ -59,6 +59,34 @@
       {% endif %}
     </div>
     {% endif %}
+    {% if group.name == "Model Selection" %}
+    <div style="margin-bottom:0.85rem;font-size:0.82rem;color:#555;line-height:1.5;">
+      <strong>Hardware:</strong> {{ model_info.chip }} — {{ model_info.ram_gb }} GB RAM
+      {% if model_info.recommended %}
+      &nbsp;·&nbsp; <strong>Recommended:</strong>
+      <span style="color:#6366f1;font-weight:700;">{{ model_info.recommended }}</span>
+      {% endif %}
+    </div>
+    <div style="margin-bottom:0.85rem;">
+      <div class="param-label" style="margin-bottom:0.35rem;">Quick switch</div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+        <select id="model-quick-select" style="min-width:240px;">
+          {% for m in model_info.available %}
+          <option value="{{ m.name }}" {% if m.name == model_info.current %}selected{% endif %}>
+            {{ m.name }} ({{ "%.1f"|format(m.size_gb) }} GB{% if not m.has_tools %} — no tools{% endif %})
+          </option>
+          {% endfor %}
+          {% if not model_info.available %}
+          <option value="">— no models found —</option>
+          {% endif %}
+        </select>
+        <button class="btn-save" onclick="switchModel(document.getElementById('model-quick-select').value)">Switch to selected</button>
+        <button class="btn-save" style="background:#059669;" onclick="autoSelectModel()">Auto-select best</button>
+        <button class="btn-save" style="background:#6b7280;" onclick="refreshModelCache()">Refresh list</button>
+        <span id="model-switch-status" class="save-status"></span>
+      </div>
+    </div>
+    {% endif %}
     {% for p in group.params %}
     <div class="param-row">
       <div>
@@ -201,6 +229,62 @@
       });
   }
   window.serviceAction = serviceAction;
+
+  function _modelStatus(text, color) {
+    var el = document.getElementById('model-switch-status');
+    if (el) { el.textContent = text; el.style.color = color || '#333'; }
+  }
+
+  function switchModel(name) {
+    if (!name) { _modelStatus('no model selected', '#dc3545'); return; }
+    _modelStatus('switching…', '#666');
+    fetch('/model/switch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_name: name}),
+    })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(res) {
+      if (!res.ok) { _modelStatus(res.d.detail || 'error', '#dc3545'); return; }
+      _modelStatus('✓ switched to ' + res.d.model, '#28a745');
+      var inp = document.getElementById('input-ollama_model');
+      if (inp) inp.value = res.d.model;
+      setTimeout(function() { _modelStatus(''); }, 4000);
+    })
+    .catch(function() { _modelStatus('error', '#dc3545'); });
+  }
+
+  function autoSelectModel() {
+    _modelStatus('detecting…', '#666');
+    fetch('/model/switch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(res) {
+      if (!res.ok) { _modelStatus(res.d.detail || 'error', '#dc3545'); return; }
+      _modelStatus('✓ auto-selected ' + res.d.model, '#28a745');
+      var sel = document.getElementById('model-quick-select');
+      if (sel) { for (var i=0; i<sel.options.length; i++) { if (sel.options[i].value === res.d.model) { sel.selectedIndex = i; break; } } }
+      var inp = document.getElementById('input-ollama_model');
+      if (inp) inp.value = res.d.model;
+      setTimeout(function() { _modelStatus(''); }, 4000);
+    })
+    .catch(function() { _modelStatus('error', '#dc3545'); });
+  }
+
+  function refreshModelCache() {
+    _modelStatus('refreshing…', '#666');
+    fetch('/model/refresh-cache', {method: 'POST'})
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(res) {
+      if (!res.ok) { _modelStatus('error', '#dc3545'); return; }
+      _modelStatus('✓ found ' + res.d.count + ' models — reload to update list', '#28a745');
+      setTimeout(function() { location.reload(); }, 2000);
+    })
+    .catch(function() { _modelStatus('error', '#dc3545'); });
+  }
+
+  window.switchModel = switchModel;
+  window.autoSelectModel = autoSelectModel;
+  window.refreshModelCache = refreshModelCache;
 
   // SSE: flash confirmation when config_saved event arrives
   if (window.EventSource) {

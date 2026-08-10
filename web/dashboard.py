@@ -185,6 +185,25 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "group": "Notifications",
         "restart_required": False,
     },
+    # ── Model Selection ───────────────────────────────────────────────────────
+    "ollama_model": {
+        "yaml_section": "ollama",
+        "yaml_key": "model",
+        "config_attr": "OLLAMA_MODEL",
+        "val_type": "str",
+        "description": "Active Ollama model name for local inference",
+        "group": "Model Selection",
+        "restart_required": False,
+    },
+    "ollama_model_auto": {
+        "yaml_section": "ollama",
+        "yaml_key": "model_auto",
+        "config_attr": "OLLAMA_MODEL_AUTO",
+        "val_type": "bool",
+        "description": "Auto-select the best model for this hardware at startup",
+        "group": "Model Selection",
+        "restart_required": False,
+    },
     # ── LLM Provider (restart required) ──────────────────────────────────────
     "llm_provider": {
         "yaml_section": "llm",
@@ -1420,8 +1439,18 @@ def _build_settings_groups() -> list[dict]:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_tab(request: Request) -> HTMLResponse:
+    import asyncio as _asyncio
     import config as _config
+    from utils.hardware import (
+        detect_local_hardware,
+        list_ollama_models,
+        recommend_model,
+    )
     from utils.service import service_status
+
+    profile = await _asyncio.to_thread(detect_local_hardware)
+    available = await _asyncio.to_thread(list_ollama_models)
+    recommended = recommend_model(profile, available)
 
     return templates.TemplateResponse(
         request,
@@ -1430,6 +1459,16 @@ async def settings_tab(request: Request) -> HTMLResponse:
             "groups": _build_settings_groups(),
             "service": service_status(),
             "api_key_set": bool(_config.ANTHROPIC_API_KEY),
+            "model_info": {
+                "current": _config.OLLAMA_MODEL,
+                "chip": profile.chip,
+                "ram_gb": profile.ram_gb,
+                "recommended": recommended,
+                "available": [
+                    {"name": m.name, "size_gb": m.size_gb, "has_tools": m.has_tools}
+                    for m in sorted(available, key=lambda m: m.size_gb, reverse=True)
+                ],
+            },
         },
     )
 
@@ -1502,6 +1541,116 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
 
     return JSONResponse(
         {"ok": True, "restart_required": spec.get("restart_required", False)}
+    )
+
+
+@app.get("/model/status")
+async def model_status() -> JSONResponse:
+    """Return current model, hardware profile, available models, and recommendation."""
+    import asyncio as _asyncio
+    import config as _config
+    from utils.hardware import (
+        detect_local_hardware,
+        list_ollama_models,
+        recommend_model,
+    )
+
+    profile = await _asyncio.to_thread(detect_local_hardware)
+    available = await _asyncio.to_thread(list_ollama_models)
+    recommended = recommend_model(profile, available)
+    return JSONResponse(
+        {
+            "current_model": _config.OLLAMA_MODEL,
+            "model_auto": _config.OLLAMA_MODEL_AUTO,
+            "hardware": {
+                "chip": profile.chip,
+                "arch": profile.arch,
+                "ram_gb": profile.ram_gb,
+                "cpu_cores": profile.cpu_cores,
+            },
+            "available_models": [
+                {
+                    "name": m.name,
+                    "size_gb": m.size_gb,
+                    "has_tools": m.has_tools,
+                }
+                for m in sorted(available, key=lambda m: m.size_gb, reverse=True)
+            ],
+            "recommended": recommended,
+        }
+    )
+
+
+@app.post("/model/switch")
+async def model_switch(request: Request) -> JSONResponse:
+    """Switch the active Ollama model. POST body: {model_name?: str}."""
+    import asyncio as _asyncio
+    import config as _config
+    from utils.hardware import (
+        apply_model_selection,
+        detect_local_hardware,
+        list_ollama_models,
+        recommend_model,
+    )
+
+    body = (
+        await request.json()
+        if request.headers.get("content-type", "").startswith("application/json")
+        else {}
+    )
+    model_name: str | None = body.get("model_name") if body else None
+
+    if model_name:
+        available = await _asyncio.to_thread(list_ollama_models)
+        names = [m.name for m in available]
+        if model_name not in names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model {model_name!r} not installed. Available: {names}",
+            )
+        selected = model_name
+    else:
+        profile = await _asyncio.to_thread(detect_local_hardware)
+        available = await _asyncio.to_thread(list_ollama_models)
+        _candidate = recommend_model(profile, available)
+        if _candidate is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No suitable tools-capable model found for this hardware.",
+            )
+        selected = _candidate
+
+    previous = _config.OLLAMA_MODEL
+    await _asyncio.to_thread(apply_model_selection, selected)
+    return JSONResponse({"ok": True, "previous": previous, "model": selected})
+
+
+@app.post("/model/refresh-cache")
+async def model_refresh_cache() -> JSONResponse:
+    """Re-query Ollama and update the model cache in SQLite."""
+    import asyncio as _asyncio
+    from ha_agent_advanced import store_model_cache
+    from utils.hardware import list_ollama_models
+
+    models = await _asyncio.to_thread(list_ollama_models)
+    store_model_cache(
+        [
+            {
+                "name": m.name,
+                "size_gb": m.size_gb,
+                "has_tools": m.has_tools,
+                "context_length": m.context_length,
+                "last_seen_at": m.last_seen_at,
+            }
+            for m in models
+        ]
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "count": len(models),
+            "models": [m.name for m in models],
+        }
     )
 
 
