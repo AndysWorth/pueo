@@ -1836,19 +1836,13 @@ async def _run_chat_loop(
             }
         )
 
-    context_parts: list[str] = []
-    if history:
-        context_parts.append("[Prior conversation]")
-        for msg in history:
-            role = msg["role"]
-            content = (msg.get("content") or "").strip()
-            if role == "user":
-                context_parts.append(f"User: {content}")
-            elif role == "assistant":
-                context_parts.append(f"Pueo: {content}")
-        context_parts.append("")
-    context_parts.append(message)
-    initial_context = "\n".join(context_parts)
+    # Pass prior turns as structured messages so the model has proper
+    # multi-turn context rather than a flattened text block.
+    prior_messages = [
+        {"role": m["role"], "content": m.get("content") or ""}
+        for m in history
+        if m.get("role") in ("user", "assistant")
+    ]
 
     try:
         agent_loop = AgentLoop(
@@ -1861,7 +1855,7 @@ async def _run_chat_loop(
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
             step_callback=on_step,
         )
-        result = await agent_loop.run(initial_context)
+        result = await agent_loop.run(message, initial_messages=prior_messages or None)
 
         summary = result.episode_stub.get("summary", "") if result.episode_stub else ""
         if not summary:

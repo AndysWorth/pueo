@@ -265,6 +265,9 @@ class TestChatToolRegistry:
     def test_contains_add_tool(self):
         assert "add_tool" in self._registry
 
+    def test_contains_get_disk_usage(self):
+        assert "get_disk_usage" in self._registry
+
     def test_does_not_contain_finish_repair(self):
         assert "finish_repair" not in self._registry
 
@@ -729,3 +732,189 @@ class TestAddTool:
         result = asyncio.run(ex.execute(ToolCall(name="my_tool", arguments={})))
         assert result.success
         assert result.output == "result"
+
+
+# ---------------------------------------------------------------------------
+# TestGetDiskUsageTool
+# ---------------------------------------------------------------------------
+
+
+class TestGetDiskUsageTool:
+    """get_disk_usage returns a formatted breakdown using cached or fresh data."""
+
+    def _make_fake_breakdown(self):
+        from utils.disk_usage import DiskBreakdown, DiskItem, DiskSection
+
+        backup_item = DiskItem(
+            path="/backup/abc123.tar",
+            name="abc123.tar",
+            size_bytes=2 * 1024**3,
+            size_human="2.0 GB",
+            is_empty=False,
+            pct_of_section=100.0,
+        )
+        backups = DiskSection(
+            title="Backups",
+            items=[backup_item],
+            total_bytes=2 * 1024**3,
+            total_human="2.0 GB",
+            is_empty=False,
+        )
+        return DiskBreakdown(
+            sections=[backups],
+            disk_used_gb=8.5,
+            disk_total_gb=32.0,
+            disk_free_gb=23.5,
+            disk_used_pct=26.6,
+            fetched_at=__import__("time").time(),
+            container_images_estimated_gb=6.5,
+        )
+
+    def test_uses_cached_breakdown(self, executor, monkeypatch):
+        import utils.disk_usage as du_mod
+
+        fake = self._make_fake_breakdown()
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", fake)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_disk_usage", arguments={}))
+        )
+        assert result.success
+        assert "8.5 GB used" in result.output
+        assert "32.0 GB total" in result.output
+        assert "Backups" in result.output
+        assert "abc123.tar" in result.output
+
+    def test_fetches_fresh_when_no_cache(self, executor, monkeypatch):
+        import utils.disk_usage as du_mod
+
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        fake = self._make_fake_breakdown()
+
+        async def fake_fetch(ssh_client):
+            return fake
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", fake_fetch)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_disk_usage", arguments={}))
+        )
+        assert result.success
+        assert "8.5 GB used" in result.output
+
+    def test_fetches_fresh_when_cache_stale(self, executor, monkeypatch):
+        import utils.disk_usage as du_mod
+
+        stale = self._make_fake_breakdown()
+        stale.fetched_at = 0.0  # epoch — always stale
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", stale)
+
+        fresh = self._make_fake_breakdown()
+        fresh.disk_free_gb = 5.0  # different value to confirm fresh was used
+
+        async def fake_fetch(ssh_client):
+            return fresh
+
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", fake_fetch)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_disk_usage", arguments={}))
+        )
+        assert result.success
+        assert "5.0 GB free" in result.output
+
+    def test_container_estimate_included(self, executor, monkeypatch):
+        import utils.disk_usage as du_mod
+
+        fake = self._make_fake_breakdown()
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", fake)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_disk_usage", arguments={}))
+        )
+        assert "6.5 GB" in result.output
+        assert "container" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# TestAgentLoopInitialMessages
+# ---------------------------------------------------------------------------
+
+
+class TestAgentLoopInitialMessages:
+    """AgentLoop.run() correctly incorporates prior conversation history."""
+
+    def test_loop_runs_with_initial_messages(self, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_chat_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {
+                                    "summary": "Based on prior context, done."
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        prior = [
+            {"role": "user", "content": "What is the disk usage?"},
+            {"role": "assistant", "content": "It is 80% full."},
+        ]
+        result = asyncio.run(loop.run("Tell me more.", initial_messages=prior))
+        assert result.outcome == "success"
+
+    def test_loop_runs_without_initial_messages(self, db_path):
+        """Backward-compat: None initial_messages behaves as before."""
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_chat_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done."},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        result = asyncio.run(loop.run("Hello", initial_messages=None))
+        assert result.outcome == "success"
