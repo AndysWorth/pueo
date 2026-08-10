@@ -156,10 +156,10 @@ echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY
 echo "    both   — Ollama for autonomous cycles + Claude available for HITL escalation"
 echo
 ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
-CLOUD_MODEL_VAL="claude-sonnet-4-5"
+CLOUD_MODEL_VAL="claude-sonnet-5"
 
 if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
-    ask "Claude model" "claude-sonnet-4-5" CLOUD_MODEL_VAL
+    ask "Claude model" "claude-sonnet-5" CLOUD_MODEL_VAL
     echo
     if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
         warn "ANTHROPIC_API_KEY is not set in the current environment."

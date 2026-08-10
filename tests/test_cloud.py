@@ -501,7 +501,7 @@ class TestLLMProviderConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.CLOUD_MODEL == "claude-sonnet-4-5"
+        assert config.CLOUD_MODEL == "claude-sonnet-5"
 
     def test_cloud_model_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"cloud": {"model": "claude-opus-5"}}))
