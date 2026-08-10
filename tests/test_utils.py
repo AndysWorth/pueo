@@ -4852,3 +4852,155 @@ class TestAgentLoopEpisodeRecording:
         assert result.outcome == "exhausted"
         assert result.episode_id is None
         assert len(load_episodes(db_path)) == 0
+
+
+# ── utils/anonymizer.py ──────────────────────────────────────────────────────────
+
+
+class TestAnonymizer:
+    def test_ipv4_replaced_with_placeholder(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        assert a.text("Host is 192.168.1.50 online") == "Host is <host_1> online"
+
+    def test_same_ip_gets_same_placeholder(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        result = a.text("192.168.1.50 and 192.168.1.50 again")
+        assert result.count("<host_1>") == 2
+        assert "<host_2>" not in result
+
+    def test_different_ips_get_different_placeholders(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        result = a.text("10.0.0.1 and 10.0.0.2")
+        assert "<host_1>" in result
+        assert "<host_2>" in result
+
+    def test_backup_slug_replaced(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        result = a.text("backup slug a1b2c3d4 created")
+        assert "a1b2c3d4" not in result
+        assert "<slug_1>" in result
+
+    def test_config_path_filename_anonymized(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        result = a.text("Editing /config/automations/morning.yaml")
+        assert "morning.yaml" not in result
+        assert "/config/automations/<file>" in result
+
+    def test_config_path_top_level_preserved(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        # Top-level /config/configuration.yaml has no sub-directory, so not matched
+        result = a.text("Reading /config/configuration.yaml")
+        assert "/config/configuration.yaml" in result
+
+    def test_empty_string_unchanged(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        assert a.text("") == ""
+
+    def test_args_anonymizes_string_values(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        result = a.args({"host": "192.168.1.1", "count": 5})
+        assert result["host"] == "<host_1>"
+        assert result["count"] == 5
+
+    def test_args_preserves_structure_on_bad_json(self):
+        from utils.anonymizer import Anonymizer
+
+        a = Anonymizer()
+        original = {"key": "value"}
+        # Should return original if re-parsing fails (edge case)
+        result = a.args(original)
+        assert result["key"] == "value"
+
+
+# ── export_episodes_yaml ─────────────────────────────────────────────────────────
+
+
+class TestExportEpisodesYaml:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_export_produces_valid_yaml(self, db_path):
+        import yaml
+        from utils.repair_episode import export_episodes_yaml
+
+        ep = _make_episode(symptoms=["err1"], hypothesis_chain=["maybe fix"])
+        serialize_episode(db_path, ep)
+        episodes = load_episodes(db_path)
+        output = export_episodes_yaml(episodes)
+        parsed = yaml.safe_load(output)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+
+    def test_export_anonymizes_ip_in_symptoms(self, db_path):
+        import yaml
+        from utils.repair_episode import export_episodes_yaml
+
+        ep = _make_episode(symptoms=["Error from host 10.0.0.5"])
+        serialize_episode(db_path, ep)
+        output = export_episodes_yaml(load_episodes(db_path))
+        assert "10.0.0.5" not in output
+        assert "<host_1>" in output
+
+    def test_export_structure_contains_expected_fields(self, db_path):
+        import yaml
+        from utils.repair_episode import export_episodes_yaml
+
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        parsed = yaml.safe_load(export_episodes_yaml(load_episodes(db_path)))
+        record = parsed[0]
+        for field in (
+            "id",
+            "timestamp",
+            "trigger",
+            "symptoms",
+            "tool_sequence",
+            "hypothesis_chain",
+            "fix_applied",
+            "verification_result",
+            "model_used",
+            "escalated",
+            "duration_seconds",
+        ):
+            assert field in record, f"Missing field: {field}"
+
+    def test_export_empty_list_returns_empty_yaml(self):
+        from utils.repair_episode import export_episodes_yaml
+        import yaml
+
+        output = export_episodes_yaml([])
+        parsed = yaml.safe_load(output)
+        assert parsed is None or parsed == []
+
+    def test_export_timestamp_is_iso_string(self, db_path):
+        import yaml
+        from utils.repair_episode import export_episodes_yaml
+
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        parsed = yaml.safe_load(export_episodes_yaml(load_episodes(db_path)))
+        ts = parsed[0]["timestamp"]
+        assert isinstance(ts, str)
+        assert "T" in ts

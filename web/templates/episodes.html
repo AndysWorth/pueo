@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
+  <h2 style="font-size:1rem;color:#555;margin:0;">Repair Episodes</h2>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+    <form method="get" action="/episodes" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+      <select name="trigger" onchange="this.form.submit()"
+        style="padding:0.35rem 0.5rem;border:1px solid #ccc;border-radius:4px;font-size:0.85rem;">
+        <option value="" {% if not filter_trigger %}selected{% endif %}>All triggers</option>
+        <option value="ha_log"    {% if filter_trigger == 'ha_log'    %}selected{% endif %}>HA log</option>
+        <option value="netalertx" {% if filter_trigger == 'netalertx' %}selected{% endif %}>NetAlertX</option>
+        <option value="manual"    {% if filter_trigger == 'manual'    %}selected{% endif %}>Manual</option>
+        <option value="escalated" {% if filter_trigger == 'escalated' %}selected{% endif %}>Escalated</option>
+      </select>
+      <select name="outcome" onchange="this.form.submit()"
+        style="padding:0.35rem 0.5rem;border:1px solid #ccc;border-radius:4px;font-size:0.85rem;">
+        <option value=""       {% if not filter_outcome %}selected{% endif %}>All outcomes</option>
+        <option value="passed" {% if filter_outcome == 'passed' %}selected{% endif %}>Passed</option>
+        <option value="failed" {% if filter_outcome == 'failed' %}selected{% endif %}>Failed</option>
+      </select>
+    </form>
+    <a href="/episodes/export" style="padding:0.4rem 1rem;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;text-decoration:none;">
+      Export YAML
+    </a>
+    <button disabled title="Available in Phase 20 — Federated Case Library"
+      style="padding:0.4rem 1rem;background:#e9ecef;color:#999;border:1px solid #ccc;border-radius:4px;cursor:not-allowed;font-size:0.85rem;">
+      Submit to Case Library
+    </button>
+  </div>
+</div>
+
+{% if not episodes %}
+  <p class="empty">No repair episodes recorded yet.</p>
+{% else %}
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+      <thead>
+        <tr style="text-align:left;border-bottom:2px solid #ddd;color:#555;">
+          <th style="padding:0.4rem 0.75rem;">Date</th>
+          <th style="padding:0.4rem 0.75rem;">Trigger</th>
+          <th style="padding:0.4rem 0.75rem;text-align:center;">Outcome</th>
+          <th style="padding:0.4rem 0.75rem;">Model</th>
+          <th style="padding:0.4rem 0.75rem;text-align:center;">Escalated</th>
+          <th style="padding:0.4rem 0.75rem;text-align:right;">Duration</th>
+          <th style="padding:0.4rem 0.75rem;text-align:right;">Tools</th>
+          <th style="padding:0.4rem 0.75rem;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ep in episodes %}
+        <tr style="border-bottom:1px solid #eee;" id="row-{{ loop.index }}">
+          <td style="padding:0.4rem 0.75rem;white-space:nowrap;">{{ ep.timestamp | epoch_to_iso }}</td>
+          <td style="padding:0.4rem 0.75rem;">
+            <span class="badge" style="background:#e0e7ff;color:#3730a3;border:1px solid #6366f1;">{{ ep.trigger }}</span>
+          </td>
+          <td style="padding:0.4rem 0.75rem;text-align:center;">
+            {% if ep.verification_result %}
+              <span style="color:#28a745;font-weight:700;">passed</span>
+            {% else %}
+              <span style="color:#dc3545;font-weight:700;">failed</span>
+            {% endif %}
+          </td>
+          <td style="padding:0.4rem 0.75rem;font-size:0.78rem;color:#555;">{{ ep.model_used }}</td>
+          <td style="padding:0.4rem 0.75rem;text-align:center;">
+            {% if ep.escalated %}<span style="color:#fd7e14;font-weight:700;">☁</span>{% else %}—{% endif %}
+          </td>
+          <td style="padding:0.4rem 0.75rem;text-align:right;">{{ "%.1f"|format(ep.duration_seconds) }}s</td>
+          <td style="padding:0.4rem 0.75rem;text-align:right;">{{ ep.tool_sequence | length }}</td>
+          <td style="padding:0.4rem 0.75rem;">
+            <button onclick="toggleDetail('detail-{{ loop.index }}')"
+              style="padding:0.2rem 0.6rem;font-size:0.78rem;border:1px solid #ccc;border-radius:3px;cursor:pointer;background:#f8f9fa;">
+              Detail
+            </button>
+          </td>
+        </tr>
+        <tr id="detail-{{ loop.index }}" style="display:none;background:#fafafa;">
+          <td colspan="8" style="padding:0.75rem;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+              <div>
+                <div style="font-size:0.75rem;font-weight:700;color:#555;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Symptoms</div>
+                {% if ep.symptoms %}
+                  <ul style="margin:0;padding-left:1.2rem;font-size:0.8rem;color:#444;">
+                    {% for s in ep.symptoms %}<li>{{ s }}</li>{% endfor %}
+                  </ul>
+                {% else %}
+                  <span style="font-size:0.8rem;color:#888;">None recorded</span>
+                {% endif %}
+              </div>
+              <div>
+                <div style="font-size:0.75rem;font-weight:700;color:#555;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Hypothesis Chain</div>
+                {% if ep.hypothesis_chain %}
+                  <ol style="margin:0;padding-left:1.2rem;font-size:0.8rem;color:#444;">
+                    {% for h in ep.hypothesis_chain %}<li>{{ h }}</li>{% endfor %}
+                  </ol>
+                {% else %}
+                  <span style="font-size:0.8rem;color:#888;">None recorded</span>
+                {% endif %}
+              </div>
+            </div>
+
+            <div style="margin-top:0.75rem;">
+              <div style="font-size:0.75rem;font-weight:700;color:#555;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Tool Sequence</div>
+              <div style="display:flex;flex-wrap:wrap;gap:0.3rem;">
+                {% for tc in ep.tool_sequence %}
+                  <span class="section-label" style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;">{{ tc.name }}</span>
+                {% endfor %}
+              </div>
+            </div>
+
+            {% if ep.fix_applied %}
+            <div style="margin-top:0.75rem;">
+              <div style="font-size:0.75rem;font-weight:700;color:#555;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Fix Applied</div>
+              <pre>{{ ep.fix_applied }}</pre>
+            </div>
+            {% endif %}
+
+            <div style="margin-top:0.6rem;font-size:0.75rem;color:#888;">ID: {{ ep.id }}</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
+<script>
+function toggleDetail(id) {
+  var row = document.getElementById(id);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+</script>
+{% endblock %}

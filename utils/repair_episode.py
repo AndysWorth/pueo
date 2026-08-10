@@ -1,4 +1,4 @@
-"""RepairEpisode dataclass and SQLite persistence helpers (Phase 19, item 77)."""
+"""RepairEpisode dataclass and SQLite persistence helpers (Phase 19, items 77-79)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ import json
 import sqlite3
 import time
 import uuid
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+import yaml
 
 from pydantic import BaseModel, Field
 
@@ -86,3 +89,42 @@ def load_episodes(db_path: str, since: Optional[float] = None) -> list[RepairEpi
             )
         )
     return episodes
+
+
+def export_episodes_yaml(
+    episodes: list[RepairEpisode],
+) -> str:
+    """Serialize episodes to anonymized YAML suitable for sharing.
+
+    Each episode gets its own Anonymizer instance so placeholder numbering
+    is consistent within the episode but independent across episodes.
+    """
+    from utils.anonymizer import Anonymizer
+
+    records: list[dict[str, Any]] = []
+    for ep in episodes:
+        anon = Anonymizer()
+        tool_seq = [
+            {"name": tc.name, "arguments": anon.args(tc.arguments)}
+            for tc in ep.tool_sequence
+        ]
+        records.append(
+            {
+                "id": ep.id,
+                "timestamp": datetime.fromtimestamp(
+                    ep.timestamp, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "trigger": ep.trigger,
+                "symptoms": [anon.text(s) for s in ep.symptoms],
+                "tool_sequence": tool_seq,
+                "hypothesis_chain": [anon.text(h) for h in ep.hypothesis_chain],
+                "fix_applied": anon.text(ep.fix_applied) if ep.fix_applied else None,
+                "verification_result": ep.verification_result,
+                "model_used": ep.model_used,
+                "escalated": ep.escalated,
+                "duration_seconds": ep.duration_seconds,
+            }
+        )
+    return yaml.dump(
+        records, allow_unicode=True, sort_keys=False, default_flow_style=False
+    )

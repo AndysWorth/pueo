@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
@@ -393,6 +393,7 @@ def main() -> None:
             "  stop-service        unload the launchd service (suppresses KeepAlive restart)\n"
             "  restart-service     stop the service; launchd KeepAlive restarts it immediately\n"
             "  audit               self-diagnostics: gap report saved to audits/\n"
+            "  export-episodes     export anonymized repair episodes as YAML (use --since DATE)\n"
         ),
     )
     parser.add_argument(
@@ -422,9 +423,16 @@ def main() -> None:
             "stop-service",
             "restart-service",
             "audit",
+            "export-episodes",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
+    )
+    parser.add_argument(
+        "--since",
+        metavar="DATE",
+        default=None,
+        help="ISO date (YYYY-MM-DD) — export episodes on or after this date (export-episodes mode)",
     )
     args = parser.parse_args()
 
@@ -536,6 +544,26 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(main_audit())
+    elif args.mode == "export-episodes":
+        import ha_agent_advanced
+        from utils.repair_episode import export_episodes_yaml, load_episodes
+
+        ha_agent_advanced.init_local_database()
+        since_ts: Optional[float] = None
+        if args.since:
+            from datetime import datetime
+
+            try:
+                since_ts = datetime.fromisoformat(args.since).timestamp()
+            except ValueError:
+                sys.stderr.write(f"✘  Invalid --since date: {args.since!r}\n")
+                sys.stderr.write("   Expected ISO format, e.g. 2026-08-01\n")
+                sys.exit(1)
+        episodes = load_episodes(ha_agent_advanced.DB_PATH, since=since_ts)
+        if not episodes:
+            sys.stderr.write("No repair episodes found.\n")
+            sys.exit(0)
+        print(export_episodes_yaml(episodes), end="")
 
 
 if __name__ == "__main__":

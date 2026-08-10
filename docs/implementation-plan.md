@@ -100,7 +100,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 76   | Billing guard: DB migration v15 `cloud_spend` table; `record_cloud_spend`, `get_daily_spend`, `get_incident_spend` helpers; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card (LLM_PROVIDER=both + loop exhausted); re-run with `ClaudeAPIClient` on approval | ✅ Done (2026-08-07) |
 | 77   | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper | ✅ Done (2026-08-10) |
 | 78   | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference | ✅ Done (2026-08-10) |
-| 79   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ☐ TODO |
+| 79   | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard | ✅ Done (2026-08-10) |
 | 80   | Case submission: dashboard review flow → gh pr create to pueo-cases  | ☐ TODO |
 | 81   | Case ingest: weekly pull → embed → upsert into community_cases ChromaDB | ☐ TODO |
 | 82   | Eval scenario generation from each ingested community case           | ☐ TODO |
