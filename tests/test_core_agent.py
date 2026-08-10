@@ -1408,6 +1408,24 @@ class TestBackupSlugExtraction:
 # Tests call main.main() directly (not via subprocess) so coverage is tracked.
 
 
+def _make_episode_for_main_test(timestamp: float = 1_000_000.0, ep_id: str = "ep-1"):
+    from utils.repair_episode import RepairEpisode
+
+    return RepairEpisode(
+        id=ep_id,
+        timestamp=timestamp,
+        trigger="ha_log",
+        symptoms=[],
+        tool_sequence=[],
+        hypothesis_chain=[],
+        fix_applied=None,
+        verification_result=True,
+        model_used="qwen2.5-coder:7b",
+        escalated=False,
+        duration_seconds=1.0,
+    )
+
+
 class TestMain:
     def test_missing_config_exits_1(self, monkeypatch, tmp_path, capsys):
         import main as main_module
@@ -1440,6 +1458,109 @@ class TestMain:
             main_module.main()
         assert exc_info.value.code == 0
         assert "monitor" in capsys.readouterr().out
+
+    def test_export_episodes_no_episodes_exits_0(self, monkeypatch, tmp_path, capsys):
+        import ha_agent_advanced
+        import main as main_module
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["main.py", "--config", str(config), "--mode", "export-episodes"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+        assert exc_info.value.code == 0
+        assert "No repair episodes" in capsys.readouterr().err
+
+    def test_export_episodes_outputs_yaml(self, monkeypatch, tmp_path, capsys):
+        import yaml
+        import ha_agent_advanced
+        import main as main_module
+        from utils.repair_episode import serialize_episode
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        ep = _make_episode_for_main_test()
+        serialize_episode(db, ep)
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["main.py", "--config", str(config), "--mode", "export-episodes"],
+        )
+        main_module.main()
+        out = capsys.readouterr().out
+        parsed = yaml.safe_load(out)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+
+    def test_export_episodes_since_filter(self, monkeypatch, tmp_path, capsys):
+        import yaml
+        import ha_agent_advanced
+        import main as main_module
+        from utils.repair_episode import RepairEpisode, serialize_episode
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        old = _make_episode_for_main_test(timestamp=1000.0, ep_id="old")
+        new = _make_episode_for_main_test(timestamp=9999999999.0, ep_id="new")
+        serialize_episode(db, old)
+        serialize_episode(db, new)
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "main.py",
+                "--config",
+                str(config),
+                "--mode",
+                "export-episodes",
+                "--since",
+                "2030-01-01",
+            ],
+        )
+        main_module.main()
+        parsed = yaml.safe_load(capsys.readouterr().out)
+        assert len(parsed) == 1
+        assert parsed[0]["id"] == "new"
+
+    def test_export_episodes_bad_since_exits_1(self, monkeypatch, tmp_path, capsys):
+        import ha_agent_advanced
+        import main as main_module
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "main.py",
+                "--config",
+                str(config),
+                "--mode",
+                "export-episodes",
+                "--since",
+                "not-a-date",
+            ],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+        assert exc_info.value.code == 1
+        assert "Invalid" in capsys.readouterr().err
 
 
 class TestSupervisorMain:

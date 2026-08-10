@@ -358,7 +358,7 @@ Items 65–72. Adds a Chat tab to the HITL dashboard, persistent agent memory (S
 
 ---
 
-### Phase 18 — Configurable LLM Provider + Cloud Escalation (4 items)
+### Phase 18 — Configurable LLM Provider + Cloud Escalation (4 items) ✅ Complete (2026-08-07)
 Items 73–76. Makes the LLM inference engine a first-class switchable setting: `local` (Ollama only, current default), `cloud` (Anthropic API as primary), or `both` (Ollama for autonomous cycles + Claude available via HITL escalation). The "0 WAN during autonomous fix cycles" constraint is overridden by design — cloud mode sends inference traffic to Anthropic. HITL escalation (the original Phase 18 goal) becomes the natural behavior of `both` mode when `AgentLoop` exhausts its budget. `ANTHROPIC_API_KEY` from environment only; billing caps enforced; `LLM_PROVIDER = "local"` default preserves existing behavior.
 
 | Items | Concern |
@@ -372,7 +372,7 @@ Items 73–76. Makes the LLM inference engine a first-class switchable setting: 
 
 ---
 
-### Phase 19 — Repair Episode Recording (3 items)
+### Phase 19 — Repair Episode Recording (3 items) ✅ Complete (2026-08-10)
 Items 77–79. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 20 (Federated Case Library).
 
 | Items | Concern |

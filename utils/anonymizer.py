@@ -56,5 +56,5 @@ class Anonymizer:
         serialized = self.text(json.dumps(arguments))
         try:
             return dict(json.loads(serialized))  # type: ignore[arg-type]
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError):  # pragma: no cover
             return arguments
