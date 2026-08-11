@@ -194,6 +194,7 @@ class TestVacuumJournal:
         ssh = MagicMock()
         ssh.run = AsyncMock(
             side_effect=[
+                (0, "/usr/bin/journalctl", ""),  # which journalctl
                 (0, "Archived and active journals take up 1.5G.", ""),  # disk-usage
                 (0, "", ""),  # rotate
                 (0, "Freed 800M of archived journals.", ""),  # vacuum
@@ -224,6 +225,14 @@ class TestVacuumJournal:
         calls = [c.args[0] for c in ssh.run.call_args_list]
         assert any("--vacuum-size=512M" in c for c in calls)
 
+    def test_journalctl_not_available_returns_failure(self):
+        ssh = MagicMock()
+        ssh.run = AsyncMock(side_effect=[(0, "", "")])  # which journalctl returns empty
+        with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
+            result = asyncio.run(vacuum_journal(ssh))
+        assert result.success is False
+        assert "not available" in result.message
+
     def test_ssh_exception_returns_failure(self):
         ssh = MagicMock()
         ssh.run = AsyncMock(side_effect=Exception("timeout"))
@@ -249,8 +258,14 @@ class TestPurgeRecorder:
         rest.call_service.assert_called_once_with(
             "recorder",
             "purge",
-            {"purge_keep_days": 30, "repack": False, "apply_filter": True},
+            {"purge_keep_days": 30, "repack": False},
         )
+
+    def test_apply_filter_not_sent(self):
+        rest = self._make_rest()
+        asyncio.run(purge_recorder(rest, keep_days=30, repack=False))
+        _, _, payload = rest.call_service.call_args.args
+        assert "apply_filter" not in payload
 
     def test_repack_true_passed_through(self):
         rest = self._make_rest()
@@ -327,7 +342,8 @@ class TestRunSafeDiskRecovery:
                 # truncate_ha_log: stat, truncate
                 (0, str(10 * 1024 * 1024), ""),
                 (0, "", ""),
-                # vacuum_journal: disk-usage, rotate, vacuum
+                # vacuum_journal: which, disk-usage, rotate, vacuum
+                (0, "/usr/bin/journalctl", ""),
                 (0, "1G", ""),
                 (0, "", ""),
                 (0, "Freed 400M", ""),
@@ -368,6 +384,7 @@ class TestRunSafeDiskRecovery:
         ssh.run = AsyncMock(
             side_effect=[
                 Exception("stat failed"),  # truncate_ha_log stat raises
+                (0, "/usr/bin/journalctl", ""),  # vacuum_journal which
                 (0, "1G", ""),  # vacuum_journal disk-usage
                 (0, "", ""),  # vacuum_journal rotate
                 (0, "Freed 400M", ""),  # vacuum_journal vacuum-size
