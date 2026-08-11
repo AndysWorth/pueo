@@ -758,16 +758,19 @@ async def _resolve_backup_remote_path(
 ) -> Optional[str]:
     """Return the actual remote /backup/<filename>.tar for slug, or None if not found.
 
-    HA stores Pueo-triggered backups as {slug}.tar, but auto-created backups use
-    descriptive filenames. Falls back to scanning /backup/*.tar via SSH when the
-    direct path doesn't exist.
+    HA names backups with descriptive filenames (not {slug}.tar), so the fast direct-path
+    check almost always misses. The fallback scans each archive's embedded backup.json for
+    a matching slug — reliable but O(n) in archive count.
     """
     if not _SLUG_RE.match(slug):
+        log.warning("backup_offload_slug_invalid", slug=slug)
         return None
     direct = f"/backup/{slug}.tar"
     _, stdout, _ = await client.run(f"[ -f {direct} ] && echo found", check=False)
     if "found" in stdout:
+        log.debug("backup_path_resolved_direct", slug=slug, path=direct)
         return direct
+    log.debug("backup_path_scan_start", slug=slug)
     _, stdout, _ = await client.run(
         "for f in /backup/*.tar; do "
         f's=$(tar -xOf "$f" ./backup.json 2>/dev/null '
@@ -778,7 +781,11 @@ async def _resolve_backup_remote_path(
         check=False,
     )
     path = stdout.strip()
-    return path if path else None
+    if path:
+        log.debug("backup_path_resolved_scan", slug=slug, path=path)
+        return path
+    log.warning("backup_path_not_found", slug=slug)
+    return None
 
 
 async def offload_backup_to_local(
