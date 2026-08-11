@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "disk_recovery", "code_proposal", "ha_repair", "cloud_escalation") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -130,6 +130,21 @@
         <details>
           <summary>Proposed code</summary>
           <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("code", "") }}</pre>
+        </details>
+        {% if r.payload.get("sandbox_output") %}
+        <details>
+          <summary>Sandbox CI output</summary>
+          <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("sandbox_output", "") }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if ct == "open_pr" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;"><strong>Branch:</strong> <code>{{ r.payload.get("branch_name", "") }}</code></p>
+        <details>
+          <summary>PR body preview</summary>
+          <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("pr_body", "") }}</pre>
         </details>
         {% if r.payload.get("sandbox_output") %}
         <details>
@@ -203,6 +218,9 @@
         {% elif ct == "code_proposal" %}
           {% set hint_approve = "Write tool code to user_tools/, import it, and register it for future agent loop calls" %}
           {% set hint_reject = "Discard; the proposed tool is not registered" %}
+        {% elif ct == "open_pr" %}
+          {% set hint_approve = "Apply patch to live tree, commit, push branch, and open a GitHub PR via gh pr create" %}
+          {% set hint_reject = "Discard; no files changed and no PR opened" %}
         {% elif ct == "ha_repair" %}
           {% if r.payload.get("action") == "reboot" %}
             {% set hint_approve = "Create HA backup, then reboot the HA host; Pueo will poll until HA is back online" %}

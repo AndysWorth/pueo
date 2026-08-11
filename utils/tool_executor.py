@@ -176,6 +176,12 @@ class ToolExecutor:
                     args.get("parameters_schema", ""),
                     args.get("code", ""),
                 )
+            if name == "open_pr":
+                return await self._open_pr(
+                    args.get("title", ""),
+                    args.get("reason", ""),
+                    args.get("branch_name"),
+                )
             if name == "switch_model":
                 return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
@@ -623,6 +629,82 @@ class ToolExecutor:
             tool_name="add_tool",
             success=False,
             output=f"Tool registration queued for HITL approval (id={nid})",
+            awaiting_approval=True,
+        )
+
+    async def _open_pr(
+        self, title: str, reason: str, branch_name: Optional[str]
+    ) -> ToolResult:
+        if not self._pending_patch:
+            return ToolResult(
+                tool_name="open_pr",
+                success=False,
+                output="",
+                error="No pending patch. Call propose_patch first.",
+            )
+        if not self._sandbox_passed:
+            return ToolResult(
+                tool_name="open_pr",
+                success=False,
+                output="",
+                error="Run sandbox_code first and ensure all CI checks pass.",
+            )
+        if not title:
+            return ToolResult(
+                tool_name="open_pr",
+                success=False,
+                output="",
+                error="title is required.",
+            )
+
+        if not branch_name:
+            branch_name = (
+                "feat/"
+                + title.lower()
+                .replace(" ", "-")
+                .replace("/", "-")
+                .replace("'", "")
+                .replace('"', "")[:50]
+            )
+
+        diff_lines: list[str] = []
+        for rel_path, content in self._pending_patch.items():
+            diff_lines.append(f"### {rel_path}\n```\n{content}\n```")
+        diff_block = "\n\n".join(diff_lines)
+
+        pr_body = (
+            f"{reason}\n\n"
+            "## Changes\n\n"
+            f"{diff_block}\n\n"
+            "## CI\n\n"
+            f"```\n{self._sandbox_output}\n```\n\n"
+            "## References\n\n"
+            "- [ADR 007 — Agent-generated code proposals with sandboxed CI gate]"
+            "(docs/decisions/007-code-proposals.md)\n\n"
+            "🤖 Generated with [Pueo](https://github.com/AndysWorth/pueo-cases)"
+        )
+
+        from utils.card_types import CARD_TYPE_OPEN_PR
+
+        nid = get_correlation_id() or str(uuid.uuid4())
+        await self._notifier.send(
+            subject=f"Pueo HITL: open_pr — {title}",
+            body=f"Open GitHub PR: {title}\n\n{reason}",
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_OPEN_PR,
+                "pr_title": title,
+                "pr_body": pr_body,
+                "branch_name": branch_name,
+                "patch_files": dict(self._pending_patch),
+                "sandbox_output": self._sandbox_output,
+            },
+        )
+        log.info("open_pr_queued_for_hitl", title=title, branch=branch_name, nid=nid)
+        return ToolResult(
+            tool_name="open_pr",
+            success=False,
+            output=f"PR queued for HITL approval (id={nid}). Branch: {branch_name!r}",
             awaiting_approval=True,
         )
 
