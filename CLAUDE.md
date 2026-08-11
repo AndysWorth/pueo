@@ -165,7 +165,7 @@ Every code change follows this procedure in order. Never commit directly to `mai
     pytest --cov --cov-fail-under=90 --ignore=tests/integration
     ```
 13. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
-14. If implementing a named plan item: CI passing = done, open the PR. If ad-hoc: confirm with the user that the change is complete before opening the PR.
+14. If implementing a GitHub issue: CI passing = done, open the PR. For ad-hoc work: confirm with the user that the change is complete before opening the PR.
 15. `gh pr create` — description focuses on *why*, not *what*; include rollback note if step 13 applies.
 
 ### After merge
@@ -179,11 +179,13 @@ Every code change follows this procedure in order. Never commit directly to `mai
 
 `.mcp.json` configures a Home Assistant MCP server for use during development, giving Claude Code direct access to live HA state and entities. Requires `mcp-homeassistant` installed (`uvx mcp-homeassistant`) and `HA_TOKEN` set in the environment. See `.mcp.json` for the full config shape.
 
-## Implementation Plan
+## Work Tracking
 
-Ordered backlog of agentic engineering practices to implement. The index below loads automatically; full item specs live in `docs/plan/` and should be read before starting any item.
+New bugs, enhancements, and feature work are tracked in [GitHub Issues](https://github.com/AndysWorth/pueo/issues). Use labels `bug`, `enhancement`, `security`, `ux`, or `discussion`.
 
-@docs/implementation-plan.md
+When starting work on an issue, reference it in the branch name (`feat/<slug>`) and in commit messages (`Closes #N`). Complex features that need upfront design get a spec in `docs/plan/` — link it from the issue before implementing.
+
+The initial build-out phases (items 1–STOR-6) are archived in `docs/implementation-plan.md` as a historical record.
 
 ## Design Decisions
 

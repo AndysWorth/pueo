@@ -1,5 +1,7 @@
 # Agentic Engineering Practices — Implementation Plan
 
+> **Archived — 2026-08-11.** All items below are complete. New bugs, enhancements, and feature work are tracked in [GitHub Issues](https://github.com/AndysWorth/pueo/issues). This file is kept as a historical record of the initial build-out phases.
+
 Pick up the next incomplete item at the start of a new session: find it in the Status table below, then open the linked detail file for the full specification before writing any code.
 
 ## Hierarchy
