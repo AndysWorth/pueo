@@ -194,7 +194,7 @@ Items 77–79. → [plan/repair-episodes.md](plan/repair-episodes.md)
 
 ---
 
-### Phase 20 — Federated Case Library (3 items)
+### Phase 20 — Federated Case Library ✅ Complete (2026-08-11)
 Items 80–82. Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Instances contribute (PR from dashboard) and consume (weekly pull → embed → ChromaDB). Each merged case auto-generates an eval scenario, closing the Phase 16 eval loop.
 
 | Items | Concern |
