@@ -5663,3 +5663,322 @@ class TestCaseIngesterIngest:
         ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert "community_cases" in store._docs
         assert len(store._docs["community_cases"]) == 1
+
+
+# ── generate_eval_scenario ────────────────────────────────────────────────────
+
+
+class TestGenerateEvalScenario:
+    def test_ha_log_trigger_produces_read_logs_mock(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "abc123def456",
+            "trigger": "ha_log",
+            "symptoms": ["[ERROR] homeassistant.core: failed to start"],
+            "hypothesis_chain": ["Config key missing"],
+            "fix_applied": "homeassistant:\n  name: Home",
+        }
+        scenario = generate_eval_scenario(record, pr_number=5)
+        assert scenario is not None
+        assert scenario["name"] == "community_pr5_abc123def456"
+        assert scenario["trigger"] == "ha_log"
+        assert "read_logs" in scenario["mocks"]
+        assert "failed to start" in scenario["mocks"]["read_logs"]
+        assert "apply_fix" in scenario["expected_tools_called"]
+        assert scenario["fix_must_parse"] is True
+
+    def test_ha_config_trigger_produces_read_config_mock(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "cfgid001",
+            "trigger": "ha_config",
+            "symptoms": [],
+            "hypothesis_chain": [],
+            "fix_applied": "homeassistant:\n  name: Home",
+        }
+        scenario = generate_eval_scenario(record, pr_number=7)
+        assert scenario is not None
+        assert scenario["trigger"] == "ha_config"
+        assert "read_config" in scenario["mocks"]
+        assert "read_config" in scenario["expected_tools_called"]
+        assert "apply_fix" in scenario["expected_tools_called"]
+
+    def test_netalertx_trigger_produces_query_netalertx_mock(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "nax001",
+            "trigger": "netalertx",
+            "symptoms": ["Unknown device 00:11:22:33:44:55 on LAN"],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=9)
+        assert scenario is not None
+        assert scenario["trigger"] == "netalertx"
+        assert "query_netalertx" in scenario["mocks"]
+        assert "query_netalertx" in scenario["expected_tools_called"]
+        assert scenario["fix_must_parse"] is False
+
+    def test_unknown_trigger_falls_back_to_investigation(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "misc001",
+            "trigger": "manual",
+            "symptoms": ["Something happened"],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=3)
+        assert scenario is not None
+        assert scenario["trigger"] == "investigation"
+        assert "read_logs" in scenario["mocks"]
+
+    def test_ha_log_monitor_maps_to_ha_log(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "mon001",
+            "trigger": "ha_log_monitor",
+            "symptoms": ["CRITICAL: boot failed"],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=2)
+        assert scenario is not None
+        assert scenario["trigger"] == "ha_log"
+
+    def test_description_and_hypothesis_go_into_description_field(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "x" * 20,
+            "trigger": "ha_log",
+            "symptoms": [],
+            "hypothesis_chain": ["Auth error", "Cert expired"],
+            "description": "Failed login from unknown IP",
+        }
+        scenario = generate_eval_scenario(record, pr_number=1)
+        assert scenario is not None
+        assert "Failed login" in scenario["description"]
+        assert "Auth error" in scenario["description"]
+
+    def test_no_content_returns_fallback_description(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "bare001",
+            "trigger": "ha_log",
+            "symptoms": [],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=42)
+        assert scenario is not None
+        assert "PR #42" in scenario["description"]
+
+    def test_finish_repair_always_in_expected_tools(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        for trigger in ("ha_log", "ha_config", "netalertx", "manual"):
+            record = {
+                "id": "t1",
+                "trigger": trigger,
+                "symptoms": ["err"],
+                "hypothesis_chain": [],
+            }
+            scenario = generate_eval_scenario(record, pr_number=1)
+            assert scenario is not None
+            assert "finish_repair" in scenario["expected_tools_called"]
+
+    def test_id_slug_truncated_at_12_chars(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "z" * 50,
+            "trigger": "ha_log",
+            "symptoms": ["err"],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=10)
+        assert scenario is not None
+        assert scenario["name"] == f"community_pr10_{'z' * 12}"
+
+    def test_expected_outcome_is_success(self):
+        from utils.case_ingester import generate_eval_scenario
+
+        record = {
+            "id": "ok1",
+            "trigger": "ha_log",
+            "symptoms": ["x"],
+            "hypothesis_chain": [],
+        }
+        scenario = generate_eval_scenario(record, pr_number=1)
+        assert scenario is not None
+        assert scenario["expected_outcome"] == "success"
+
+
+# ── write_eval_scenario ───────────────────────────────────────────────────────
+
+
+class TestWriteEvalScenario:
+    def test_writes_yaml_file_to_dir(self, tmp_path):
+        import yaml
+        from utils.case_ingester import write_eval_scenario
+
+        scenario = {
+            "name": "community_pr5_abc123def456",
+            "trigger": "ha_log",
+            "description": "Test",
+            "expected_outcome": "success",
+            "expected_tools_called": ["read_logs", "finish_repair"],
+            "fix_must_parse": False,
+        }
+        path = write_eval_scenario(scenario, str(tmp_path))
+        assert path.exists()
+        assert path.name == "community_pr5_abc123def456.yaml"
+        loaded = yaml.safe_load(path.read_text())
+        assert loaded["name"] == "community_pr5_abc123def456"
+        assert loaded["trigger"] == "ha_log"
+
+    def test_creates_directory_if_missing(self, tmp_path):
+        from utils.case_ingester import write_eval_scenario
+
+        nested = tmp_path / "a" / "b"
+        scenario = {
+            "name": "test_scenario",
+            "trigger": "ha_log",
+            "description": "x",
+            "expected_outcome": "success",
+            "expected_tools_called": [],
+            "fix_must_parse": False,
+        }
+        path = write_eval_scenario(scenario, str(nested))
+        assert path.exists()
+
+    def test_roundtrip_loadable_by_eval_harness(self, tmp_path):
+        """Scenario written by write_eval_scenario must be parseable by EvalScenario.from_yaml."""
+        import sys
+        from pathlib import Path as _Path
+
+        # Add project root so EvalScenario can be imported
+        sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+        from evals.run_evals import EvalScenario
+        from utils.case_ingester import generate_eval_scenario, write_eval_scenario
+
+        record = {
+            "id": "roundtrip001",
+            "trigger": "ha_log",
+            "symptoms": ["[ERROR] boot failed"],
+            "hypothesis_chain": ["Missing key"],
+            "fix_applied": "homeassistant:\n  name: Home",
+        }
+        scenario = generate_eval_scenario(record, pr_number=99)
+        assert scenario is not None
+        path = write_eval_scenario(scenario, str(tmp_path))
+        loaded = EvalScenario.from_yaml(path)
+        assert loaded.name == scenario["name"]
+        assert loaded.trigger == scenario["trigger"]
+        assert loaded.fix_must_parse is True
+
+
+# ── ingest with scenarios_dir ─────────────────────────────────────────────────
+
+
+class TestIngestWithScenariosDir:
+    def _make_pr_list(
+        self, numbers: list[int], merged_at: str = "2026-08-11T10:00:00Z"
+    ) -> str:
+        import json
+
+        return json.dumps(
+            [{"number": n, "merged_at": merged_at, "title": f"PR {n}"} for n in numbers]
+        )
+
+    def _make_pr_files(self, filenames: list[str]) -> str:
+        import json
+
+        return json.dumps([{"filename": f, "status": "added"} for f in filenames])
+
+    def _make_contents(self, episode_yaml: str) -> str:
+        import base64, json
+
+        return json.dumps(
+            {
+                "encoding": "base64",
+                "content": base64.b64encode(episode_yaml.encode()).decode(),
+            }
+        )
+
+    def test_scenario_file_written_per_episode(self, tmp_path, monkeypatch):
+        import yaml
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        scenarios_dir = tmp_path / "scenarios"
+        episode_yaml = yaml.dump(
+            [
+                {
+                    "id": "ep777",
+                    "trigger": "ha_log",
+                    "symptoms": ["Boot error"],
+                    "hypothesis_chain": ["Config corrupt"],
+                    "fix_applied": "homeassistant:\n  name: Home",
+                }
+            ]
+        )
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases(
+            "owner/repo", str(tmp_path), store, scenarios_dir=str(scenarios_dir)
+        )
+        assert n == 1
+        files = list(scenarios_dir.glob("*.yaml"))
+        assert len(files) == 1
+        assert files[0].name == "community_pr1_ep777.yaml"
+
+    def test_no_scenarios_dir_writes_nothing(self, tmp_path, monkeypatch):
+        import yaml
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        episode_yaml = yaml.dump(
+            [
+                {
+                    "id": "ep888",
+                    "trigger": "ha_log",
+                    "symptoms": ["err"],
+                    "hypothesis_chain": [],
+                }
+            ]
+        )
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        # No scenarios_dir passed — should not create any files in tmp_path
+        before = set(tmp_path.iterdir())
+        ingest_community_cases("owner/repo", str(tmp_path), store)
+        after = set(tmp_path.iterdir())
+        # Only state.json may appear, no scenario YAML
+        new_files = {f for f in (after - before) if f.suffix == ".yaml"}
+        assert len(new_files) == 0

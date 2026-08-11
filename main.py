@@ -118,11 +118,15 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         print(
             f"[rag-refresh] Ingesting community cases from {config.FEDERATED_CASES_REPO}…"
         )
+        community_scenarios_dir = str(
+            Path(__file__).parent / "evals" / "scenarios" / "community"
+        )
         try:
             n_cases = ingest_community_cases(
                 config.FEDERATED_CASES_REPO,
                 config.CASE_INGEST_CACHE_DIR,
                 store,
+                scenarios_dir=community_scenarios_dir,
             )
             print(f"[rag-refresh]   → {n_cases} new episode(s) ingested")
         except CaseIngestError as exc:
