@@ -908,6 +908,21 @@ class TestHAUpdateManagerConfig:
 
         assert config.HA_PROFILE_REFRESH_HOURS == 12
 
+    def test_log_triage_cooldown_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.LOG_TRIAGE_COOLDOWN_HOURS == 4
+
+    def test_log_triage_cooldown_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"log_triage_cooldown_hours": 8}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.LOG_TRIAGE_COOLDOWN_HOURS == 8
+
     def test_disk_usage_poll_interval_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

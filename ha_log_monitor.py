@@ -4,8 +4,10 @@
 import asyncio
 import collections
 import datetime
+import hashlib
 import re
 import sqlite3
+import time
 import uuid
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -24,6 +26,7 @@ from config import (
     HA_UPDATE_NOTIFY_ON_AVAILABLE,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
     HA_USER,
+    LOG_TRIAGE_COOLDOWN_HOURS,
     MAX_PROMPT_TOKENS,
     MAX_REPAIRS_PER_HOUR,
     NETALERTX_API_PORT,
@@ -73,6 +76,10 @@ CRITICAL_LOG_PATTERN = re.compile(
     r"(ERROR|CRITICAL).*?(Component error|Failed to initialize|Traceback|Invalid config|Error doing job)",
     re.IGNORECASE,
 )
+
+# OSError errno values that indicate a normal SSH session tear-down by the remote host.
+# These are expected during long-running log streams and warrant WARNING, not ERROR.
+_TRANSIENT_SSH_ERRNOS: frozenset[int] = frozenset({32, 54, 104})  # EPIPE, ECONNRESET
 
 
 # ==========================================
@@ -208,6 +215,30 @@ async def tail_remote_log_stream(
                     except RateLimitExceeded:
                         log.warning("rate_limit_exceeded")
                         continue
+                    # Persistent dedup: skip if we already sent a HITL card for this
+                    # error pattern within the cooldown window. Survives daemon restarts
+                    # unlike the in-memory _debouncer.
+                    from ha_agent_advanced import (
+                        mark_log_triage_hitl_sent,
+                        record_log_triage_seen,
+                        should_send_log_triage_hitl,
+                    )
+
+                    _fingerprint = hashlib.sha256(
+                        evaluation.root_cause_summary.encode()
+                    ).hexdigest()[:16]
+                    _now = time.time()
+                    with sqlite3.connect(DB_PATH) as _triage_conn:
+                        record_log_triage_seen(_triage_conn, _fingerprint, _now)
+                        if not should_send_log_triage_hitl(
+                            _triage_conn, _fingerprint, LOG_TRIAGE_COOLDOWN_HOURS
+                        ):
+                            log.info(
+                                "log_triage_cooldown",
+                                fingerprint=_fingerprint,
+                                cause=evaluation.root_cause_summary,
+                            )
+                            continue
                     if not _gate.should_auto_execute(RiskLevel.HIGH):
                         log.info(
                             "autonomy_gate_blocked",
@@ -226,9 +257,13 @@ async def tail_remote_log_stream(
                                 "llm_trace": llm_trace.as_dict(),
                             },
                         )
+                        with sqlite3.connect(DB_PATH) as _triage_conn:
+                            mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
                         continue
                     log.warning("repair_triggered")
                     asyncio.create_task(trigger_remediation_pipeline())
+                    with sqlite3.connect(DB_PATH) as _triage_conn:
+                        mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
                     log.info(
                         "repair_cooldown_start",
                         seconds=REPAIR_COOLDOWN_SECONDS,
@@ -237,7 +272,10 @@ async def tail_remote_log_stream(
                     log.info("repair_cooldown_complete")
 
     except Exception as e:
-        log.error("log_stream_failed", error=str(e))
+        if isinstance(e, OSError) and e.errno in _TRANSIENT_SSH_ERRNOS:
+            log.warning("log_stream_reset", error=str(e))
+        else:
+            log.error("log_stream_failed", error=str(e))
         log.info("log_stream_reconnect")
         raise
 

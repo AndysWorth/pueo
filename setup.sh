@@ -472,6 +472,7 @@ agent:
   # debounce_window_seconds: 30
   # repair_cooldown_seconds: 300
   # max_repairs_per_hour: 10
+  # log_triage_cooldown_hours: 4  # Min hours between HITL cards for same recurring log error
   # log_level: INFO
   # log_file: pueo.log
   # max_prompt_tokens: 7000

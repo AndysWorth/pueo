@@ -325,6 +325,20 @@ def _migrate_v18(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v19(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS log_triage_history (
+            fingerprint   TEXT PRIMARY KEY,
+            first_seen_at REAL NOT NULL,
+            last_seen_at  REAL NOT NULL,
+            hitl_sent_at  REAL,
+            send_count    INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -344,6 +358,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (16, _migrate_v16),
     (17, _migrate_v17),
     (18, _migrate_v18),
+    (19, _migrate_v19),
 ]
 
 

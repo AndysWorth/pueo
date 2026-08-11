@@ -384,7 +384,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 18
+        assert version == 19
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 18
+        assert rows[0][0] == 19
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 18
+        assert version == 19
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -1290,7 +1290,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 18
+        assert version == 19
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1300,7 +1300,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 18
+        assert rows[0][0] == 19
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1328,7 +1328,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 18
+        assert version == 19
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -2486,6 +2486,31 @@ class TestLogMonitorTriage:
             tail_remote_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
         )
         assert len(llm_not_actionable.calls) == 1
+
+    def test_transient_errno_is_econnreset(self):
+        """ECONNRESET (54) and EPIPE (32) are classified as transient."""
+        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+
+        assert 54 in _TRANSIENT_SSH_ERRNOS  # ECONNRESET (macOS)
+        assert 32 in _TRANSIENT_SSH_ERRNOS  # EPIPE
+        assert 104 in _TRANSIENT_SSH_ERRNOS  # ECONNRESET (Linux)
+
+    def test_non_transient_errno_not_in_set(self):
+        """Generic I/O errors are NOT classified as transient."""
+        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+
+        assert 5 not in _TRANSIENT_SSH_ERRNOS  # EIO
+        assert 111 not in _TRANSIENT_SSH_ERRNOS  # ECONNREFUSED
+
+    def test_non_oserror_not_transient(self):
+        """A ValueError is never classified as a transient SSH connection reset."""
+        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+
+        e = ValueError("unexpected")
+        assert not (
+            isinstance(e, OSError)
+            and getattr(e, "errno", None) in _TRANSIENT_SSH_ERRNOS
+        )
 
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
@@ -9988,6 +10013,130 @@ class TestHARepairDB:
         record_repair_seen("hassio/abc123")  # no translation_key
         mark_repair_hitl_sent("hassio/abc123")
         assert is_reboot_required_active() is False
+
+
+class TestLogTriageDB:
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        return str(db)
+
+    def test_record_log_triage_seen_first_sighting(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import record_log_triage_seen
+
+        now = time.time()
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "abc123", now)
+            row = conn.execute(
+                "SELECT first_seen_at, last_seen_at, hitl_sent_at FROM log_triage_history"
+                " WHERE fingerprint='abc123'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == now
+        assert row[1] == now
+        assert row[2] is None  # not yet sent
+
+    def test_record_log_triage_seen_repeat_updates_last_seen(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import record_log_triage_seen
+
+        t1 = time.time()
+        t2 = t1 + 60
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "abc123", t1)
+            record_log_triage_seen(conn, "abc123", t2)
+            row = conn.execute(
+                "SELECT first_seen_at, last_seen_at FROM log_triage_history"
+                " WHERE fingerprint='abc123'"
+            ).fetchone()
+        assert row[0] == t1  # first_seen_at unchanged
+        assert row[1] == t2  # last_seen_at updated
+
+    def test_should_send_when_no_prior_sighting(self, db_path):
+        import sqlite3
+
+        from ha_agent_advanced import should_send_log_triage_hitl
+
+        with sqlite3.connect(db_path) as conn:
+            result = should_send_log_triage_hitl(conn, "unknown", cooldown_hours=4)
+        assert result is True
+
+    def test_should_send_when_hitl_never_sent(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            record_log_triage_seen,
+            should_send_log_triage_hitl,
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp1", time.time())
+            result = should_send_log_triage_hitl(conn, "fp1", cooldown_hours=4)
+        assert result is True
+
+    def test_should_not_send_within_cooldown(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+            should_send_log_triage_hitl,
+        )
+
+        now = time.time()
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp2", now)
+            mark_log_triage_hitl_sent(conn, "fp2", now)  # just sent
+            result = should_send_log_triage_hitl(conn, "fp2", cooldown_hours=4)
+        assert result is False
+
+    def test_should_send_after_cooldown_expires(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+            should_send_log_triage_hitl,
+        )
+
+        old_time = time.time() - 5 * 3600  # 5 hours ago
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp3", old_time)
+            mark_log_triage_hitl_sent(conn, "fp3", old_time)
+            result = should_send_log_triage_hitl(conn, "fp3", cooldown_hours=4)
+        assert result is True
+
+    def test_mark_hitl_sent_sets_timestamp_and_increments_count(self, db_path):
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+        )
+
+        now = time.time()
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp4", now)
+            mark_log_triage_hitl_sent(conn, "fp4", now)
+            mark_log_triage_hitl_sent(conn, "fp4", now + 1)  # second send
+            row = conn.execute(
+                "SELECT hitl_sent_at, send_count FROM log_triage_history WHERE fingerprint='fp4'"
+            ).fetchone()
+        assert row[0] == now + 1
+        assert row[1] == 2
 
 
 class TestUpdatePriority:
