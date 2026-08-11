@@ -121,6 +121,9 @@ AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
+# Federated case library — community repair episode sharing
+FEDERATED_CASES_REPO: str = _agent.get("federated_cases_repo", "")
+
 # LLM provider selection
 _llm_cfg = _cfg.get("llm", {})
 _cloud_cfg = _cfg.get("cloud", {})

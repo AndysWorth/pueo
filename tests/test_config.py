@@ -1103,3 +1103,20 @@ class TestLLMProviderStartupGuards:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
             importlib.reload(sys.modules["config"])
+
+
+class TestFederatedCasesRepoConfig:
+    def test_federated_cases_repo_default_empty(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.FEDERATED_CASES_REPO == ""
+
+    def test_federated_cases_repo_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"federated_cases_repo": "myorg/pueo-cases"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.FEDERATED_CASES_REPO == "myorg/pueo-cases"

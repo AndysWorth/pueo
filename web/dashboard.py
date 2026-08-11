@@ -19,7 +19,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
-from config import AGENT_MAX_WALL_SECONDS, DASHBOARD_PORT, NOTIFY_WATCH_DIR, DB_PATH
+from config import (
+    AGENT_MAX_WALL_SECONDS,
+    DASHBOARD_PORT,
+    DB_PATH,
+    FEDERATED_CASES_REPO,
+    NOTIFY_WATCH_DIR,
+)
 from utils.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
@@ -2211,6 +2217,102 @@ async def export_episodes(
         media_type="application/x-yaml",
         headers={"Content-Disposition": "attachment; filename=repair-episodes.yaml"},
     )
+
+
+@app.get("/episodes/{episode_id}/prepare", response_class=HTMLResponse)
+async def prepare_episode_submission(
+    request: Request,
+    episode_id: str,
+) -> HTMLResponse:
+    """Render review page for submitting an episode to the federated case library."""
+    from utils.repair_episode import export_single_episode_yaml, load_episode
+
+    episode = load_episode(DB_PATH, episode_id)
+    if episode is None:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+
+    yaml_preview = export_single_episode_yaml(episode)
+    return templates.TemplateResponse(
+        request,
+        "episode_prepare.html",
+        {
+            "episode": episode,
+            "yaml_preview": yaml_preview,
+            "cases_repo": FEDERATED_CASES_REPO,
+            "repo_configured": bool(FEDERATED_CASES_REPO),
+        },
+    )
+
+
+class EpisodeSubmitRequest(BaseModel):
+    description: str = ""
+
+
+@app.post("/episodes/{episode_id}/submit")
+async def submit_episode_to_case_library(
+    episode_id: str,
+    body: EpisodeSubmitRequest,
+) -> JSONResponse:
+    """
+    Clone FEDERATED_CASES_REPO, commit episode YAML on a new branch, open a PR.
+
+    Returns JSON with 'pr_url' on success or 'error' on failure.
+    """
+    from utils.case_submitter import CaseSubmitError, submit_episode
+    from utils.repair_episode import (
+        export_single_episode_yaml,
+        load_episode,
+        mark_episode_submitted,
+    )
+
+    if not FEDERATED_CASES_REPO:
+        raise HTTPException(
+            status_code=400,
+            detail="FEDERATED_CASES_REPO is not configured. "
+            "Add 'federated_cases_repo: owner/pueo-cases' under 'agent:' in config.yaml.",
+        )
+
+    episode = load_episode(DB_PATH, episode_id)
+    if episode is None:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+
+    if episode.submitted_at is not None:
+        return JSONResponse({"pr_url": episode.pr_url, "already_submitted": True})
+
+    yaml_content = export_single_episode_yaml(episode, body.description)
+    pr_title = f"Repair episode: {episode.trigger} / {episode.id[:8]}"
+    pr_body_lines = [
+        f"Anonymized repair episode from Pueo.",
+        f"",
+        f"- **Trigger:** {episode.trigger}",
+        f"- **Outcome:** {'passed' if episode.verification_result else 'failed'}",
+        f"- **Tools used:** {len(episode.tool_sequence)}",
+        f"- **Duration:** {episode.duration_seconds:.1f}s",
+    ]
+    if body.description:
+        pr_body_lines = [body.description, ""] + pr_body_lines
+    pr_body_lines += [
+        "",
+        "```yaml",
+        yaml_content.strip(),
+        "```",
+    ]
+    pr_body = "\n".join(pr_body_lines)
+
+    try:
+        pr_url = await submit_episode(
+            episode_id=episode.id,
+            yaml_content=yaml_content,
+            cases_repo=FEDERATED_CASES_REPO,
+            pr_title=pr_title,
+            pr_body=pr_body,
+        )
+        mark_episode_submitted(DB_PATH, episode.id, pr_url)
+        log.info("episode_submitted", episode_id=episode.id, pr_url=pr_url)
+        return JSONResponse({"pr_url": pr_url, "already_submitted": False})
+    except CaseSubmitError as exc:
+        log.error("episode_submit_failed", episode_id=episode.id, error=str(exc))
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 def run_dashboard() -> None:

@@ -30,6 +30,8 @@ class RepairEpisode(BaseModel):
     model_used: str
     escalated: bool
     duration_seconds: float
+    submitted_at: Optional[float] = None
+    pr_url: Optional[str] = None
 
 
 def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
@@ -58,6 +60,25 @@ def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
         conn.commit()
 
 
+def _row_to_episode(row: sqlite3.Row) -> RepairEpisode:
+    keys = row.keys()
+    return RepairEpisode(
+        id=row["id"],
+        timestamp=row["timestamp"],
+        trigger=row["trigger"],
+        symptoms=json.loads(row["symptoms"]),
+        tool_sequence=[ToolCall(**tc) for tc in json.loads(row["tool_sequence"])],
+        hypothesis_chain=json.loads(row["hypothesis_chain"]),
+        fix_applied=row["fix_applied"],
+        verification_result=bool(row["verification_result"]),
+        model_used=row["model_used"],
+        escalated=bool(row["escalated"]),
+        duration_seconds=row["duration_seconds"],
+        submitted_at=row["submitted_at"] if "submitted_at" in keys else None,
+        pr_url=row["pr_url"] if "pr_url" in keys else None,
+    )
+
+
 def load_episodes(db_path: str, since: Optional[float] = None) -> list[RepairEpisode]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -68,27 +89,60 @@ def load_episodes(db_path: str, since: Optional[float] = None) -> list[RepairEpi
             params = (since,)
         query += " ORDER BY timestamp DESC"
         rows = conn.execute(query, params).fetchall()
+    return [_row_to_episode(row) for row in rows]
 
-    episodes = []
-    for row in rows:
-        episodes.append(
-            RepairEpisode(
-                id=row["id"],
-                timestamp=row["timestamp"],
-                trigger=row["trigger"],
-                symptoms=json.loads(row["symptoms"]),
-                tool_sequence=[
-                    ToolCall(**tc) for tc in json.loads(row["tool_sequence"])
-                ],
-                hypothesis_chain=json.loads(row["hypothesis_chain"]),
-                fix_applied=row["fix_applied"],
-                verification_result=bool(row["verification_result"]),
-                model_used=row["model_used"],
-                escalated=bool(row["escalated"]),
-                duration_seconds=row["duration_seconds"],
-            )
+
+def load_episode(db_path: str, episode_id: str) -> Optional[RepairEpisode]:
+    """Load a single episode by ID; returns None if not found."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM repair_episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_episode(row)
+
+
+def mark_episode_submitted(db_path: str, episode_id: str, pr_url: str) -> None:
+    """Record that an episode has been submitted to the case library."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE repair_episodes SET submitted_at = ?, pr_url = ? WHERE id = ?",
+            (time.time(), pr_url, episode_id),
         )
-    return episodes
+        conn.commit()
+
+
+def export_single_episode_yaml(episode: RepairEpisode, description: str = "") -> str:
+    """Anonymize and serialize one episode to YAML, with an optional description header."""
+    from utils.anonymizer import Anonymizer
+
+    anon = Anonymizer()
+    tool_seq = [
+        {"name": tc.name, "arguments": anon.args(tc.arguments)}
+        for tc in episode.tool_sequence
+    ]
+    record: dict = {
+        "id": episode.id,
+        "timestamp": datetime.fromtimestamp(
+            episode.timestamp, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "trigger": episode.trigger,
+        "symptoms": [anon.text(s) for s in episode.symptoms],
+        "tool_sequence": tool_seq,
+        "hypothesis_chain": [anon.text(h) for h in episode.hypothesis_chain],
+        "fix_applied": anon.text(episode.fix_applied) if episode.fix_applied else None,
+        "verification_result": episode.verification_result,
+        "model_used": episode.model_used,
+        "escalated": episode.escalated,
+        "duration_seconds": episode.duration_seconds,
+    }
+    if description:
+        record["description"] = description
+    return yaml.dump(
+        [record], allow_unicode=True, sort_keys=False, default_flow_style=False
+    )
 
 
 def export_episodes_yaml(

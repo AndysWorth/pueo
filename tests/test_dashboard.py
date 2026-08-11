@@ -5091,3 +5091,178 @@ class TestEpisodesTab:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.get("/episodes/export?since=not-a-date")
         assert resp.status_code == 400
+
+
+class TestEpisodePrepareAndSubmit:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _insert_episode(self, db_path, episode_id="ep-sub-1"):
+        import json
+        import sqlite3
+        import time
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO repair_episodes"
+                " (id, timestamp, trigger, symptoms, tool_sequence, hypothesis_chain,"
+                "  fix_applied, verification_result, model_used, escalated, duration_seconds)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    episode_id,
+                    time.time(),
+                    "ha_log",
+                    json.dumps(["sensor offline"]),
+                    json.dumps([{"name": "read_logs", "arguments": {}}]),
+                    json.dumps(["maybe timeout"]),
+                    None,
+                    1,
+                    "qwen2.5-coder:7b",
+                    0,
+                    7.3,
+                ),
+            )
+            conn.commit()
+
+    def test_prepare_404_for_unknown_episode(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.get("/episodes/nonexistent-id/prepare")
+        assert resp.status_code == 404
+
+    def test_prepare_renders_yaml_preview(self, db_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes/ep-sub-1/prepare").text
+        assert "trigger" in html
+        assert "yaml" in html.lower() or "YAML" in html
+
+    def test_prepare_shows_repo_not_configured_warning(self, db_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "")
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes/ep-sub-1/prepare").text
+        assert "not configured" in html.lower()
+
+    def test_submit_returns_400_when_repo_not_configured(self, db_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "")
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.post(
+            "/episodes/ep-sub-1/submit",
+            json={"description": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_submit_404_for_unknown_episode(self, db_path, monkeypatch):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.post(
+            "/episodes/nonexistent-id/submit",
+            json={"description": ""},
+        )
+        assert resp.status_code == 404
+
+    def test_submit_returns_already_submitted_for_duplicate(self, db_path, monkeypatch):
+        import sqlite3
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
+        self._insert_episode(db_path)
+        # Pre-mark as submitted
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE repair_episodes SET submitted_at = 1.0, pr_url = 'https://github.com/x/y/pull/1' WHERE id = 'ep-sub-1'"
+            )
+            conn.commit()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/episodes/ep-sub-1/submit",
+            json={"description": ""},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["already_submitted"] is True
+        assert data["pr_url"] == "https://github.com/x/y/pull/1"
+
+    def test_submit_calls_case_submitter_and_marks_submitted(
+        self, db_path, monkeypatch
+    ):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
+        self._insert_episode(db_path)
+
+        async def _fake_submit(episode_id, yaml_content, cases_repo, pr_title, pr_body):
+            return "https://github.com/owner/pueo-cases/pull/99"
+
+        # Dashboard imports submit_episode at call time via `from utils.case_submitter import ...`
+        monkeypatch.setattr("utils.case_submitter.submit_episode", _fake_submit)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/episodes/ep-sub-1/submit",
+            json={"description": "context note"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "pr_url" in data
+        assert data["pr_url"] == "https://github.com/owner/pueo-cases/pull/99"
+
+        # Verify the episode is now marked submitted in DB
+        from utils.repair_episode import load_episode
+
+        ep = load_episode(db_path, "ep-sub-1")
+        assert ep is not None
+        assert ep.submitted_at is not None
+        assert ep.pr_url == "https://github.com/owner/pueo-cases/pull/99"
+
+    def test_episodes_list_shows_prepare_button_for_unsubmitted(self, db_path):
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_episode(db_path)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes").text
+        assert "Prepare" in html
+
+    def test_episodes_list_shows_submitted_link_for_submitted(self, db_path):
+        import sqlite3
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._insert_episode(db_path)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE repair_episodes SET submitted_at = 1.0, pr_url = 'https://github.com/x/y/pull/3' WHERE id = 'ep-sub-1'"
+            )
+            conn.commit()
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes").text
+        assert "submitted" in html.lower()
+        assert "https://github.com/x/y/pull/3" in html

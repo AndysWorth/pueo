@@ -339,6 +339,11 @@ def _migrate_v19(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v20(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE repair_episodes ADD COLUMN submitted_at REAL")
+    cursor.execute("ALTER TABLE repair_episodes ADD COLUMN pr_url TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -359,6 +364,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (17, _migrate_v17),
     (18, _migrate_v18),
     (19, _migrate_v19),
+    (20, _migrate_v20),
 ]
 
 
