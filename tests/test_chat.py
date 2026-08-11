@@ -1355,3 +1355,136 @@ class TestGapDetection:
         )
 
         assert len(calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestProposePatchSafety — item 85
+# ---------------------------------------------------------------------------
+
+
+class TestProposePatchSafety:
+    """propose_patch enforces the safety-critical file block list and backup
+    invariant chain protection."""
+
+    @pytest.fixture(autouse=True)
+    def fake_repo(self, monkeypatch, tmp_path, db_path):
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        (tmp_path / "utils").mkdir()
+        for name in ("autonomy.py", "helper.py"):
+            (tmp_path / "utils" / name).write_text("x = 1\n")
+        for name in ("interfaces.py", "config.py"):
+            (tmp_path / name).write_text("x = 1\n")
+        self._ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+
+    def _patch(self, path: str, content: str):
+        return asyncio.run(
+            self._ex.execute(
+                ToolCall(
+                    name="propose_patch", arguments={"path": path, "content": content}
+                )
+            )
+        )
+
+    def test_blocks_utils_autonomy_py(self):
+        result = self._patch("utils/autonomy.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_interfaces_py(self):
+        result = self._patch("interfaces.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_config_py(self):
+        result = self._patch("config.py", "y = 2\n")
+        assert not result.success
+        assert "safety-critical" in (result.error or "").lower()
+
+    def test_blocks_redefining_execute_remote_backup(self):
+        content = "def execute_remote_backup(ssh_client):\n    return 'slug'\n"
+        result = self._patch("utils/helper.py", content)
+        assert not result.success
+        assert "backup invariant" in (result.error or "").lower()
+
+    def test_blocks_redefining_record_backup_slug(self):
+        content = "def record_backup_slug(slug):\n    pass\n"
+        result = self._patch("utils/helper.py", content)
+        assert not result.success
+        assert "backup invariant" in (result.error or "").lower()
+
+    def test_allows_calling_execute_remote_backup(self):
+        content = "slug = execute_remote_backup(ssh)\n"
+        result = self._patch("utils/helper.py", content)
+        assert result.success
+
+    def test_allows_non_critical_file(self):
+        result = self._patch("utils/helper.py", "def my_helper(): pass\n")
+        assert result.success
+
+    def test_path_traversal_rejected(self):
+        result = self._patch("../../etc/passwd", "malicious\n")
+        assert not result.success
+        assert result.error is not None
+
+
+# ---------------------------------------------------------------------------
+# TestResolveRepoPathSecurity — item 85
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRepoPathSecurity:
+    """_resolve_repo_path uses is_relative_to() — immune to the startswith()
+    prefix-confusion attack where a sibling directory name begins with the
+    repo root name."""
+
+    @pytest.fixture
+    def sibling_setup(self, monkeypatch, tmp_path, db_path):
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        # Create a sibling whose name is a prefix extension of tmp_path.name
+        sibling = tmp_path.parent / (tmp_path.name + "_evil")
+        sibling.mkdir()
+        (sibling / "evil.py").write_text("evil\n")
+        self._ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        self._sibling = sibling
+        self._tmp_path = tmp_path
+
+    def test_sibling_prefix_directory_rejected_for_read_source(self, sibling_setup):
+        # Construct a raw path that resolves inside the sibling (not _REPO_ROOT).
+        # e.g. if _REPO_ROOT=/tmp/abc, sibling=/tmp/abc_evil, path='../abc_evil/evil.py'
+        rel = f"../{self._sibling.name}/evil.py"
+        result = asyncio.run(
+            self._ex.execute(ToolCall(name="read_source", arguments={"path": rel}))
+        )
+        assert not result.success
+        assert result.error is not None
+        assert (
+            "traversal" in (result.error or "").lower()
+            or "rejected" in (result.error or "").lower()
+        )
+
+    def test_sibling_prefix_directory_rejected_for_propose_patch(self, sibling_setup):
+        rel = f"../{self._sibling.name}/evil.py"
+        result = asyncio.run(
+            self._ex.execute(
+                ToolCall(
+                    name="propose_patch",
+                    arguments={"path": rel, "content": "evil\n"},
+                )
+            )
+        )
+        assert not result.success
+        assert result.error is not None

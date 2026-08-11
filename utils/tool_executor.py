@@ -52,6 +52,23 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
 
 _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
+# Files the agent may never patch autonomously — manual edit + security review required.
+_SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
+    {
+        "utils/autonomy.py",
+        "interfaces.py",
+        "config.py",
+    }
+)
+
+# Function definitions that belong exclusively to the backup invariant chain.
+# A patch that introduces one of these definitions would bypass or duplicate
+# the invariant, so it is blocked regardless of target file.
+_BACKUP_INVARIANT_SYMBOLS: tuple[str, ...] = (
+    "def execute_remote_backup",
+    "def record_backup_slug",
+)
+
 
 class ToolExecutor:
     """Executes tool calls on behalf of AgentLoop.
@@ -429,7 +446,7 @@ class ToolExecutor:
             resolved = (_REPO_ROOT / path).resolve()
         except Exception as exc:
             return str(exc)
-        if not str(resolved).startswith(str(_REPO_ROOT.resolve())):
+        if not resolved.is_relative_to(_REPO_ROOT.resolve()):
             return f"Path traversal rejected: {path!r}"
         if resolved.suffix not in _SOURCE_ALLOWED_EXTENSIONS:
             allowed = sorted(_SOURCE_ALLOWED_EXTENSIONS)
@@ -458,6 +475,36 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="propose_patch", success=False, output="", error=result
             )
+        # Safety-critical file block list (item 85): derive canonical relative path
+        # so that path aliases ("./config.py", "config.py") all hit the same check.
+        try:
+            rel = str(result.relative_to(_REPO_ROOT.resolve()))
+        except ValueError:
+            rel = path
+        if rel in _SAFETY_CRITICAL_PATHS:
+            return ToolResult(
+                tool_name="propose_patch",
+                success=False,
+                output="",
+                error=(
+                    f"Patching {rel!r} is blocked — safety-critical file. "
+                    "Manual edit and security review required."
+                ),
+            )
+        # Backup invariant chain protection (item 85): block patches that introduce
+        # a new definition of backup-invariant functions — calling them is fine;
+        # redefining them could silently bypass the invariant.
+        for symbol in _BACKUP_INVARIANT_SYMBOLS:
+            if symbol in content:
+                return ToolResult(
+                    tool_name="propose_patch",
+                    success=False,
+                    output="",
+                    error=(
+                        f"Patch redefines {symbol!r} — backup invariant chain is "
+                        "protected. Manual edit and security review required."
+                    ),
+                )
         self._pending_patch[path] = content
         self._sandbox_passed = False
         self._sandbox_output = ""
