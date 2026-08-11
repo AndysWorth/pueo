@@ -177,8 +177,10 @@ async def supervisor_main(config_path: Path) -> None:
     try:
         await ha_agent_advanced.reconcile_backup_inventory()
         await ha_agent_advanced.offload_pending_backups()
-    except Exception:  # nosec B110 — reconcile/offload failure must not block startup
-        pass
+    except Exception as _e:  # nosec B110
+        from utils.logging import get_logger as _gl
+
+        _gl("main").warning("backup_startup_failed", error=str(_e))
 
     # Detect local hardware and populate the model cache; optionally auto-select model
     try:
@@ -294,20 +296,26 @@ async def supervisor_main(config_path: Path) -> None:
 
         supervisor.start("profile_refresh", _profile_refresh_loop)
 
-    # Periodic backup reconciliation loop — keeps the inventory in sync with HA
+    # Periodic backup reconciliation and offload loop — keeps inventory in sync and
+    # ensures new HA-side backups (including automatic daily ones) are pulled locally.
     async def _backup_reconcile_loop() -> None:
+        from utils.logging import get_logger as _gl
         from utils.ssh_client import AsyncSSHClient as _SSH
 
+        _log = _gl("main")
         while True:
             await asyncio.sleep(
                 30 * 60
-            )  # 30-minute interval; startup reconcile already ran
+            )  # 30-minute interval; startup reconcile+offload already ran
+            ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
             try:
-                await ha_agent_advanced.reconcile_backup_inventory(
-                    ssh_client=_SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
-                )
-            except Exception:  # pragma: no cover  # nosec B110
-                pass
+                await ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh)
+            except Exception as e:  # pragma: no cover  # nosec B110
+                _log.warning("backup_reconcile_loop_failed", error=str(e))
+            try:
+                await ha_agent_advanced.offload_pending_backups(ssh_client=ssh)
+            except Exception as e:  # pragma: no cover  # nosec B110
+                _log.warning("backup_offload_loop_failed", error=str(e))
 
     supervisor.start("backup_sync", _backup_reconcile_loop)
 

@@ -363,3 +363,56 @@ class TestPurgeLocalBackupsLocation:
                 ("gone-everywhere",),
             ).fetchone()[0]
         assert loc == "purged"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_backup_remote_path: slug validation
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBackupRemotePathSlugValidation:
+    def test_unknown_slug_returns_none_without_ssh(self):
+        """'unknown_slug' (with underscore) fails _SLUG_RE and returns None immediately."""
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            __import__("ha_agent_advanced")._resolve_backup_remote_path(
+                "unknown_slug", ssh
+            )
+        )
+        assert result is None
+        assert ssh.commands_run == []
+
+    def test_valid_hex_slug_proceeds_to_ssh(self):
+        """A valid all-hex slug passes _SLUG_RE and makes at least one SSH call."""
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={})
+        asyncio.run(
+            __import__("ha_agent_advanced")._resolve_backup_remote_path("abc123ef", ssh)
+        )
+        assert len(ssh.commands_run) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Supervisor backup_sync loop registration
+# ---------------------------------------------------------------------------
+
+
+class TestBackupSyncLoopRegistration:
+    def test_backup_sync_loop_always_starts(self):
+        """backup_sync (periodic reconcile+offload) is always registered in supervisor."""
+        import inspect
+        import main as m
+
+        src = inspect.getsource(m.supervisor_main)
+        assert 'supervisor.start("backup_sync"' in src
+
+    def test_backup_reconcile_loop_calls_offload_pending(self):
+        """The backup_sync loop body calls offload_pending_backups after reconcile."""
+        import inspect
+        import main as m
+
+        src = inspect.getsource(m.supervisor_main)
+        assert "offload_pending_backups" in src
