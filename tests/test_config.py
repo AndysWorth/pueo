@@ -1120,3 +1120,18 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.FEDERATED_CASES_REPO == "myorg/pueo-cases"
+
+    def test_case_ingest_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CASE_INGEST_CACHE_DIR == ".cache/case_ingest/"
+
+    def test_case_ingest_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"case_ingest_cache_dir": "/tmp/my_ingest/"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.CASE_INGEST_CACHE_DIR == "/tmp/my_ingest/"

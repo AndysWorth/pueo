@@ -110,10 +110,33 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     if docs_ids:
         store.prune("ha_integration_docs", docs_ids)
 
-    total = n_ha + n_hacs + n_docs
+    # ── 4. Community cases ───────────────────────────────────────────────────
+    n_cases = 0
+    if config.FEDERATED_CASES_REPO:
+        from utils.case_ingester import CaseIngestError, ingest_community_cases
+
+        print(
+            f"[rag-refresh] Ingesting community cases from {config.FEDERATED_CASES_REPO}…"
+        )
+        try:
+            n_cases = ingest_community_cases(
+                config.FEDERATED_CASES_REPO,
+                config.CASE_INGEST_CACHE_DIR,
+                store,
+            )
+            print(f"[rag-refresh]   → {n_cases} new episode(s) ingested")
+        except CaseIngestError as exc:
+            print(f"[rag-refresh]   → case ingest failed: {exc}")
+    else:
+        print(
+            "[rag-refresh] Community cases: skipped "
+            "(set federated_cases_repo in config.yaml to enable)"
+        )
+
+    total = n_ha + n_hacs + n_docs + n_cases
     print(
         f"[rag-refresh] Done. Embedded content from {total} file(s) "
-        f"across 3 collections."
+        f"across 4 collections."
     )
 
 
