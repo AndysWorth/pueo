@@ -1,4 +1,4 @@
-"""Ingest merged community repair episodes from pueo-cases into ChromaDB (item 81)."""
+"""Ingest merged community repair episodes from pueo-cases into ChromaDB (items 81-82)."""
 
 from __future__ import annotations
 
@@ -151,6 +151,96 @@ def _chunk_episode(
     return chunk_id, text, metadata
 
 
+_TRIGGER_MAP: dict[str, str] = {
+    "ha_log": "ha_log",
+    "ha_log_monitor": "ha_log",
+    "ha_config": "ha_config",
+    "ha_config_check": "ha_config",
+    "netalertx": "netalertx",
+}
+
+
+def generate_eval_scenario(record: dict, pr_number: int) -> Optional[dict]:
+    """Build an EvalScenario-compatible dict from one episode record.
+
+    Returns None if the record lacks enough content to be a useful scenario.
+    """
+    episode_id = str(record.get("id", ""))
+    raw_trigger = str(record.get("trigger", ""))
+    symptoms: list = record.get("symptoms") or []
+    hypothesis_chain: list = record.get("hypothesis_chain") or []
+    fix_applied: str = record.get("fix_applied") or ""
+    description: str = record.get("description") or ""
+
+    trigger = _TRIGGER_MAP.get(raw_trigger, "investigation")
+
+    desc_parts: list[str] = []
+    if description:
+        desc_parts.append(description)
+    if hypothesis_chain:
+        desc_parts.append(
+            "Hypothesis: " + "; ".join(str(h) for h in hypothesis_chain[:3])
+        )
+    desc_text = (
+        " ".join(desc_parts).strip() or f"Community repair case from PR #{pr_number}"
+    )
+
+    symptom_text = "\n".join(str(s) for s in symptoms)
+    mocks: dict[str, str] = {}
+    if trigger == "ha_log":
+        if symptom_text:
+            mocks["read_logs"] = symptom_text
+    elif trigger == "ha_config":
+        if fix_applied:
+            mocks["read_config"] = fix_applied
+    elif trigger == "netalertx":
+        if symptom_text:
+            mocks["query_netalertx"] = symptom_text
+    else:  # investigation
+        if symptom_text:
+            mocks["read_logs"] = symptom_text
+
+    if trigger in ("ha_log", "investigation"):
+        if fix_applied:
+            expected_tools = ["read_logs", "apply_fix", "finish_repair"]
+        else:
+            expected_tools = ["read_logs", "finish_repair"]
+    elif trigger == "ha_config":
+        if fix_applied:
+            expected_tools = ["read_config", "apply_fix", "finish_repair"]
+        else:
+            expected_tools = ["read_config", "finish_repair"]
+    else:  # netalertx
+        expected_tools = ["query_netalertx", "finish_repair"]
+
+    id_slug = episode_id[:12] if episode_id else "unknown"
+    scenario: dict = {
+        "name": f"community_pr{pr_number}_{id_slug}",
+        "trigger": trigger,
+        "description": desc_text,
+        "expected_outcome": "success",
+        "expected_tools_called": expected_tools,
+        "fix_must_parse": bool(fix_applied),
+    }
+    if mocks:
+        scenario["mocks"] = mocks
+    return scenario
+
+
+def write_eval_scenario(scenario: dict, scenarios_dir: str) -> Path:
+    """Write a scenario dict to YAML in scenarios_dir. Returns the written path."""
+    out_dir = Path(scenarios_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{scenario['name']}.yaml"
+    path.write_text(
+        yaml.dump(
+            scenario, default_flow_style=False, sort_keys=False, allow_unicode=True
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def load_ingest_state(cache_dir: str) -> dict:
     state_file = Path(cache_dir) / _STATE_FILE
     if state_file.exists():
@@ -171,10 +261,12 @@ def ingest_community_cases(
     repo: str,
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
+    scenarios_dir: Optional[str] = None,
 ) -> int:
     """Pull merged PRs from repo, embed episode YAML files, upsert into community_cases.
 
     Tracks last-ingest timestamp in cache_dir/state.json so repeated runs are idempotent.
+    When scenarios_dir is set, writes an eval scenario YAML for each ingested episode.
     Returns the total number of episode records ingested.
     """
     _validate_repo(repo)
@@ -219,6 +311,10 @@ def ingest_community_cases(
                         metadatas=[metadata],
                     )
                     total += 1
+                    if scenarios_dir is not None:
+                        scenario = generate_eval_scenario(record, pr_number)
+                        if scenario is not None:
+                            write_eval_scenario(scenario, scenarios_dir)
             except Exception:  # nosec B110 — skip malformed/inaccessible files
                 pass
 
