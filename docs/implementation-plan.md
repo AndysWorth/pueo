@@ -107,7 +107,7 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 83     | open_pr tool: gh pr create integration; builds on propose_patch + sandbox_code from item 70; PR body template with diff + test summary + ADR 007 ref                                                                                                                  | ✅ Done (2026-08-11) |
 | 84     | Autonomous gap detection: finish_repair with capability_gap=True triggers propose_patch → sandbox_code → code_proposal HITL card automatically                                                                                                                        | ✅ Done (2026-08-11) |
 | 85     | Security review: sandbox escape vectors, safety-critical file block list (utils/autonomy.py, interfaces.py, config.py, backup chain), read_source path traversal                                                                                                      | ✅ Done (2026-08-11) |
-| 86     | ADR 007: agent-generated code proposals with sandboxed CI gate                                                                                                                                                                                                        | ☐ TODO              |
+| 86     | ADR 007: agent-generated code proposals with sandboxed CI gate                                                                                                                                                                                                        | ✅ Done (2026-08-11) |
 | 87     | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory in `analyze_breaking_changes`; stub sentinel in `fetch_ha_release_notes`                                                                                                              | ✅ Done (2026-08-06) |
 | 88     | `utils/ha_blog_scraper.py`: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes`; hooked into `run_rag_refresh`                                                                                                                                | ✅ Done (2026-08-06) |
 | 89     | Enriched chunk metadata (`release_type`, `category`, `impacted_integration`); `where` clause in `KnowledgeStore.query`; `integration_filter` in `query_knowledge` tool                                                                                                | ✅ Done (2026-08-06) |
@@ -207,7 +207,7 @@ Items 80–82. Pool anonymized repair episodes in a public `pueo-cases` GitHub r
 
 ---
 
-### Phase 21 — Self-Improving Code Proposals *(stretch goal, 4 items)*
+### Phase 21 — Self-Improving Code Proposals ✅ Complete (2026-08-11)
 Items 83–86. The sandbox infrastructure (`read_source`, `propose_patch`, `sandbox_code`, code_proposal HITL card) was delivered in Phase 17.5. This phase adds the autonomous trigger (agent detects a capability gap during a repair loop), the `open_pr` path (formal PR instead of in-process registration), a security review, and ADR 007. Requires Milestones 7 and 9 complete.
 
 | Items | Concern |
