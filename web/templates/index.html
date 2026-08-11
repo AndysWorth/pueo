@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "code_proposal", "ha_repair", "cloud_escalation") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "disk_recovery", "code_proposal", "ha_repair", "cloud_escalation") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -136,6 +136,28 @@
           <summary>Sandbox CI output</summary>
           <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("sandbox_output", "") }}</pre>
         </details>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if ct == "disk_recovery" %}
+      <div style="margin:0.75rem 0;">
+        {% set auto_actions = r.payload.get("auto_actions_taken", []) %}
+        {% if auto_actions %}
+        <p style="margin:0 0 0.4rem;"><strong>Auto-recovery already ran:</strong></p>
+        <ul style="margin:0 0 0.6rem;padding-left:1.2rem;font-size:0.85rem;">
+          {% for act in auto_actions %}
+          <li>{{ "✓" if act.success else "✗" }} {{ act.message }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% set hitl_opts = r.payload.get("ranked_hitl_options", []) %}
+        {% if hitl_opts %}
+        <p style="margin:0 0 0.4rem;"><strong>Remaining options (approve to run all):</strong></p>
+        <ul style="margin:0 0 0.4rem;padding-left:1.2rem;font-size:0.85rem;">
+          {% for opt in hitl_opts %}
+          <li><strong>{{ opt.name }}</strong> — {{ opt.description }} <em>({{ opt.estimated_savings }})</em></li>
+          {% endfor %}
+        </ul>
         {% endif %}
       </div>
       {% endif %}
@@ -175,6 +197,9 @@
         {% elif ct == "resource_action" %}
           {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}
           {% set hint_reject = "Skip; no backups moved or deleted" %}
+        {% elif ct == "disk_recovery" %}
+          {% set hint_approve = "Run all listed recovery options: repack recorder DB, purge supervisor tmp, offload and remove old backups" %}
+          {% set hint_reject = "Skip additional recovery; disk remains at current level" %}
         {% elif ct == "code_proposal" %}
           {% set hint_approve = "Write tool code to user_tools/, import it, and register it for future agent loop calls" %}
           {% set hint_reject = "Discard; the proposed tool is not registered" %}

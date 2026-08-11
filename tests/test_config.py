@@ -938,6 +938,51 @@ class TestHAUpdateManagerConfig:
 
         assert config.DISK_USAGE_POLL_INTERVAL_SECONDS == 60.0
 
+    def test_disk_recovery_auto_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_AUTO_ENABLED is True
+
+    def test_disk_recovery_auto_enabled_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"disk_recovery_auto_enabled": False}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_AUTO_ENABLED is False
+
+    def test_disk_recovery_recorder_keep_days_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_RECORDER_KEEP_DAYS == 30
+
+    def test_disk_recovery_recorder_keep_days_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"disk_recovery_recorder_keep_days": 14}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_RECORDER_KEEP_DAYS == 14
+
+    def test_disk_recovery_journal_max_mb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_JOURNAL_MAX_MB == 200
+
+    def test_disk_recovery_journal_max_mb_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"disk_recovery_journal_max_mb": 500}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DISK_RECOVERY_JOURNAL_MAX_MB == 500
+
 
 class TestLLMProviderBillingConfig:
     def test_cloud_max_cost_per_incident_default(self, isolated_config):

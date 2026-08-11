@@ -1,0 +1,52 @@
+name: disk_critical_investigation
+trigger: investigation
+description: >
+  HA disk is critically low at 82% usage with only 1.9 GB free. Call get_disk_usage
+  to confirm the breakdown, then call query_knowledge for disk space best practices,
+  then call finish_investigation with a structured report identifying root causes
+  and classifying remediation options as auto_actions and hitl_actions.
+
+mocks:
+  get_disk_usage: |
+    {
+      "total_gb": 10.8,
+      "used_gb": 8.9,
+      "free_gb": 1.9,
+      "used_pct": 82.4,
+      "sections": [
+        {"name": "HA Config & Database", "path": "/config", "used_gb": 7.1,
+         "breakdown": [
+           {"name": "home-assistant_v2.db (recorder)", "size_display": "6.2G"},
+           {"name": "home-assistant.log", "size_display": "820M"},
+           {"name": "configuration.yaml", "size_display": "12K"}
+         ]},
+        {"name": "Backups", "path": "/backup", "used_gb": 0.13,
+         "breakdown": [{"name": "2 backup archives", "size_display": "130M"}]},
+        {"name": "Addon Data", "path": "/addon_data", "used_gb": 0.8,
+         "breakdown": [{"name": "nginx proxy manager", "size_display": "800M"}]},
+        {"name": "Supervisor Tmp", "path": "/tmp", "used_gb": 0.9,
+         "breakdown": [{"name": "failed-backup-abc123.tar", "size_display": "900M"}]}
+      ]
+    }
+  query_knowledge: |
+    [
+      {"source": "ha_blog_2026_03", "content": "To free space on a full HA disk: (1) truncate /config/home-assistant.log with 'truncate -s 0' — never delete it as HA holds the fd; (2) vacuum the systemd journal with 'journalctl --rotate && journalctl --vacuum-size=200M'; (3) run recorder.purge service call with purge_keep_days=30 and repack=False for quick space recovery; (4) check /mnt/data/supervisor/tmp/ for orphaned failed-backup tar files which can be gigabytes; (5) recorder.purge with repack=True compacts the SQLite file but requires ~2.5x the DB size in free space."},
+      {"source": "community_cases_2025", "content": "The recorder database (home-assistant_v2.db) is the most common cause of disk full on HAOS. A 6 GB recorder DB with no purge schedule is typical for installations polling many sensors at high frequency. Purging history keeps the last 30 days and is safe to automate. Compacting (VACUUM) is irreversible but recovers the deleted space permanently."}
+    ]
+
+expected_outcome: success
+expected_tools_called:
+  - get_disk_usage
+  - query_knowledge
+  - finish_investigation
+expected_tools_not_called:
+  - apply_fix
+  - trigger_backup
+  - propose_patch
+fix_must_parse: false
+max_tool_calls: 15
+
+assertions:
+  auto_actions_nonempty: true
+  hitl_actions_nonempty: true
+  root_causes_mention: recorder

@@ -44,6 +44,7 @@ _TRIGGER_CONTEXTS = {
     "ha_config": "Investigate the Home Assistant configuration for errors and fix any issues found.",
     "ha_log": "Analyze recent Home Assistant log output for errors that require remediation.",
     "netalertx": "Check NetAlertX health and fix any configuration or operational issues found.",
+    "investigation": "Investigate the reported issue, consult the knowledge base, and produce a structured report of root causes and ranked remediation options.",
 }
 
 

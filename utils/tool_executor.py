@@ -138,6 +138,12 @@ class ToolExecutor:
                     success=True,
                     output=args.get("summary", ""),
                 )
+            if name == "finish_investigation":
+                return ToolResult(
+                    tool_name="finish_investigation",
+                    success=True,
+                    output=args.get("summary", "Investigation complete"),
+                )
             if name == "query_knowledge":
                 return await self._query_knowledge(
                     args.get("query", ""),

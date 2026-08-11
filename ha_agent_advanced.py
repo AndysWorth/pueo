@@ -839,8 +839,13 @@ async def offload_backup_to_local(
 
 async def enforce_ha_retention(
     ssh_client: Optional[SSHClientProtocol] = None,
+    force_critical: bool = False,
 ) -> int:
     """Delete oldest HA backups beyond BACKUP_RETAIN_ON_HA; only slugs confirmed location='both'.
+
+    When force_critical=True (disk is at critical threshold), the effective floor drops to 1
+    so confirmed-offloaded backups are cleared even when total count equals the normal minimum.
+    The single newest slug is always protected regardless of force_critical.
 
     Returns the number of backups successfully deleted from HA.
     """
@@ -851,11 +856,12 @@ async def enforce_ha_retention(
         ).fetchall()
 
     ha_count = len(ha_rows)
-    if ha_count <= BACKUP_RETAIN_ON_HA:
+    effective_floor = 1 if force_critical else BACKUP_RETAIN_ON_HA
+    if ha_count <= effective_floor:
         return 0
 
     most_recent_slug = ha_rows[0][0]
-    to_delete_count = ha_count - BACKUP_RETAIN_ON_HA
+    to_delete_count = ha_count - effective_floor
 
     with sqlite3.connect(DB_PATH) as conn:
         candidates = conn.execute(
@@ -910,7 +916,13 @@ async def offload_pending_backups(
         if not offloaded:
             log.warning("backup_offload_pending_failed", slug=slug)
 
-    await enforce_ha_retention(ssh_client=ssh_client)
+    from utils.resource import get_resource_status
+
+    _status = get_resource_status()
+    await enforce_ha_retention(
+        ssh_client=ssh_client,
+        force_critical=_status is not None and _status.disk_critical,
+    )
     purge_local_backups()
 
 
