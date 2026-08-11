@@ -301,6 +301,20 @@ def _migrate_v18(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v19(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS log_triage_history (
+            fingerprint   TEXT PRIMARY KEY,
+            first_seen_at REAL NOT NULL,
+            last_seen_at  REAL NOT NULL,
+            hitl_sent_at  REAL,
+            send_count    INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -320,6 +334,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (16, _migrate_v16),
     (17, _migrate_v17),
     (18, _migrate_v18),
+    (19, _migrate_v19),
 ]
 
 
@@ -491,6 +506,58 @@ def mark_repair_resolved(issue_key: str) -> None:
             (time.time(), issue_key),
         )
         conn.commit()
+
+
+def record_log_triage_seen(
+    conn: sqlite3.Connection, fingerprint: str, now: float
+) -> None:
+    """Upsert a log triage fingerprint — insert on first sighting, update last_seen_at on repeat."""
+    row = conn.execute(
+        "SELECT first_seen_at FROM log_triage_history WHERE fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO log_triage_history (fingerprint, first_seen_at, last_seen_at)"
+            " VALUES (?, ?, ?)",
+            (fingerprint, now, now),
+        )
+    else:
+        conn.execute(
+            "UPDATE log_triage_history SET last_seen_at = ? WHERE fingerprint = ?",
+            (now, fingerprint),
+        )
+    conn.commit()
+
+
+def should_send_log_triage_hitl(
+    conn: sqlite3.Connection, fingerprint: str, cooldown_hours: int
+) -> bool:
+    """Return True if no HITL card has been sent for this fingerprint within the cooldown window."""
+    import time as _time
+
+    row = conn.execute(
+        "SELECT hitl_sent_at FROM log_triage_history WHERE fingerprint = ?",
+        (fingerprint,),
+    ).fetchone()
+    if row is None:
+        return True
+    if row[0] is None:
+        return True
+    return row[0] < _time.time() - cooldown_hours * 3600
+
+
+def mark_log_triage_hitl_sent(
+    conn: sqlite3.Connection, fingerprint: str, now: float
+) -> None:
+    """Record that a HITL card was sent for this fingerprint and increment the send counter."""
+    conn.execute(
+        "UPDATE log_triage_history"
+        " SET hitl_sent_at = ?, send_count = send_count + 1"
+        " WHERE fingerprint = ?",
+        (now, fingerprint),
+    )
+    conn.commit()
 
 
 def is_reboot_required_active() -> bool:

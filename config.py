@@ -90,6 +90,9 @@ HA_REPAIR_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("ha_repair_poll_interval_minutes", 5)
 )
 
+# Log triage deduplication — suppress repeat HITL cards for the same recurring error
+LOG_TRIAGE_COOLDOWN_HOURS: int = int(_agent.get("log_triage_cooldown_hours", 4))
+
 # RAG knowledge layer
 CHROMADB_PATH: str = _agent.get("chromadb_path", "./chromadb/")
 RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
