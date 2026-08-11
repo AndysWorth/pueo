@@ -547,7 +547,7 @@ else
     echo "  from your HA instance), and HA integration documentation. A weekly"
     echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
     echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
-    echo "  rag_ha_docs_cache_dir — see config.yaml.default for details."
+    echo "  rag_ha_docs_cache_dir, case_ingest_cache_dir — see config.yaml.default for details."
     echo
     read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
     if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then

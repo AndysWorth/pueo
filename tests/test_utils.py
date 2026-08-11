@@ -2179,11 +2179,11 @@ class TestEmbedCachedIntegrationDocs:
         assert hits[0].metadata.get("is_installed") is True
 
 
-class TestCommunityCollectionRemoved:
-    def test_community_cases_not_in_collections(self):
+class TestCommunityCollection:
+    def test_community_cases_in_collections(self):
         from utils.knowledge_store import COLLECTIONS
 
-        assert "community_cases" not in COLLECTIONS
+        assert "community_cases" in COLLECTIONS
 
 
 class TestFetchIntegrationDocReturnValues:
@@ -5223,3 +5223,443 @@ class TestCaseSubmitterValidation:
                     pr_body="b",
                 )
             )
+
+
+# ── case_ingester ─────────────────────────────────────────────────────────────
+
+
+class TestCaseIngesterValidate:
+    def test_empty_repo_raises(self):
+        from utils.case_ingester import CaseIngestError, _validate_repo
+
+        with pytest.raises(CaseIngestError, match="Invalid"):
+            _validate_repo("")
+
+    def test_malformed_repo_raises(self):
+        from utils.case_ingester import CaseIngestError, _validate_repo
+
+        with pytest.raises(CaseIngestError, match="Invalid"):
+            _validate_repo("not-a-valid/repo/path/extra")
+
+    def test_path_traversal_rejected(self):
+        from utils.case_ingester import CaseIngestError, _validate_repo
+
+        with pytest.raises(CaseIngestError, match="Invalid"):
+            _validate_repo("../evil/repo")
+
+    def test_valid_repo_format_passes(self):
+        from utils.case_ingester import _validate_repo
+
+        _validate_repo("owner/pueo-cases")
+        _validate_repo("my-org/my.repo_123")
+
+
+class TestCaseIngesterState:
+    def test_load_state_missing_dir_returns_empty(self, tmp_path):
+        from utils.case_ingester import load_ingest_state
+
+        state = load_ingest_state(str(tmp_path / "nonexistent"))
+        assert state == {}
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        from utils.case_ingester import load_ingest_state, save_ingest_state
+
+        save_ingest_state(str(tmp_path), {"last_ingest_ts": 12345.0, "foo": "bar"})
+        state = load_ingest_state(str(tmp_path))
+        assert state["last_ingest_ts"] == 12345.0
+        assert state["foo"] == "bar"
+
+    def test_save_creates_directory(self, tmp_path):
+        from utils.case_ingester import load_ingest_state, save_ingest_state
+
+        nested = str(tmp_path / "a" / "b" / "c")
+        save_ingest_state(nested, {"last_ingest_ts": 0.0})
+        state = load_ingest_state(nested)
+        assert state["last_ingest_ts"] == 0.0
+
+    def test_corrupt_state_file_returns_empty(self, tmp_path):
+        from utils.case_ingester import load_ingest_state
+
+        (tmp_path / "state.json").write_text("not valid json", encoding="utf-8")
+        state = load_ingest_state(str(tmp_path))
+        assert state == {}
+
+
+class TestCaseIngesterChunkEpisode:
+    def test_minimal_episode_produces_chunk(self):
+        from utils.case_ingester import _chunk_episode
+
+        record = {
+            "id": "abc123def456",
+            "trigger": "ha_log",
+            "symptoms": ["Boot error"],
+            "hypothesis_chain": ["Config corrupt"],
+        }
+        result = _chunk_episode(record, pr_number=7, ingest_date="2026-08-11T00:00:00Z")
+        assert result is not None
+        chunk_id, text, meta = result
+        assert "community_pr7_abc123def456" == chunk_id
+        assert "ha_log" in text
+        assert "Boot error" in text
+        assert "Config corrupt" in text
+        assert meta["source_pr"] == "7"
+        assert meta["trigger_type"] == "ha_log"
+        assert meta["ingest_date"] == "2026-08-11T00:00:00Z"
+        assert meta["collection"] == "community_cases"
+
+    def test_episode_with_description_and_fix(self):
+        from utils.case_ingester import _chunk_episode
+
+        record = {
+            "id": "x" * 20,
+            "trigger": "netalertx",
+            "symptoms": ["New device"],
+            "hypothesis_chain": ["Unknown MAC"],
+            "fix_applied": "Added to allowlist",
+            "description": "Rogue device detected",
+        }
+        result = _chunk_episode(
+            record, pr_number=42, ingest_date="2026-08-11T00:00:00Z"
+        )
+        assert result is not None
+        _, text, _ = result
+        assert "Rogue device detected" in text
+        assert "Added to allowlist" in text
+
+    def test_empty_symptoms_and_hypothesis_returns_none(self):
+        from utils.case_ingester import _chunk_episode
+
+        record = {
+            "id": "abc",
+            "trigger": "ha_log",
+            "symptoms": [],
+            "hypothesis_chain": [],
+        }
+        result = _chunk_episode(record, pr_number=1, ingest_date="2026-08-11T00:00:00Z")
+        # Only "Trigger: ha_log" — that's still non-empty text so result is not None
+        assert result is not None
+        _, text, _ = result
+        assert "Trigger: ha_log" in text
+
+    def test_no_id_uses_unknown_slug(self):
+        from utils.case_ingester import _chunk_episode
+
+        record = {"trigger": "ha_log", "symptoms": ["err"], "hypothesis_chain": []}
+        result = _chunk_episode(record, pr_number=1, ingest_date="2026-08-11T00:00:00Z")
+        assert result is not None
+        chunk_id, _, _ = result
+        assert "unknown" in chunk_id
+
+    def test_chunk_id_truncates_long_id(self):
+        from utils.case_ingester import _chunk_episode
+
+        record = {
+            "id": "a" * 50,
+            "trigger": "ha_log",
+            "symptoms": ["x"],
+            "hypothesis_chain": [],
+        }
+        result = _chunk_episode(record, pr_number=3, ingest_date="2026-08-11T00:00:00Z")
+        assert result is not None
+        chunk_id, _, _ = result
+        # slug is capped at 12 chars
+        assert chunk_id == f"community_pr3_{'a' * 12}"
+
+
+class TestCaseIngesterIngest:
+    def _make_pr_list(
+        self, numbers: list[int], merged_at: str = "2026-08-11T10:00:00Z"
+    ) -> str:
+        import json
+
+        return json.dumps(
+            [{"number": n, "merged_at": merged_at, "title": f"PR {n}"} for n in numbers]
+        )
+
+    def _make_pr_files(self, filenames: list[str]) -> str:
+        import json
+
+        return json.dumps([{"filename": f, "status": "added"} for f in filenames])
+
+    def _make_contents(self, episode_yaml: str) -> str:
+        import base64
+        import json
+
+        return json.dumps(
+            {
+                "encoding": "base64",
+                "content": base64.b64encode(episode_yaml.encode()).decode(),
+            }
+        )
+
+    def _make_episode_yaml(
+        self, ep_id: str = "epabc123", trigger: str = "ha_log"
+    ) -> str:
+        import yaml
+
+        return yaml.dump(
+            [
+                {
+                    "id": ep_id,
+                    "trigger": trigger,
+                    "symptoms": ["Error booting"],
+                    "hypothesis_chain": ["Config missing key"],
+                    "fix_applied": "Added default_config",
+                    "verification_result": True,
+                    "model_used": "test-model",
+                    "escalated": False,
+                    "duration_seconds": 5.0,
+                    "timestamp": "2026-08-11T00:00:00Z",
+                }
+            ]
+        )
+
+    def test_invalid_repo_raises(self, tmp_path):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import CaseIngestError, ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        with pytest.raises(CaseIngestError, match="Invalid"):
+            ingest_community_cases("", str(tmp_path), store)
+
+    def test_no_merged_prs_returns_zero(self, tmp_path, monkeypatch):
+        import json
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+
+        def fake_run_gh(args, timeout=60):
+            if "pulls" in args:
+                return json.dumps([])
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 0
+
+    def test_ingest_one_episode(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        episode_yaml = self._make_episode_yaml("ep001")
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep001.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 1
+        docs = store._docs.get("community_cases", [])
+        assert len(docs) == 1
+        _, text, meta = docs[0]
+        assert "Error booting" in text
+        assert meta["source_pr"] == "1"
+        assert meta["trigger_type"] == "ha_log"
+
+    def test_ingest_multiple_prs(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        yaml1 = self._make_episode_yaml("ep001")
+        yaml2 = self._make_episode_yaml("ep002", trigger="netalertx")
+
+        call_log: list[list[str]] = []
+
+        def fake_run_gh(args, timeout=60):
+            call_log.append(args)
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1, 2])
+            if "files" in joined and "/1/" in joined:
+                return self._make_pr_files(["episodes/ep001.yaml"])
+            if "files" in joined and "/2/" in joined:
+                return self._make_pr_files(["episodes/ep002.yaml"])
+            if "contents" in joined and "ep001" in joined:
+                return self._make_contents(yaml1)
+            if "contents" in joined and "ep002" in joined:
+                return self._make_contents(yaml2)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 2
+
+    def test_state_saved_after_ingest(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases, load_ingest_state
+
+        store = FakeKnowledgeStore()
+        episode_yaml = self._make_episode_yaml()
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        state = load_ingest_state(str(tmp_path))
+        assert "last_ingest_ts" in state
+        assert state["last_ingest_ts"] > 0
+
+    def test_since_timestamp_filters_old_prs(self, tmp_path, monkeypatch):
+        import json
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases, save_ingest_state
+
+        store = FakeKnowledgeStore()
+        # Save a "future" last_ingest_ts so no PRs are newer
+        save_ingest_state(str(tmp_path), {"last_ingest_ts": 9_999_999_999.0})
+
+        calls: list = []
+
+        def fake_run_gh(args, timeout=60):
+            calls.append(args)
+            return json.dumps(
+                [
+                    {
+                        "number": 1,
+                        "merged_at": "2020-01-01T00:00:00Z",
+                        "title": "Old PR",
+                    }
+                ]
+            )
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 0
+
+    def test_non_episode_files_skipped(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        episode_yaml = self._make_episode_yaml()
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                # Mix of episode YAML and other files
+                return self._make_pr_files(
+                    [
+                        "README.md",
+                        "episodes/ep.yaml",
+                        "episodes/wrong.txt",
+                    ]
+                )
+            if "contents" in joined and "ep.yaml" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        # Only episodes/ep.yaml qualifies (README.md and .txt excluded)
+        assert n == 1
+
+    def test_malformed_yaml_file_skipped(self, tmp_path, monkeypatch):
+        import base64
+        import json
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/bad.yaml"])
+            if "contents" in joined:
+                return json.dumps(
+                    {
+                        "encoding": "base64",
+                        "content": base64.b64encode(b": invalid: yaml: [[[").decode(),
+                    }
+                )
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        # Should not raise — malformed file is silently skipped
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 0
+
+    def test_gh_failure_on_files_skips_pr(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases, CaseIngestError
+
+        store = FakeKnowledgeStore()
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined:
+                return self._make_pr_list([1])
+            raise CaseIngestError("network timeout")
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        # PR file fetch fails → PR skipped → 0 ingested, no exception raised
+        n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert n == 0
+
+    def test_upsert_idempotent_on_repeat_run(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        episode_yaml = self._make_episode_yaml("ep-stable")
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        # Second run sees same PR as already ingested (since_ts covers it)
+        ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        n2 = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        # No new PRs after the first run → 0
+        assert n2 == 0
+
+    def test_community_cases_collection_used(self, tmp_path, monkeypatch):
+        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.case_ingester import ingest_community_cases
+
+        store = FakeKnowledgeStore()
+        episode_yaml = self._make_episode_yaml()
+
+        def fake_run_gh(args, timeout=60):
+            joined = " ".join(args)
+            if "pulls" in joined and "files" not in joined and "contents" not in joined:
+                return self._make_pr_list([1])
+            if "files" in joined:
+                return self._make_pr_files(["episodes/ep.yaml"])
+            if "contents" in joined:
+                return self._make_contents(episode_yaml)
+            return "[]"
+
+        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
+        assert "community_cases" in store._docs
+        assert len(store._docs["community_cases"]) == 1

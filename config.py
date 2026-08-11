@@ -123,6 +123,7 @@ HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
 # Federated case library — community repair episode sharing
 FEDERATED_CASES_REPO: str = _agent.get("federated_cases_repo", "")
+CASE_INGEST_CACHE_DIR: str = _agent.get("case_ingest_cache_dir", ".cache/case_ingest/")
 
 # LLM provider selection
 _llm_cfg = _cfg.get("llm", {})
