@@ -121,6 +121,12 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | DU-4 | `web/templates/base.html` nav link; `web/dashboard.py` `GET /disk` + `POST /disk/refresh` routes | ✅ Done (2026-08-07) |
 | DU-5 | `main.py` supervisor registration of `disk_usage_poll` loop | ✅ Done (2026-08-07) |
 | DU-6 | Tests: `test_utils.py` (35 tests), `test_dashboard.py` (5 tests), `test_config.py` (2 tests) | ✅ Done (2026-08-07) |
+| STOR-1 | `utils/archiver.py`: `ArchiveResult`, `archive_ha_log`, `archive_journal_dump`, `enforce_archive_retention` | ✅ Done (2026-08-11) |
+| STOR-2 | Config keys: `PUEO_ARCHIVE_DIR`, `ARCHIVE_HA_LOG_ENABLED`, `ARCHIVE_JOURNAL_ENABLED`, `PUEO_ARCHIVE_MAX_GB`, `PUEO_LOCAL_MAX_GB`; triple-update; `archives/` added to `setup.sh --clean` | ✅ Done (2026-08-11) |
+| STOR-3 | Wire archiver into `disk_recovery.py`: archive HA log before truncate; archive journal before vacuum | ✅ Done (2026-08-11) |
+| STOR-4 | `utils/pueo_storage.py`: `PueoFootprint`, `measure_pueo_footprint`; warns when `PUEO_LOCAL_MAX_GB` exceeded | ✅ Done (2026-08-11) |
+| STOR-5 | Dashboard: "Pueo Local Storage" card in `disk.html`; `GET /disk` includes footprint; `_backup_reconcile_loop` trims archives | ✅ Done (2026-08-11) |
+| STOR-6 | Tests: `test_archiver.py` (14 tests), `test_disk_recovery.py` (archiver integration), `test_config.py` (5 new keys) | ✅ Done (2026-08-11) |
 
 ---
 
@@ -444,6 +450,20 @@ Items DU-1–DU-6. Adds a `/disk` dashboard tab giving operational visibility in
 | DU-6 | Tests: `test_utils.py`, `test_dashboard.py`, `test_config.py` |
 
 → [plan/disk-usage.md](plan/disk-usage.md)
+
+---
+
+### Phase 24 — Pueo Local Storage Management (6 items) ✅ Complete (2026-08-11)
+Items STOR-1–STOR-6. Closes three gaps in disk-recovery housekeeping: (1) HA log is now SFTP-pulled and gzip-compressed to `archives/ha_logs/` before being zeroed, giving forensic continuity at the moment of a disk-critical event; (2) an optional journal text dump is archived before vacuum runs; (3) Pueo tracks its own local storage footprint across all data directories and surfaces it in the Disk dashboard tab. A new `PUEO_ARCHIVE_MAX_GB` cap with automatic retention enforcement prevents the archive directory from growing unboundedly. The 30-min backup-sync loop now trims archives after each offload cycle.
+
+| Items | Concern |
+|-------|---------|
+| STOR-1 | `utils/archiver.py`: `ArchiveResult`, `archive_ha_log`, `archive_journal_dump`, `enforce_archive_retention` |
+| STOR-2 | 5 new config keys + triple-update; `archives/` added to `setup.sh --clean` |
+| STOR-3 | Archive wired into `disk_recovery.py` before truncate/vacuum |
+| STOR-4 | `utils/pueo_storage.py`: `PueoFootprint`, `measure_pueo_footprint`, soft-warn on `PUEO_LOCAL_MAX_GB` |
+| STOR-5 | "Pueo Local Storage" card in `disk.html`; footprint in `GET /disk`; archive trim in `_backup_reconcile_loop` |
+| STOR-6 | Tests: 14 in `test_archiver.py`, archiver integration in `test_disk_recovery.py`, 5 config keys in `test_config.py` |
 
 ---
 

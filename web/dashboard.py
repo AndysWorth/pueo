@@ -1346,7 +1346,8 @@ async def disk_tab(request: Request) -> HTMLResponse:
     import time as _time
 
     import utils.disk_usage as _du
-    from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB
+    from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB, PUEO_LOCAL_MAX_GB
+    from utils.pueo_storage import measure_pueo_footprint
 
     breakdown = _du.get_disk_breakdown()
     age_seconds = None
@@ -1356,6 +1357,12 @@ async def disk_tab(request: Request) -> HTMLResponse:
         age_seconds = int(_time.time() - breakdown.fetched_at)
         disk_warn = breakdown.disk_free_gb < HA_DISK_WARN_GB
         disk_critical = breakdown.disk_free_gb < HA_DISK_CRITICAL_GB
+
+    try:
+        pueo_footprint = measure_pueo_footprint()
+    except Exception:
+        pueo_footprint = None
+
     return templates.TemplateResponse(
         request,
         "disk.html",
@@ -1364,6 +1371,8 @@ async def disk_tab(request: Request) -> HTMLResponse:
             "age_seconds": age_seconds,
             "disk_warn": disk_warn,
             "disk_critical": disk_critical,
+            "pueo_footprint": pueo_footprint,
+            "pueo_local_max_gb": PUEO_LOCAL_MAX_GB,
         },
     )
 

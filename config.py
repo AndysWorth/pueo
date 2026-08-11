@@ -76,6 +76,13 @@ DISK_RECOVERY_RECORDER_KEEP_DAYS: int = int(
 )
 DISK_RECOVERY_JOURNAL_MAX_MB: int = int(_agent.get("disk_recovery_journal_max_mb", 200))
 
+# Local archive — copy HA data to Pueo before deletion
+PUEO_ARCHIVE_DIR: str = _agent.get("pueo_archive_dir", "./archives/")
+ARCHIVE_HA_LOG_ENABLED: bool = bool(_agent.get("archive_ha_log_enabled", True))
+ARCHIVE_JOURNAL_ENABLED: bool = bool(_agent.get("archive_journal_enabled", False))
+PUEO_ARCHIVE_MAX_GB: float = float(_agent.get("pueo_archive_max_gb", 2.0))
+PUEO_LOCAL_MAX_GB: float = float(_agent.get("pueo_local_max_gb", 20.0))
+
 # HA Update Manager
 HA_UPDATE_CHECK_INTERVAL_HOURS: float = float(
     _agent.get("update_check_interval_hours", 0.0)

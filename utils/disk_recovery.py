@@ -16,9 +16,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
+import config
 from interfaces import HARestClientProtocol, SSHClientProtocol
+from utils.archiver import (
+    archive_ha_log,
+    archive_journal_dump,
+    enforce_archive_retention,
+)
 from utils.logging import get_logger
 
 log = get_logger("disk_recovery")
@@ -56,9 +63,22 @@ async def truncate_ha_log(
 
     HA keeps the file descriptor open, so truncation (not deletion) is the correct approach
     — deletion leaves the inode allocated until HA restarts and the space is not freed.
+
+    If ARCHIVE_HA_LOG_ENABLED, the log is SFTP-pulled and gzip-compressed to PUEO_ARCHIVE_DIR
+    before truncation. Archive failure is non-fatal — truncation proceeds regardless.
     """
     name = "truncate_ha_log"
     try:
+        if config.ARCHIVE_HA_LOG_ENABLED:
+            archive_result = await archive_ha_log(
+                ssh_client, Path(config.PUEO_ARCHIVE_DIR)
+            )
+            if archive_result:
+                enforce_archive_retention(
+                    Path(config.PUEO_ARCHIVE_DIR),
+                    int(config.PUEO_ARCHIVE_MAX_GB * 1_000_000_000),
+                )
+
         # Get current size before truncating
         _, size_out, _ = await ssh_client.run(
             "stat -c %s /config/home-assistant.log 2>/dev/null || echo 0",
@@ -87,9 +107,22 @@ async def vacuum_journal(
 
     journalctl --rotate marks current journals as archived so --vacuum-size can remove them.
     Without --rotate, vacuum only removes already-archived files and may free nothing.
+
+    If ARCHIVE_JOURNAL_ENABLED, a text dump of recent journal entries is gzip-compressed to
+    PUEO_ARCHIVE_DIR before the vacuum runs. Archive failure is non-fatal.
     """
     name = "vacuum_journal"
     try:
+        if config.ARCHIVE_JOURNAL_ENABLED:
+            archive_result = await archive_journal_dump(
+                ssh_client, Path(config.PUEO_ARCHIVE_DIR)
+            )
+            if archive_result:
+                enforce_archive_retention(
+                    Path(config.PUEO_ARCHIVE_DIR),
+                    int(config.PUEO_ARCHIVE_MAX_GB * 1_000_000_000),
+                )
+
         _, before_out, _ = await ssh_client.run(
             "journalctl --disk-usage 2>/dev/null | grep -oP '[\\d.]+ [KMG]?B' | tail -1",
             check=False,

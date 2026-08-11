@@ -1,7 +1,7 @@
 """Tests for utils/disk_recovery.py."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -77,6 +77,8 @@ class TestParseDuSize:
 
 
 class TestTruncateHaLog:
+    """Tests for truncate_ha_log with archiving disabled (archive tests are in TestArchiveOnTruncate)."""
+
     def _make_ssh(self, size_bytes: int = 50 * 1024 * 1024):
         ssh = MagicMock()
         # First call: stat; second call: truncate
@@ -90,14 +92,16 @@ class TestTruncateHaLog:
 
     def test_returns_bytes_freed(self):
         ssh = self._make_ssh(50 * 1024 * 1024)
-        result = asyncio.run(truncate_ha_log(ssh))
+        with patch("config.ARCHIVE_HA_LOG_ENABLED", False):
+            result = asyncio.run(truncate_ha_log(ssh))
         assert result.success is True
         assert result.bytes_freed == 50 * 1024 * 1024
         assert result.name == "truncate_ha_log"
 
     def test_truncate_command_sent(self):
         ssh = self._make_ssh(1024)
-        asyncio.run(truncate_ha_log(ssh))
+        with patch("config.ARCHIVE_HA_LOG_ENABLED", False):
+            asyncio.run(truncate_ha_log(ssh))
         calls = [c.args[0] for c in ssh.run.call_args_list]
         assert any("truncate -s 0" in c for c in calls)
 
@@ -109,16 +113,75 @@ class TestTruncateHaLog:
                 (0, "", ""),  # truncate
             ]
         )
-        result = asyncio.run(truncate_ha_log(ssh))
+        with patch("config.ARCHIVE_HA_LOG_ENABLED", False):
+            result = asyncio.run(truncate_ha_log(ssh))
         assert result.success is True
         assert result.bytes_freed == 0
 
     def test_ssh_exception_returns_failure(self):
         ssh = MagicMock()
         ssh.run = AsyncMock(side_effect=Exception("connection lost"))
-        result = asyncio.run(truncate_ha_log(ssh))
+        with patch("config.ARCHIVE_HA_LOG_ENABLED", False):
+            result = asyncio.run(truncate_ha_log(ssh))
         assert result.success is False
         assert result.bytes_freed == 0
+
+
+class TestArchiveOnTruncate:
+    """Verify archiver integration with truncate_ha_log."""
+
+    def test_archives_before_truncating(self, tmp_path):
+        from utils.archiver import archive_ha_log as _real_archive
+
+        call_order = []
+
+        async def mock_archive(ssh_client, archive_dir):
+            call_order.append("archive")
+            return None
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            side_effect=[
+                (0, "1048576", ""),  # stat (for truncate_ha_log)
+                (0, "", ""),  # truncate
+            ]
+        )
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", True),
+            patch("config.PUEO_ARCHIVE_DIR", str(tmp_path)),
+            patch("config.PUEO_ARCHIVE_MAX_GB", 2.0),
+            patch("utils.disk_recovery.archive_ha_log", mock_archive),
+            patch("utils.disk_recovery.enforce_archive_retention", lambda *a, **k: 0),
+        ):
+            result = asyncio.run(truncate_ha_log(ssh))
+
+        assert "archive" in call_order
+        # Truncate still succeeds even when archive returns None
+        assert result.success is True
+
+    def test_skips_archive_when_disabled(self, tmp_path):
+        archived = []
+
+        async def mock_archive(ssh_client, archive_dir):
+            archived.append(True)
+            return None
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            side_effect=[
+                (0, "1048576", ""),  # stat
+                (0, "", ""),  # truncate
+            ]
+        )
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("utils.disk_recovery.archive_ha_log", mock_archive),
+        ):
+            asyncio.run(truncate_ha_log(ssh))
+
+        assert len(archived) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -140,13 +203,15 @@ class TestVacuumJournal:
 
     def test_success_returns_action(self):
         ssh = self._make_ssh()
-        result = asyncio.run(vacuum_journal(ssh, max_mb=200))
+        with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
+            result = asyncio.run(vacuum_journal(ssh, max_mb=200))
         assert result.success is True
         assert result.name == "vacuum_journal"
 
     def test_rotate_called_before_vacuum(self):
         ssh = self._make_ssh()
-        asyncio.run(vacuum_journal(ssh, max_mb=200))
+        with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
+            asyncio.run(vacuum_journal(ssh, max_mb=200))
         calls = [c.args[0] for c in ssh.run.call_args_list]
         rotate_idx = next(i for i, c in enumerate(calls) if "--rotate" in c)
         vacuum_idx = next(i for i, c in enumerate(calls) if "--vacuum-size" in c)
@@ -154,14 +219,16 @@ class TestVacuumJournal:
 
     def test_vacuum_size_param_respected(self):
         ssh = self._make_ssh()
-        asyncio.run(vacuum_journal(ssh, max_mb=512))
+        with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
+            asyncio.run(vacuum_journal(ssh, max_mb=512))
         calls = [c.args[0] for c in ssh.run.call_args_list]
         assert any("--vacuum-size=512M" in c for c in calls)
 
     def test_ssh_exception_returns_failure(self):
         ssh = MagicMock()
         ssh.run = AsyncMock(side_effect=Exception("timeout"))
-        result = asyncio.run(vacuum_journal(ssh))
+        with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
+            result = asyncio.run(vacuum_journal(ssh))
         assert result.success is False
 
 
@@ -272,7 +339,13 @@ class TestRunSafeDiskRecovery:
         ssh = self._make_ssh()
         rest = MagicMock()
         rest.call_service = AsyncMock(return_value=None)
-        summary = asyncio.run(run_safe_disk_recovery(ssh, rest, recorder_keep_days=30))
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+        ):
+            summary = asyncio.run(
+                run_safe_disk_recovery(ssh, rest, recorder_keep_days=30)
+            )
         assert len(summary.actions) == 3
         names = [a.name for a in summary.actions]
         assert "truncate_ha_log" in names
@@ -281,7 +354,11 @@ class TestRunSafeDiskRecovery:
 
     def test_recorder_skipped_when_no_rest_client(self):
         ssh = self._make_ssh()
-        summary = asyncio.run(run_safe_disk_recovery(ssh, rest_client=None))
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest_client=None))
         names = [a.name for a in summary.actions]
         assert "purge_recorder" not in names
         assert len(summary.actions) == 2
@@ -298,6 +375,10 @@ class TestRunSafeDiskRecovery:
         )
         rest = MagicMock()
         rest.call_service = AsyncMock(return_value=None)
-        summary = asyncio.run(run_safe_disk_recovery(ssh, rest))
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest))
         assert summary.actions[0].success is False
         assert summary.actions[1].success is True

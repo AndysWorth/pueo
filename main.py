@@ -316,6 +316,16 @@ async def supervisor_main(config_path: Path) -> None:
                 await ha_agent_advanced.offload_pending_backups(ssh_client=ssh)
             except Exception as e:  # pragma: no cover  # nosec B110
                 _log.warning("backup_offload_loop_failed", error=str(e))
+            try:
+                from pathlib import Path as _Path
+                from utils.archiver import enforce_archive_retention as _ear
+
+                _ear(
+                    _Path(cfg.PUEO_ARCHIVE_DIR),
+                    int(cfg.PUEO_ARCHIVE_MAX_GB * 1_000_000_000),
+                )
+            except Exception as e:  # pragma: no cover  # nosec B110
+                _log.warning("archive_retention_loop_failed", error=str(e))
 
     supervisor.start("backup_sync", _backup_reconcile_loop)
 
