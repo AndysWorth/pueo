@@ -5004,3 +5004,222 @@ class TestExportEpisodesYaml:
         ts = parsed[0]["timestamp"]
         assert isinstance(ts, str)
         assert "T" in ts
+
+
+# ── migration v20 (submitted_at / pr_url columns) ────────────────────────────────
+
+
+class TestMigrationV20:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def test_submitted_at_column_exists(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(repair_episodes)").fetchall()
+            }
+        assert "submitted_at" in cols
+
+    def test_pr_url_column_exists(self, db_path):
+        with sqlite3.connect(db_path) as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(repair_episodes)").fetchall()
+            }
+        assert "pr_url" in cols
+
+
+# ── load_episode (single-row lookup) ────────────────────────────────────────────
+
+
+class TestLoadEpisode:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def test_returns_none_for_missing_id(self, db_path):
+        from utils.repair_episode import load_episode
+
+        assert load_episode(db_path, "nonexistent-id") is None
+
+    def test_returns_episode_for_known_id(self, db_path):
+        from utils.repair_episode import load_episode
+
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        result = load_episode(db_path, ep.id)
+        assert result is not None
+        assert result.id == ep.id
+        assert result.trigger == ep.trigger
+
+    def test_submitted_fields_default_to_none(self, db_path):
+        from utils.repair_episode import load_episode
+
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        result = load_episode(db_path, ep.id)
+        assert result is not None
+        assert result.submitted_at is None
+        assert result.pr_url is None
+
+
+# ── mark_episode_submitted ────────────────────────────────────────────────────────
+
+
+class TestMarkEpisodeSubmitted:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(_haa_mod, "DB_PATH", path)
+        _haa_mod.init_local_database()
+        return path
+
+    def test_sets_submitted_at_and_pr_url(self, db_path):
+        from utils.repair_episode import load_episode, mark_episode_submitted
+
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        mark_episode_submitted(
+            db_path, ep.id, "https://github.com/owner/pueo-cases/pull/1"
+        )
+        result = load_episode(db_path, ep.id)
+        assert result is not None
+        assert result.submitted_at is not None
+        assert result.pr_url == "https://github.com/owner/pueo-cases/pull/1"
+
+    def test_submitted_at_is_recent_timestamp(self, db_path):
+        import time
+        from utils.repair_episode import load_episode, mark_episode_submitted
+
+        before = time.time()
+        ep = _make_episode()
+        serialize_episode(db_path, ep)
+        mark_episode_submitted(db_path, ep.id, "https://github.com/x/y/pull/2")
+        after = time.time()
+        result = load_episode(db_path, ep.id)
+        assert result is not None
+        assert before <= result.submitted_at <= after  # type: ignore[operator]
+
+
+# ── export_single_episode_yaml ───────────────────────────────────────────────────
+
+
+class TestExportSingleEpisodeYaml:
+    def test_produces_valid_yaml_list(self):
+        import yaml
+        from utils.repair_episode import export_single_episode_yaml
+
+        ep = _make_episode()
+        output = export_single_episode_yaml(ep)
+        parsed = yaml.safe_load(output)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+
+    def test_includes_description_when_provided(self):
+        import yaml
+        from utils.repair_episode import export_single_episode_yaml
+
+        ep = _make_episode()
+        output = export_single_episode_yaml(
+            ep, description="Integration broke after upgrade"
+        )
+        parsed = yaml.safe_load(output)
+        assert parsed[0]["description"] == "Integration broke after upgrade"
+
+    def test_omits_description_when_empty(self):
+        import yaml
+        from utils.repair_episode import export_single_episode_yaml
+
+        ep = _make_episode()
+        parsed = yaml.safe_load(export_single_episode_yaml(ep, description=""))
+        assert "description" not in parsed[0]
+
+    def test_anonymizes_ip_in_symptoms(self):
+        import yaml
+        from utils.repair_episode import export_single_episode_yaml
+
+        ep = _make_episode(symptoms=["Device 192.168.1.50 unreachable"])
+        output = export_single_episode_yaml(ep)
+        assert "192.168.1.50" not in output
+        assert "<host_1>" in output
+
+    def test_expected_fields_present(self):
+        import yaml
+        from utils.repair_episode import export_single_episode_yaml
+
+        ep = _make_episode()
+        parsed = yaml.safe_load(export_single_episode_yaml(ep))
+        record = parsed[0]
+        for field in (
+            "id",
+            "trigger",
+            "symptoms",
+            "tool_sequence",
+            "verification_result",
+        ):
+            assert field in record
+
+
+# ── case_submitter validation ─────────────────────────────────────────────────────
+
+
+class TestCaseSubmitterValidation:
+    def test_empty_repo_raises(self):
+        import asyncio
+        from utils.case_submitter import CaseSubmitError, submit_episode
+
+        with pytest.raises(CaseSubmitError, match="Invalid"):
+            asyncio.run(
+                submit_episode(
+                    episode_id="abc",
+                    yaml_content="---\n",
+                    cases_repo="",
+                    pr_title="t",
+                    pr_body="b",
+                )
+            )
+
+    def test_malformed_repo_raises(self):
+        import asyncio
+        from utils.case_submitter import CaseSubmitError, submit_episode
+
+        with pytest.raises(CaseSubmitError, match="Invalid"):
+            asyncio.run(
+                submit_episode(
+                    episode_id="abc",
+                    yaml_content="---\n",
+                    cases_repo="not-a-valid/repo/path/extra",
+                    pr_title="t",
+                    pr_body="b",
+                )
+            )
+
+    def test_valid_repo_format_passes_validation(self, monkeypatch):
+        import asyncio
+        from utils.case_submitter import _validate_repo
+
+        _validate_repo("owner/pueo-cases")
+        _validate_repo("my-org/my.repo_123")
+
+    def test_path_traversal_rejected(self):
+        import asyncio
+        from utils.case_submitter import CaseSubmitError, submit_episode
+
+        with pytest.raises(CaseSubmitError, match="Invalid"):
+            asyncio.run(
+                submit_episode(
+                    episode_id="abc",
+                    yaml_content="---\n",
+                    cases_repo="../evil/repo",
+                    pr_title="t",
+                    pr_body="b",
+                )
+            )

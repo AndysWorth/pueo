@@ -111,3 +111,4 @@ agent:
   # rag_ha_versions_to_fetch: 12      # How many recent HA releases to fetch from GitHub on rag-refresh
   # rag_hacs_cache_dir: ".cache/hacs_changelogs/"  # Local cache for fetched HACS integration changelogs
   # rag_ha_docs_cache_dir: ".cache/ha_docs/"       # Local cache for fetched HA integration documentation
+  # federated_cases_repo: ""  # GitHub repo for community case library (e.g. "owner/pueo-cases"); enables episode submission
