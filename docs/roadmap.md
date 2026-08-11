@@ -51,7 +51,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72   |
 | Phase 18: Configurable LLM Provider + Cloud Escalation | ✅ Complete (2026-08-07) | 73–76   |
 | Phase 19: Repair Episode Recording                 | ✅ Complete (2026-08-10) | 77–79   |
-| Phase 20: Federated Case Library                   | ❌ Not started           | 80–82   |
+| Phase 20: Federated Case Library                   | 🔄 In progress (80–81 done) | 80–82   |
 | Phase 21: Code Proposals *(stretch)*               | ❌ Not started           | 83–86   |
 | Phase 22: HA RAG Strategy                          | ✅ Complete (2026-08-06) | 87–93   |
 | Phase 23: Disk Usage Tab                           | ✅ Complete (2026-08-07) | DU-1–6  |
