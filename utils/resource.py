@@ -1,6 +1,7 @@
 """Disk and memory sensing for the HA host via 'ha host info' and /proc/meminfo."""
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -96,6 +97,10 @@ def check_disk_not_critical(disk_critical_gb: float) -> None:
         )
 
 
+# Minimum time between automated recovery attempts when disk stays CRITICAL.
+_RECOVERY_COOLDOWN_SECONDS = 1800
+
+
 class ResourcePoller:
     """Polls HA disk/memory on a fixed interval; sends HITL alerts on first threshold breach."""
 
@@ -117,6 +122,7 @@ class ResourcePoller:
         self._mem_warn_mb = mem_warn_mb
         self._rest_client = rest_client
         self._alerted: set[str] = set()
+        self._last_recovery_at: float = 0.0
 
     async def run(self) -> None:
         """Poll indefinitely — start via asyncio.create_task()."""
@@ -168,16 +174,22 @@ class ResourcePoller:
     async def _check_and_alert(self, status: ResourceStatus) -> None:
         """Send alerts for new threshold breaches; suppress duplicates until the condition clears."""
         if status.disk_critical:
-            if "disk_critical" not in self._alerted:
-                log.critical(
-                    "disk_critical",
-                    disk_free_gb=status.disk_free_gb,
-                    threshold_gb=self._disk_critical_gb,
-                )
+            log.critical(
+                "disk_critical",
+                disk_free_gb=status.disk_free_gb,
+                threshold_gb=self._disk_critical_gb,
+            )
 
-                # Run auto-safe recovery steps before sending the HITL card so the card
-                # can report what was already freed and what still needs human action.
-                auto_summary = None
+            # Run auto-safe recovery when first breaching CRITICAL, then retry if
+            # disk stays critical beyond the cooldown window.
+            cooldown_elapsed = (
+                time.monotonic() - self._last_recovery_at
+            ) > _RECOVERY_COOLDOWN_SECONDS
+            is_first_breach = "disk_critical" not in self._alerted
+
+            auto_summary = None
+            disk_free_after_gb: Optional[float] = None
+            if is_first_breach or cooldown_elapsed:
                 try:
                     import config as _cfg
                     from utils.disk_recovery import run_safe_disk_recovery
@@ -189,22 +201,39 @@ class ResourcePoller:
                             recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
                             journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
                         )
-                        # Also offload pending backups and enforce retention with force_critical
+                        # Offload pending backups and enforce retention with force_critical
                         try:
                             import ha_agent_advanced as _adv
-                            from utils.resource import get_resource_status
 
                             await _adv.offload_pending_backups(ssh_client=self._ssh)
-                            _rs = get_resource_status()
                             await _adv.enforce_ha_retention(
                                 ssh_client=self._ssh,
-                                force_critical=_rs is not None and _rs.disk_critical,
+                                force_critical=True,
                             )
                         except Exception:  # nosec B110
                             pass
+
+                        # Re-poll to find out whether recovery actually freed enough space.
+                        try:
+                            post = await poll_host_resources(
+                                self._ssh,
+                                self._disk_warn_gb,
+                                self._disk_critical_gb,
+                                self._mem_warn_mb,
+                            )
+                            disk_free_after_gb = post.disk_free_gb
+                            update_resource_status(post)
+                        except Exception:  # nosec B110
+                            pass
+
+                    self._last_recovery_at = time.monotonic()
                 except Exception as _e:  # nosec B110
                     log.warning("disk_recovery_auto_failed", error=str(_e))
 
+            # Only send a HITL card on the first breach or after a successful recovery
+            # retry (cooldown elapsed). Subsequent polls within the cooldown are silent.
+            if is_first_breach or cooldown_elapsed:
+                import config as _cfg  # type: ignore[assignment]
                 from utils.card_types import CARD_TYPE_DISK_RECOVERY
 
                 auto_actions = []
@@ -279,6 +308,16 @@ class ResourcePoller:
                 if auto_summary and auto_summary.failed:
                     for act in auto_summary.failed:
                         body_lines.append(f"  ✗ {act.name}: {act.message}")
+                if disk_free_after_gb is not None:
+                    still_critical = disk_free_after_gb < self._disk_critical_gb
+                    body_lines.append(
+                        f"\nDisk after auto-recovery: {disk_free_after_gb:.1f} GB"
+                        + (
+                            " — still CRITICAL, manual action required."
+                            if still_critical
+                            else " — recovered."
+                        )
+                    )
 
                 await self._notifier.send(
                     subject="Pueo CRITICAL: HA disk almost full",
@@ -288,6 +327,7 @@ class ResourcePoller:
                         "type": "resource_alert",
                         "severity": "CRITICAL",
                         "disk_free_gb": status.disk_free_gb,
+                        "disk_free_after_gb": disk_free_after_gb,
                         "disk_total_gb": status.disk_total_gb,
                         "mem_available_mb": round(status.mem_available_mb),
                         "auto_actions_taken": auto_actions,
@@ -304,6 +344,7 @@ class ResourcePoller:
                         f" — below {self._disk_critical_gb} GB threshold",
                         {
                             "disk_free_gb": status.disk_free_gb,
+                            "disk_free_after_gb": disk_free_after_gb,
                             "disk_total_gb": status.disk_total_gb,
                         },
                     )
@@ -319,12 +360,50 @@ class ResourcePoller:
                         disk_free_gb=status.disk_free_gb,
                         threshold_gb=self._disk_warn_gb,
                     )
+
+                    # Proactive cleanup at WARN level — run safe recovery steps before
+                    # disk slides further to CRITICAL.
+                    warn_summary = None
+                    try:
+                        import config as _cfg
+                        from utils.disk_recovery import run_safe_disk_recovery
+
+                        if _cfg.DISK_RECOVERY_AUTO_ENABLED:
+                            warn_summary = await run_safe_disk_recovery(
+                                ssh_client=self._ssh,
+                                rest_client=self._rest_client,
+                                recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
+                                journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
+                            )
+                            try:
+                                import ha_agent_advanced as _adv
+
+                                await _adv.offload_pending_backups(ssh_client=self._ssh)
+                                await _adv.enforce_ha_retention(
+                                    ssh_client=self._ssh,
+                                    force_critical=False,
+                                )
+                            except Exception:  # nosec B110
+                                pass
+                            self._last_recovery_at = time.monotonic()
+                    except Exception as _e:  # nosec B110
+                        log.warning("disk_recovery_warn_failed", error=str(_e))
+
+                    warn_body = (
+                        f"Disk free: {status.disk_free_gb:.1f} GB — below warning threshold "
+                        f"{self._disk_warn_gb} GB."
+                    )
+                    if warn_summary and warn_summary.succeeded:
+                        freed_mb = warn_summary.total_freed_mb
+                        warn_body += (
+                            f"\nProactive recovery freed ~{freed_mb:.0f} MB."
+                            if freed_mb > 0
+                            else "\nProactive recovery ran; space freed will reflect in the next poll."
+                        )
+
                     await self._notifier.send(
                         subject="Pueo WARNING: HA disk space low",
-                        body=(
-                            f"Disk free: {status.disk_free_gb:.1f} GB — below warning threshold "
-                            f"{self._disk_warn_gb} GB."
-                        ),
+                        body=warn_body,
                         payload={
                             "type": "resource_alert",
                             "severity": "WARN",
@@ -333,7 +412,7 @@ class ResourcePoller:
                             "mem_available_mb": round(status.mem_available_mb),
                         },
                     )
-                    try:  # pragma: no cover
+                    try:
                         from utils.timeline import write_timeline_event
 
                         write_timeline_event(
