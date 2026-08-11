@@ -10014,6 +10014,32 @@ class TestHARepairDB:
         mark_repair_hitl_sent("hassio/abc123")
         assert is_reboot_required_active() is False
 
+    def test_is_reboot_not_triggered_by_config_entry_reauth(self, db_path):
+        """A pending config_entry_reauth repair (e.g. Cync) must not block update ordering."""
+        from ha_agent_advanced import (
+            is_reboot_required_active,
+            mark_repair_hitl_sent,
+            record_repair_seen,
+        )
+
+        record_repair_seen("pycync/abc123", translation_key="config_entry_reauth")
+        mark_repair_hitl_sent("pycync/abc123")
+        assert is_reboot_required_active() is False
+
+    def test_is_reboot_not_triggered_by_device_registry_split(self, db_path):
+        """A pending device_registry_split repair (HA 2026.8.0) must not block update ordering."""
+        from ha_agent_advanced import (
+            is_reboot_required_active,
+            mark_repair_hitl_sent,
+            record_repair_seen,
+        )
+
+        record_repair_seen(
+            "homeassistant/abc456", translation_key="device_registry_split"
+        )
+        mark_repair_hitl_sent("homeassistant/abc456")
+        assert is_reboot_required_active() is False
+
 
 class TestLogTriageDB:
     @pytest.fixture
@@ -10415,6 +10441,168 @@ class TestRepairPollBackoff:
         assert sleep_calls[3] == 120
         assert sleep_calls[4] == 120
         assert sleep_calls[5] == 120
+
+
+# ── Repair card action classification ─────────────────────────────────────────────
+
+
+class TestRepairCardClassification:
+    """Verify that poll_for_repairs assigns the correct action (dismiss vs reboot)
+    for each repair type, covering the translation_keys that appear after HA 2026.8.0.
+    """
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _run_one_poll(self, raw_issues, monkeypatch, db_path):
+        """Run exactly one poll iteration and return the FakeNotifier."""
+        import asyncio as asyncio_mod
+        from ha_log_monitor import poll_for_repairs
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        class FakeRepairWS:
+            async def get_repair_issues(self):
+                return raw_issues
+
+            async def get_device_registry(self):
+                return []
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeRepairWS(),
+                    notifier=notifier,
+                    db_path=db_path,
+                )
+            )
+        return notifier
+
+    def test_config_entry_reauth_classified_as_dismiss(self, db_path, monkeypatch):
+        """config_entry_reauth (e.g. Cync re-auth) must be classified as dismiss."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "pycync",
+                    "issue_id": "abc-uuid-001",
+                    "severity": "warning",
+                    "translation_key": "config_entry_reauth",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "dismiss"
+
+    def test_device_registry_split_classified_as_dismiss(self, db_path, monkeypatch):
+        """Device registry split repairs (introduced in HA 2026.8.0) must be dismiss."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "homeassistant",
+                    "issue_id": "abc-uuid-002",
+                    "severity": "warning",
+                    "translation_key": "device_registry_split",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "dismiss"
+
+    def test_http_config_migration_classified_as_dismiss(self, db_path, monkeypatch):
+        """HTTP-to-UI config migration repair (HA 2026.8.0) must be classified as dismiss."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "http",
+                    "issue_id": "abc-uuid-003",
+                    "severity": "warning",
+                    "translation_key": "deprecated_yaml_config",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "dismiss"
+
+    def test_reboot_required_translation_key_classified_as_reboot(
+        self, db_path, monkeypatch
+    ):
+        """Repairs with 'reboot' in translation_key must be classified as reboot."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "hassio",
+                    "issue_id": "abc-uuid-004",
+                    "severity": "warning",
+                    "translation_key": "issue_system_reboot_required",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "reboot"
+
+    def test_critical_severity_non_reboot_key_classified_as_reboot(
+        self, db_path, monkeypatch
+    ):
+        """severity=critical overrides translation_key — action is reboot even without 'reboot' in key."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "homeassistant",
+                    "issue_id": "abc-uuid-005",
+                    "severity": "critical",
+                    "translation_key": "some_critical_issue",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "reboot"
+
+    def test_already_sent_repair_not_re_sent(self, db_path, monkeypatch):
+        """A repair whose HITL card was already sent is not sent again on the next poll."""
+        import ha_agent_advanced
+
+        ha_agent_advanced.record_repair_seen(
+            "pycync/abc-uuid-001", translation_key="config_entry_reauth"
+        )
+        ha_agent_advanced.mark_repair_hitl_sent("pycync/abc-uuid-001")
+
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "pycync",
+                    "issue_id": "abc-uuid-001",
+                    "severity": "warning",
+                    "translation_key": "config_entry_reauth",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 0
 
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────
