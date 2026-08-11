@@ -123,6 +123,19 @@ async def vacuum_journal(
                     int(config.PUEO_ARCHIVE_MAX_GB * 1_000_000_000),
                 )
 
+        # Check if journalctl is available (not present on HAOS SSH shells)
+        _, which_out, _ = await ssh_client.run(
+            "which journalctl 2>/dev/null || echo ''", check=False
+        )
+        if not which_out.strip():
+            log.info("disk_recovery_journal_skipped", reason="journalctl_not_found")
+            return RecoveryAction(
+                name=name,
+                bytes_freed=0,
+                message="Journal vacuum skipped (journalctl not available on this host)",
+                success=False,
+            )
+
         _, before_out, _ = await ssh_client.run(
             "journalctl --disk-usage 2>/dev/null | grep -oP '[\\d.]+ [KMG]?B' | tail -1",
             check=False,
@@ -160,10 +173,12 @@ async def purge_recorder(
     """
     name = "purge_recorder"
     try:
+        # apply_filter is omitted: HA returns 400 when True but no recorder entity
+        # filters are configured, which is the common case.
         await rest_client.call_service(
             "recorder",
             "purge",
-            {"purge_keep_days": keep_days, "repack": repack, "apply_filter": True},
+            {"purge_keep_days": keep_days, "repack": repack},
         )
         action = "purge+repack" if repack else "purge"
         log.info(
@@ -178,7 +193,19 @@ async def purge_recorder(
             success=True,
         )
     except Exception as e:
-        log.warning("disk_recovery_recorder_purge_failed", error=str(e))
+        try:
+            import httpx as _httpx
+
+            if isinstance(e, _httpx.HTTPStatusError):
+                log.warning(
+                    "disk_recovery_recorder_purge_failed",
+                    status=e.response.status_code,
+                    body=e.response.text[:500],
+                )
+            else:
+                log.warning("disk_recovery_recorder_purge_failed", error=str(e))
+        except Exception:  # nosec B110
+            log.warning("disk_recovery_recorder_purge_failed", error=str(e))
         return RecoveryAction(name=name, bytes_freed=0, message=str(e), success=False)
 
 
