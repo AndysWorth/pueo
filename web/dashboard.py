@@ -1076,17 +1076,17 @@ async def _execute_open_pr(
     repo_root = Path(__file__).parent.parent
     try:
         # Ensure we're on main before branching
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607 — fixed git args, no user input in cmd
             ["git", "-C", str(repo_root), "checkout", "main"],
             check=True,
             capture_output=True,
         )
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607 — fixed git args, no user input in cmd
             ["git", "-C", str(repo_root), "pull"],
             check=True,
             capture_output=True,
         )
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607 — branch_name is agent-generated, not raw user input
             ["git", "-C", str(repo_root), "checkout", "-b", branch_name],
             check=True,
             capture_output=True,
@@ -1100,19 +1100,19 @@ async def _execute_open_pr(
 
         # Stage and commit
         for rel_path in patch_files:
-            subprocess.run(
+            subprocess.run(  # nosec B603 B607 — rel_path is a repo-relative path from agent
                 ["git", "-C", str(repo_root), "add", rel_path],
                 check=True,
                 capture_output=True,
             )
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607 — pr_title is agent-generated commit message
             ["git", "-C", str(repo_root), "commit", "-m", pr_title],
             check=True,
             capture_output=True,
         )
 
         # Push
-        subprocess.run(
+        subprocess.run(  # nosec B603 B607 — branch_name is agent-generated
             [
                 "git",
                 "-C",
@@ -1127,7 +1127,7 @@ async def _execute_open_pr(
         )
 
         # Open PR
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 B607 — gh with fixed subcommand; title/body are agent-generated strings, not shell input
             [
                 "gh",
                 "pr",
@@ -1153,7 +1153,7 @@ async def _execute_open_pr(
 
     except Exception as exc:
         # Best-effort cleanup: switch back to main so the repo is usable
-        subprocess.run(  # nosec B603 — fixed args, no user input
+        subprocess.run(  # nosec B603 B607 — fixed args, no user input
             ["git", "-C", str(repo_root), "checkout", "main"],
             capture_output=True,
         )
