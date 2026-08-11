@@ -46,6 +46,8 @@ class AgentLoopResult(BaseModel):
     steps: list[AgentStep] = []
     episode_stub: dict[str, Any] | None = None
     episode_id: str | None = None
+    capability_gap: bool = False
+    gap_description: str = ""
 
 
 class ToolDefinition(BaseModel):
@@ -230,7 +232,9 @@ FINISH_REPAIR = ToolDefinition(
     name="finish_repair",
     description=(
         "Signal that the repair session is complete. "
-        "Call when you are done investigating and/or applying a fix."
+        "Call when you are done investigating and/or applying a fix. "
+        "Set capability_gap=true and describe the gap when the needed tool or capability "
+        "does not exist — this automatically triggers a code-proposal flow."
     ),
     parameters={
         "type": "object",
@@ -243,6 +247,20 @@ FINISH_REPAIR = ToolDefinition(
                 "type": "string",
                 "enum": ["fixed", "no_fix_needed", "fix_failed", "needs_human"],
                 "description": "Outcome of the repair attempt",
+            },
+            "capability_gap": {
+                "type": "boolean",
+                "description": (
+                    "Set to true when the agent encountered a failure mode for which "
+                    "no existing tool or capability exists. Triggers automatic code-proposal."
+                ),
+            },
+            "gap_description": {
+                "type": "string",
+                "description": (
+                    "Plain-English description of the missing capability: what tool or "
+                    "action would be needed to resolve the issue."
+                ),
             },
         },
         "required": ["summary", "action_taken"],
@@ -545,6 +563,25 @@ def build_ha_tool_registry() -> ToolRegistry:
         VERIFY_FIX,
         FINISH_REPAIR,
         QUERY_KNOWLEDGE,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_code_proposal_registry() -> ToolRegistry:
+    """Registry for the autonomous code-proposal loop (item 84).
+
+    Used when a repair loop finishes with capability_gap=True.  The loop
+    reads relevant source, proposes a patch, validates it in the sandbox,
+    and queues an open_pr HITL card for human review.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_SOURCE,
+        PROPOSE_PATCH,
+        SANDBOX_CODE,
+        OPEN_PR,
+        FINISH_REPAIR,
     ):
         reg.register(tool)
     return reg

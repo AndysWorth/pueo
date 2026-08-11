@@ -563,6 +563,73 @@ def requires_hitl(report: DiagnosticsReport, hitl_always: bool = False) -> bool:
     return any(kw in joined for kw in ("hacs", "database"))
 
 
+_CODE_PROPOSAL_SYSTEM_PROMPT = """\
+You are Pueo, performing autonomous capability-gap closure.
+
+A previous repair loop could not fully address an issue because a required tool or capability
+was missing. Your task is to propose a Python patch that adds the missing capability.
+
+MANDATORY FLOW — follow exactly in this order:
+1. Call read_source to examine the source files relevant to the missing capability
+   (e.g. utils/tool_executor.py, utils/tool_registry.py).
+2. Call propose_patch to stage the proposed change (complete new file content).
+3. Call sandbox_code to run CI validation (black, flake8, mypy, pytest).
+4. If CI passes, call open_pr to queue a HITL PR-approval card.
+5. Call finish_repair when done:
+   - action_taken='fixed' if open_pr was successfully queued
+   - action_taken='fix_failed' if sandbox CI failed or no valid patch could be produced
+
+Never call open_pr before sandbox_code passes.
+"""
+
+
+async def _run_code_proposal_loop(
+    gap_description: str,
+    ssh_client: "SSHClientProtocol",
+    gate: "AutonomyGate",
+    notifier: "NotifierProtocol",
+    llm_client: "LLMClientProtocol",
+    db_path: str = DB_PATH,
+) -> None:
+    """Run a code-proposal loop in response to a capability gap detected by finish_repair.
+
+    Called automatically when a repair AgentLoop result has capability_gap=True.
+    The loop reads relevant source, proposes a patch, validates it in the sandbox,
+    and queues an open_pr HITL card — all without human input until the final approval.
+    """
+    from utils.agent_loop import AgentLoop
+    from utils.tool_executor import ToolExecutor
+    from utils.tool_registry import build_code_proposal_registry
+
+    executor = ToolExecutor(
+        ha_ssh_client=ssh_client,
+        gate=gate,
+        notifier=notifier,
+        db_path=db_path,
+    )
+    registry = build_code_proposal_registry()
+    proposal_loop = AgentLoop(
+        llm_client=llm_client,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=_CODE_PROPOSAL_SYSTEM_PROMPT,
+        trigger="gap_detection",
+    )
+    initial_context = (
+        "The previous HA repair loop detected a capability gap:\n\n"
+        f"{gap_description}\n\n"
+        "Read the relevant source files, propose a patch that closes this gap, "
+        "validate it with sandbox_code, and queue it for review with open_pr."
+    )
+    result = await proposal_loop.run(initial_context)
+    log.info(
+        "code_proposal_loop_complete",
+        outcome=result.outcome,
+        steps=len(result.steps),
+        gap_description=gap_description[:100],
+    )
+
+
 # ==========================================
 # ORCHESTRATION PIPELINE
 # ==========================================
@@ -624,6 +691,22 @@ async def main(
         f"Current configuration.yaml:\n```yaml\n{yaml_content}\n```"
     )
     result = await loop.run(initial_context)
+
+    # Autonomous gap detection (item 84): when the agent signalled a capability gap,
+    # automatically start a code-proposal loop that drafts a patch, validates it in
+    # sandbox CI, and queues an open_pr HITL card for human review.
+    if result.capability_gap and result.gap_description:
+        log.info(
+            "gap_detection_triggered",
+            gap_description=result.gap_description[:100],
+        )
+        await _run_code_proposal_loop(
+            gap_description=result.gap_description,
+            ssh_client=_ssh,
+            gate=_gate,
+            notifier=_notifier,
+            llm_client=_llm,
+        )
 
     # When running in "both" mode and the local loop is unable to resolve the
     # issue, offer a cloud escalation HITL card so the user can re-run with

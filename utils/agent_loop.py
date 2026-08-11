@@ -284,6 +284,8 @@ class AgentLoop:
             steps=steps,
             episode_stub=episode_stub,
             episode_id=episode_id,
+            capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
+            gap_description=(episode_stub or {}).get("gap_description", ""),
         )
 
     async def _loop_body(
@@ -417,6 +419,12 @@ class AgentLoop:
                         "summary": tool_call.arguments.get("summary", ""),
                         "action_taken": tool_call.arguments.get("action_taken", ""),
                         "steps": tool_call_count,
+                        "capability_gap": bool(
+                            tool_call.arguments.get("capability_gap", False)
+                        ),
+                        "gap_description": tool_call.arguments.get(
+                            "gap_description", ""
+                        ),
                     }
                     return "success", episode_stub
 
