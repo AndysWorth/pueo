@@ -1155,6 +1155,112 @@ class TestResourcePollerAlerts:
         asyncio.run(poller._check_and_alert(status))
         assert len(notifier.sent) == 0
 
+    def test_disk_critical_payload_includes_disk_free_after_gb(self, monkeypatch):
+        """HITL card payload carries disk_free_after_gb from the post-recovery re-poll."""
+        import utils.resource as resource_mod
+        from utils.notify import FakeNotifier
+
+        async def fake_poll(*_args, **_kwargs):
+            return self._make_status(disk_free=2.3)
+
+        monkeypatch.setattr(resource_mod, "poll_host_resources", fake_poll)
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+        asyncio.run(poller._check_and_alert(status))
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["disk_free_after_gb"] == pytest.approx(2.3, abs=0.01)
+
+    def test_disk_critical_recovery_retries_after_cooldown(self, monkeypatch):
+        """Recovery runs again and a new HITL card is emitted after the cooldown elapses."""
+        import time
+        import utils.resource as resource_mod
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        critical = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+
+        asyncio.run(poller._check_and_alert(critical))
+        assert len(notifier.sent) == 1
+
+        # Simulate cooldown elapsed by setting _last_recovery_at far in the past
+        poller._last_recovery_at = (
+            time.monotonic() - resource_mod._RECOVERY_COOLDOWN_SECONDS - 1
+        )
+        asyncio.run(poller._check_and_alert(critical))
+        assert len(notifier.sent) == 2
+
+    def test_disk_critical_suppressed_within_cooldown(self, monkeypatch):
+        """No additional card is sent while disk stays CRITICAL within the cooldown window."""
+        from utils.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        critical = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+
+        asyncio.run(poller._check_and_alert(critical))
+        assert len(notifier.sent) == 1
+
+        # _last_recovery_at is now set; cooldown has NOT elapsed
+        asyncio.run(poller._check_and_alert(critical))
+        assert len(notifier.sent) == 1
+
+    def test_disk_warn_triggers_proactive_recovery(self, monkeypatch):
+        """When disk_warn fires, run_safe_disk_recovery is called as proactive cleanup."""
+        import utils.resource as resource_mod
+        import utils.disk_recovery as dr_mod
+        from utils.notify import FakeNotifier
+
+        recovery_called: list[bool] = []
+
+        async def fake_recovery(*_args, **_kwargs):
+            recovery_called.append(True)
+            from utils.disk_recovery import RecoverySummary
+
+            return RecoverySummary()
+
+        monkeypatch.setattr(dr_mod, "run_safe_disk_recovery", fake_recovery)
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=3.5, disk_warn=True, disk_critical=False)
+        asyncio.run(poller._check_and_alert(status))
+
+        assert recovery_called, "run_safe_disk_recovery should be called at WARN level"
+        assert len(notifier.sent) == 1
+        assert "WARNING" in notifier.sent[0]["subject"]
+
+    def test_disk_warn_proactive_recovery_result_included_in_body(self, monkeypatch):
+        """Warning notification body mentions space freed by proactive recovery."""
+        import utils.disk_recovery as dr_mod
+        from utils.notify import FakeNotifier
+
+        async def fake_recovery(*_args, **_kwargs):
+            from utils.disk_recovery import RecoveryAction, RecoverySummary
+
+            s = RecoverySummary()
+            s.actions.append(
+                RecoveryAction(
+                    name="truncate_ha_log",
+                    bytes_freed=52_428_800,  # 50 MB
+                    message="Truncated HA log (50.0 MB freed)",
+                    success=True,
+                )
+            )
+            return s
+
+        monkeypatch.setattr(dr_mod, "run_safe_disk_recovery", fake_recovery)
+
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        status = self._make_status(disk_free=3.5, disk_warn=True, disk_critical=False)
+        asyncio.run(poller._check_and_alert(status))
+
+        body = notifier.sent[0]["body"]
+        assert "50" in body  # freed MB mentioned
+
     def test_update_resource_status_sets_cache(self, monkeypatch):
         from utils.resource import ResourceStatus, update_resource_status
         import utils.resource as resource_mod
