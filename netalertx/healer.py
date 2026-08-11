@@ -224,6 +224,23 @@ class NetAlertXHealer:
             steps=len(result.steps),
         )
 
+        # Autonomous gap detection (item 84): mirror the HA loop behaviour.
+        if result.capability_gap and result.gap_description:
+            from ha_agent_sandbox_engine import _run_code_proposal_loop
+
+            log.info(
+                "gap_detection_triggered",
+                gap_description=result.gap_description[:100],
+            )
+            await _run_code_proposal_loop(
+                gap_description=result.gap_description,
+                ssh_client=self._ha_ssh,
+                gate=self._gate,
+                notifier=self._notifier,
+                llm_client=llm_client,
+                db_path=self._db_path,
+            )
+
     # ------------------------------------------------------------------
     # Main entry point (linear pipeline — backward-compatible)
     # ------------------------------------------------------------------

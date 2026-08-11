@@ -1073,3 +1073,285 @@ class TestOpenPrTool:
         )
         payload = prepped_executor._notifier.sent[0]["payload"]
         assert "All checks passed" in payload["sandbox_output"]
+
+
+# ---------------------------------------------------------------------------
+# TestGapDetection — item 84
+# ---------------------------------------------------------------------------
+
+
+class TestGapDetection:
+    """AgentLoop propagates capability_gap from finish_repair; sandbox engine
+    and NetAlertX healer launch _run_code_proposal_loop automatically."""
+
+    # ------------------------------------------------------------------
+    # AgentLoopResult schema
+    # ------------------------------------------------------------------
+
+    def test_agent_loop_result_capability_gap_default_false(self):
+        from utils.tool_registry import AgentLoopResult
+
+        r = AgentLoopResult(outcome="success", steps=[])
+        assert r.capability_gap is False
+        assert r.gap_description == ""
+
+    def test_agent_loop_result_capability_gap_set(self):
+        from utils.tool_registry import AgentLoopResult
+
+        r = AgentLoopResult(
+            outcome="success",
+            steps=[],
+            capability_gap=True,
+            gap_description="Need a tool to check sensor state",
+        )
+        assert r.capability_gap is True
+        assert r.gap_description == "Need a tool to check sensor state"
+
+    def test_agent_loop_result_json_round_trip_with_gap(self):
+        from utils.tool_registry import AgentLoopResult
+
+        orig = AgentLoopResult(
+            outcome="success",
+            steps=[],
+            capability_gap=True,
+            gap_description="Missing sensor tool",
+        )
+        restored = AgentLoopResult.model_validate_json(orig.model_dump_json())
+        assert restored.capability_gap is True
+        assert restored.gap_description == "Missing sensor tool"
+
+    # ------------------------------------------------------------------
+    # FINISH_REPAIR ToolDefinition
+    # ------------------------------------------------------------------
+
+    def test_finish_repair_accepts_capability_gap_parameter(self):
+        from utils.tool_registry import FINISH_REPAIR
+
+        props = FINISH_REPAIR.parameters["properties"]
+        assert "capability_gap" in props
+        assert props["capability_gap"]["type"] == "boolean"
+
+    def test_finish_repair_accepts_gap_description_parameter(self):
+        from utils.tool_registry import FINISH_REPAIR
+
+        props = FINISH_REPAIR.parameters["properties"]
+        assert "gap_description" in props
+        assert props["gap_description"]["type"] == "string"
+
+    def test_finish_repair_does_not_require_capability_gap(self):
+        from utils.tool_registry import FINISH_REPAIR
+
+        required = FINISH_REPAIR.parameters["required"]
+        assert "capability_gap" not in required
+        assert "gap_description" not in required
+
+    # ------------------------------------------------------------------
+    # build_code_proposal_registry
+    # ------------------------------------------------------------------
+
+    def test_code_proposal_registry_has_required_tools(self):
+        from utils.tool_registry import build_code_proposal_registry
+
+        reg = build_code_proposal_registry()
+        names = reg.names()
+        for tool in (
+            "read_source",
+            "propose_patch",
+            "sandbox_code",
+            "open_pr",
+            "finish_repair",
+        ):
+            assert tool in names, f"{tool!r} missing from code_proposal registry"
+
+    def test_code_proposal_registry_excludes_apply_fix(self):
+        from utils.tool_registry import build_code_proposal_registry
+
+        reg = build_code_proposal_registry()
+        assert "apply_fix" not in reg.names()
+
+    # ------------------------------------------------------------------
+    # AgentLoop propagates capability_gap from finish_repair arguments
+    # ------------------------------------------------------------------
+
+    def test_agent_loop_propagates_capability_gap_true(self, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_ha_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "No tool available for this failure",
+                                    "action_taken": "needs_human",
+                                    "capability_gap": True,
+                                    "gap_description": "Need a tool to query sensor history",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        result = asyncio.run(loop.run("Diagnose config"))
+        assert result.outcome == "success"
+        assert result.capability_gap is True
+        assert result.gap_description == "Need a tool to query sensor history"
+
+    def test_agent_loop_capability_gap_false_by_default(self, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_ha_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "All good",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_ha_tool_registry(),
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+        result = asyncio.run(loop.run("Diagnose config"))
+        assert result.outcome == "success"
+        assert result.capability_gap is False
+        assert result.gap_description == ""
+
+    # ------------------------------------------------------------------
+    # _run_code_proposal_loop triggered by ha_agent_sandbox_engine.main()
+    # ------------------------------------------------------------------
+
+    def test_sandbox_engine_calls_proposal_loop_on_gap(self, db_path, monkeypatch):
+        """When AgentLoop result has capability_gap=True, main() calls _run_code_proposal_loop."""
+        import ha_agent_sandbox_engine as engine
+        from utils.agent_loop import AgentLoopResult
+
+        calls: list[dict] = []
+
+        async def fake_proposal_loop(**kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+        monkeypatch.setattr(engine, "_run_code_proposal_loop", fake_proposal_loop)
+
+        # Patch loop.run() to return a capability_gap result without SSH/LLM
+        async def fake_run(*args: object, **kwargs: object) -> AgentLoopResult:
+            return AgentLoopResult(
+                outcome="success",
+                steps=[],
+                capability_gap=True,
+                gap_description="Need sensor history tool",
+            )
+
+        async def fake_fetch(**kw: object) -> tuple[str, str]:
+            return ("yaml: {}", "abc")
+
+        monkeypatch.setattr(engine, "fetch_remote_config", fake_fetch)
+        monkeypatch.setattr(engine, "DB_PATH", db_path)
+        import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
+        ha_agent_advanced.init_local_database()
+
+        from utils.agent_loop import AgentLoop
+
+        monkeypatch.setattr(AgentLoop, "run", fake_run)
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+
+        asyncio.run(
+            engine.main(
+                ssh_client=FakeSSHClient(),
+                llm_client=FakeLLMClient("{}"),
+                notifier=FakeNotifier(),
+                gate=FakeAutonomyGate(),
+            )
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["gap_description"] == "Need sensor history tool"
+
+    def test_sandbox_engine_skips_proposal_loop_without_gap(self, db_path, monkeypatch):
+        """When capability_gap=False, main() does not call _run_code_proposal_loop."""
+        import ha_agent_sandbox_engine as engine
+        from utils.agent_loop import AgentLoopResult
+
+        calls: list[dict] = []
+
+        async def fake_proposal_loop(**kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+        monkeypatch.setattr(engine, "_run_code_proposal_loop", fake_proposal_loop)
+
+        async def fake_run(*args: object, **kwargs: object) -> AgentLoopResult:
+            return AgentLoopResult(outcome="success", steps=[])
+
+        async def fake_fetch(**kw: object) -> tuple[str, str]:
+            return ("yaml: {}", "abc")
+
+        monkeypatch.setattr(engine, "fetch_remote_config", fake_fetch)
+        monkeypatch.setattr(engine, "DB_PATH", db_path)
+        import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
+        ha_agent_advanced.init_local_database()
+
+        from utils.agent_loop import AgentLoop
+
+        monkeypatch.setattr(AgentLoop, "run", fake_run)
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+
+        asyncio.run(
+            engine.main(
+                ssh_client=FakeSSHClient(),
+                llm_client=FakeLLMClient("{}"),
+                notifier=FakeNotifier(),
+                gate=FakeAutonomyGate(),
+            )
+        )
+
+        assert len(calls) == 0
