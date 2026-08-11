@@ -52,8 +52,8 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 30     | Backup Inventory Tracking                                                                                                                                                                                                                                             | ✅ Done (2026-07-24) |
 | 31     | Backup Offloading                                                                                                                                                                                                                                                     | ✅ Done (2026-07-24) |
 | 32     | Retention Policy & Cleanup                                                                                                                                                                                                                                            | ✅ Done (2026-07-27) |
-| 12.5A  | HA Repairs polling: `poll_for_repairs()`; `execute_ha_reboot()`; `ha_repair_history` migration v12; `CARD_TYPE_HA_REPAIR`; `_execute_queued_ha_repair` dashboard handler                                                                                              | ✅ Done (2026-08-05) |
-| 12.5B  | Update ordering enforcement: `_update_priority()`; ordering guard in `approve()`; advisory note in `request_update_approval()`; `is_reboot_required_active()` preflight in `execute_update()`                                                                         | ✅ Done (2026-08-05) |
+| 12.5A  | HA Repairs polling: `poll_for_repairs()`; `execute_ha_reboot()`; `ha_repair_history` migration v12; `CARD_TYPE_HA_REPAIR`; dashboard handler                                                                                                                          | ✅ Done (2026-08-05) |
+| 12.5B  | Update ordering enforcement: `_update_priority()`; ordering guard in `approve()`; `is_reboot_required_active()` preflight in `execute_update()`                                                                                                                       | ✅ Done (2026-08-05) |
 | 33     | HARestClient + HARestClientProtocol; update entity polling; --mode update-check                                                                                                                                                                                       | ✅ Done (2026-07-27) |
 | 34     | Breaking change analysis: release notes fetch + cache; UpdateReadinessReport schema                                                                                                                                                                                   | ✅ Done (2026-07-27) |
 | 35     | HITL update approval card: per-component, advisory breaking-changes section                                                                                                                                                                                           | ✅ Done (2026-07-27) |
@@ -94,10 +94,10 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 | 70     | read_source, propose_patch, sandbox_code tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout                                                                                                                                               | ✅ Done (2026-07-31) |
 | 71     | add_tool registration: migration v9 (registered_tools), ToolExecutor._dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler, user_tools/ loader on startup                                                                                                   | ✅ Done (2026-07-31) |
 | 72     | Tests: test_chat.py (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); TestConfigDefaults for two new config keys                                                                                                               | ✅ Done (2026-07-31) |
-| 73     | `utils/cloud_client.py`: `ClaudeAPIClient` + tool schema adapter + response normalizer + history translator; `utils/llm_factory.py`: `make_llm_client()` + `_default_model_for_provider()`; migrate all 20+ `OllamaClient()` call-sites to `make_llm_client()`        | ✅ Done (2026-08-07) |
-| 74     | Config: `LLM_PROVIDER` (local/cloud/both), `CLOUD_MODEL`, billing keys in `config.py` + `config.yaml.default`; `ANTHROPIC_API_KEY` env guard + credential guard; `setup.sh` provider wizard section; ADR 006                                                          | ✅ Done (2026-08-07) |
-| 75     | Dashboard: `LLM Provider` settings group in `_EDITABLE_PARAMS` (provider dropdown, cloud model, billing thresholds); API key status badge in `settings.html`; update `_run_chat_loop` + `evals/run_evals.py` call-sites                                               | ✅ Done (2026-08-07) |
-| 76     | Billing guard: DB migration v15 `cloud_spend` table; `record_cloud_spend`, `get_daily_spend`, `get_incident_spend` helpers; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card (LLM_PROVIDER=both + loop exhausted); re-run with `ClaudeAPIClient` on approval | ✅ Done (2026-08-07) |
+| 73     | `ClaudeAPIClient` (tool/response/history adapters); `make_llm_client()` factory in `llm_factory.py`; migrate all `OllamaClient()` call-sites                                                                                                                          | ✅ Done (2026-08-07) |
+| 74     | `LLM_PROVIDER`, `CLOUD_MODEL`, billing config keys; `ANTHROPIC_API_KEY` env guard; `setup.sh` provider wizard; ADR 006                                                                                                                                                | ✅ Done (2026-08-07) |
+| 75     | Dashboard `LLM Provider` settings group; API key status badge; remaining call-site updates                                                                                                                                                                            | ✅ Done (2026-08-07) |
+| 76     | `cloud_spend` DB migration v15; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card; re-run with `ClaudeAPIClient` on approval                                                                                                                                  | ✅ Done (2026-08-07) |
 | 77     | repair_episodes SQLite table (migration); RepairEpisode dataclass; serialization helper                                                                                                                                                                               | ✅ Done (2026-08-10) |
 | 78     | Serialization hook at finish_repair in AgentLoop; LLMTrace episode reference                                                                                                                                                                                          | ✅ Done (2026-08-10) |
 | 79     | --mode export-episodes CLI; anonymized YAML output; episodes tab in dashboard                                                                                                                                                                                         | ✅ Done (2026-08-10) |
@@ -132,262 +132,65 @@ Detail files: [plan/foundation.md](plan/foundation.md) · [plan/autonomy.md](pla
 
 ## Phases
 
-### Phase 1–3 — Foundation, Observability, Architecture ✅ Complete
-Items 1–9. All complete as of 2026-07-15. Covers prompt management, SSH/Ollama retry with backoff, rate limiting and debounce, SQLite migration versioning, structured JSON logging with correlation IDs, token budget management, YAML content validation, dependency injection via Protocol interfaces, and HITL notification infrastructure (FileNotifier, NtfyNotifier, WebhookNotifier).
+### Phase 1–3 — Foundation, Observability, Architecture ✅ Complete (2026-07-15)
+Items 1–9. → [plan/foundation.md](plan/foundation.md)
 
-→ [plan/foundation.md](plan/foundation.md)
+### Phase 3.5 — Cross-Cutting: Autonomy Control ✅ Complete (2026-07-19)
+Item 9.5. → [plan/autonomy.md](plan/autonomy.md)
 
----
+### Phase 4 — NetAlertX Integration ✅ Complete (2026-07-20)
+Items 10–19. → [plan/netalertx.md](plan/netalertx.md)
 
-### Phase 3.5 — Cross-Cutting: Autonomy Control (1 session) ✅ Complete (2026-07-19)
-Item 9.5. Adds `agent.autonomy_level` (integer 1–4, default 2) and `AutonomyGate` — the single ask/skip decision point imported by every Pueo module. Also adds `FakeAutonomyGate` for tests. Refactors the hardcoded `requires_hitl()` in the HA sandbox engine. **All Phase 4 items depend on this being implemented first.**
+### Phase 4.5 — HITL UX ✅ Complete (2026-07-20)
+Item 19.5. → [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
 
-Levels: 1 = report only · 2 = suggest + approve all · 3 = auto LOW-risk + approve MEDIUM/HIGH/CRITICAL · 4 = auto LOW/MEDIUM/HIGH + approve CRITICAL only.
+### Phase 5 — Observability UX ✅ Complete (2026-07-20)
+Item 20. → [plan/status-logging.md](plan/status-logging.md)
 
-→ [plan/autonomy.md](plan/autonomy.md)
+### Phase 6 — Installer Intelligence ✅ Complete (2026-07-21)
+Items 21–22. → [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
 
----
+### Phase 7 — Evidence Capture and HITL Display ✅ Complete (2026-07-21)
+Items 23–24. → [plan/evidence-trace.md](plan/evidence-trace.md)
 
-### Phase 4 — NetAlertX Integration (11–14 sessions) ✅ Complete (2026-07-20)
-Items 10–19. Full lifecycle for a new integration target: install from scratch (items 10–12), sync device names from HA (13–14), monitor logs and health (15–16), AI diagnosis (17), autonomy-gated healing (18), and ongoing HA integration maintenance (19). Requires Phase 3.5 complete before item 10.
+### Phase 8 — NetAlertX Compatibility Maintenance ✅ Complete (2026-07-21)
+Item 25. → [plan/netalertx.md](plan/netalertx.md)
 
-| Items | Concern |
-|-------|---------|
-| 10 | Package skeleton, all config keys, SQLite migration, detector, API client |
-| 11–12 | Idempotent installer: 8-step state machine across two sessions |
-| 13–14 | HA→NetAlertX device name sync across two sessions |
-| 15–16 | Continuous monitoring: log tail and health polling/MQTT |
-| 17 | AI diagnosis prompts, Pydantic schema, config validator |
-| 18–19 | Healing actions gated by autonomy level; HA integration maintenance |
+### Phase 9 — NetAlertX One-Shot Diagnosis ✅ Complete (2026-07-22)
+Item 27. → [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
 
-→ [plan/netalertx.md](plan/netalertx.md)
+### Phase 11 — Resource Stewardship ✅ Complete (2026-07-27)
+Items 28–32. → [plan/resource-stewardship.md](plan/resource-stewardship.md)
 
----
+### Phase 12 — HA Update Manager ✅ Complete (2026-07-27)
+Items 33–37. → [plan/ha-update-manager.md](plan/ha-update-manager.md)
 
-### Phase 4.5 — HITL UX (1 session) ✅ Complete (2026-07-20)
-Item 19.5. Eliminates the 60-minute blocking timeout from `AutonomyGate.require_approval()`, converts monitoring loops to fire healing as `asyncio.create_task()`, and adds a local FastAPI web dashboard (`python main.py --mode dashboard`) for approving or rejecting pending repair actions via browser. Adds `fastapi`, `jinja2`, and `uvicorn` dependencies.
+### Phase 12.5 — HA Repairs & Update Orchestration ✅ Complete (2026-08-05)
+Items 12.5A–12.5B. → [plan/ha-update-manager.md](plan/ha-update-manager.md)
 
-→ [plan/hitl-dashboard.md](plan/hitl-dashboard.md)
+### Phase 13 — HA Notification Intelligence ✅ Complete (2026-07-27)
+Items 38–41. → [plan/ha-notifications.md](plan/ha-notifications.md)
 
----
+### Phase 14 — Tool-Calling Agent Loop ✅ Complete (2026-07-28)
+Items 42–48. → [plan/tool-loop.md](plan/tool-loop.md)
 
-### Phase 5 — Observability UX (1 session) ✅ Complete (2026-07-20)
-Item 20. Wires up `setup_logging()` centrally in `main.py` so all modes emit log output, and adds a human-readable plain-text console formatter used by `--mode netalertx-setup`. Currently the installer emits rich structured events at every step but they are silently dropped because no handlers are attached. The file handler always stays JSON; the stderr handler switches to plain text for the setup wizard.
+### Phase 15 — RAG Knowledge Layer ✅ Complete (2026-07-28)
+Items 49–52. → [plan/rag-tool.md](plan/rag-tool.md)
 
-→ [plan/status-logging.md](plan/status-logging.md)
+### Phase 16 — Evals ✅ Complete (2026-07-28)
+Items 53–54. → [plan/evals.md](plan/evals.md)
 
----
+### Phase 17 — Supervisor + Active Dashboard ✅ Complete (2026-07-30)
+Items 55–64. → [plan/supervisor.md](plan/supervisor.md)
 
----
+### Phase 17.5 — Conversational Agent ✅ Complete (2026-07-31)
+Items 65–72. → [plan/conversational-agent.md](plan/conversational-agent.md)
 
-### Phase 6 — Installer Intelligence (2 sessions) ✅ Complete (2026-07-21)
-Items 21–22. Fixes three CLI command bugs found during documentation review (2026-07-21), removes
-the NetAlertX enabled/disabled toggle (NetAlertX is always-on), corrects the add-on repository URL,
-and adds evidence-first LLM diagnosis to installer failure paths so Pueo can explain what went wrong
-and attempt an automated fix rather than silently aborting.
+### Phase 18 — Configurable LLM Provider + Cloud Escalation ✅ Complete (2026-08-07)
+Items 73–76. → [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
-→ [plan/installer-diagnostics.md](plan/installer-diagnostics.md)
-
----
-
-### Phase 7 — Evidence Capture and HITL Display (2 sessions) ✅ Complete (2026-07-21)
-Items 23–24. When Pueo can't fix a problem, all gathered evidence (log snapshots, SSH command output, raw YAML), the structured diagnosis, and the full LLM prompt/response are currently discarded after use. This phase captures them and surfaces them in the web dashboard HITL cards so the user doesn't have to re-gather evidence manually.
-
-| Items | Concern |
-|-------|---------|
-| 23 | `LLMTrace` dataclass; 6 LLM call sites return `(ParsedModel, LLMTrace)` tuples; HITL payloads enriched with `diagnosis`, `evidence_raw`, and `llm_trace` keys |
-| 24 | Dashboard template: 3 new collapsible sections (Evidence, Diagnosis, LLM Interaction); `epoch_to_iso` Jinja2 filter |
-
-→ [plan/evidence-trace.md](plan/evidence-trace.md)
-
----
-
-### Phase 8 — NetAlertX Compatibility Maintenance (1 session) ✅ Complete (2026-07-21)
-Item 25. The NetAlertX old REST API (`/API_OLD` endpoints) is slated for removal in the next NetAlertX release (flagged since v26.5.4, imminent as of v26.7.1). Although the current Pueo codebase already uses the new API endpoints (`/devices`, `/events`, `/health`, `/settings/<key>`, `/graphql`, `/metrics`, `/nettools/trigger-scan`), this item locks in the migration and adds a version-check guard so Pueo warns at startup if a NetAlertX version is detected that removes expected endpoints.
-
-**Scope:** `netalertx/api_client.py` (remove any old-API fallback paths if present), `netalertx/detector.py` (add minimum-version check against `GET /settings/VERSION`), `tests/test_core.py` (new `TestNetAlertXVersionGuard` class).
-
-**Trigger:** Do this item before the next NetAlertX release drops, or when `GET /settings/VERSION` returns a version > v26.7.1 and integration tests start failing.
-
----
-
-### Phase 9 — NetAlertX One-Shot Diagnosis (1 session) ✅ Complete (2026-07-22)
-Item 27. Adds `--mode netalertx-diagnose`: a single proactive pass that checks the current
-state of NetAlertX and the HA integration, synthesises an AI diagnosis, and optionally
-triggers healing. Fills the gap between the reactive `--mode netalertx` daemon and having no
-way to ask "what is wrong right now?" All building blocks exist (health poller, log triage,
-config validator, healer); this item wires them together behind a new CLI entry point.
-
-→ [plan/netalertx-one-shot-diagnose.md](plan/netalertx-one-shot-diagnose.md)
-
----
-
-> **Note:** Phase 10 is intentionally retired (gap between Phase 9 and Phase 11 is permanent).
-
-### Phase 11 — Resource Stewardship (4 items) ✅ Complete (2026-07-27)
-Items 28–32. Protects the backup-before-write safety invariant by keeping HA disk free.
-
-| Item | Concern |
-|------|---------|
-| 28 | MQTT credential setup |
-| 29 | Disk & memory sensing (`ha host info` polling, HITL alerts, `DiskCriticalError` block) |
-| 30 | Backup inventory tracking (SQLite migration v5, reconcile on startup) |
-| 31 | Backup offloading (SFTP pull, SHA-256 verify, `location='both'`) |
-| 32 | Retention policy (`enforce_ha_retention`, `purge_local_backups`, `--mode backup-status`, dashboard `/backups` tab) |
-
-→ [plan/resource-stewardship.md](plan/resource-stewardship.md)
-
----
-
----
-
-### Phase 12 — HA Update Manager (5 items) ✅ Complete (2026-07-27)
-Items 33–37. Detects available Core, OS, and add-on updates via `update.*` REST entities; evaluates each update for breaking changes using local LLM analysis of cached release notes; executes updates with the backup invariant intact; validates Pueo's own command catalog survives a Core update. Prerequisite: Phase 11 complete (`execute_remote_backup()` blocks on `DiskCriticalError`).
-
-| Items | Concern |
-|-------|---------|
-| 33 | HARestClient + update entity polling + --mode update-check |
-| 34 | Breaking change analysis: release notes fetch + cache + UpdateReadinessReport |
-| 35 | HITL update approval card (CRITICAL for Core/OS; MEDIUM for add-ons) |
-| 36 | Safe update execution (Core, OS, add-ons) + post-update log triage |
-| 37 | Pueo self-check after Core update: command catalog smoke-test + LLM cross-reference |
-
-→ [plan/ha-update-manager.md](plan/ha-update-manager.md)
-
----
-
-### Phase 12.5 — HA Repairs & Update Orchestration (2 items) ✅ Complete (2026-08-05)
-Items 12.5A–12.5B. Two gaps discovered after the HAOS 18.1 → 18.2 update: Pueo had zero visibility into `/api/repairs/issues`, so the post-OS-update `reboot_required` signal was invisible; and nothing prevented approving Core before OS in the HITL queue. This phase closes both gaps.
-
-| Item | Concern |
-|------|---------|
-| 12.5A | `poll_for_repairs()` daemon polls `GET /api/repairs/issues` every `HA_REPAIR_POLL_INTERVAL_MINUTES` (default 5 min); fires `CARD_TYPE_HA_REPAIR` HITL cards; `execute_ha_reboot()` (backup → `ha host reboot` → TCP poll); dismiss via `DELETE /api/repairs/issues/{domain}/{issue_id}`; `ha_repair_history` DB table (migration v12); `record_repair_seen`, `mark_repair_hitl_sent`, `mark_repair_resolved`, `is_reboot_required_active()` helpers |
-| 12.5B | `_update_priority()` (OS=0, Supervisor=1, Core=2, add-ons=3); `_pending_higher_priority_components()` scans watch dir; ordering guard in `approve()` redirects to `/queue?order_error=<component>` with dismissible banner; advisory note appended to update card body; `execute_update()` preflights `is_reboot_required_active()` and aborts if reboot unresolved |
-
----
-
-### Phase 13 — HA Notification Intelligence (4 items) ✅ Complete (2026-07-27)
-Items 38–41. Surfaces HA persistent notifications (`persistent_notification.*`) as enriched HITL cards with plain-English explanations, IP device enrichment, and recommended actions. Uses `HARestClient` from item 33. `http_login` notifications enriched via reverse DNS + NetAlertX + HA device registry; unknown-source logins escalated to CRITICAL.
-
-| Items | Concern |
-|-------|---------|
-| 38 | Notification polling + NotificationAnalysis schema + notification_history table |
-| 39 | Notification enrichment: reverse DNS, NetAlertX, HA device registry via HAWebSocketClient |
-| 40 | HITL notification cards + dismissal + --mode notifications |
-| 41 | Notifications tab in HITL dashboard: pending, history, filters |
-
-→ [plan/ha-notifications.md](plan/ha-notifications.md)
-
----
-
-### Phase 14 — Tool-Calling Agent Loop (7 items) ✅ Complete (2026-07-28)
-Items 42–48. Replaces the linear pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call, iterates until it fixes the problem or exhausts a budget (≤20 tool calls, ≤120s). Both HA and NetAlertX healing pipelines are refactored to use `AgentLoop.run()`. Phase 16 (Evals) follows and establishes the tool loop's first performance baseline.
-
-| Items | Concern |
-|-------|---------|
-| 42–43 | Tool registry Pydantic schemas + execution implementations |
-| 44 | AgentLoop controller |
-| 45–46 | HA sandbox engine + NetAlertX healer refactors |
-| 47 | Safety audit |
-| 48 | Functional verification: tool call traces for representative HA and NetAlertX repair scenarios |
-
-→ [plan/tool-loop.md](plan/tool-loop.md)
-
----
-
-### Phase 15 — RAG Knowledge Layer (4 items) ✅ Complete (2026-07-28)
-Items 49–52. Keeps the agent knowledgeable about HA breaking changes without WAN calls during fix cycles. ChromaDB + `nomic-embed-text` via Ollama; weekly scrapers for HA release notes and HACS changelogs; `query_knowledge` tool registered in the loop (slot reserved from item 42). Requires Phase 14 complete.
-
-| Items | Concern |
-|-------|---------|
-| 49 | ChromaDB setup + embedding client wrapper |
-| 50 | HA release notes scraper |
-| 51 | HACS changelog scraper + query_knowledge tool |
-| 52 | Weekly launchd refresh + vector store maintenance |
-
-→ [plan/rag-tool.md](plan/rag-tool.md)
-
----
-
-### Phase 16 — Evals (2 items) ✅ Complete (2026-07-28)
-Items 53–54. Makes regressions visible: unit tests verify code correctness, evals verify agent intelligence. Synthetic YAML scenario library run through the real Ollama pipeline; scored and baselined in git.
-
-| Items | Concern |
-|-------|---------|
-| 53 | Scenario library (≥10 YAML files) + run_evals.py + baseline.json scoring |
-| 54 | /project:run-evals slash command + optional gated CI job |
-
-→ [plan/evals.md](plan/evals.md)
-
----
-
-### Phase 17 — Supervisor + Active Dashboard (10 items) ✅ Complete (2026-07-30)
-Items 55–64. Replaces the collection of disconnected one-shot and daemon commands with a
-single `python main.py` supervisor process. All monitoring loops run as asyncio tasks
-alongside the FastAPI dashboard. The dashboard becomes the face of Pueo: real-time status
-overview, live event timeline, configuration editor, loop control, and direct execution of
-HITL-approved actions. A launchd plist keeps Pueo alive across reboots. Prerequisite:
-Phase 16 (Evals) complete.
-
-| Items | Concern                                                                                           |
-| ----- | ------------------------------------------------------------------------------------------------- |
-| 55    | Supervisor process: LoopSupervisor with asyncio task launcher, health tracking, backoff restart   |
-| 56    | Card-type dispatch: utils/card_types.py; card_type on all HITL cards; dispatch table in approve() |
-| 57    | Update executor in dashboard; refactor execute_update() as standalone callable                    |
-| 58    | NetAlertX + resource action executors; in-progress spinner state                                  |
-| 59    | Dashboard overview tab: loop health rows, HA state card, resource gauges; SSE /events             |
-| 60    | Live event timeline: timeline_events DB table (migration v6); drill-down detail view              |
-| 61    | Configuration editor: settings tab; live-apply runtime params; write config.yaml                  |
-| 62    | Loop control from dashboard: pause/resume/run-now per loop                                        |
-| 63    | launchd service: plist template; setup.sh install step; dashboard service controls                |
-| 64    | --mode audit: Pueo self-diagnostics report saved to audits/                                       |
-
-→ [plan/supervisor.md](plan/supervisor.md)
-
----
-
-### Phase 17.5 — Conversational Agent (8 items) ✅ Complete (2026-07-31)
-Items 65–72. Adds a Chat tab to the HITL dashboard, persistent agent memory (SQLite), and an interactive code-sandbox flow for proposing and registering new tools. The same `AgentLoop` that drives repair sessions drives the conversational agent — with a different system prompt, a chat-specific tool registry, and `terminal_tool_name="finish_chat"`. Also implements the shared sandbox infrastructure (`read_source`, `propose_patch`, `sandbox_code`) that Phase 21 will reuse for its autonomous code-proposal path. Prerequisite: Phase 17 complete.
-
-| Items | Concern |
-|-------|---------|
-| 65 | DB migration v8: agent_memory, chat_sessions, chat_messages |
-| 66 | remember + recall tools; CHAT_MEMORY_TOP_K + CHAT_ALLOW_TOOL_REGISTRATION config keys |
-| 67 | build_chat_tool_registry(); finish_chat tool; AgentLoop.terminal_tool_name; conversational system prompt |
-| 68 | /chat UI: route, chat.html template, base.html nav link |
-| 69 | POST /chat/message + GET /chat/events SSE; asyncio task dispatch |
-| 70 | read_source, propose_patch, sandbox_code tools; subprocess CI gate |
-| 71 | add_tool: migration v9, _dynamic_tools, CARD_TYPE_CODE_PROPOSAL, dashboard HITL handler |
-| 72 | Tests: test_chat.py + TestConfigDefaults entries |
-
-→ [plan/conversational-agent.md](plan/conversational-agent.md)
-
----
-
-### Phase 18 — Configurable LLM Provider + Cloud Escalation (4 items) ✅ Complete (2026-08-07)
-Items 73–76. Makes the LLM inference engine a first-class switchable setting: `local` (Ollama only, current default), `cloud` (Anthropic API as primary), or `both` (Ollama for autonomous cycles + Claude available via HITL escalation). The "0 WAN during autonomous fix cycles" constraint is overridden by design — cloud mode sends inference traffic to Anthropic. HITL escalation (the original Phase 18 goal) becomes the natural behavior of `both` mode when `AgentLoop` exhausts its budget. `ANTHROPIC_API_KEY` from environment only; billing caps enforced; `LLM_PROVIDER = "local"` default preserves existing behavior.
-
-| Items | Concern |
-|-------|---------|
-| 73 | `ClaudeAPIClient` (tool schema + response + history adapters); `make_llm_client()` factory; call-site migration |
-| 74 | Config keys (`LLM_PROVIDER`, `CLOUD_MODEL`, billing limits); `ANTHROPIC_API_KEY` env guard; `setup.sh` provider wizard; ADR 006 |
-| 75 | Dashboard `LLM Provider` settings group; API key status badge; remaining call-site updates |
-| 76 | Billing guard (`cloud_spend` DB migration v15); `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card |
-
-→ [plan/cloud-escalation.md](plan/cloud-escalation.md)
-
----
-
-### Phase 19 — Repair Episode Recording (3 items) ✅ Complete (2026-08-10)
-Items 77–79. Every successful repair cycle serializes a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML. Episodes feed Phase 20 (Federated Case Library).
-
-| Items | Concern |
-|-------|---------|
-| 77 | repair_episodes migration + RepairEpisode dataclass |
-| 78 | Serialization hook at finish_repair in AgentLoop |
-| 79 | --mode export-episodes CLI + episodes dashboard tab |
-
-→ [plan/repair-episodes.md](plan/repair-episodes.md)
+### Phase 19 — Repair Episode Recording ✅ Complete (2026-08-10)
+Items 77–79. → [plan/repair-episodes.md](plan/repair-episodes.md)
 
 ---
 
@@ -418,52 +221,14 @@ Items 83–86. The sandbox infrastructure (`read_source`, `propose_patch`, `sand
 
 ---
 
-### Phase 22 — HA RAG Strategy (7 items) ✅ Complete (2026-08-06)
-Items 87–93. Fixes structural gaps in the RAG knowledge layer that cause hallucinated breaking-change advisories and leave the chat agent without knowledge access in production. Prerequisite: Phase 17.5 complete.
+### Phase 22 — HA RAG Strategy ✅ Complete (2026-08-06)
+Items 87–93. → [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
 
-**Implementation order:** 92 (supervisor wiring, bug fix) → 87 (stub fix) → 88–89 (blog scraper + metadata) → 90–91 (environment profile) → 93 (enrichment).
+### Phase 23 — Disk Usage Tab ✅ Complete (2026-08-07)
+Items DU-1–DU-6. → [plan/disk-usage.md](plan/disk-usage.md)
 
-| Item | Concern |
-|------|---------|
-| 87 | Stub-body fix: beta fallback in `_fetch_github_release_notes`; neutral advisory when notes unavailable |
-| 88 | HA blog scraper: `fetch_blog_post`, `extract_blog_url_from_stub`, `fetch_blog_release_notes` |
-| 89 | Enriched chunk metadata + `where` clause support + `integration_filter` in `query_knowledge` |
-| 90 | `HAEnvironmentProfile` dataclass + build/save/load + `get_config_entries` WS + migration v14 |
-| 91 | Profile wired into supervisor; `get_ha_profile` chat tool; profile-aware `analyze_breaking_changes` |
-| 92 | `ChromaKnowledgeStore` wired into `supervisor_main()` — unblocks `query_knowledge` in production |
-| 93 | HACS version metadata; HA docs `is_installed` flag; `release_type` tags; remove empty `community_cases` |
-
-→ [plan/ha-rag-strategy.md](plan/ha-rag-strategy.md)
-
----
-
-### Phase 23 — Disk Usage Tab (6 items) ✅ Complete (2026-08-07)
-Items DU-1–DU-6. Adds a `/disk` dashboard tab giving operational visibility into per-path HA storage. Surfaces the four user-actionable storage groups (HA Config & Database, Backups, Addon Data, Shared Storage) with a disk gauge, per-item mini-bars, and a live-refresh button. `DiskUsagePoller` registers with the supervisor and appears in the Overview loop health table. No DB migration needed — entirely read-only SSH queries.
-
-| Items | Concern |
-|-------|---------|
-| DU-1 | `utils/disk_usage.py`: dataclasses, SSH helpers, `fetch_disk_breakdown()`, cache, `DiskUsagePoller` |
-| DU-2 | `DISK_USAGE_POLL_INTERVAL_SECONDS` config key |
-| DU-3 | `disk.html` template: disk gauge, 4 section cards, DB table breakdown |
-| DU-4 | Dashboard routes `GET /disk` + `POST /disk/refresh`; base.html nav link |
-| DU-5 | Supervisor registration of `disk_usage_poll` loop |
-| DU-6 | Tests: `test_utils.py`, `test_dashboard.py`, `test_config.py` |
-
-→ [plan/disk-usage.md](plan/disk-usage.md)
-
----
-
-### Phase 24 — Pueo Local Storage Management (6 items) ✅ Complete (2026-08-11)
-Items STOR-1–STOR-6. Closes three gaps in disk-recovery housekeeping: (1) HA log is now SFTP-pulled and gzip-compressed to `archives/ha_logs/` before being zeroed, giving forensic continuity at the moment of a disk-critical event; (2) an optional journal text dump is archived before vacuum runs; (3) Pueo tracks its own local storage footprint across all data directories and surfaces it in the Disk dashboard tab. A new `PUEO_ARCHIVE_MAX_GB` cap with automatic retention enforcement prevents the archive directory from growing unboundedly. The 30-min backup-sync loop now trims archives after each offload cycle.
-
-| Items | Concern |
-|-------|---------|
-| STOR-1 | `utils/archiver.py`: `ArchiveResult`, `archive_ha_log`, `archive_journal_dump`, `enforce_archive_retention` |
-| STOR-2 | 5 new config keys + triple-update; `archives/` added to `setup.sh --clean` |
-| STOR-3 | Archive wired into `disk_recovery.py` before truncate/vacuum |
-| STOR-4 | `utils/pueo_storage.py`: `PueoFootprint`, `measure_pueo_footprint`, soft-warn on `PUEO_LOCAL_MAX_GB` |
-| STOR-5 | "Pueo Local Storage" card in `disk.html`; footprint in `GET /disk`; archive trim in `_backup_reconcile_loop` |
-| STOR-6 | Tests: 14 in `test_archiver.py`, archiver integration in `test_disk_recovery.py`, 5 config keys in `test_config.py` |
+### Phase 24 — Pueo Local Storage Management ✅ Complete (2026-08-11)
+Items STOR-1–STOR-6. → [plan/resource-stewardship.md](plan/resource-stewardship.md)
 
 ---
 
