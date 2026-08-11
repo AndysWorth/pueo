@@ -107,6 +107,7 @@ class ResourcePoller:
         disk_warn_gb: float,
         disk_critical_gb: float,
         mem_warn_mb: float,
+        rest_client=None,  # Optional[HARestClientProtocol] — not typed to avoid circular import
     ) -> None:
         self._ssh = ssh_client
         self._notifier = notifier
@@ -114,6 +115,7 @@ class ResourcePoller:
         self._disk_warn_gb = disk_warn_gb
         self._disk_critical_gb = disk_critical_gb
         self._mem_warn_mb = mem_warn_mb
+        self._rest_client = rest_client
         self._alerted: set[str] = set()
 
     async def run(self) -> None:
@@ -172,22 +174,124 @@ class ResourcePoller:
                     disk_free_gb=status.disk_free_gb,
                     threshold_gb=self._disk_critical_gb,
                 )
-                from utils.card_types import CARD_TYPE_RESOURCE_ACTION
+
+                # Run auto-safe recovery steps before sending the HITL card so the card
+                # can report what was already freed and what still needs human action.
+                auto_summary = None
+                try:
+                    import config as _cfg
+                    from utils.disk_recovery import run_safe_disk_recovery
+
+                    if _cfg.DISK_RECOVERY_AUTO_ENABLED:
+                        auto_summary = await run_safe_disk_recovery(
+                            ssh_client=self._ssh,
+                            rest_client=self._rest_client,
+                            recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
+                            journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
+                        )
+                        # Also offload pending backups and enforce retention with force_critical
+                        try:
+                            import ha_agent_advanced as _adv
+                            from utils.resource import get_resource_status
+
+                            await _adv.offload_pending_backups(ssh_client=self._ssh)
+                            _rs = get_resource_status()
+                            await _adv.enforce_ha_retention(
+                                ssh_client=self._ssh,
+                                force_critical=_rs is not None and _rs.disk_critical,
+                            )
+                        except Exception:  # nosec B110
+                            pass
+                except Exception as _e:  # nosec B110
+                    log.warning("disk_recovery_auto_failed", error=str(_e))
+
+                from utils.card_types import CARD_TYPE_DISK_RECOVERY
+
+                auto_actions = []
+                if auto_summary:
+                    for act in auto_summary.actions:
+                        auto_actions.append(
+                            {
+                                "name": act.name,
+                                "success": act.success,
+                                "message": act.message,
+                                "bytes_freed": act.bytes_freed,
+                            }
+                        )
+
+                ranked_hitl_options = [
+                    {
+                        "name": "Repack recorder database",
+                        "description": (
+                            "Compact the HA recorder SQLite file (home-assistant_v2.db). "
+                            "Frees physical space previously occupied by deleted history rows. "
+                            "Requires extra free space (~2.5× DB size) and takes several minutes."
+                        ),
+                        "estimated_savings": "up to several GB",
+                        "risk": "LOW",
+                        "action_key": "repack_recorder",
+                    },
+                    {
+                        "name": "Aggressive recorder purge (7 days)",
+                        "description": (
+                            "Reduce history retention to 7 days instead of "
+                            f"{_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS} days."
+                        ),
+                        "estimated_savings": "hundreds of MB to several GB",
+                        "risk": "LOW",
+                        "action_key": "aggressive_purge_7d",
+                    },
+                    {
+                        "name": "Clear supervisor temp files",
+                        "description": (
+                            "Remove leftover temp files from failed HA backup attempts "
+                            "in /mnt/data/supervisor/tmp/. Can be very large (up to 60 GB) "
+                            "if backups repeatedly failed mid-write."
+                        ),
+                        "estimated_savings": "0 to 60 GB",
+                        "risk": "LOW",
+                        "action_key": "clean_tmp",
+                    },
+                    {
+                        "name": "Offload and delete old backups from HA",
+                        "description": (
+                            "Offload any remaining HA-only backups to Pueo, then delete "
+                            "confirmed-local backups from HA (keeping the newest one)."
+                        ),
+                        "estimated_savings": "backup size × count",
+                        "risk": "MEDIUM",
+                        "action_key": "offload_backups",
+                    },
+                ]
+
+                body_lines = [
+                    f"Disk free: {status.disk_free_gb:.1f} GB — below critical threshold "
+                    f"{self._disk_critical_gb} GB. Backup creation is blocked.",
+                ]
+                if auto_summary and auto_summary.succeeded:
+                    freed_mb = auto_summary.total_freed_mb
+                    body_lines.append(
+                        f"\nAuto-recovery ran {len(auto_summary.succeeded)} safe step(s)"
+                        + (f", freeing ~{freed_mb:.0f} MB." if freed_mb > 0 else ".")
+                    )
+                    for act in auto_summary.succeeded:
+                        body_lines.append(f"  ✓ {act.message}")
+                if auto_summary and auto_summary.failed:
+                    for act in auto_summary.failed:
+                        body_lines.append(f"  ✗ {act.name}: {act.message}")
 
                 await self._notifier.send(
                     subject="Pueo CRITICAL: HA disk almost full",
-                    body=(
-                        f"Disk free: {status.disk_free_gb:.1f} GB — below critical threshold "
-                        f"{self._disk_critical_gb} GB. Backup creation is blocked."
-                    ),
+                    body="\n".join(body_lines),
                     payload={
-                        "card_type": CARD_TYPE_RESOURCE_ACTION,
+                        "card_type": CARD_TYPE_DISK_RECOVERY,
                         "type": "resource_alert",
-                        "action": "offload_backups",
                         "severity": "CRITICAL",
                         "disk_free_gb": status.disk_free_gb,
                         "disk_total_gb": status.disk_total_gb,
                         "mem_available_mb": round(status.mem_available_mb),
+                        "auto_actions_taken": auto_actions,
+                        "ranked_hitl_options": ranked_hitl_options,
                     },
                 )
                 try:

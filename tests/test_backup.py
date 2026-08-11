@@ -396,6 +396,108 @@ class TestResolveBackupRemotePathSlugValidation:
 
 
 # ---------------------------------------------------------------------------
+# enforce_ha_retention force_critical flag
+# ---------------------------------------------------------------------------
+
+
+class TestEnforceHaRetentionForceCritical:
+    """Tests for the force_critical parameter added to enforce_ha_retention."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path):
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE backup_registry "
+                "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
+                "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
+                "deleted_from_ha_at REAL)"
+            )
+        return db
+
+    def _insert_backup(self, db_path, slug, ts, location="both"):
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry"
+                " (timestamp, backup_slug, status, size_bytes, location)"
+                " VALUES (?, ?, 'ACTIVE', 0, ?)",
+                (ts, slug, location),
+            )
+
+    def test_force_critical_deletes_when_at_floor(self, db_path):
+        """force_critical=True lowers floor to 1; 2 offloaded backups → 1 deleted."""
+        self._insert_backup(db_path, "newer-slug", ts=2000, location="both")
+        self._insert_backup(db_path, "older-slug", ts=1000, location="both")
+
+        ssh_calls = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                ssh_calls.append(cmd)
+                return (0, "", "")
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
+        ):
+            deleted = asyncio.run(
+                __import__("ha_agent_advanced").enforce_ha_retention(
+                    ssh_client=_FakeSSH(), force_critical=True
+                )
+            )
+
+        assert deleted == 1
+        remove_calls = [c for c in ssh_calls if "ha backups remove" in c]
+        assert len(remove_calls) == 1
+
+    def test_force_critical_protects_newest_slug(self, db_path):
+        """force_critical=True always keeps the newest slug even when only 1 on HA."""
+        self._insert_backup(db_path, "only-slug", ts=1000, location="both")
+
+        ssh_calls = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                ssh_calls.append(cmd)
+                return (0, "", "")
+
+        with patch("ha_agent_advanced.DB_PATH", db_path):
+            deleted = asyncio.run(
+                __import__("ha_agent_advanced").enforce_ha_retention(
+                    ssh_client=_FakeSSH(), force_critical=True
+                )
+            )
+
+        assert deleted == 0  # 1 backup, floor=1 → nothing to delete
+        assert not any("ha backups remove" in c for c in ssh_calls)
+
+    def test_no_force_critical_bails_at_normal_floor(self, db_path):
+        """Without force_critical, enforce_ha_retention bails when count == BACKUP_RETAIN_ON_HA."""
+        self._insert_backup(db_path, "slug-a", ts=1000, location="both")
+        self._insert_backup(db_path, "slug-b", ts=2000, location="both")
+
+        ssh_calls = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                ssh_calls.append(cmd)
+                return (0, "", "")
+
+        with (
+            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
+        ):
+            deleted = asyncio.run(
+                __import__("ha_agent_advanced").enforce_ha_retention(
+                    ssh_client=_FakeSSH(), force_critical=False
+                )
+            )
+
+        assert deleted == 0
+        assert not any("ha backups remove" in c for c in ssh_calls)
+
+
+# ---------------------------------------------------------------------------
 # Supervisor backup_sync loop registration
 # ---------------------------------------------------------------------------
 

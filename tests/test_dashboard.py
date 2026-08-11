@@ -2728,7 +2728,7 @@ class TestExecuteResourceAction:
             offloaded.append(slug)
             return True
 
-        async def _fake_retention(ssh_client=None):
+        async def _fake_retention(ssh_client=None, force_critical=False):
             retention_called.append(True)
 
         def _fake_purge():
@@ -2764,7 +2764,7 @@ class TestExecuteResourceAction:
         retention_called = []
         purge_called = []
 
-        async def _fake_retention(ssh_client=None):
+        async def _fake_retention(ssh_client=None, force_critical=False):
             retention_called.append(True)
 
         def _fake_purge():
@@ -2903,6 +2903,143 @@ class TestExecuteResourceAction:
         asyncio.run(dashboard._execute_resource_action(nid, data, json_path, tmp_path))
 
         assert not (tmp_path / f"{nid}.in_progress").exists()
+
+
+# ── _execute_disk_recovery (CARD_TYPE_DISK_RECOVERY) ─────────────────────────
+
+
+class TestExecuteDiskRecovery:
+    """Tests for the _execute_disk_recovery() HITL handler."""
+
+    def _write_disk_recovery_card(self, watch_dir, nid: str, action_keys: list[str]):
+        import json as _json
+        import time as _time
+
+        hitl_opts = [{"action_key": k} for k in action_keys]
+        data = {
+            "notification_id": nid,
+            "subject": "Pueo CRITICAL: HA disk space recovery required",
+            "body": "Auto-safe steps taken. HITL options below.",
+            "payload": {
+                "card_type": "disk_recovery",
+                "ranked_hitl_options": hitl_opts,
+            },
+            "sent_at": int(_time.time()) - 10,
+        }
+        json_path = watch_dir / f"{nid}.json"
+        json_path.write_text(_json.dumps(data))
+        return json_path
+
+    def test_repack_recorder_calls_purge_recorder(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.disk_recovery as dr
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "tok")
+
+        purge_calls = []
+
+        async def _fake_purge(rest, keep_days, repack):
+            purge_calls.append({"keep_days": keep_days, "repack": repack})
+            from utils.disk_recovery import RecoveryAction
+
+            return RecoveryAction("purge_recorder", 0, "ok", True)
+
+        monkeypatch.setattr(dr, "purge_recorder", _fake_purge)
+
+        class _FakeRest:
+            pass
+
+        monkeypatch.setattr(
+            dashboard,
+            "HARestClient",
+            lambda *a, **kw: _FakeRest(),
+            raising=False,
+        )
+
+        nid = "dr-repack-1"
+        json_path = self._write_disk_recovery_card(tmp_path, nid, ["repack_recorder"])
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_disk_recovery(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert len(purge_calls) == 1
+        assert purge_calls[0]["repack"] is True
+
+    def test_clean_tmp_calls_audit_and_rm(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.disk_recovery as dr
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "")
+
+        rm_calls = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                rm_calls.append(cmd)
+                return (0, "", "")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: _FakeSSH())
+
+        from utils.disk_recovery import TmpAuditItem
+
+        async def _fake_audit(ssh):
+            return [TmpAuditItem("/mnt/data/supervisor/tmp/foo", "500M", 500 * 1024**2)]
+
+        monkeypatch.setattr(dr, "audit_supervisor_tmp", _fake_audit)
+
+        nid = "dr-tmp-1"
+        json_path = self._write_disk_recovery_card(tmp_path, nid, ["clean_tmp"])
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_disk_recovery(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert any("rm -rf" in c for c in rm_calls)
+
+    def test_unknown_action_keys_succeed_silently(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "")
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        nid = "dr-noop-1"
+        json_path = self._write_disk_recovery_card(tmp_path, nid, [])
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_disk_recovery(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+
+    def test_exception_writes_rejected(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "tok")
+        monkeypatch.setattr(
+            ssh_mod,
+            "AsyncSSHClient",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        nid = "dr-err-1"
+        json_path = self._write_disk_recovery_card(tmp_path, nid, ["repack_recorder"])
+        data = _json.loads(json_path.read_text())
+        asyncio.run(dashboard._execute_disk_recovery(nid, data, json_path, tmp_path))
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
 
 
 # ── Overview tab + SSE /events (item 59) ─────────────────────────────────────

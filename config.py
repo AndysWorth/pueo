@@ -69,6 +69,13 @@ BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", "./backups/")
 BACKUP_RETAIN_ON_HA: int = int(_agent.get("backup_retain_on_ha", 2))
 BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
 
+# Disk recovery — safe auto-steps on disk critical
+DISK_RECOVERY_AUTO_ENABLED: bool = bool(_agent.get("disk_recovery_auto_enabled", True))
+DISK_RECOVERY_RECORDER_KEEP_DAYS: int = int(
+    _agent.get("disk_recovery_recorder_keep_days", 30)
+)
+DISK_RECOVERY_JOURNAL_MAX_MB: int = int(_agent.get("disk_recovery_journal_max_mb", 200))
+
 # HA Update Manager
 HA_UPDATE_CHECK_INTERVAL_HOURS: float = float(
     _agent.get("update_check_interval_hours", 0.0)

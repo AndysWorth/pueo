@@ -78,6 +78,7 @@ class TestEvalScenario:
                 "ha_config",
                 "ha_log",
                 "netalertx",
+                "investigation",
             ), f"{p.name}: unknown trigger {s.trigger!r}"
             assert s.expected_outcome in (
                 "success",

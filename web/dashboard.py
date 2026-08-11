@@ -24,6 +24,7 @@ from utils.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
+    CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_REPAIR,
@@ -714,6 +715,7 @@ async def _execute_resource_action(
         offload_backup_to_local,
         purge_local_backups,
     )
+    from utils.resource import get_resource_status
     from utils.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
@@ -721,6 +723,8 @@ async def _execute_resource_action(
         payload = data.get("payload", {})
         action = payload.get("action", "")
         ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+        _rs = get_resource_status()
+        _force_critical = _rs is not None and _rs.disk_critical
 
         if action == "offload_backups":
             with _sqlite3.connect(DB_PATH) as conn:
@@ -745,10 +749,10 @@ async def _execute_resource_action(
                     )
                 except Exception:  # nosec B110
                     pass
-            await enforce_ha_retention(ssh_client=ssh)
+            await enforce_ha_retention(ssh_client=ssh, force_critical=_force_critical)
             purge_local_backups()
         elif action == "enforce_retention":
-            await enforce_ha_retention(ssh_client=ssh)
+            await enforce_ha_retention(ssh_client=ssh, force_critical=_force_critical)
             purge_local_backups()
         else:
             raise ValueError(f"Unknown resource action: {action!r}")
@@ -782,6 +786,108 @@ async def _execute_resource_action(
             )
         except Exception:  # nosec B110  # pragma: no cover
             pass
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
+async def _execute_disk_recovery(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Run all HITL disk recovery options from a disk_recovery card."""
+    import config as _config
+    from ha_agent_advanced import (
+        enforce_ha_retention,
+        offload_backup_to_local,
+        purge_local_backups,
+    )
+    from utils.disk_recovery import (
+        audit_supervisor_tmp,
+        purge_recorder,
+        run_safe_disk_recovery,
+    )
+    from utils.resource import get_resource_status
+    from utils.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    actions_run: list[str] = []
+    try:
+        ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+        rest_client = None
+        if _config.HA_API_TOKEN:
+            from utils.ha_rest_client import HARestClient
+
+            rest_client = HARestClient(
+                _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+            )
+
+        payload = data.get("payload", {})
+        hitl_opts = payload.get("ranked_hitl_options", [])
+        action_keys = {opt["action_key"] for opt in hitl_opts}
+
+        if "repack_recorder" in action_keys and rest_client is not None:
+            act = await purge_recorder(
+                rest_client,
+                keep_days=_config.DISK_RECOVERY_RECORDER_KEEP_DAYS,
+                repack=True,
+            )
+            actions_run.append(f"repack_recorder: {act.message}")
+
+        if "aggressive_purge_7d" in action_keys and rest_client is not None:
+            act = await purge_recorder(rest_client, keep_days=7, repack=False)
+            actions_run.append(f"aggressive_purge_7d: {act.message}")
+
+        if "clean_tmp" in action_keys:
+            items = await audit_supervisor_tmp(ssh)
+            if items:
+                await ssh.run("rm -rf /mnt/data/supervisor/tmp/*", check=False)
+                total_bytes = sum(i.size_bytes_approx for i in items)
+                actions_run.append(
+                    f"clean_tmp: removed {len(items)} item(s) (~{total_bytes // (1024*1024)} MB)"
+                )
+            else:
+                actions_run.append("clean_tmp: directory empty")
+
+        if "offload_backups" in action_keys:
+            import sqlite3 as _sqlite3
+
+            with _sqlite3.connect(DB_PATH) as conn:
+                rows = conn.execute(
+                    "SELECT backup_slug FROM backup_registry"
+                    " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
+                ).fetchall()
+            for (slug,) in rows:
+                await offload_backup_to_local(slug, ssh_client=ssh)
+            _rs = get_resource_status()
+            purged = await enforce_ha_retention(
+                ssh_client=ssh,
+                force_critical=_rs is not None and _rs.disk_critical,
+            )
+            purge_local_backups()
+            actions_run.append(
+                f"offload_backups: offloaded {len(rows)} backup(s), deleted {purged} from HA"
+            )
+
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.timeline import write_timeline_event
+
+            write_timeline_event(
+                "INFO",
+                "disk_recovery",
+                f"Disk recovery executed: {len(actions_run)} action(s)",
+                {"actions": actions_run},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
@@ -945,6 +1051,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_HA_REPAIR: _execute_queued_ha_repair,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
+    CARD_TYPE_DISK_RECOVERY: _execute_disk_recovery,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
     CARD_TYPE_CLOUD_ESCALATION: _execute_cloud_escalation,
 }

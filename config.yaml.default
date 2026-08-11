@@ -86,6 +86,9 @@ agent:
   backup_local_dir: "./backups/"     # Local directory for offloaded backup files
   backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
   backup_retain_local_days: 30       # Purge local .tar copies older than this many days
+  disk_recovery_auto_enabled: true   # Run safe recovery steps automatically when disk is critical
+  disk_recovery_recorder_keep_days: 30  # Days of history to keep when auto-purging the recorder DB
+  disk_recovery_journal_max_mb: 200  # Target size (MB) for systemd journal after auto-vacuum
   update_check_interval_hours: 6      # How often to poll for HA updates (0 = off; requires api_token)
   # update_notify_on_available: true  # Send HITL notification when any update entity flips to on
   # update_release_notes_cache_dir: ".cache/ha_release_notes/"  # Local cache for fetched HA release notes

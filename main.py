@@ -324,7 +324,16 @@ async def supervisor_main(config_path: Path) -> None:
         "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)
     )
 
-    # Resource polling loop — create a fresh poller on each supervisor restart
+    # Resource polling loop — create a fresh poller on each supervisor restart.
+    # Pass rest_client so the poller can call recorder.purge during disk-critical auto-recovery.
+    _rest_client_for_poller = None
+    if cfg.HA_API_TOKEN:
+        from utils.ha_rest_client import HARestClient
+
+        _rest_client_for_poller = HARestClient(
+            cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN
+        )
+
     supervisor.start(
         "resource_poll",
         lambda: ResourcePoller(
@@ -334,6 +343,7 @@ async def supervisor_main(config_path: Path) -> None:
             disk_warn_gb=cfg.HA_DISK_WARN_GB,
             disk_critical_gb=cfg.HA_DISK_CRITICAL_GB,
             mem_warn_mb=cfg.HA_MEM_WARN_MB,
+            rest_client=_rest_client_for_poller,
         ).run(),
     )
 
