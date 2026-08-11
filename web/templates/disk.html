@@ -213,6 +213,57 @@
 </div>
 {% endif %}
 
+<!-- Pueo Local Storage -->
+{% if pueo_footprint %}
+{% set pueo_total_gb = pueo_footprint.total_bytes / 1073741824 %}
+{% set pueo_pct = [(pueo_total_gb / pueo_local_max_gb * 100)|round(1), 100]|min %}
+{% set pueo_color = "#dc3545" if pueo_pct > 80 else ("#fd7e14" if pueo_pct > 50 else "#6366f1") %}
+<div class="card" style="margin-bottom:1rem;">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.5rem;">
+    <span class="disk-section-label">Pueo Local Storage</span>
+    <span style="font-size:0.82rem;color:#555;font-weight:600;">
+      {% if pueo_total_gb >= 1.0 %}{{ "%.2f"|format(pueo_total_gb) }} GB{% else %}{{ "%.0f"|format(pueo_footprint.total_bytes / 1048576) }} MB{% endif %}
+      of {{ "%.1f"|format(pueo_local_max_gb) }} GB budget
+      {% if pueo_pct > 80 %}<span style="color:#dc3545;margin-left:0.4rem;">&#x26A0; HIGH</span>
+      {% elif pueo_pct > 50 %}<span style="color:#fd7e14;margin-left:0.4rem;">&#x26A0; GROWING</span>{% endif %}
+    </span>
+  </div>
+  <div class="gauge-bar-bg" style="height:8px;border-radius:4px;background:#e9ecef;margin-bottom:0.75rem;">
+    <div style="height:8px;border-radius:4px;width:{{ pueo_pct }}%;background:{{ pueo_color }};"></div>
+  </div>
+  {% set pueo_categories = [
+    ("Backups (offloaded .tar)", pueo_footprint.backups_bytes),
+    ("Archives (HA logs, journal)", pueo_footprint.archives_bytes),
+    ("ChromaDB (knowledge store)", pueo_footprint.chromadb_bytes),
+    ("RAG caches (release notes, HACS, docs)", pueo_footprint.cache_bytes),
+    ("Database (ha_agent_state.db)", pueo_footprint.db_bytes),
+    ("Log (pueo.log)", pueo_footprint.log_bytes),
+    ("HITL cards", pueo_footprint.hitl_bytes),
+  ] %}
+  {% set pueo_max_cat = pueo_categories|map(attribute=1)|max %}
+  {% for cat_name, cat_bytes in pueo_categories %}
+  <div class="disk-item-row">
+    <span class="disk-item-name">{{ cat_name }}</span>
+    <span class="disk-item-size">
+      {% if cat_bytes >= 1073741824 %}{{ "%.2f"|format(cat_bytes / 1073741824) }} GB
+      {% elif cat_bytes >= 1048576 %}{{ "%.1f"|format(cat_bytes / 1048576) }} MB
+      {% elif cat_bytes >= 1024 %}{{ "%.0f"|format(cat_bytes / 1024) }} KB
+      {% else %}{{ cat_bytes }} B{% endif %}
+    </span>
+    <div class="disk-mini-bar-bg">
+      <div class="disk-mini-bar"
+        style="width:{{ (((cat_bytes / pueo_max_cat) * 100) if pueo_max_cat > 0 else 0)|round(1) }}%;background:{{ pueo_color }};"></div>
+    </div>
+  </div>
+  {% endfor %}
+  <p style="font-size:0.75rem;color:#bbb;margin-top:0.5rem;">
+    All data is stored on this Mac. Archives and backups have automatic retention policies.
+    The {{ "%.1f"|format(pueo_local_max_gb) }} GB budget is a soft warning threshold — Pueo will log
+    a warning if exceeded but will not automatically delete other categories.
+  </p>
+</div>
+{% endif %}
+
 <script>
 async function refreshDisk() {
   var btn = document.getElementById('refresh-btn');

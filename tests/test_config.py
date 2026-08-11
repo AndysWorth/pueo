@@ -983,6 +983,36 @@ class TestHAUpdateManagerConfig:
 
         assert config.DISK_RECOVERY_JOURNAL_MAX_MB == 500
 
+    def test_pueo_archive_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_ARCHIVE_DIR == "./archives/"
+
+    def test_archive_ha_log_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ARCHIVE_HA_LOG_ENABLED is True
+
+    def test_archive_journal_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ARCHIVE_JOURNAL_ENABLED is False
+
+    def test_pueo_archive_max_gb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_ARCHIVE_MAX_GB == 2.0
+
+    def test_pueo_local_max_gb_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_LOCAL_MAX_GB == 20.0
+
 
 class TestLLMProviderBillingConfig:
     def test_cloud_max_cost_per_incident_default(self, isolated_config):

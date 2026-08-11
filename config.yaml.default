@@ -89,6 +89,11 @@ agent:
   disk_recovery_auto_enabled: true   # Run safe recovery steps automatically when disk is critical
   disk_recovery_recorder_keep_days: 30  # Days of history to keep when auto-purging the recorder DB
   disk_recovery_journal_max_mb: 200  # Target size (MB) for systemd journal after auto-vacuum
+  pueo_archive_dir: "./archives/"      # Root directory for Pueo-archived HA data (logs, journal dumps)
+  archive_ha_log_enabled: true         # Copy HA log to Pueo before truncating on disk-critical
+  archive_journal_enabled: false       # Dump systemd journal to Pueo before vacuuming (off by default: noisy)
+  pueo_archive_max_gb: 2.0             # Max local storage for archived HA logs and journal dumps (GB)
+  pueo_local_max_gb: 20.0              # Soft-warn threshold for Pueo's total local storage footprint (GB)
   update_check_interval_hours: 6      # How often to poll for HA updates (0 = off; requires api_token)
   # update_notify_on_available: true  # Send HITL notification when any update entity flips to on
   # update_release_notes_cache_dir: ".cache/ha_release_notes/"  # Local cache for fetched HA release notes
