@@ -265,6 +265,9 @@ class TestChatToolRegistry:
     def test_contains_add_tool(self):
         assert "add_tool" in self._registry
 
+    def test_contains_open_pr(self):
+        assert "open_pr" in self._registry
+
     def test_contains_get_disk_usage(self):
         assert "get_disk_usage" in self._registry
 
@@ -918,3 +921,155 @@ class TestAgentLoopInitialMessages:
         )
         result = asyncio.run(loop.run("Hello", initial_messages=None))
         assert result.outcome == "success"
+
+
+# ---------------------------------------------------------------------------
+# TestOpenPrTool
+# ---------------------------------------------------------------------------
+
+
+class TestOpenPrTool:
+    """open_pr queues a HITL card; requires sandbox_code to have passed first."""
+
+    @pytest.fixture
+    def prepped_executor(self, db_path, monkeypatch, tmp_path):
+        import utils.tool_executor as te_mod
+
+        monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
+        (tmp_path / "utils").mkdir()
+        (tmp_path / "utils" / "helper.py").write_text("x = 1\n")
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        # Stage a patch and mark sandbox as passed
+        ex._pending_patch = {"utils/helper.py": "x = 2\n"}
+        ex._sandbox_passed = True
+        ex._sandbox_output = "All checks passed"
+        return ex
+
+    def test_no_pending_patch_returns_error(self, db_path):
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        result = asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={"title": "fix: do something", "reason": "because X"},
+                )
+            )
+        )
+        assert not result.success
+        assert "propose_patch" in (result.error or "")
+
+    def test_sandbox_not_passed_returns_error(self, prepped_executor):
+        prepped_executor._sandbox_passed = False
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={"title": "fix: do something", "reason": "because X"},
+                )
+            )
+        )
+        assert not result.success
+        assert "sandbox_code" in (result.error or "")
+
+    def test_missing_title_returns_error(self, prepped_executor):
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={"title": "", "reason": "because X"},
+                )
+            )
+        )
+        assert not result.success
+        assert "title" in (result.error or "")
+
+    def test_valid_flow_queues_hitl_card(self, prepped_executor):
+        result = asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={
+                        "title": "feat: improve helper",
+                        "reason": "Needed for better performance",
+                    },
+                )
+            )
+        )
+        assert result.awaiting_approval is True
+
+    def test_notifier_receives_open_pr_card(self, prepped_executor):
+        asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={
+                        "title": "feat: improve helper",
+                        "reason": "Needed for better performance",
+                    },
+                )
+            )
+        )
+        notifier = prepped_executor._notifier
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == "open_pr"
+        assert payload["pr_title"] == "feat: improve helper"
+        assert "utils/helper.py" in payload["patch_files"]
+        assert "ADR 007" in payload["pr_body"]
+
+    def test_branch_name_auto_derived(self, prepped_executor):
+        asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={
+                        "title": "feat: add new utility",
+                        "reason": "because X",
+                    },
+                )
+            )
+        )
+        payload = prepped_executor._notifier.sent[0]["payload"]
+        assert payload["branch_name"].startswith("feat/")
+
+    def test_explicit_branch_name_used(self, prepped_executor):
+        asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={
+                        "title": "feat: add new utility",
+                        "reason": "because X",
+                        "branch_name": "feat/custom-branch",
+                    },
+                )
+            )
+        )
+        payload = prepped_executor._notifier.sent[0]["payload"]
+        assert payload["branch_name"] == "feat/custom-branch"
+
+    def test_sandbox_output_included_in_payload(self, prepped_executor):
+        asyncio.run(
+            prepped_executor.execute(
+                ToolCall(
+                    name="open_pr",
+                    arguments={
+                        "title": "fix: something",
+                        "reason": "because X",
+                    },
+                )
+            )
+        )
+        payload = prepped_executor._notifier.sent[0]["payload"]
+        assert "All checks passed" in payload["sandbox_output"]

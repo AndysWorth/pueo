@@ -470,6 +470,36 @@ ADD_TOOL = ToolDefinition(
     },
 )
 
+OPEN_PR = ToolDefinition(
+    name="open_pr",
+    description=(
+        "Open a GitHub pull request for the pending patch after sandbox CI has passed. "
+        "Requires sandbox_code to have passed first. "
+        "Queues a HITL approval card; the PR is opened after the user approves."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "PR title (one short sentence)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this change is needed (the 'why', not the 'what')",
+            },
+            "branch_name": {
+                "type": "string",
+                "description": (
+                    "Git branch name to create (e.g. feat/add-foo-tool). "
+                    "Auto-derived from title if omitted."
+                ),
+            },
+        },
+        "required": ["title", "reason"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
@@ -558,6 +588,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         PROPOSE_PATCH,
         SANDBOX_CODE,
         ADD_TOOL,
+        OPEN_PR,
         SWITCH_MODEL,
         FINISH_CHAT,
     ):

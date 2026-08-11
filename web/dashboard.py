@@ -33,6 +33,7 @@ from utils.card_types import (
     CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
+    CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
     CARD_TYPE_UPDATE,
@@ -1049,6 +1050,120 @@ async def _execute_cloud_escalation(
         (watch_dir / f"{nid}.rejected").touch()
 
 
+async def _execute_open_pr(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Apply the pending patch to the live tree, commit, push, and open a GitHub PR."""
+    import subprocess  # nosec B404 — commands are allowlisted git/gh calls
+
+    from utils.supervisor import publish_event
+
+    payload = data.get("payload", {})
+    pr_title = payload.get("pr_title", "")
+    pr_body = payload.get("pr_body", "")
+    branch_name = payload.get("branch_name", "")
+    patch_files: dict[str, str] = payload.get("patch_files", {})
+
+    if not pr_title or not patch_files:
+        data["error"] = "Missing pr_title or patch_files in payload"
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+        return
+
+    repo_root = Path(__file__).parent.parent
+    try:
+        # Ensure we're on main before branching
+        subprocess.run(  # nosec B603 B607 — fixed git args, no user input in cmd
+            ["git", "-C", str(repo_root), "checkout", "main"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # nosec B603 B607 — fixed git args, no user input in cmd
+            ["git", "-C", str(repo_root), "pull"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(  # nosec B603 B607 — branch_name is agent-generated, not raw user input
+            ["git", "-C", str(repo_root), "checkout", "-b", branch_name],
+            check=True,
+            capture_output=True,
+        )
+
+        # Apply patch files
+        for rel_path, content in patch_files.items():
+            target = repo_root / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+
+        # Stage and commit
+        for rel_path in patch_files:
+            subprocess.run(  # nosec B603 B607 — rel_path is a repo-relative path from agent
+                ["git", "-C", str(repo_root), "add", rel_path],
+                check=True,
+                capture_output=True,
+            )
+        subprocess.run(  # nosec B603 B607 — pr_title is agent-generated commit message
+            ["git", "-C", str(repo_root), "commit", "-m", pr_title],
+            check=True,
+            capture_output=True,
+        )
+
+        # Push
+        subprocess.run(  # nosec B603 B607 — branch_name is agent-generated
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "push",
+                "-u",
+                "origin",
+                branch_name,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        # Open PR
+        result = subprocess.run(  # nosec B603 B607 — gh with fixed subcommand; title/body are agent-generated strings, not shell input
+            [
+                "gh",
+                "pr",
+                "create",
+                "--title",
+                pr_title,
+                "--body",
+                pr_body,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "gh pr create failed")
+
+        pr_url = result.stdout.strip()
+        data["pr_url"] = pr_url
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        publish_event({"event_type": "pr_opened", "pr_url": pr_url, "title": pr_title})
+        log.info("open_pr_executed", pr_url=pr_url, branch=branch_name)
+
+    except Exception as exc:
+        # Best-effort cleanup: switch back to main so the repo is usable
+        subprocess.run(  # nosec B603 B607 — fixed args, no user input
+            ["git", "-C", str(repo_root), "checkout", "main"],
+            capture_output=True,
+        )
+        data["error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -1060,6 +1175,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_DISK_RECOVERY: _execute_disk_recovery,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
     CARD_TYPE_CLOUD_ESCALATION: _execute_cloud_escalation,
+    CARD_TYPE_OPEN_PR: _execute_open_pr,
 }
 
 
