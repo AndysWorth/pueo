@@ -36,8 +36,12 @@ from config import (
     NETALERTX_MQTT_PASSWORD,
     NETALERTX_MQTT_USER,
 )
+from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.autonomy import RiskLevel
 from utils.logging import get_logger, set_correlation_id
+
+# Backward-compatible alias — existing tests import check_disk_space from here.
+check_disk_space = check_target_disk_space
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
@@ -109,50 +113,6 @@ def _write_install_state(db_path: str, state: str, details: dict, cid: str) -> N
             )
         conn.commit()
     log.info("install_state_updated", state=state, correlation_id=cid)
-
-
-# ── disk check ────────────────────────────────────────────────────────────────
-
-
-class DiskSpaceTooLowError(Exception):
-    """Raised when the target host has insufficient disk space."""
-
-    def __init__(self, available_gb: float, min_gb: float, path: str = "") -> None:
-        self.available_gb = available_gb
-        self.min_gb = min_gb
-        self.path = path
-        super().__init__(
-            f"Insufficient disk space at {path!r}: "
-            f"{available_gb:.1f} GB available, {min_gb:.1f} GB required"
-        )
-
-
-async def check_disk_space(
-    ssh_client: "SSHClientProtocol",
-    path: str,
-    min_gb: float,
-) -> float:
-    """Check available disk space on the SSH host at *path*.
-
-    Returns available GB. Raises DiskSpaceTooLowError if below min_gb.
-    """
-    ec, stdout, _ = await ssh_client.run(f"df -BG {path} 2>/dev/null || df -BG /")
-    if ec != 0 or not stdout.strip():
-        raise RuntimeError(f"df command failed on {path!r}")
-    for line in stdout.splitlines():
-        if line.startswith("Filesystem"):
-            continue
-        parts = line.split()
-        if len(parts) >= 4:
-            avail_str = parts[3].rstrip("G")
-            try:
-                available_gb = float(avail_str)
-                if available_gb < min_gb:
-                    raise DiskSpaceTooLowError(available_gb, min_gb, path)
-                return available_gb
-            except ValueError:
-                continue
-    raise RuntimeError(f"Could not parse df output for {path!r}")
 
 
 # ── app.conf helpers (shared logic with installer.py) ─────────────────────────

@@ -367,6 +367,49 @@ if $WRITE_CONFIG; then
     read -rp "  Set up NetAlertX automatically when Pueo runs? [Y/n]: " nax_setup_ans
     NAX_SETUP_DESIRED=false
     [[ "${nax_setup_ans:-Y}" =~ ^[Yy] ]] && NAX_SETUP_DESIRED=true
+
+    # Deploy target: HA add-on (default) or separate Docker machine
+    NAX_DEPLOY_TARGET="ha"
+    NAX_DOCKER_HOST=""
+    NAX_DOCKER_SSH_USER=""
+    NAX_DOCKER_SSH_KEY_PATH=""
+    if $NAX_SETUP_DESIRED; then
+        echo
+        echo "  ── NetAlertX deploy target ─────────────────────────────────────"
+        echo "  NetAlertX can be installed as a Home Assistant add-on (default)"
+        echo "  or on a separate machine running Docker (recommended if HA disk"
+        echo "  space is limited — the add-on database grows with your network)."
+        echo
+        read -rp "  Install on separate Docker machine instead of HA? [y/N]: " nax_docker_ans
+        if [[ "${nax_docker_ans:-N}" =~ ^[Yy] ]]; then
+            NAX_DEPLOY_TARGET="docker"
+            echo
+            ask "Docker host IP or hostname" "" NAX_DOCKER_HOST
+            ask "SSH user on Docker host" "$(whoami)" NAX_DOCKER_SSH_USER
+            ask "SSH key path for Docker host (blank = same as HA key)" "" NAX_DOCKER_SSH_KEY_PATH
+            if [[ -n "$NAX_DOCKER_HOST" ]]; then
+                # Verify SSH access and check disk space
+                _DOCKER_SSH="ssh -i ${NAX_DOCKER_SSH_KEY_PATH:-$HA_SSH_KEY} \
+                    -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                    ${NAX_DOCKER_SSH_USER:-$(whoami)}@${NAX_DOCKER_HOST}"
+                if $_DOCKER_SSH "echo ok" &>/dev/null 2>&1; then
+                    ok "SSH to Docker host (${NAX_DOCKER_HOST}) succeeded"
+                    docker_avail_gb=$($_DOCKER_SSH "df -BG /opt 2>/dev/null || df -BG /" 2>/dev/null \
+                        | awk 'NR==2{gsub(/G/,"",$4); print $4}')
+                    if [[ -n "$docker_avail_gb" && "$docker_avail_gb" -ge 5 ]]; then
+                        ok "Docker host disk: ${docker_avail_gb} GB free (≥ 5 GB required)"
+                    elif [[ -n "$docker_avail_gb" ]]; then
+                        warn "Docker host disk: only ${docker_avail_gb} GB free (5 GB recommended)"
+                        warn "NetAlertX install may fail. Free space before running."
+                    fi
+                else
+                    warn "SSH to Docker host (${NAX_DOCKER_HOST}) failed — check credentials."
+                    warn "You can edit config.yaml later and run: python main.py --mode netalertx-docker-setup"
+                fi
+            fi
+        fi
+    fi
+
     echo
     echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
     echo "  installed. If this is your first run, press Enter to skip."
@@ -436,8 +479,14 @@ cloud:
 netalertx:
   setup_desired: ${NAX_SETUP_DESIRED}
   api_token: "${NAX_API_TOKEN}"
+  deploy_target: "${NAX_DEPLOY_TARGET}"
+  docker_host: "${NAX_DOCKER_HOST}"
+  docker_ssh_user: "${NAX_DOCKER_SSH_USER}"
+  docker_ssh_key_path: "${NAX_DOCKER_SSH_KEY_PATH}"
+  docker_config_path: "/opt/netalertx/config"
+  docker_image: "ghcr.io/jokob-sk/netalertx:latest"
+  docker_min_disk_gb: 5.0
   # Advanced tuning — edit config.yaml directly to override these defaults:
-  # deployment: auto          # auto | addon | docker
   # host: <same as home_assistant.host>
   # api_port: 20212
   # ssh_host: <same as home_assistant.host>

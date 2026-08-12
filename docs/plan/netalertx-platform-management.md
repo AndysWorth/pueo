@@ -67,9 +67,9 @@ docker run -d --name netalertx --restart=unless-stopped \
 
 ---
 
-## Session C — Disk Space Checks + setup.sh Improvements
+## Session C — Disk Space Checks + setup.sh Improvements ✅ Complete (2026-08-12) — PR #214 (https://github.com/AndysWorth/pueo/pull/214)
 
-**Issue:** TBD  **Branch:** `feat/<N>-netalertx-setup-improvements`
+**Issue:** #213  **Branch:** `feat/213-netalertx-session-c`
 
 | Item | Concern |
 | ---- | ------- |

@@ -33,6 +33,7 @@ from utils.card_types import (
     CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
+    CARD_TYPE_NETALERTX_MIGRATE,
     CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
@@ -1164,6 +1165,57 @@ async def _execute_open_pr(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_netalertx_migrate(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Handle an approved NetAlertX migration card.
+
+    Starts the uninstall supervised task (which will issue its own HITL card for
+    final confirmation before removing the add-on). If docker_host is configured,
+    also queues the docker installer to run after uninstall completes.
+    """
+    import config as _cfg
+    from utils.supervisor import get_supervisor_instance
+
+    try:
+        sv = get_supervisor_instance()
+        if sv is not None:
+            import netalertx.uninstaller as _uninstaller
+            from utils.autonomy import AutonomyGate
+            from utils.notify import get_notifier
+
+            _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
+            _notifier = get_notifier(
+                _cfg.NOTIFIER, _cfg.NOTIFY_URL, _cfg.NOTIFY_WATCH_DIR
+            )
+            sv.start(
+                "netalertx_uninstall_migrate",
+                lambda: _uninstaller.main(gate=_gate, notifier=_notifier),
+            )
+            log.info("netalertx_migrate_uninstall_started", card_id=nid)
+
+            if _cfg.NETALERTX_DOCKER_HOST:
+                import netalertx.docker_installer as _docker_installer
+
+                sv.start(
+                    "netalertx_docker_setup_migrate",
+                    lambda: _docker_installer.main(gate=_gate, notifier=_notifier),
+                )
+                log.info("netalertx_migrate_docker_setup_queued", card_id=nid)
+
+        (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        log.error("netalertx_migrate_failed", error=str(exc), card_id=nid)
+        data["error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -1171,6 +1223,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_UPDATE: _execute_queued_update,
     CARD_TYPE_HA_REPAIR: _execute_queued_ha_repair,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
+    CARD_TYPE_NETALERTX_MIGRATE: _execute_netalertx_migrate,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
     CARD_TYPE_DISK_RECOVERY: _execute_disk_recovery,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
