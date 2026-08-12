@@ -258,7 +258,7 @@ class TestPurgeRecorder:
         rest.call_service.assert_called_once_with(
             "recorder",
             "purge",
-            {"purge_keep_days": 30, "repack": False},
+            {"keep_days": 30, "repack": False},
         )
 
     def test_apply_filter_not_sent(self):
@@ -272,7 +272,7 @@ class TestPurgeRecorder:
         asyncio.run(purge_recorder(rest, keep_days=7, repack=True))
         _, _, kwargs_payload = rest.call_service.call_args.args
         assert kwargs_payload["repack"] is True
-        assert kwargs_payload["purge_keep_days"] == 7
+        assert kwargs_payload["keep_days"] == 7
 
     def test_success_returns_action(self):
         rest = self._make_rest()
