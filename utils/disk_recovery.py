@@ -175,10 +175,11 @@ async def purge_recorder(
     try:
         # apply_filter is omitted: HA returns 400 when True but no recorder entity
         # filters are configured, which is the common case.
+        # HA renamed the field from purge_keep_days → keep_days in 2026.x.
         await rest_client.call_service(
             "recorder",
             "purge",
-            {"purge_keep_days": keep_days, "repack": repack},
+            {"keep_days": keep_days, "repack": repack},
         )
         action = "purge+repack" if repack else "purge"
         log.info(
