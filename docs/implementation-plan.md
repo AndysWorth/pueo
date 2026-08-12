@@ -234,6 +234,20 @@ Items STOR-1–STOR-6. → [plan/resource-stewardship.md](plan/resource-stewards
 
 ---
 
+### Phase 25 — NetAlertX Platform Management ☐ In Progress
+Sessions A–D. Move NetAlertX FA off HA (disk pressure), add Docker/separate-machine installer, disk-space guards, FA-only enforcement, full MQTT topic coverage.
+
+| Session | Concern | Status |
+| ------- | ------- | ------ |
+| A | Uninstall from HA + FA-only guard + `ha addons`→`ha apps` fix | ✅ Done (2026-08-12) — PR #210 |
+| B | Separate-machine Docker installer + MQTT routing | ☐ TODO |
+| C | Disk space checks + setup.sh improvements + supervisor migration offer | ☐ TODO |
+| D | Full MQTT topic coverage + event deduplication | ☐ TODO |
+
+→ [plan/netalertx-platform-management.md](plan/netalertx-platform-management.md)
+
+---
+
 ## Tracking
 
 Update the Status column above (`☐ TODO` → `✅ Done (date)`) **and** the matching entry in the linked detail file when an item completes. Add the PR or commit reference as a note in the detail file.

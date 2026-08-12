@@ -192,35 +192,41 @@ async def _poll_addon_state(
     return False
 
 
+def _require_fa_slug(slug: str) -> None:
+    """Raise ValueError if slug is not the Full Access variant.
+
+    Pueo must never install standard (non-FA) NetAlertX because it lacks the
+    NET_RAW capability required for ARP scanning.
+    """
+    if slug and "_fa" not in slug.lower():
+        raise ValueError(
+            f"Slug {slug!r} is not the Full Access variant (must contain '_fa'). "
+            "Pueo only installs NetAlertX Full Access. "
+            "Update netalertx.addon_slug in config.yaml to the FA slug, "
+            "e.g. 'db21ed7f_netalertx_fa', or remove the key to let Pueo auto-detect it."
+        )
+
+
 def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
-    """Parse the add-on slug from `ha store addons` output.
+    """Parse the Full Access add-on slug from `ha store addons` output.
 
     Strategy:
-    1. Prefer a slug whose value itself contains 'netalertx' — HA supervisor
-       slugs are formatted as {repo_hash}_{addon_name}, so the correct slug
-       contains the add-on name directly.
-    2. Fall back to the first slug near any line mentioning 'netalertx' (name,
-       description, etc.).
-    3. Last resort: first slug near the repository URL — avoided as primary
-       because large repos (e.g. alexbelgium/hassio-addons) host many add-ons
-       and the wrong one can match first.
+    1. Prefer a slug whose value contains 'netalertx_fa' — the FA variant.
+    2. Any line mentioning 'netalertx_fa' — grab the nearest slug field.
+    If a non-FA netalertx slug is found but no FA slug exists, raises ValueError
+    rather than falling back to the non-FA variant.
     """
-    repo_suffix = (
-        repository_url.rstrip("/").split("/")[-2]
-        + "/"
-        + repository_url.rstrip("/").split("/")[-1]
-    )
     lines = store_output.splitlines()
 
-    # Pass 1: slug field value contains 'netalertx'
+    # Pass 1: slug field value contains 'netalertx_fa'
     for line in lines:
-        m = re.search(r"slug:\s*(\S*netalertx\S*)", line, re.IGNORECASE)
+        m = re.search(r"slug:\s*(\S*netalertx_fa\S*)", line, re.IGNORECASE)
         if m:
             return m.group(1)
 
-    # Pass 2: any line mentions 'netalertx' — grab nearest slug
+    # Pass 2: any line mentions 'netalertx_fa' — grab nearest slug
     for i, line in enumerate(lines):
-        if "netalertx" in line.lower():
+        if "netalertx_fa" in line.lower():
             slug_match = re.search(r"slug:\s*(\S+)", line, re.IGNORECASE)
             if slug_match:
                 return slug_match.group(1)
@@ -229,16 +235,16 @@ def _parse_slug_from_store(store_output: str, repository_url: str) -> str:
                 if m:
                     return m.group(1)
 
-    # Pass 3: repo URL match (last resort; matches all add-ons in same repo)
-    for i, line in enumerate(lines):
-        if repo_suffix.lower() in line.lower():
-            slug_match = re.search(r"slug:\s*(\S+)", line, re.IGNORECASE)
-            if slug_match:
-                return slug_match.group(1)
-            for ctx_line in lines[max(0, i - 3) : i + 4]:
-                m = re.search(r"slug:\s*(\S+)", ctx_line, re.IGNORECASE)
-                if m:
-                    return m.group(1)
+    # If only a non-FA netalertx slug exists, refuse it explicitly.
+    for line in lines:
+        m = re.search(r"slug:\s*(\S*netalertx\S*)", line, re.IGNORECASE)
+        if m and "_fa" not in m.group(1).lower():
+            raise ValueError(
+                f"NetAlertX Full Access not found in repository; "
+                f"only non-FA slug {m.group(1)!r} was detected. "
+                "Pueo will not install the standard (non-FA) NetAlertX — "
+                "ensure the Full Access add-on is available in the configured repository."
+            )
 
     return ""
 
@@ -525,15 +531,41 @@ async def _step4_add_repo_and_resolve_slug(
     else:
         log.info("step4_repo_already_present", correlation_id=cid)
 
-    # Resolve slug — config value takes precedence
+    # Resolve slug — config value takes precedence; both paths require FA variant
     if NETALERTX_ADDON_SLUG:
+        try:
+            _require_fa_slug(NETALERTX_ADDON_SLUG)
+        except ValueError as exc:
+            await gate.require_approval(
+                subject="NetAlertX installer: configured slug is not Full Access",
+                body=str(exc),
+                payload={"notification_id": f"{cid}_step4_non_fa_slug", "step": 4},
+                notifier=notifier,
+                risk=RiskLevel.CRITICAL,
+            )
+            log.error("step4_non_fa_slug_in_config", correlation_id=cid)
+            return False
         details["addon_slug"] = NETALERTX_ADDON_SLUG
         log.info(
             "step4_slug_from_config", slug=NETALERTX_ADDON_SLUG, correlation_id=cid
         )
     elif not details.get("addon_slug"):
         _, addons_out, _ = await ssh_client.run("ha store addons")
-        slug = _parse_slug_from_store(addons_out, NETALERTX_ADDON_REPOSITORY_URL)
+        try:
+            slug = _parse_slug_from_store(addons_out, NETALERTX_ADDON_REPOSITORY_URL)
+        except ValueError as exc:
+            await gate.require_approval(
+                subject="NetAlertX installer: Full Access variant not in repository",
+                body=str(exc),
+                payload={
+                    "notification_id": f"{cid}_step4_no_fa_slug",
+                    "step": 4,
+                },
+                notifier=notifier,
+                risk=RiskLevel.CRITICAL,
+            )
+            log.error("step4_fa_slug_not_available", correlation_id=cid)
+            return False
         if slug:
             details["addon_slug"] = slug
             log.info("step4_slug_resolved", slug=slug, correlation_id=cid)
