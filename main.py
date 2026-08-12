@@ -502,6 +502,7 @@ def main() -> None:
             "  advanced            diagnose + SQLite memory + backup triggering\n"
             "  repair              full sandbox-test-then-atomic-swap repair cycle\n"
             "  netalertx-setup     install and configure NetAlertX on HA\n"
+            "  netalertx-uninstall remove NetAlertX from HA and reset install state\n"
             "  netalertx           monitor NetAlertX logs continuously\n"
             "  netalertx-diagnose  one-shot NetAlertX health check and optional heal\n"
             "  backup-status       print backup inventory table (slug, size, age, HA, Pueo)\n"
@@ -532,6 +533,7 @@ def main() -> None:
             "advanced",
             "repair",
             "netalertx-setup",
+            "netalertx-uninstall",
             "netalertx",
             "netalertx-diagnose",
             "backup-status",
@@ -568,7 +570,12 @@ def main() -> None:
 
     from utils.logging import setup_logging
 
-    setup_logging(console_text=(args.mode in ("netalertx-setup", "netalertx-diagnose")))
+    setup_logging(
+        console_text=(
+            args.mode
+            in ("netalertx-setup", "netalertx-uninstall", "netalertx-diagnose")
+        )
+    )
 
     if args.mode == "supervisor":
         asyncio.run(supervisor_main(config_path))
@@ -594,6 +601,12 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.installer.main())
+    elif args.mode == "netalertx-uninstall":
+        import ha_agent_advanced
+        import netalertx.uninstaller
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(netalertx.uninstaller.main())
     elif args.mode == "netalertx":
         import ha_agent_advanced
         import netalertx.log_monitor

@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -262,6 +262,9 @@
         {% elif ct == "netalertx_setup" %}
           {% set hint_approve = "Tell the NetAlertX installer to proceed with this step" %}
           {% set hint_reject = "Abort the installer at this step; prior steps already completed are not rolled back" %}
+        {% elif ct == "netalertx_uninstall" %}
+          {% set hint_approve = "Stop and uninstall the NetAlertX add-on from HA and remove the Pueo webhook automation" %}
+          {% set hint_reject = "Cancel; NetAlertX remains installed and install state is unchanged" %}
         {% elif ct == "resource_action" %}
           {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}
           {% set hint_reject = "Skip; no backups moved or deleted" %}

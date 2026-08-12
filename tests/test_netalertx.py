@@ -938,13 +938,14 @@ class TestNetAlertXInstallerSteps1to4:
         assert details.get("addon_slug") == "netalertx_fa"
 
     def test_step4_slug_from_config_takes_precedence(self, tmp_path, monkeypatch):
+        # Config slug must be an FA variant; a non-FA slug is rejected.
         import asyncio
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
         db = _make_installer_db(tmp_path, monkeypatch)
         monkeypatch.setattr("netalertx.installer.NETALERTX_SCAN_INTERFACE", "eth0")
         monkeypatch.setattr(
-            "netalertx.installer.NETALERTX_ADDON_SLUG", "my_custom_slug"
+            "netalertx.installer.NETALERTX_ADDON_SLUG", "my_custom_netalertx_fa"
         )
 
         asyncio.run(
@@ -956,7 +957,7 @@ class TestNetAlertXInstallerSteps1to4:
             )
         )
         _, details = _read_install_state(db)
-        assert details["addon_slug"] == "my_custom_slug"
+        assert details["addon_slug"] == "my_custom_netalertx_fa"
 
     # ── idempotency ────────────────────────────────────────────────────────────
 
@@ -1003,8 +1004,9 @@ class TestNetAlertXInstallerSteps1to4:
         assert slug == ""
 
     def test_parse_slug_from_store_ignores_other_addons_in_same_repo(self):
-        # alexbelgium/hassio-addons hosts many add-ons; Gazpar2MQTT appears
-        # before NetAlertX alphabetically — the resolver must not return it.
+        # alexbelgium/hassio-addons hosts many add-ons; only the FA variant
+        # is acceptable — when only non-FA is present, a ValueError is raised.
+        import pytest
         from netalertx.installer import _parse_slug_from_store
 
         output = (
@@ -1015,10 +1017,27 @@ class TestNetAlertXInstallerSteps1to4:
             "  slug: db21ed7f_netalertx\n"
             "  repository: https://github.com/alexbelgium/hassio-addons\n"
         )
+        with pytest.raises(ValueError, match="Full Access"):
+            _parse_slug_from_store(
+                output, "https://github.com/alexbelgium/hassio-addons"
+            )
+
+    def test_parse_slug_from_store_prefers_fa_over_non_fa(self):
+        # When both standard and FA slugs appear, the FA variant is returned.
+        from netalertx.installer import _parse_slug_from_store
+
+        output = (
+            "- name: NetAlertX\n"
+            "  slug: db21ed7f_netalertx\n"
+            "  repository: https://github.com/alexbelgium/hassio-addons\n"
+            "- name: NetAlertX Full Access\n"
+            "  slug: db21ed7f_netalertx_fa\n"
+            "  repository: https://github.com/alexbelgium/hassio-addons\n"
+        )
         slug = _parse_slug_from_store(
             output, "https://github.com/alexbelgium/hassio-addons"
         )
-        assert slug == "db21ed7f_netalertx"
+        assert slug == "db21ed7f_netalertx_fa"
 
     def test_step2_mosquitto_not_running_starts_without_installing(
         self, tmp_path, monkeypatch
@@ -7392,3 +7411,292 @@ class TestOneShotDiagnoseSlugAutoRecovery:
 
         assert len(llm.calls) == 1
         assert "addon_slug" in llm.calls[0]["messages"][-1]["content"]
+
+
+# ── FA-only enforcement ───────────────────────────────────────────────────────
+
+
+class TestRequireFaSlug:
+    def test_accepts_fa_slug(self):
+        from netalertx.installer import _require_fa_slug
+
+        _require_fa_slug("db21ed7f_netalertx_fa")  # no exception
+
+    def test_accepts_simple_fa_slug(self):
+        from netalertx.installer import _require_fa_slug
+
+        _require_fa_slug("netalertx_fa")  # no exception
+
+    def test_rejects_non_fa_slug(self):
+        from netalertx.installer import _require_fa_slug
+
+        with pytest.raises(ValueError, match="Full Access"):
+            _require_fa_slug("db21ed7f_netalertx")
+
+    def test_rejects_plain_netalertx_slug(self):
+        from netalertx.installer import _require_fa_slug
+
+        with pytest.raises(ValueError, match="_fa"):
+            _require_fa_slug("netalertx")
+
+    def test_empty_slug_passes(self):
+        # Empty string means "not yet resolved" — not an installed slug
+        from netalertx.installer import _require_fa_slug
+
+        _require_fa_slug("")  # no exception
+
+
+# ── Uninstaller ───────────────────────────────────────────────────────────────
+
+
+def _make_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL"):
+    """Create and migrate a test SQLite DB pre-seeded at *state*, patch uninstaller DB_PATH."""
+    import ha_agent_advanced
+    import netalertx.uninstaller as uninst
+
+    db = tmp_path / "uninstaller_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    monkeypatch.setattr(uninst, "DB_PATH", str(db))
+
+    from netalertx.uninstaller import _write_install_state
+
+    _write_install_state(str(db), state, "test-cid")
+    return str(db)
+
+
+class TestRemoveWebhookAutomation:
+    def test_removes_netalertx_block_from_mixed_file(self):
+        from netalertx.uninstaller import _remove_webhook_automation
+
+        content = (
+            "- id: 'other_automation'\n"
+            "  alias: 'Something Else'\n"
+            "  trigger: []\n"
+            "- id: 'netalertx_event_handler'\n"
+            "  alias: 'NetAlertX Event Handler'\n"
+            "  trigger:\n"
+            "    - platform: webhook\n"
+            "      webhook_id: 'netalertx_event'\n"
+        )
+        result = _remove_webhook_automation(content)
+        assert "netalertx_event_handler" not in result
+        assert "other_automation" in result
+
+    def test_removes_sole_automation_leaves_empty(self):
+        from netalertx.uninstaller import _remove_webhook_automation
+
+        content = (
+            "- id: 'netalertx_event_handler'\n"
+            "  alias: 'NetAlertX Event Handler'\n"
+            "  trigger:\n"
+            "    - platform: webhook\n"
+            "      webhook_id: 'netalertx_event'\n"
+        )
+        result = _remove_webhook_automation(content)
+        assert "netalertx_event_handler" not in result
+        assert result.strip() == ""
+
+    def test_noop_when_automation_absent(self):
+        from netalertx.uninstaller import _remove_webhook_automation
+
+        content = "- id: 'unrelated'\n  alias: 'Unrelated'\n"
+        result = _remove_webhook_automation(content)
+        assert "unrelated" in result
+
+    def test_automation_present_returns_true(self):
+        from netalertx.uninstaller import _automation_present
+
+        assert _automation_present("- id: 'netalertx_event_handler'\n  ...")
+
+    def test_automation_present_returns_false_when_absent(self):
+        from netalertx.uninstaller import _automation_present
+
+        assert not _automation_present("- id: 'other'\n  alias: 'Other'\n")
+
+
+class TestNetAlertXUninstallerStateMachine:
+    def _notifier(self, approve=True):
+        from utils.notify import FakeNotifier
+
+        return FakeNotifier(approve=approve)
+
+    def _gate_approve(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
+    def _gate_reject(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=False)
+
+    def test_full_uninstall_resets_state_to_not_installed(self, tmp_path, monkeypatch):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.uninstaller import run_uninstaller, _read_install_state
+
+        db = _make_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.uninstaller.NETALERTX_ADDON_SLUG", "db21ed7f_netalertx_fa"
+        )
+
+        ssh = FakeSSHClient(
+            command_results={
+                "df -h /data 2>/dev/null || df -h /": (
+                    0,
+                    "Filesystem  Size  Used  Avail  Use%  Mounted\n/dev/sda1  30G  25G  3G  90%  /",
+                    "",
+                ),
+                "ha apps stop db21ed7f_netalertx_fa": (0, "", ""),
+                "ha apps uninstall db21ed7f_netalertx_fa": (0, "", ""),
+            },
+            file_contents={
+                "/config/automations.yaml": (
+                    "- id: 'netalertx_event_handler'\n"
+                    "  alias: 'NetAlertX Event Handler'\n"
+                    "  trigger:\n"
+                    "    - platform: webhook\n"
+                    "      webhook_id: 'netalertx_event'\n"
+                )
+            },
+        )
+
+        async def fake_backup(**_kw):
+            return "backup-slug-test"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+        )
+
+        final = asyncio.run(
+            run_uninstaller(ssh, self._gate_approve(), self._notifier(), db_path=db)
+        )
+
+        assert final == "NOT_INSTALLED"
+        assert _read_install_state(db) == "NOT_INSTALLED"
+        assert "ha apps stop db21ed7f_netalertx_fa" in ssh.commands_run
+        assert "ha apps uninstall db21ed7f_netalertx_fa" in ssh.commands_run
+
+    def test_rejection_aborts_without_changes(self, tmp_path, monkeypatch):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.uninstaller import run_uninstaller, _read_install_state
+
+        db = _make_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL")
+        monkeypatch.setattr(
+            "netalertx.uninstaller.NETALERTX_ADDON_SLUG", "db21ed7f_netalertx_fa"
+        )
+
+        ssh = FakeSSHClient(
+            command_results={
+                "df -h /data 2>/dev/null || df -h /": (
+                    0,
+                    "Filesystem Size Used Avail\n/ 30G 25G 3G",
+                    "",
+                ),
+            }
+        )
+
+        # Gate passes to notifier (auto_execute=False) and notifier rejects (approve=False)
+        final = asyncio.run(
+            run_uninstaller(
+                ssh,
+                self._gate_reject(),
+                self._notifier(approve=False),
+                db_path=db,
+            )
+        )
+
+        assert final == "FULLY_OPERATIONAL"
+        assert _read_install_state(db) == "FULLY_OPERATIONAL"
+        assert "ha apps stop db21ed7f_netalertx_fa" not in ssh.commands_run
+
+    def test_stop_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        """A failed ha apps stop should be logged as a warning, not abort."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.uninstaller import run_uninstaller, _read_install_state
+
+        db = _make_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.uninstaller.NETALERTX_ADDON_SLUG", "db21ed7f_netalertx_fa"
+        )
+
+        ssh = FakeSSHClient(
+            command_results={
+                "df -h /data 2>/dev/null || df -h /": (0, "Filesystem Size\n/ 30G", ""),
+                "ha apps stop db21ed7f_netalertx_fa": (1, "", "not found"),
+                "ha apps uninstall db21ed7f_netalertx_fa": (0, "", ""),
+            }
+        )
+
+        async def fake_backup(**_kw):
+            return "backup-slug-test"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+        )
+
+        final = asyncio.run(
+            run_uninstaller(ssh, self._gate_approve(), self._notifier(), db_path=db)
+        )
+
+        assert final == "NOT_INSTALLED"
+
+    def test_automation_removed_from_automations_yaml(self, tmp_path, monkeypatch):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.uninstaller import run_uninstaller
+
+        db = _make_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.uninstaller.NETALERTX_ADDON_SLUG", "db21ed7f_netalertx_fa"
+        )
+
+        automation_content = (
+            "- id: 'keep_this'\n"
+            "  alias: 'Keep This'\n"
+            "- id: 'netalertx_event_handler'\n"
+            "  alias: 'NetAlertX Event Handler'\n"
+            "  trigger:\n"
+            "    - platform: webhook\n"
+            "      webhook_id: 'netalertx_event'\n"
+        )
+
+        written: dict[str, str] = {}
+
+        class TrackingSSH(FakeSSHClient):
+            async def write_file(self, path, content):  # type: ignore[override]
+                written[path] = content
+
+        ssh = TrackingSSH(
+            command_results={
+                "df -h /data 2>/dev/null || df -h /": (0, "/ 30G 25G 3G", ""),
+                "ha apps stop db21ed7f_netalertx_fa": (0, "", ""),
+                "ha apps uninstall db21ed7f_netalertx_fa": (0, "", ""),
+            },
+            file_contents={"/config/automations.yaml": automation_content},
+        )
+
+        async def fake_backup(**_kw):
+            return "slug"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+        )
+
+        asyncio.run(
+            run_uninstaller(ssh, self._gate_approve(), self._notifier(), db_path=db)
+        )
+
+        assert "/config/automations.yaml" in written
+        written_content = written["/config/automations.yaml"]
+        assert "netalertx_event_handler" not in written_content
+        assert "keep_this" in written_content
+
+
+class TestNetalertxUninstallCardRegistered:
+    def test_card_type_in_is_actionable(self):
+        """CARD_TYPE_NETALERTX_UNINSTALL must appear in index.html is_actionable set."""
+        from pathlib import Path
+
+        template = Path(__file__).parent.parent / "web" / "templates" / "index.html"
+        content = template.read_text()
+        assert "netalertx_uninstall" in content

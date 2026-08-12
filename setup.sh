@@ -382,7 +382,7 @@ if $WRITE_CONFIG; then
     MQTT_USER=""
     MQTT_PASSWORD=""
     if $_SSH "echo ok" &>/dev/null; then
-        mosquitto_state=$($_SSH "ha addons info core_mosquitto 2>/dev/null | grep -E '^\s*state:' | awk '{print \$2}'" 2>/dev/null || echo "")
+        mosquitto_state=$($_SSH "ha apps info core_mosquitto 2>/dev/null | grep -E '^\s*state:' | awk '{print \$2}'" 2>/dev/null || echo "")
         if [[ "$mosquitto_state" == "started" ]]; then
             ok "Mosquitto broker is running"
         else
