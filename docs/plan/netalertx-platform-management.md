@@ -10,7 +10,7 @@ non-FA variant unconditionally.
 
 ---
 
-## Session A — Uninstall from HA + FA-only enforcement ✅ Complete (2026-08-12) — PR #210
+## Session A — Uninstall from HA + FA-only enforcement ✅ Complete (2026-08-12) — PR #210 (https://github.com/AndysWorth/pueo/pull/210)
 
 **Branch:** `feat/209-netalertx-uninstall-fa-enforcement`  **Issue:** #209
 
