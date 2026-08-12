@@ -270,6 +270,62 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
     )
 
 
+def fetch_top_consumers_flat(breakdown: DiskBreakdown, n: int = 6) -> list:
+    """Return the top N non-empty DiskItems across all sections, sorted by size descending.
+
+    Each entry is a plain dict: {name, section, size_bytes, size_human}.
+    """
+    all_items = []
+    for section in breakdown.sections:
+        for item in section.items:
+            if not item.is_empty:
+                all_items.append(
+                    {
+                        "name": item.name,
+                        "section": section.title,
+                        "size_bytes": item.size_bytes,
+                        "size_human": item.size_human,
+                    }
+                )
+    all_items.sort(key=lambda x: -x["size_bytes"])
+    return all_items[:n]
+
+
+async def fetch_addon_persistent_sizes(
+    ssh_client: SSHClientProtocol,
+    addon_name_map: dict,
+) -> list:
+    """Fetch per-add-on persistent data sizes from /mnt/data/supervisor/addons/*.
+
+    Returns a list of dicts sorted by size descending:
+      {slug, name, size_bytes, size_human}
+    Returns [] on any error — treat as best-effort at CRITICAL alert time.
+    """
+    try:
+        _, out, _ = await ssh_client.run(
+            "du -sh /mnt/data/supervisor/addons/* 2>/dev/null || true",
+            check=False,
+        )
+        path_sizes = _parse_du_output(out)
+        if not path_sizes:
+            return []
+        results = []
+        for path, size_bytes in sorted(path_sizes.items(), key=lambda kv: -kv[1]):
+            slug = path.rstrip("/").rsplit("/", 1)[-1]
+            name = addon_name_map.get(slug, slug)
+            results.append(
+                {
+                    "slug": slug,
+                    "name": name,
+                    "size_bytes": size_bytes,
+                    "size_human": _bytes_to_human(size_bytes),
+                }
+            )
+        return results
+    except Exception:
+        return []
+
+
 _last_disk_breakdown: Optional[DiskBreakdown] = None
 
 
