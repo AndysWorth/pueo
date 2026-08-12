@@ -11,6 +11,7 @@ from utils.disk_recovery import (
     TmpAuditItem,
     _parse_du_size,
     audit_supervisor_tmp,
+    build_disk_conclusion,
     purge_recorder,
     run_safe_disk_recovery,
     truncate_ha_log,
@@ -399,3 +400,213 @@ class TestRunSafeDiskRecovery:
             summary = asyncio.run(run_safe_disk_recovery(ssh, rest))
         assert summary.actions[0].success is False
         assert summary.actions[1].success is True
+
+
+# ---------------------------------------------------------------------------
+# build_disk_conclusion
+# ---------------------------------------------------------------------------
+
+_HITL_OPTIONS = [
+    {"action_key": "repack_recorder", "name": "Repack"},
+    {"action_key": "aggressive_purge_7d", "name": "Purge"},
+    {"action_key": "clean_tmp", "name": "Clean tmp"},
+    {"action_key": "offload_backups", "name": "Offload"},
+]
+
+
+class TestBuildDiskConclusion:
+    def _call(self, **kwargs):
+        defaults = dict(
+            top_consumers=[],
+            addon_persistent=[],
+            auto_savings_mb=0.0,
+            disk_free_after_gb=1.9,
+            disk_critical_gb=3.0,
+            hitl_options=_HITL_OPTIONS,
+            backup_section_bytes=0,
+            ha_config_section_bytes=0,
+        )
+        defaults.update(kwargs)
+        return build_disk_conclusion(**defaults)
+
+    def test_returns_required_keys(self):
+        result = self._call()
+        for key in (
+            "text",
+            "hitl_sufficient",
+            "needed_mb",
+            "hitl_estimate_mb",
+            "top_consumers",
+            "addon_persistent",
+        ):
+            assert key in result
+
+    def test_insufficient_when_savings_less_than_needed(self):
+        # needs 1126 MB, backup=0, config=0 → hitl_estimate=0 → insufficient
+        result = self._call(
+            disk_free_after_gb=1.9,
+            disk_critical_gb=3.0,
+            backup_section_bytes=0,
+            ha_config_section_bytes=0,
+        )
+        assert result["hitl_sufficient"] is False
+        assert result["needed_mb"] == pytest.approx(1126.0, abs=1)
+        assert (
+            "not enough" in result["text"]
+            or "not fully" in result["text"]
+            or "not enough" in result["text"]
+            or "unlikely" in result["text"]
+            or "likely not" in result["text"]
+        )
+
+    def test_sufficient_when_backup_section_large_enough(self):
+        # needs 1126 MB, backup section = 2 GB → estimate = 2048 MB → sufficient
+        result = self._call(
+            disk_free_after_gb=1.9,
+            disk_critical_gb=3.0,
+            backup_section_bytes=2 * 1024**3,
+        )
+        assert result["hitl_sufficient"] is True
+        assert result["hitl_estimate_mb"] == pytest.approx(2048.0, abs=1)
+
+    def test_sufficient_when_already_above_critical(self):
+        # disk_free_after_gb already above threshold
+        result = self._call(
+            disk_free_after_gb=4.0,
+            disk_critical_gb=3.0,
+        )
+        assert result["hitl_sufficient"] is True
+        assert result["needed_mb"] == 0.0
+        assert "above" in result["text"] or "threshold" in result["text"]
+
+    def test_culprit_named_from_addon_persistent(self):
+        addon_persistent = [
+            {
+                "name": "NetAlertX",
+                "slug": "netalertx",
+                "size_bytes": 7 * 1024**3,
+                "size_human": "7.0 GB",
+            }
+        ]
+        result = self._call(addon_persistent=addon_persistent)
+        assert "NetAlertX" in result["text"]
+
+    def test_culprit_falls_back_to_top_consumers(self):
+        top_consumers = [
+            {
+                "name": "home-assistant_v2.db",
+                "section": "HA Config & Database",
+                "size_bytes": 5 * 1024**3,
+                "size_human": "5.0 GB",
+            }
+        ]
+        result = self._call(top_consumers=top_consumers, addon_persistent=[])
+        assert "home-assistant_v2.db" in result["text"]
+
+    def test_addon_persistent_capped_at_four(self):
+        addon_persistent = [
+            {
+                "name": f"addon_{i}",
+                "slug": f"slug_{i}",
+                "size_bytes": i * 1024**3,
+                "size_human": f"{i} GB",
+            }
+            for i in range(6, 0, -1)
+        ]
+        result = self._call(addon_persistent=addon_persistent)
+        assert len(result["addon_persistent"]) == 4
+
+    def test_top_consumers_capped_at_four(self):
+        top_consumers = [
+            {
+                "name": f"item_{i}",
+                "section": "HA Config",
+                "size_bytes": i * 1024**2,
+                "size_human": f"{i} MB",
+            }
+            for i in range(10, 0, -1)
+        ]
+        result = self._call(top_consumers=top_consumers)
+        assert len(result["top_consumers"]) == 4
+
+    def test_no_data_returns_valid_dict(self):
+        result = self._call(
+            top_consumers=[], addon_persistent=[], backup_section_bytes=0
+        )
+        assert isinstance(result["text"], str)
+        assert len(result["text"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# fetch_addon_persistent_sizes
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAddonPersistentSizes:
+    def test_parses_du_output_and_resolves_names(self):
+        from utils.disk_usage import fetch_addon_persistent_sizes
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(
+                0,
+                "7.2G\t/mnt/data/supervisor/addons/a0d7b954_netalertx\n"
+                "1.1G\t/mnt/data/supervisor/addons/core_mosquitto\n",
+                "",
+            )
+        )
+        addon_name_map = {
+            "a0d7b954_netalertx": "NetAlertX",
+            "core_mosquitto": "Mosquitto Broker",
+        }
+        result = asyncio.run(fetch_addon_persistent_sizes(ssh, addon_name_map))
+        assert len(result) == 2
+        assert result[0]["name"] == "NetAlertX"
+        assert result[0]["size_human"] == "7.2 GB"
+        assert result[1]["name"] == "Mosquitto Broker"
+
+    def test_returns_empty_on_ssh_exception(self):
+        from utils.disk_usage import fetch_addon_persistent_sizes
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(side_effect=Exception("permission denied"))
+        result = asyncio.run(fetch_addon_persistent_sizes(ssh, {}))
+        assert result == []
+
+    def test_returns_empty_on_no_output(self):
+        from utils.disk_usage import fetch_addon_persistent_sizes
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(return_value=(0, "", ""))
+        result = asyncio.run(fetch_addon_persistent_sizes(ssh, {}))
+        assert result == []
+
+    def test_unknown_slug_uses_slug_as_name(self):
+        from utils.disk_usage import fetch_addon_persistent_sizes
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(
+                0,
+                "500M\t/mnt/data/supervisor/addons/some_unknown_slug\n",
+                "",
+            )
+        )
+        result = asyncio.run(fetch_addon_persistent_sizes(ssh, {}))
+        assert result[0]["name"] == "some_unknown_slug"
+
+    def test_sorted_descending_by_size(self):
+        from utils.disk_usage import fetch_addon_persistent_sizes
+
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            return_value=(
+                0,
+                "100M\t/mnt/data/supervisor/addons/small\n"
+                "5.0G\t/mnt/data/supervisor/addons/large\n",
+                "",
+            )
+        )
+        result = asyncio.run(fetch_addon_persistent_sizes(ssh, {}))
+        assert result[0]["slug"] == "large"
+        assert result[1]["slug"] == "small"

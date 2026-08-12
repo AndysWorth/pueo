@@ -293,6 +293,64 @@ class ResourcePoller:
                     },
                 ]
 
+                # Best-effort deep disk analysis — determines whether the HITL options
+                # are likely to resolve the issue and names the primary culprit if not.
+                disk_analysis: dict = {}
+                try:
+                    from utils.disk_recovery import build_disk_conclusion
+                    from utils.disk_usage import (
+                        fetch_addon_persistent_sizes,
+                        fetch_top_consumers_flat,
+                        get_disk_breakdown,
+                    )
+
+                    breakdown = get_disk_breakdown()
+                    if breakdown:
+                        addon_name_map: dict = {}
+                        if len(breakdown.sections) > 2:
+                            for _item in breakdown.sections[2].items:
+                                _slug = _item.path.rstrip("/").rsplit("/", 1)[-1]
+                                addon_name_map[_slug] = _item.name
+
+                        top_consumers = fetch_top_consumers_flat(breakdown)
+                        addon_persistent: list = []
+                        try:
+                            addon_persistent = await fetch_addon_persistent_sizes(
+                                self._ssh, addon_name_map
+                            )
+                        except Exception:  # nosec B110 — best-effort
+                            pass
+
+                        _dfa = (
+                            disk_free_after_gb
+                            if disk_free_after_gb is not None
+                            else status.disk_free_gb
+                        )
+                        ha_config_bytes = (
+                            breakdown.sections[0].total_bytes
+                            if breakdown.sections
+                            else 0
+                        )
+                        backup_bytes = (
+                            breakdown.sections[1].total_bytes
+                            if len(breakdown.sections) > 1
+                            else 0
+                        )
+                        disk_analysis = build_disk_conclusion(
+                            top_consumers=top_consumers,
+                            addon_persistent=addon_persistent,
+                            auto_savings_mb=(
+                                auto_summary.total_freed_mb if auto_summary else 0.0
+                            ),
+                            disk_free_after_gb=_dfa,
+                            disk_critical_gb=self._disk_critical_gb,
+                            hitl_options=ranked_hitl_options,
+                            backup_section_bytes=backup_bytes,
+                            ha_config_section_bytes=ha_config_bytes,
+                        )
+                except Exception as _e:  # nosec B110 — analysis is best-effort
+                    log.warning("disk_analysis_failed", error=str(_e))
+
                 body_lines = [
                     f"Disk free: {status.disk_free_gb:.1f} GB — below critical threshold "
                     f"{self._disk_critical_gb} GB. Backup creation is blocked.",
@@ -332,6 +390,7 @@ class ResourcePoller:
                         "mem_available_mb": round(status.mem_available_mb),
                         "auto_actions_taken": auto_actions,
                         "ranked_hitl_options": ranked_hitl_options,
+                        "disk_analysis": disk_analysis,
                     },
                 )
                 try:

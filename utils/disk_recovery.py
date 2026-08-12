@@ -267,6 +267,76 @@ def _parse_du_size(size_str: str) -> int:
         return 0
 
 
+def build_disk_conclusion(
+    top_consumers: list,
+    addon_persistent: list,
+    auto_savings_mb: float,
+    disk_free_after_gb: float,
+    disk_critical_gb: float,
+    hitl_options: list,
+    backup_section_bytes: int,
+    ha_config_section_bytes: int = 0,
+) -> dict:
+    """Compute a plain-English conclusion about whether HITL options will resolve the disk issue.
+
+    Uses a conservative heuristic to estimate max HITL savings:
+      - offload_backups: backup section size (all backups freed)
+      - recorder purge/repack: 20% of HA Config section (rough recorder-DB estimate)
+
+    Returns a dict with text, hitl_sufficient, needed_mb, hitl_estimate_mb,
+    top_consumers (up to 4), and addon_persistent (up to 4).
+    """
+    needed_mb = max(0.0, (disk_critical_gb - disk_free_after_gb) * 1024)
+
+    option_keys = {opt.get("action_key", "") for opt in hitl_options}
+    hitl_estimate_mb = 0.0
+    if "offload_backups" in option_keys:
+        hitl_estimate_mb += backup_section_bytes / (1024 * 1024)
+    if any(k in option_keys for k in ("repack_recorder", "aggressive_purge_7d")):
+        hitl_estimate_mb += ha_config_section_bytes / (1024 * 1024) * 0.20
+
+    hitl_sufficient = (auto_savings_mb + hitl_estimate_mb) >= needed_mb
+
+    culprit: Optional[dict] = None
+    if addon_persistent:
+        culprit = addon_persistent[0]
+    elif top_consumers:
+        culprit = top_consumers[0]
+
+    if needed_mb <= 0:
+        text = (
+            f"Auto-recovery freed ~{auto_savings_mb:.0f} MB and disk is now above the "
+            "critical threshold. Approving the options below will add extra headroom."
+        )
+    elif hitl_sufficient:
+        text = (
+            f"Auto-recovery freed ~{auto_savings_mb:.0f} MB. Disk still needs "
+            f"~{needed_mb:.0f} MB more to clear the critical threshold. "
+            f"The recovery options below (estimated ~{hitl_estimate_mb:.0f} MB) "
+            "should be sufficient — approving them is recommended."
+        )
+    else:
+        culprit_str = ""
+        if culprit:
+            culprit_str = f" The largest single consumer is {culprit['name']} ({culprit['size_human']})."
+        text = (
+            f"Auto-recovery freed ~{auto_savings_mb:.0f} MB, but disk still needs "
+            f"~{needed_mb:.0f} MB more. The recovery options below can free at most "
+            f"~{hitl_estimate_mb:.0f} MB — likely not enough to resolve this.{culprit_str} "
+            "To actually fix this, consider removing or reducing a large add-on, "
+            "or expanding storage."
+        )
+
+    return {
+        "text": text,
+        "hitl_sufficient": hitl_sufficient,
+        "needed_mb": round(needed_mb, 1),
+        "hitl_estimate_mb": round(hitl_estimate_mb, 1),
+        "top_consumers": top_consumers[:4],
+        "addon_persistent": addon_persistent[:4],
+    }
+
+
 async def run_safe_disk_recovery(
     ssh_client: SSHClientProtocol,
     rest_client: Optional[HARestClientProtocol],

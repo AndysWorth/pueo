@@ -156,6 +156,41 @@
       {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
+        {% set da = r.payload.get("disk_analysis", {}) %}
+        {% if da and da.get("text") %}
+          {% if da.hitl_sufficient %}
+        <div style="background:#d4edda;border:1px solid #c3e6cb;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.75rem;font-size:0.85rem;color:#155724;">
+          <strong>✓ Analysis:</strong> {{ da.text }}
+        </div>
+          {% else %}
+        <div style="background:#fff3cd;border:1px solid #e6a817;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.75rem;font-size:0.85rem;color:#856404;">
+          <strong>⚠ Analysis:</strong> {{ da.text }}
+        </div>
+          {% endif %}
+        {% endif %}
+        {% if da and (da.get("addon_persistent") or da.get("top_consumers")) %}
+        <p style="margin:0 0 0.3rem;font-size:0.85rem;"><strong>Largest disk consumers:</strong></p>
+        <table style="width:100%;border-collapse:collapse;font-size:0.83rem;margin:0 0 0.7rem;">
+          {% if da.addon_persistent %}
+          <tr><td colspan="2" style="padding:0.1rem 0.25rem;color:#666;font-size:0.78rem;">Add-on data directories (/mnt/data/supervisor/addons/)</td></tr>
+          {% for item in da.addon_persistent %}
+          <tr>
+            <td style="padding:0.15rem 0.5rem 0.15rem 0.25rem;">{{ item.name }}</td>
+            <td style="padding:0.15rem 0.25rem;text-align:right;font-family:monospace;white-space:nowrap;">{{ item.size_human }}</td>
+          </tr>
+          {% endfor %}
+          {% endif %}
+          {% if da.top_consumers %}
+          <tr><td colspan="2" style="padding:0.1rem 0.25rem;color:#666;font-size:0.78rem;">Top items by section</td></tr>
+          {% for item in da.top_consumers %}
+          <tr>
+            <td style="padding:0.15rem 0.5rem 0.15rem 0.25rem;">{{ item.name }} <span style="color:#999;font-size:0.78rem;">({{ item.section }})</span></td>
+            <td style="padding:0.15rem 0.25rem;text-align:right;font-family:monospace;white-space:nowrap;">{{ item.size_human }}</td>
+          </tr>
+          {% endfor %}
+          {% endif %}
+        </table>
+        {% endif %}
         {% set auto_actions = r.payload.get("auto_actions_taken", []) %}
         {% if auto_actions %}
         <p style="margin:0 0 0.4rem;"><strong>Auto-recovery already ran:</strong></p>
@@ -213,7 +248,12 @@
           {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}
           {% set hint_reject = "Skip; no backups moved or deleted" %}
         {% elif ct == "disk_recovery" %}
-          {% set hint_approve = "Run all listed recovery options: repack recorder DB, purge supervisor tmp, offload and remove old backups" %}
+          {% set _da = r.payload.get("disk_analysis", {}) %}
+          {% if _da and _da.hitl_sufficient == false %}
+            {% set hint_approve = "Run all listed recovery options — note: analysis above suggests these alone may not fully resolve the disk issue" %}
+          {% else %}
+            {% set hint_approve = "Run all listed recovery options: repack recorder DB, purge supervisor tmp, offload and remove old backups" %}
+          {% endif %}
           {% set hint_reject = "Skip additional recovery; disk remains at current level" %}
         {% elif ct == "code_proposal" %}
           {% set hint_approve = "Write tool code to user_tools/, import it, and register it for future agent loop calls" %}
