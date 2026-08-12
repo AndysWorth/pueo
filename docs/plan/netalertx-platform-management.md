@@ -85,9 +85,9 @@ disk-critical and NAX is on HA.
 
 ---
 
-## Session D — MQTT Full Integration + NetAlertX Capabilities
+## Session D — MQTT Full Integration + NetAlertX Capabilities ✅ Complete (2026-08-12) — PR #216
 
-**Issue:** TBD  **Branch:** `feat/<N>-netalertx-mqtt-full`
+**Issue:** #215  **Branch:** `feat/215-netalertx-session-d`
 
 | Item | Concern |
 | ---- | ------- |
