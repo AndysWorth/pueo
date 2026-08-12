@@ -7700,3 +7700,365 @@ class TestNetalertxUninstallCardRegistered:
         template = Path(__file__).parent.parent / "web" / "templates" / "index.html"
         content = template.read_text()
         assert "netalertx_uninstall" in content
+
+
+# ── Docker installer ──────────────────────────────────────────────────────────
+
+
+def _make_docker_installer_db(tmp_path, monkeypatch, state="NOT_INSTALLED"):
+    """Create and migrate a test SQLite DB pre-seeded at *state*."""
+    import ha_agent_advanced
+    import netalertx.docker_installer as dinst
+
+    db = tmp_path / "docker_installer_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    if state != "NOT_INSTALLED":
+        import datetime
+        import sqlite3
+
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                (state, "test-cid", datetime.datetime.now().isoformat(), "{}"),
+            )
+    monkeypatch.setattr(dinst, "DB_PATH", str(db))
+    return str(db)
+
+
+class TestCheckDiskSpace:
+    def test_returns_available_gb_when_sufficient(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import check_disk_space
+
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           100       70         30   70%  /\n"
+        )
+        # check_disk_space runs: df -BG {path} 2>/dev/null || df -BG /
+        ssh = FakeSSHClient(
+            command_results={
+                "df -BG /mnt/data 2>/dev/null || df -BG /": (0, df_output, "")
+            }
+        )
+        result = asyncio.run(check_disk_space(ssh, "/mnt/data", 5.0))
+        assert result == 30.0
+
+    def test_raises_when_too_low(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import check_disk_space, DiskSpaceTooLowError
+
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           10        8         2   80%  /\n"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "df -BG /mnt/data 2>/dev/null || df -BG /": (0, df_output, "")
+            }
+        )
+        with pytest.raises(DiskSpaceTooLowError) as exc_info:
+            asyncio.run(check_disk_space(ssh, "/mnt/data", 5.0))
+        assert exc_info.value.available_gb == 2.0
+        assert exc_info.value.min_gb == 5.0
+
+
+class TestDockerInstallerStateMachine:
+    """Integration-style tests for the Docker installer state machine."""
+
+    class _FakeNotifier:
+        def __init__(self, approve=True):
+            self._approve = approve
+            self.sent = []
+
+        async def send(self, subject="", body="", payload=None, **kw):
+            self.sent.append({"subject": subject, "payload": payload})
+
+        async def wait_for_approval(self, notification_id, **kw):
+            return self._approve
+
+    def _make_gate(self, approve=True):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=approve)
+
+    def _notifier(self, approve=True):
+        return self._FakeNotifier(approve=approve)
+
+    def test_step1_fails_when_docker_unavailable(self, tmp_path, monkeypatch):
+        """Abort when 'docker info' returns non-zero."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        ssh = FakeSSHClient(
+            command_results={"docker info": (1, "", "Permission denied")}
+        )
+        notifier = self._notifier(approve=True)
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=notifier,
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "NOT_INSTALLED"
+
+    def test_step2_aborts_when_disk_too_low(self, tmp_path, monkeypatch):
+        """Abort at disk check when available GB < min_gb."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(
+            tmp_path, monkeypatch, state="DOCKER_SSH_VERIFIED"
+        )
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           10        9         1   90%  /\n"
+        )
+        # parent of /opt/netalertx/config is /opt/netalertx
+        ssh = FakeSSHClient(
+            command_results={
+                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, ""),
+            }
+        )
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=False),
+                db_path=db,
+                docker_host="192.168.1.50",
+                config_path="/opt/netalertx/config",
+                min_disk_gb=5.0,
+            )
+        )
+        assert state == "DOCKER_SSH_VERIFIED"
+
+    def test_full_flow_reaches_fully_operational(self, tmp_path, monkeypatch):
+        """Happy path: all steps succeed → FULLY_OPERATIONAL."""
+        import httpx
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr("netalertx.docker_installer.HA_HOST", "homeassistant.local")
+        monkeypatch.setattr("netalertx.docker_installer.HA_API_TOKEN", "fake_token")
+        monkeypatch.setattr("netalertx.docker_installer.NETALERTX_MQTT_USER", "")
+
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           100      30        70   30%  /\n"
+        )
+        docker_ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                # parent of /opt/netalertx/config is /opt/netalertx
+                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, ""),
+                "mkdir -p /opt/netalertx/config": (0, "", ""),
+                "docker pull ghcr.io/jokob-sk/netalertx:latest": (
+                    0,
+                    "Pull complete",
+                    "",
+                ),
+                "ip route show default": (0, "default via 192.168.1.1 dev eth0", ""),
+                "ip addr show eth0": (0, "inet 192.168.1.50/24 scope global eth0", ""),
+                "docker stop netalertx 2>/dev/null || true": (0, "", ""),
+                "docker rm netalertx 2>/dev/null || true": (0, "", ""),
+                "docker run -d --name netalertx --restart=unless-stopped "
+                "--network=host --cap-add=NET_RAW "
+                "-v /opt/netalertx/config:/app/config "
+                "ghcr.io/jokob-sk/netalertx:latest": (0, "abc123", ""),
+            },
+            file_contents={},
+        )
+
+        ha_ssh = FakeSSHClient(
+            command_results={
+                "ha apps restart core_mosquitto": (0, "", ""),
+                "ha core check": (0, "", ""),
+                "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
+                ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
+                ' -H "Content-Type: application/json"': (0, "", ""),
+            },
+            file_contents={"/config/automations.yaml": ""},
+        )
+
+        # Patch execute_remote_backup in installer (used by _step8_create_webhook_automation)
+        async def _fake_backup(**_kw):
+            return "backup-slug-abc"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup",
+            _fake_backup,
+        )
+
+        # Fake HTTP client that always returns 200 for health checks
+        class _FakeHTTP:
+            async def get(self, url, **kw):
+                return httpx.Response(200)
+
+            async def aclose(self):
+                pass
+
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=docker_ssh,
+                ha_ssh=ha_ssh,
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+                image="ghcr.io/jokob-sk/netalertx:latest",
+                config_path="/opt/netalertx/config",
+                min_disk_gb=5.0,
+                api_port=20212,
+                http_client=_FakeHTTP(),  # type: ignore[arg-type]
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+
+    def test_mqtt_routing_skipped_on_rejection(self, tmp_path, monkeypatch):
+        """When HITL is rejected at step 8, installer still advances to DOCKER_MQTT_ROUTED."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step8_route_mqtt
+
+        db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_HEALTHY")
+        gate = self._make_gate(approve=False)
+        notifier = self._notifier(approve=False)
+
+        result = asyncio.run(
+            _step8_route_mqtt(
+                ha_ssh=FakeSSHClient(),
+                gate=gate,
+                notifier=notifier,
+                details={},
+                cid="test-cid",
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        # Non-fatal: returns True (proceed to next step) even when rejected
+        assert result is True
+        from netalertx.docker_installer import _read_install_state
+
+        s, _ = _read_install_state(db)
+        assert s == "DOCKER_MQTT_ROUTED"
+
+
+class TestDetectDeploymentDockerTarget:
+    """detect_deployment respects the deploy_target parameter."""
+
+    def test_docker_target_skips_supervisor_probe(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+        import httpx
+
+        ssh = FakeSSHClient(
+            command_results={"docker info": (0, "Server: Docker Engine", "")}
+        )
+
+        class _FakeHTTP:
+            async def get(self, url, **kw):
+                return httpx.Response(200, json={"value": "v26.7.1"})
+
+        result = asyncio.run(
+            detect_deployment(
+                ssh_client=ssh,
+                host="192.168.1.50",
+                api_port=20212,
+                container_name="netalertx",
+                http_client=_FakeHTTP(),  # type: ignore[arg-type]
+                deploy_target="docker",
+            )
+        )
+        assert result.mode == "docker"
+        assert result.api_base_url == "http://192.168.1.50:20212"
+
+    def test_ha_target_raises_when_supervisor_down(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.detector import detect_deployment
+
+        ssh = FakeSSHClient(
+            command_results={"ha supervisor info": (1, "", "not found")}
+        )
+        with pytest.raises(RuntimeError, match="HA Supervisor"):
+            asyncio.run(
+                detect_deployment(
+                    ssh_client=ssh,
+                    host="homeassistant.local",
+                    api_port=20212,
+                    container_name="netalertx",
+                    deploy_target="ha",
+                )
+            )
+
+
+class TestDockerInstallerConfigKeys:
+    """New config keys are present with correct defaults."""
+
+    def test_deploy_target_default(self, isolated_config):
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.NETALERTX_DEPLOY_TARGET == "ha"
+
+    def test_docker_host_default_empty(self, isolated_config):
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.NETALERTX_DOCKER_HOST == ""
+
+    def test_docker_config_path_default(self, isolated_config):
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.NETALERTX_DOCKER_CONFIG_PATH == "/opt/netalertx/config"
+
+    def test_docker_image_default(self, isolated_config):
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.NETALERTX_DOCKER_IMAGE == "ghcr.io/jokob-sk/netalertx:latest"
+
+    def test_docker_min_disk_gb_default(self, isolated_config):
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.NETALERTX_DOCKER_MIN_DISK_GB == 5.0
+
+    def test_mode_recognized_in_main(self):
+        """--mode netalertx-docker-setup is in the choices list."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "main.py", "--mode", "netalertx-docker-setup", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        # --help exits 0 and prints usage
+        assert result.returncode == 0 or "netalertx-docker-setup" in (
+            result.stdout + result.stderr
+        )

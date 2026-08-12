@@ -52,6 +52,13 @@ netalertx:
   mqtt_password: ""                           # MQTT password — enable auth in: Settings → Apps → Mosquitto broker → Configuration
   log_container_name: "netalertx"            # Docker container name (Docker deployments only)
   max_db_history_rows: 100000                 # Trigger DB cleanup above this row count
+  deploy_target: "ha"                         # Install target: ha (HA add-on) | docker (separate machine)
+  docker_host: ""                             # IP/hostname of the separate Docker machine
+  docker_ssh_user: ""                         # SSH user for Docker host (blank = same as HA user)
+  docker_ssh_key_path: ""                     # SSH key for Docker host (blank = same as HA key)
+  docker_config_path: "/opt/netalertx/config" # Config volume path on Docker host
+  docker_image: "ghcr.io/jokob-sk/netalertx:latest"  # Docker image to pull and run
+  docker_min_disk_gb: 5.0                     # Abort Docker install if host has less free space (GB)
 
 agent:
   db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
