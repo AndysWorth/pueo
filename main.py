@@ -183,6 +183,18 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
             log.warning("dynamic_tool_load_failed", name=tool_name, error=str(exc))
 
 
+async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
+    """Embed unembedded successful repair episodes into ChromaDB every 10 minutes."""
+    from utils.knowledge_store import embed_local_episode
+    from utils.repair_episode import get_unembedded_successful_episodes
+
+    while True:
+        episodes = get_unembedded_successful_episodes(db_path)
+        for ep in episodes:
+            await embed_local_episode(ep, knowledge_store, db_path)
+        await asyncio.sleep(600)
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     import config as cfg
@@ -371,6 +383,8 @@ async def supervisor_main(config_path: Path) -> None:
             cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN
         )
 
+    from utils.llm_factory import make_llm_client
+
     supervisor.start(
         "resource_poll",
         lambda: ResourcePoller(
@@ -381,8 +395,16 @@ async def supervisor_main(config_path: Path) -> None:
             disk_critical_gb=cfg.HA_DISK_CRITICAL_GB,
             mem_warn_mb=cfg.HA_MEM_WARN_MB,
             rest_client=_rest_client_for_poller,
+            llm_client=make_llm_client(),
+            knowledge_store=knowledge_store,
         ).run(),
     )
+
+    if knowledge_store is not None:
+        supervisor.start(
+            "embed_episodes",
+            lambda: _embed_episodes_loop(cfg.DB_PATH, knowledge_store),
+        )
 
     # Per-path disk usage polling loop
     from utils.disk_usage import DiskUsagePoller

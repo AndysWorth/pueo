@@ -3,7 +3,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import yaml as _yaml
 
@@ -113,6 +113,8 @@ class ResourcePoller:
         disk_critical_gb: float,
         mem_warn_mb: float,
         rest_client=None,  # Optional[HARestClientProtocol] — not typed to avoid circular import
+        llm_client=None,  # Optional[LLMClientProtocol] — not typed to avoid circular import
+        knowledge_store=None,  # Optional[KnowledgeStoreClientProtocol]
     ) -> None:
         self._ssh = ssh_client
         self._notifier = notifier
@@ -121,6 +123,8 @@ class ResourcePoller:
         self._disk_critical_gb = disk_critical_gb
         self._mem_warn_mb = mem_warn_mb
         self._rest_client = rest_client
+        self._llm_client = llm_client
+        self._knowledge_store = knowledge_store
         self._alerted: set[str] = set()
         self._last_recovery_at: float = 0.0
 
@@ -351,6 +355,45 @@ class ResourcePoller:
                 except Exception as _e:  # nosec B110 — analysis is best-effort
                     log.warning("disk_analysis_failed", error=str(_e))
 
+                # Run LLM investigation on top of the heuristic to get root-cause analysis.
+                # 60-second timeout; falls back to heuristic result so the card always sends.
+                if self._llm_client is not None:
+                    try:
+                        from utils.investigation_loop import investigate_with_fallback
+
+                        inv_report, inv_fallback = await investigate_with_fallback(
+                            topic="HA disk CRITICAL",
+                            goal=(
+                                "Determine the root cause of the disk CRITICAL condition. "
+                                "Identify which recovery options will actually resolve it. "
+                                "If the offered HITL options are insufficient, name the "
+                                "structural change required (specific add-on to remove, "
+                                "storage expansion, etc.)."
+                            ),
+                            context=_build_disk_investigation_context(
+                                status,
+                                disk_free_after_gb,
+                                auto_summary,
+                                self._disk_critical_gb,
+                                disk_analysis,
+                            ),
+                            llm_client=self._llm_client,
+                            ssh_client=self._ssh,
+                            notifier=self._notifier,
+                            knowledge_store=self._knowledge_store,
+                            timeout=60.0,
+                        )
+                        disk_analysis = _serialize_analysis(
+                            inv_report, disk_analysis, inv_fallback
+                        )
+                    except (
+                        Exception
+                    ) as _inv_e:  # nosec B110 — investigation is best-effort
+                        log.warning("disk_investigation_failed", error=str(_inv_e))
+                        disk_analysis = {**disk_analysis, "source": "heuristic"}
+                else:
+                    disk_analysis = {**disk_analysis, "source": "heuristic"}
+
                 body_lines = [
                     f"Disk free: {status.disk_free_gb:.1f} GB — below critical threshold "
                     f"{self._disk_critical_gb} GB. Backup creation is blocked.",
@@ -510,3 +553,79 @@ class ResourcePoller:
                 self._alerted.add("mem_warn")
         else:
             self._alerted.discard("mem_warn")
+
+
+# ---------------------------------------------------------------------------
+# Helpers for disk investigation + serialization
+# ---------------------------------------------------------------------------
+
+
+def _build_disk_investigation_context(
+    status: ResourceStatus,
+    disk_free_after_gb: Optional[float],
+    auto_summary: Any,  # RecoverySummary | None
+    disk_critical_gb: float,
+    heuristic: dict,
+) -> str:
+    """Format current disk state as a context string for the investigation agent."""
+    lines = [
+        f"Disk free: {status.disk_free_gb:.2f} GB (total: {status.disk_total_gb:.2f} GB)",
+        f"Critical threshold: {disk_critical_gb} GB",
+    ]
+    if disk_free_after_gb is not None:
+        still = disk_free_after_gb < disk_critical_gb
+        lines.append(
+            f"After auto-recovery: {disk_free_after_gb:.2f} GB"
+            f" ({'still CRITICAL' if still else 'recovered'})"
+        )
+    if auto_summary:
+        succeeded = [a.message for a in auto_summary.actions if a.success]
+        if succeeded:
+            lines.append("Auto-recovery steps taken: " + "; ".join(succeeded))
+    if heuristic.get("top_consumers"):
+        top = ", ".join(
+            f"{c['name']} ({c['size_human']})" for c in heuristic["top_consumers"][:4]
+        )
+        lines.append(f"Top disk consumers: {top}")
+    if heuristic.get("addon_persistent"):
+        addons = ", ".join(
+            f"{a['name']} ({a['size_human']})"
+            for a in heuristic["addon_persistent"][:4]
+        )
+        lines.append(f"Add-on data sizes: {addons}")
+    if heuristic.get("needed_mb", 0) > 0:
+        lines.append(
+            f"Space still needed: {heuristic['needed_mb']:.0f} MB above critical threshold"
+        )
+    return "\n".join(lines)
+
+
+def _serialize_analysis(
+    report: Any,  # Optional[InvestigationReport]
+    heuristic: dict,
+    is_fallback: bool,
+) -> dict:
+    """Merge investigation result (if available) with heuristic context data."""
+    if is_fallback or report is None:
+        return {**heuristic, "source": "heuristic"}
+    return {
+        "source": "investigation",
+        "text": report.summary,
+        "root_causes": report.root_causes,
+        "manual_only": report.manual_only,
+        "hitl_actions": [
+            {
+                "name": a.name,
+                "description": a.description,
+                "estimated_impact": a.estimated_impact,
+                "risk_level": a.risk_level,
+            }
+            for a in report.hitl_actions
+        ],
+        "knowledge_sources": report.knowledge_sources,
+        "confidence": report.confidence,
+        "top_consumers": heuristic.get("top_consumers", []),
+        "addon_persistent": heuristic.get("addon_persistent", []),
+        "hitl_sufficient": len(report.manual_only) == 0,
+        "needed_mb": heuristic.get("needed_mb", 0),
+    }
