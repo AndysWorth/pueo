@@ -158,15 +158,33 @@
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}
         {% if da and da.get("text") %}
+          {% set _is_inv = da.get("source") == "investigation" %}
+          {% set _label = "Investigation" if _is_inv else "Analysis" %}
           {% if da.hitl_sufficient %}
-        <div style="background:#d4edda;border:1px solid #c3e6cb;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.75rem;font-size:0.85rem;color:#155724;">
-          <strong>✓ Analysis:</strong> {{ da.text }}
+        <div style="background:#d4edda;border:1px solid #c3e6cb;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.5rem;font-size:0.85rem;color:#155724;">
+          <strong>✓ {{ _label }}:</strong> {{ da.text }}
+          {% if _is_inv and da.get("confidence") %}<span style="margin-left:0.5rem;font-size:0.78rem;opacity:0.75;">(confidence: {{ "%.0f"|format(da.confidence * 100) }}%)</span>{% endif %}
         </div>
           {% else %}
-        <div style="background:#fff3cd;border:1px solid #e6a817;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.75rem;font-size:0.85rem;color:#856404;">
-          <strong>⚠ Analysis:</strong> {{ da.text }}
+        <div style="background:#fff3cd;border:1px solid #e6a817;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.5rem;font-size:0.85rem;color:#856404;">
+          <strong>⚠ {{ _label }}:</strong> {{ da.text }}
+          {% if _is_inv and da.get("confidence") %}<span style="margin-left:0.5rem;font-size:0.78rem;opacity:0.75;">(confidence: {{ "%.0f"|format(da.confidence * 100) }}%)</span>{% endif %}
         </div>
           {% endif %}
+        {% endif %}
+        {% if da.get("root_causes") %}
+        <p style="margin:0 0 0.3rem;font-size:0.85rem;"><strong>Root causes identified:</strong></p>
+        <ul style="margin:0 0 0.6rem;padding-left:1.2rem;font-size:0.85rem;">
+          {% for rc in da.root_causes %}<li>{{ rc }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% if da.get("manual_only") %}
+        <div style="background:#f8d7da;border:1px solid #f5c2c7;border-radius:6px;padding:0.55rem 0.75rem;margin:0 0 0.75rem;font-size:0.85rem;color:#842029;">
+          <strong>⛔ Requires manual action (Pueo cannot fix automatically):</strong>
+          <ul style="margin:0.3rem 0 0;padding-left:1.2rem;">
+            {% for m in da.manual_only %}<li>{{ m }}</li>{% endfor %}
+          </ul>
+        </div>
         {% endif %}
         {% if da and (da.get("addon_persistent") or da.get("top_consumers")) %}
         <p style="margin:0 0 0.3rem;font-size:0.85rem;"><strong>Largest disk consumers:</strong></p>

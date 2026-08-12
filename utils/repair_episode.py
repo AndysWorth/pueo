@@ -145,6 +145,44 @@ def export_single_episode_yaml(episode: RepairEpisode, description: str = "") ->
     )
 
 
+def format_episode_for_embedding(episode: RepairEpisode) -> str:
+    """Serialize a repair episode as a searchable text chunk for ChromaDB embedding."""
+    parts = [f"trigger: {episode.trigger}"]
+    if episode.symptoms:
+        parts.append("symptoms: " + "; ".join(episode.symptoms))
+    if episode.hypothesis_chain:
+        parts.append("hypotheses: " + "; ".join(episode.hypothesis_chain))
+    if episode.fix_applied:
+        parts.append(f"fix applied: {episode.fix_applied}")
+    parts.append(
+        f"verification: {'success' if episode.verification_result else 'failed'}"
+    )
+    parts.append(f"model: {episode.model_used}")
+    return "\n".join(parts)
+
+
+def get_unembedded_successful_episodes(db_path: str) -> list[RepairEpisode]:
+    """Return successful episodes that have not yet been embedded into ChromaDB."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM repair_episodes "
+            "WHERE verification_result = 1 AND embedded_at IS NULL "
+            "ORDER BY timestamp ASC"
+        ).fetchall()
+    return [_row_to_episode(row) for row in rows]
+
+
+def mark_episode_embedded(db_path: str, episode_id: str) -> None:
+    """Record the timestamp at which an episode was embedded into ChromaDB."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE repair_episodes SET embedded_at = ? WHERE id = ?",
+            (time.time(), episode_id),
+        )
+        conn.commit()
+
+
 def export_episodes_yaml(
     episodes: list[RepairEpisode],
 ) -> str:

@@ -168,6 +168,33 @@ class ChromaKnowledgeStore:  # pragma: no cover
         return len(stale)
 
 
+async def embed_local_episode(
+    episode: Any,
+    knowledge_store: Any,
+    db_path: str,
+) -> bool:
+    """Embed a successful repair episode into the community_cases ChromaDB collection.
+
+    Uses the episode ID as the ChromaDB document ID so repeated calls are idempotent
+    (upsert semantics). Marks the episode as embedded in SQLite on success.
+    Returns True on success, False on any error.
+    """
+    from utils.repair_episode import format_episode_for_embedding, mark_episode_embedded
+
+    try:
+        text = format_episode_for_embedding(episode)
+        knowledge_store.upsert(
+            collection="community_cases",
+            ids=[episode.id],
+            documents=[text],
+            metadatas=[{"source": "local_episode", "episode_id": episode.id}],
+        )
+        mark_episode_embedded(db_path, episode.id)
+        return True
+    except Exception:
+        return False
+
+
 class _OllamaEmbeddingFunction:  # pragma: no cover
     """chromadb embedding function backed by Ollama."""
 

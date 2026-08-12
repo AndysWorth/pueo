@@ -21,10 +21,9 @@ any future domain without bespoke code.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import Optional
-
-from typing import Any
+from typing import Any, Optional
 
 from interfaces import (
     KnowledgeStoreClientProtocol,
@@ -255,8 +254,8 @@ async def run_investigation(
     context: str,
     llm_client: LLMClientProtocol,
     ha_ssh_client: SSHClientProtocol,
-    gate: Any,  # AutonomyGate — Any avoids circular import
-    notifier: Any,  # NotifierProtocol — Any avoids circular import
+    gate: Any = None,  # AutonomyGate — Any avoids circular import; defaults to AUTONOMOUS
+    notifier: Any = None,  # NotifierProtocol — Any avoids circular import
     knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
     max_tool_calls: int = 15,
     max_wall_seconds: float = 90.0,
@@ -268,6 +267,11 @@ async def run_investigation(
     """
     from utils.agent_loop import AgentLoop
     from utils.tool_executor import ToolExecutor
+
+    if gate is None:
+        from utils.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)  # AUTONOMOUS — investigation registry is read-only
 
     system_prompt = INVESTIGATION_SYSTEM_PROMPT_TEMPLATE.format(
         topic=topic,
@@ -341,3 +345,37 @@ async def run_investigation(
         confidence=report.confidence,
     )
     return report
+
+
+async def investigate_with_fallback(
+    topic: str,
+    goal: str,
+    context: str,
+    llm_client: LLMClientProtocol,
+    ssh_client: SSHClientProtocol,
+    notifier: Any = None,
+    knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
+    timeout: float = 60.0,
+) -> tuple[Optional[InvestigationReport], bool]:
+    """Run a read-only investigation with a timeout. Returns (report, is_fallback).
+
+    is_fallback=True when the investigation timed out or raised — the caller should
+    fall back to its heuristic analysis. The card is always sent regardless.
+    """
+    try:
+        report = await asyncio.wait_for(
+            run_investigation(
+                topic=topic,
+                investigation_goal=goal,
+                context=context,
+                llm_client=llm_client,
+                ha_ssh_client=ssh_client,
+                notifier=notifier,
+                knowledge_store=knowledge_store,
+            ),
+            timeout=timeout,
+        )
+        return report, False
+    except Exception:
+        log.warning("investigation_fallback", topic=topic)
+        return None, True
