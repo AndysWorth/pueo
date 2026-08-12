@@ -154,6 +154,18 @@
         {% endif %}
       </div>
       {% endif %}
+      {% if ct == "netalertx_new_device" %}
+      <div style="margin:0.75rem 0;">
+        {% set _mac = r.payload.get("mac", "") %}
+        {% set _ip = r.payload.get("ip", "") %}
+        {% set _vendor = r.payload.get("vendor", "") %}
+        {% set _name = r.payload.get("name", "") %}
+        {% if _mac %}<p style="margin:0 0 0.3rem;"><strong>MAC:</strong> <code>{{ _mac }}</code></p>{% endif %}
+        {% if _ip %}<p style="margin:0 0 0.3rem;"><strong>IP:</strong> {{ _ip }}</p>{% endif %}
+        {% if _vendor %}<p style="margin:0 0 0.3rem;"><strong>Vendor:</strong> {{ _vendor }}</p>{% endif %}
+        {% if _name %}<p style="margin:0 0 0.3rem;"><strong>Name:</strong> {{ _name }}</p>{% endif %}
+      </div>
+      {% endif %}
       {% if ct == "disk_recovery" %}
       <div style="margin:0.75rem 0;">
         {% set da = r.payload.get("disk_analysis", {}) %}

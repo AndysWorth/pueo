@@ -1,0 +1,30 @@
+name: netalertx_new_device_mqtt
+trigger: netalertx
+description: >
+  A new device has appeared on the network: MAC AA:BB:CC:DD:EE:FF,
+  IP 192.168.1.200, vendor Apple Inc. Query NetAlertX to retrieve the
+  device list and confirm the device is present. Check recent logs for
+  any associated errors. Call finish_repair with a summary classifying
+  the device as new/unknown and noting whether any follow-up is needed.
+
+mocks:
+  query_netalertx: |
+    {"status": "ok", "version": "26.7.1", "last_scan": "2026-08-12T14:00:00Z",
+     "devices": [
+       {"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.200", "name": "Unknown",
+        "vendor": "Apple Inc.", "is_new": true, "status": "online"}
+     ]}
+  read_logs: |
+    [INFO] NetAlertX: New device detected — AA:BB:CC:DD:EE:FF / 192.168.1.200 / Apple Inc.
+    [INFO] NetAlertX: MQTT alert published: NetAlertX/alert/new_device
+    [INFO] NetAlertX: Scan complete. 47 devices online, 1 new device flagged.
+
+expected_outcome: success
+expected_tools_called:
+  - query_netalertx
+  - finish_repair
+expected_tools_not_called:
+  - apply_fix
+  - trigger_backup
+fix_must_parse: false
+max_tool_calls: 8

@@ -1,16 +1,19 @@
 """NetAlertX MQTT subscriber — device presence events via aiomqtt (item 16).
 
 Subscribes to:
-  system-sensors/binary_sensor/+/state
-  system-sensors/sensor/+/state
+  system-sensors/binary_sensor/+/state   — feeds DevicePresenceEvent into queue
+  system-sensors/sensor/+/state          — feeds DevicePresenceEvent into queue
+  NetAlertX/alert/+                      — feeds (topic, payload) into alert_queue
+  NetAlertX/device/+/state               — feeds (topic, payload) into alert_queue
+  NetAlertX/scan/complete                — feeds (topic, payload) into alert_queue
 
-Feeds DevicePresenceEvent into an asyncio.Queue consumed by health.py.
 Reconnects automatically on broker disconnection.
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
 import aiomqtt
 from pydantic import BaseModel
@@ -22,6 +25,12 @@ log = get_logger("netalertx.mqtt_subscriber")
 _TOPICS = [
     "system-sensors/binary_sensor/+/state",
     "system-sensors/sensor/+/state",
+]
+
+_NAX_TOPICS = [
+    "NetAlertX/alert/+",
+    "NetAlertX/device/+/state",
+    "NetAlertX/scan/complete",
 ]
 
 
@@ -47,8 +56,16 @@ class MQTTSubscriber:
         self._username = username or None
         self._password = password or None
 
-    async def subscribe(self, queue: asyncio.Queue[DevicePresenceEvent]) -> None:
-        """Subscribe and feed events into queue. Runs until cancelled."""
+    async def subscribe(
+        self,
+        queue: "asyncio.Queue[DevicePresenceEvent]",
+        alert_queue: "Optional[asyncio.Queue[tuple[str, str]]]" = None,
+    ) -> None:
+        """Subscribe and feed events into queues. Runs until cancelled.
+
+        system-sensors messages → queue (DevicePresenceEvent).
+        NetAlertX/* messages → alert_queue as (topic, payload) if provided.
+        """
         while True:
             try:
                 async with aiomqtt.Client(
@@ -57,7 +74,7 @@ class MQTTSubscriber:
                     username=self._username,
                     password=self._password,
                 ) as client:
-                    for topic in _TOPICS:
+                    for topic in _TOPICS + _NAX_TOPICS:
                         await client.subscribe(topic)
                     log.info(
                         "mqtt_subscriber_connected",
@@ -65,11 +82,17 @@ class MQTTSubscriber:
                         port=self._port,
                     )
                     async for message in client.messages:
-                        event = DevicePresenceEvent(
-                            topic=str(message.topic),
-                            payload=message.payload.decode(errors="replace"),
-                        )
-                        await queue.put(event)
+                        topic_str = str(message.topic)
+                        payload_str = message.payload.decode(errors="replace")
+                        if topic_str.startswith("NetAlertX/"):
+                            if alert_queue is not None:
+                                await alert_queue.put((topic_str, payload_str))
+                        else:
+                            await queue.put(
+                                DevicePresenceEvent(
+                                    topic=topic_str, payload=payload_str
+                                )
+                            )
             except asyncio.CancelledError:
                 log.info("mqtt_subscriber_cancelled")
                 return
@@ -117,15 +140,24 @@ class FakeMQTTSubscriber:
     def __init__(
         self,
         events: list[DevicePresenceEvent] | None = None,
+        alert_events: list[tuple[str, str]] | None = None,
         error: Exception | None = None,
     ) -> None:
         self._events: list[DevicePresenceEvent] = events or []
+        self._alert_events: list[tuple[str, str]] = alert_events or []
         self._error = error
         self.subscribe_calls: int = 0
 
-    async def subscribe(self, queue: asyncio.Queue[DevicePresenceEvent]) -> None:
+    async def subscribe(
+        self,
+        queue: "asyncio.Queue[DevicePresenceEvent]",
+        alert_queue: "Optional[asyncio.Queue[tuple[str, str]]]" = None,
+    ) -> None:
         self.subscribe_calls += 1
         for event in self._events:
             await queue.put(event)
+        if alert_queue is not None:
+            for item in self._alert_events:
+                await alert_queue.put(item)
         if self._error is not None:
             raise self._error

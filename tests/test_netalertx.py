@@ -8360,3 +8360,314 @@ class TestNetalertxMigrateCard:
         asyncio.run(poller._maybe_send_migrate_card())
 
         assert notifier.send.call_count == 1
+
+
+# ── netalertx/event_router.py ────────────────────────────────────────────────
+
+
+class TestNewDeviceAlertEvent:
+    def test_valid_construction(self):
+        from netalertx.event_router import NewDeviceAlertEvent
+
+        ev = NewDeviceAlertEvent(
+            mac="AA:BB:CC:DD:EE:FF",
+            ip="192.168.1.100",
+            vendor="Apple Inc.",
+            name="iPhone",
+            topic="NetAlertX/alert/new_device",
+        )
+        assert ev.mac == "AA:BB:CC:DD:EE:FF"
+        assert ev.ip == "192.168.1.100"
+        assert ev.vendor == "Apple Inc."
+
+    def test_optional_fields_default_empty(self):
+        from netalertx.event_router import NewDeviceAlertEvent
+
+        ev = NewDeviceAlertEvent(mac="AA:BB:CC:DD:EE:FF")
+        assert ev.ip == ""
+        assert ev.vendor == ""
+        assert ev.name == ""
+
+    def test_json_roundtrip(self):
+        from netalertx.event_router import NewDeviceAlertEvent
+
+        ev = NewDeviceAlertEvent(mac="AA:BB:CC:DD:EE:FF", ip="10.0.0.1")
+        restored = NewDeviceAlertEvent.model_validate_json(ev.model_dump_json())
+        assert restored.mac == ev.mac
+        assert restored.ip == ev.ip
+
+
+class TestDeviceStateEvent:
+    def test_valid_construction(self):
+        from netalertx.event_router import DeviceStateEvent
+
+        ev = DeviceStateEvent(mac="AA:BB:CC:DD:EE:FF", state="online")
+        assert ev.mac == "AA:BB:CC:DD:EE:FF"
+        assert ev.state == "online"
+
+    def test_json_roundtrip(self):
+        from netalertx.event_router import DeviceStateEvent
+
+        ev = DeviceStateEvent(
+            mac="AA:BB:CC:DD:EE:FF",
+            state="offline",
+            topic="NetAlertX/device/AA:BB:CC:DD:EE:FF/state",
+        )
+        restored = DeviceStateEvent.model_validate_json(ev.model_dump_json())
+        assert restored.mac == ev.mac
+        assert restored.state == ev.state
+
+
+class TestScanCompleteEvent:
+    def test_valid_construction(self):
+        from netalertx.event_router import ScanCompleteEvent
+
+        ev = ScanCompleteEvent()
+        assert ev.topic == "NetAlertX/scan/complete"
+
+    def test_json_roundtrip(self):
+        from netalertx.event_router import ScanCompleteEvent
+
+        ev = ScanCompleteEvent(payload="done")
+        restored = ScanCompleteEvent.model_validate_json(ev.model_dump_json())
+        assert restored.payload == "done"
+
+
+class TestParseMQTTEvent:
+    def test_alert_topic_with_json_payload(self):
+        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
+
+        result = parse_mqtt_event(
+            "NetAlertX/alert/new_device",
+            '{"mac":"AA:BB:CC:DD:EE:FF","ip":"192.168.1.1","vendor":"Apple"}',
+        )
+        assert isinstance(result, NewDeviceAlertEvent)
+        assert result.mac == "AA:BB:CC:DD:EE:FF"
+        assert result.ip == "192.168.1.1"
+        assert result.vendor == "Apple"
+
+    def test_alert_topic_with_webhook_field_names(self):
+        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
+
+        result = parse_mqtt_event(
+            "NetAlertX/alert/new_device",
+            '{"eveMac":"CC:DD:EE:FF:00:11","eveIp":"10.0.0.5","devVendor":"TP-Link"}',
+        )
+        assert isinstance(result, NewDeviceAlertEvent)
+        assert result.mac == "CC:DD:EE:FF:00:11"
+        assert result.ip == "10.0.0.5"
+        assert result.vendor == "TP-Link"
+
+    def test_alert_topic_with_non_json_payload(self):
+        from netalertx.event_router import NewDeviceAlertEvent, parse_mqtt_event
+
+        result = parse_mqtt_event("NetAlertX/alert/new_device", "not-json")
+        assert isinstance(result, NewDeviceAlertEvent)
+        assert result.mac == ""
+
+    def test_device_state_topic(self):
+        from netalertx.event_router import DeviceStateEvent, parse_mqtt_event
+
+        result = parse_mqtt_event("NetAlertX/device/AA:BB:CC:DD:EE:FF/state", "online")
+        assert isinstance(result, DeviceStateEvent)
+        assert result.mac == "AA:BB:CC:DD:EE:FF"
+        assert result.state == "online"
+
+    def test_scan_complete_topic(self):
+        from netalertx.event_router import ScanCompleteEvent, parse_mqtt_event
+
+        result = parse_mqtt_event("NetAlertX/scan/complete", "")
+        assert isinstance(result, ScanCompleteEvent)
+
+    def test_unrecognised_topic_returns_none(self):
+        from netalertx.event_router import parse_mqtt_event
+
+        assert parse_mqtt_event("system-sensors/binary_sensor/pi/state", "ON") is None
+        assert parse_mqtt_event("homeassistant/status", "online") is None
+
+
+class TestNetAlertXEventRouter:
+    def _make_router(self, auto_execute: bool = False):
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+        from utils.autonomy import FakeAutonomyGate
+        from netalertx.event_router import NetAlertXEventRouter
+
+        gate = FakeAutonomyGate(auto_execute_result=auto_execute)
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return NetAlertXEventRouter(notifier, gate), notifier, gate
+
+    def test_new_device_card_sent_when_gate_blocks(self):
+        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="192.168.1.1", vendor="Apple", name=""
+            )
+        )
+        notifier.send.assert_called_once()
+        call_kwargs = notifier.send.call_args[1]
+        assert call_kwargs["payload"]["card_type"] == CARD_TYPE_NETALERTX_NEW_DEVICE
+        assert call_kwargs["payload"]["mac"] == "AA:BB:CC:DD:EE:FF"
+
+    def test_new_device_no_card_when_gate_auto_executes(self):
+        router, notifier, _ = self._make_router(auto_execute=True)
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        notifier.send.assert_not_called()
+
+    def test_deduplication_suppresses_second_event(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        assert notifier.send.call_count == 1
+
+    def test_deduplication_is_case_insensitive(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(
+            router._handle_new_device(
+                mac="aa:bb:cc:dd:ee:ff", ip="", vendor="", name=""
+            )
+        )
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        assert notifier.send.call_count == 1
+
+    def test_different_macs_not_deduplicated(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        asyncio.run(
+            router._handle_new_device(
+                mac="11:22:33:44:55:66", ip="", vendor="", name=""
+            )
+        )
+        assert notifier.send.call_count == 2
+
+    def test_route_alert_topic_calls_handle_new_device(self):
+        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(
+            router.route(
+                "NetAlertX/alert/new_device",
+                '{"mac":"AA:BB:CC:DD:EE:FF","ip":"10.0.0.1"}',
+            )
+        )
+        notifier.send.assert_called_once()
+        assert (
+            notifier.send.call_args[1]["payload"]["card_type"]
+            == CARD_TYPE_NETALERTX_NEW_DEVICE
+        )
+
+    def test_route_device_state_does_not_create_card(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(router.route("NetAlertX/device/AA:BB:CC:DD:EE:FF/state", "offline"))
+        notifier.send.assert_not_called()
+
+    def test_route_scan_complete_does_not_create_card(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        asyncio.run(router.route("NetAlertX/scan/complete", ""))
+        notifier.send.assert_not_called()
+
+    def test_route_webhook_deduplicates_against_mqtt(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        # MQTT event arrives first
+        asyncio.run(
+            router.route(
+                "NetAlertX/alert/new_device",
+                '{"mac":"AA:BB:CC:DD:EE:FF"}',
+            )
+        )
+        # Webhook event for the same MAC arrives shortly after
+        asyncio.run(router.route_webhook(mac="AA:BB:CC:DD:EE:FF"))
+        assert notifier.send.call_count == 1  # deduplicated
+
+    def test_dedup_window_expired_allows_resend(self):
+        router, notifier, _ = self._make_router(auto_execute=False)
+        router._dedup_window = 0.0  # expire immediately
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        asyncio.run(
+            router._handle_new_device(
+                mac="AA:BB:CC:DD:EE:FF", ip="", vendor="", name=""
+            )
+        )
+        assert notifier.send.call_count == 2
+
+
+class TestMQTTSubscriberNAXTopics:
+    def test_fake_subscriber_routes_alert_events_to_alert_queue(self):
+        from netalertx.mqtt_subscriber import (
+            DevicePresenceEvent,
+            FakeMQTTSubscriber,
+        )
+
+        presence_queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
+        alert_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+        sub = FakeMQTTSubscriber(
+            events=[
+                DevicePresenceEvent(
+                    topic="system-sensors/binary_sensor/pi/state", payload="ON"
+                )
+            ],
+            alert_events=[
+                ("NetAlertX/alert/new_device", '{"mac":"AA:BB:CC:DD:EE:FF"}')
+            ],
+        )
+        asyncio.run(sub.subscribe(presence_queue, alert_queue))
+
+        assert presence_queue.qsize() == 1
+        assert alert_queue.qsize() == 1
+        topic, payload = alert_queue.get_nowait()
+        assert topic == "NetAlertX/alert/new_device"
+
+    def test_fake_subscriber_no_alert_queue_ignores_alert_events(self):
+        from netalertx.mqtt_subscriber import (
+            DevicePresenceEvent,
+            FakeMQTTSubscriber,
+        )
+
+        presence_queue: asyncio.Queue[DevicePresenceEvent] = asyncio.Queue()
+        sub = FakeMQTTSubscriber(
+            alert_events=[
+                ("NetAlertX/alert/new_device", '{"mac":"AA:BB:CC:DD:EE:FF"}')
+            ],
+        )
+        asyncio.run(sub.subscribe(presence_queue))  # no alert_queue passed
+        assert presence_queue.qsize() == 0  # nothing added to presence queue either
+
+    def test_nax_topics_constant_contains_expected_topics(self):
+        from netalertx.mqtt_subscriber import _NAX_TOPICS
+
+        assert any("NetAlertX/alert" in t for t in _NAX_TOPICS)
+        assert any("NetAlertX/device" in t for t in _NAX_TOPICS)
+        assert any("NetAlertX/scan/complete" in t for t in _NAX_TOPICS)
+
+    def test_new_device_card_type_registered(self):
+        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+
+        assert CARD_TYPE_NETALERTX_NEW_DEVICE == "netalertx_new_device"
