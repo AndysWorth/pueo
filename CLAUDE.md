@@ -154,10 +154,11 @@ Every code change follows this procedure in order. Never commit directly to `mai
 
 ### Before committing
 11. `git diff --staged` — self-review the diff; catch noise, debug artifacts, unintended changes
-12. Commit atomically — one logical concern per commit; message explains *why*, not *what*; include `Closes #N` or `Refs #N`.
+12. **Exercise the change** — run the app and manually verify the affected behavior. Tests confirm code correctness; only running it confirms the feature works. Use `/run` to launch the app. If the change touches the dashboard, SSH flows, or LLM interactions, test those paths directly. If it truly cannot be exercised locally (e.g. requires live HA state that isn't available), say so explicitly rather than skipping silently.
+13. Commit atomically — one logical concern per commit; message explains *why*, not *what*; include `Closes #N` or `Refs #N`.
 
 ### Before opening a PR
-13. Run the full CI gate locally — all must pass:
+14. Run the full CI gate locally — all must pass:
     ```bash
     black --check .
     flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -165,11 +166,11 @@ Every code change follows this procedure in order. Never commit directly to `mai
     bandit -r . -x ./tests,./.venv
     pytest --cov --cov-fail-under=90 --ignore=tests/integration
     ```
-14. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
-15. CI passing = done, open the PR. `gh pr create` — description focuses on *why*, not *what*; reference the issue (`Closes #N`); include rollback note if step 14 applies.
+15. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
+16. CI passing = done, open the PR. `gh pr create` — description focuses on *why*, not *what*; reference the issue (`Closes #N`); include rollback note if step 15 applies.
 
 ### After merge
-16. Repeat steps 1–3 to clean up.
+17. Repeat steps 1–3 to clean up.
 
 ## Roadmap
 
