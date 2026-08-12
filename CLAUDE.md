@@ -138,25 +138,26 @@ Every code change follows this procedure in order. Never commit directly to `mai
 1. `git checkout main && git pull` — start from a clean base
 2. `git remote prune origin` — remove stale remote-tracking refs
 3. `git branch --merged | grep -v '^\*\|main' | xargs git branch -d 2>/dev/null` — prune merged local branches
-4. **Plan non-trivial changes first.** Trivial = a few files within the same module; implement directly. Non-trivial = crosses module boundaries or touches many files; agree on the approach before touching any files.
-5. `git checkout -b feat/<slug>` — branch created before the first edit. If a change was already made on `main` without branching, do this retroactively — uncommitted changes carry over.
+4. **Every change needs a GitHub issue.** Check that an issue exists for this work. If not, create one with `gh issue create` before touching any files. No issue = no branch. Reference the issue number in the branch name and in every commit message.
+5. **Plan non-trivial changes first.** Trivial = a few files within the same module; implement directly. Non-trivial = crosses module boundaries or touches many files; agree on the approach before touching any files.
+6. `git checkout -b feat/<issue-number>-<slug>` — branch created before the first edit, named with the issue number. If a change was already made on `main` without branching, do this retroactively — uncommitted changes carry over.
 
 ### During coding
-6. **Write/update tests in the same session** — not deferred. Do not commit logic changes without corresponding test changes.
-7. **Update all related files** and report explicitly when done:
+7. **Write/update tests in the same session** — not deferred. Do not commit logic changes without corresponding test changes.
+8. **Update all related files** and report explicitly when done:
    - Config key added → `config.py`, `config.yaml.default`, and `setup.sh`
    - Architecture change → add/update a decision record in `docs/decisions/`
    - Public interface changed → update this file if the pattern is documented here
    - Dependency added/changed → update `requirements.txt` or `requirements-dev.txt`
-8. **Migrations and schema changes** — flag separately from code changes. Test against a real local copy of `ha_agent_state.db`. Document the rollback path (which migration version to revert to) before proceeding.
-9. **Security review** — invoke `/security-review` when the change meaningfully touches SSH transport, external HTTP calls, credential handling, or production file writes.
+9. **Migrations and schema changes** — flag separately from code changes. Test against a real local copy of `ha_agent_state.db`. Document the rollback path (which migration version to revert to) before proceeding.
+10. **Security review** — invoke `/security-review` when the change meaningfully touches SSH transport, external HTTP calls, credential handling, or production file writes.
 
 ### Before committing
-10. `git diff --staged` — self-review the diff; catch noise, debug artifacts, unintended changes
-11. Commit atomically — one logical concern per commit; message explains *why*, not *what*
+11. `git diff --staged` — self-review the diff; catch noise, debug artifacts, unintended changes
+12. Commit atomically — one logical concern per commit; message explains *why*, not *what*; include `Closes #N` or `Refs #N`.
 
 ### Before opening a PR
-12. Run the full CI gate locally — all must pass:
+13. Run the full CI gate locally — all must pass:
     ```bash
     black --check .
     flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -164,9 +165,8 @@ Every code change follows this procedure in order. Never commit directly to `mai
     bandit -r . -x ./tests,./.venv
     pytest --cov --cov-fail-under=90 --ignore=tests/integration
     ```
-13. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
-14. If implementing a GitHub issue: CI passing = done, open the PR. For ad-hoc work: confirm with the user that the change is complete before opening the PR.
-15. `gh pr create` — description focuses on *why*, not *what*; include rollback note if step 13 applies.
+14. **Rollback planning** — for migrations or config writes to production, note the rollback path in the PR description (revert commit + migration version).
+15. CI passing = done, open the PR. `gh pr create` — description focuses on *why*, not *what*; reference the issue (`Closes #N`); include rollback note if step 14 applies.
 
 ### After merge
 16. Repeat steps 1–3 to clean up.
