@@ -29,9 +29,9 @@ message; `ha addons` removed from `setup.sh`; CI passes.
 
 ---
 
-## Session B — Separate-Machine Docker Installer
+## Session B — Separate-Machine Docker Installer ✅ Complete (2026-08-12) — PR #212 (https://github.com/AndysWorth/pueo/pull/212)
 
-**Issue:** TBD  **Branch:** `feat/<N>-netalertx-docker-installer`
+**Branch:** `feat/211-netalertx-docker-installer`  **Issue:** #211
 
 New config keys (triple-update rule):
 

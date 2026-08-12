@@ -43,6 +43,7 @@ async def detect_deployment(
     api_port: int,
     container_name: str,
     http_client: httpx.AsyncClient | None = None,
+    deploy_target: str = "auto",
 ) -> DeploymentInfo:
     """Detect whether NetAlertX is running as an HA add-on or a Docker container.
 
@@ -55,6 +56,8 @@ async def detect_deployment(
         api_port: NetAlertX API port (default 20212).
         container_name: Docker container name (from config, default "netalertx").
         http_client: optional pre-built httpx.AsyncClient for tests.
+        deploy_target: "ha", "docker", or "auto" (probe both). When "docker",
+            the HA Supervisor check is skipped and Docker is probed directly.
 
     Returns:
         DeploymentInfo with mode, container_name, api_base_url, log_path, version.
@@ -62,18 +65,38 @@ async def detect_deployment(
     Raises:
         RuntimeError: if neither HA Supervisor nor Docker is available.
     """
-    exit_code, _, _ = await ssh_client.run("ha supervisor info")
-    if exit_code == 0:
-        mode = "addon"
-    else:
-        exit_code2, _, _ = await ssh_client.run("docker info")
-        if exit_code2 == 0:
+    if deploy_target == "docker":
+        exit_code, _, _ = await ssh_client.run("docker info")
+        if exit_code == 0:
             mode = "docker"
         else:
             raise RuntimeError(
                 "NetAlertX deployment detection failed: "
-                "neither HA Supervisor nor Docker is available on the SSH host"
+                "Docker is not available on the configured docker_host"
             )
+    elif deploy_target == "ha":
+        exit_code, _, _ = await ssh_client.run("ha supervisor info")
+        if exit_code == 0:
+            mode = "addon"
+        else:
+            raise RuntimeError(
+                "NetAlertX deployment detection failed: "
+                "HA Supervisor is not available on the SSH host"
+            )
+    else:
+        # auto: probe Supervisor first, fall back to Docker
+        exit_code, _, _ = await ssh_client.run("ha supervisor info")
+        if exit_code == 0:
+            mode = "addon"
+        else:
+            exit_code2, _, _ = await ssh_client.run("docker info")
+            if exit_code2 == 0:
+                mode = "docker"
+            else:
+                raise RuntimeError(
+                    "NetAlertX deployment detection failed: "
+                    "neither HA Supervisor nor Docker is available on the SSH host"
+                )
 
     api_base_url = f"http://{host}:{api_port}"
     version = await _fetch_version(api_base_url, http_client)

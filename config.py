@@ -191,6 +191,21 @@ NETALERTX_MQTT_PASSWORD: str = _nax.get("mqtt_password", "")
 NETALERTX_LOG_CONTAINER_NAME: str = _nax.get("log_container_name", "netalertx")
 NETALERTX_MAX_DB_HISTORY_ROWS: int = int(_nax.get("max_db_history_rows", 100000))
 
+# Docker / separate-machine install target
+NETALERTX_DEPLOY_TARGET: str = _nax.get("deploy_target", "ha")
+NETALERTX_DOCKER_HOST: str = _nax.get("docker_host", "")
+NETALERTX_DOCKER_SSH_USER: str = _nax.get("docker_ssh_user", "")
+NETALERTX_DOCKER_SSH_KEY_PATH: str = os.path.expanduser(
+    _nax.get("docker_ssh_key_path", _ha.get("ssh_key_path", "~/.ssh/id_ed25519"))
+)
+NETALERTX_DOCKER_CONFIG_PATH: str = _nax.get(
+    "docker_config_path", "/opt/netalertx/config"
+)
+NETALERTX_DOCKER_IMAGE: str = _nax.get(
+    "docker_image", "ghcr.io/jokob-sk/netalertx:latest"
+)
+NETALERTX_DOCKER_MIN_DISK_GB: float = float(_nax.get("docker_min_disk_gb", 5.0))
+
 # Autonomy control
 _netalertx_mode = _nax.get("mode", "")
 _NETALERTX_MODE_MAP: dict[str, int] = {"diagnose": 1, "auto_fix": 3, "autonomous": 4}
