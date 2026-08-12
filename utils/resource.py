@@ -453,6 +453,11 @@ class ResourcePoller:
                 except Exception:  # nosec B110
                     pass
                 self._alerted.add("disk_critical")
+
+                # If NetAlertX is running as an HA add-on and the user has a
+                # Docker host configured, suggest migrating it off HA.
+                if is_first_breach or cooldown_elapsed:
+                    await self._maybe_send_migrate_card()
         else:
             self._alerted.discard("disk_critical")
             if status.disk_warn:
@@ -553,6 +558,55 @@ class ResourcePoller:
                 self._alerted.add("mem_warn")
         else:
             self._alerted.discard("mem_warn")
+
+    async def _maybe_send_migrate_card(self) -> None:
+        """Send CARD_TYPE_NETALERTX_MIGRATE if NAX is on HA and disk is CRITICAL.
+
+        Suppressed when:
+        - deploy_target != "ha" (already migrated or Docker target)
+        - NAX is not FULLY_OPERATIONAL on HA
+        - migrate card already sent (tracked in _alerted)
+        """
+        if "netalertx_migrate" in self._alerted:
+            return
+        try:
+            import config as _cfg
+            from netalertx.installer import get_install_state
+            from utils.card_types import CARD_TYPE_NETALERTX_MIGRATE
+
+            deploy_target = getattr(_cfg, "NETALERTX_DEPLOY_TARGET", "ha")
+            if deploy_target != "ha":
+                return
+            nax_state = get_install_state(_cfg.DB_PATH)
+            if nax_state != "FULLY_OPERATIONAL":
+                return
+
+            await self._notifier.send(
+                subject="Pueo: Consider migrating NetAlertX off HA to free disk space",
+                body=(
+                    "HA disk is CRITICAL and NetAlertX Full Access is running as an HA add-on. "
+                    "Moving NetAlertX to a separate Docker host would reclaim significant disk "
+                    "space on HA. Approve to begin the migration sequence."
+                ),
+                payload={
+                    "card_type": CARD_TYPE_NETALERTX_MIGRATE,
+                    "severity": "WARNING",
+                    "type": "netalertx_migrate",
+                    "deploy_target": deploy_target,
+                    "nax_state": nax_state,
+                    "docker_host_configured": bool(
+                        getattr(_cfg, "NETALERTX_DOCKER_HOST", "")
+                    ),
+                },
+            )
+            self._alerted.add("netalertx_migrate")
+            log.info(
+                "netalertx_migrate_card_sent",
+                nax_state=nax_state,
+                deploy_target=deploy_target,
+            )
+        except Exception as exc:  # nosec B110 — best-effort advisory card
+            log.warning("netalertx_migrate_card_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------

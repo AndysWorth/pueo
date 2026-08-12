@@ -44,6 +44,7 @@ from config import (
     NETALERTX_MQTT_USER,
     NETALERTX_SCAN_INTERFACE,
 )
+from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.autonomy import RiskLevel
 from netalertx.installer_diagnostics import (
     diagnose_installer_failure,
@@ -1334,6 +1335,38 @@ async def run_steps_1_to_4(
         steps="1-4",
         correlation_id=cid,
     )
+
+    # Disk-space preflight — only when starting fresh (resuming is fine).
+    # Best-effort: SSH/parse failures are logged but do not abort the install.
+    if current_state == "NOT_INSTALLED":
+        try:
+            import config as _cfg
+
+            min_gb = getattr(_cfg, "NETALERTX_DOCKER_MIN_DISK_GB", 5.0)
+            await check_target_disk_space(ssh_client, "/", min_gb)
+        except DiskSpaceTooLowError as exc:
+            log.error(
+                "installer_disk_too_low",
+                available_gb=exc.available_gb,
+                required_gb=exc.min_gb,
+                correlation_id=cid,
+            )
+            await notifier.send(
+                subject="NetAlertX install aborted: HA disk space too low",
+                body=(
+                    f"HA has only {exc.available_gb:.1f} GB free — "
+                    f"{exc.min_gb:.1f} GB required. "
+                    "Free disk space on HA before retrying the NetAlertX install."
+                ),
+                payload={"type": "installer_error", "severity": "ERROR"},
+            )
+            return current_state
+        except Exception as _disk_exc:  # nosec B110 — df failure is non-fatal
+            log.warning(
+                "installer_disk_check_failed",
+                error=str(_disk_exc),
+                correlation_id=cid,
+            )
 
     # Step 1: NOT_INSTALLED → MQTT_INSTALLED
     if _STATE_RANK[current_state] < _STATE_RANK["MQTT_INSTALLED"]:

@@ -8062,3 +8062,301 @@ class TestDockerInstallerConfigKeys:
         assert result.returncode == 0 or "netalertx-docker-setup" in (
             result.stdout + result.stderr
         )
+
+
+# ── netalertx/disk_check.py ─────────────────────────────────────────────────
+
+
+class TestDiskCheckModule:
+    """Shared disk-space guard: DiskSpaceTooLowError + check_target_disk_space."""
+
+    def test_check_target_disk_space_returns_available_gb(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.disk_check import check_target_disk_space
+
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           100       70         30   70%  /\n"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, "")
+            }
+        )
+        result = asyncio.run(check_target_disk_space(ssh, "/opt/netalertx", 5.0))
+        assert result == 30.0
+
+    def test_check_target_disk_space_raises_when_too_low(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
+
+        df_output = (
+            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1           10        8         2   80%  /\n"
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, "")
+            }
+        )
+        with pytest.raises(DiskSpaceTooLowError) as exc_info:
+            asyncio.run(check_target_disk_space(ssh, "/opt/netalertx", 5.0))
+        assert exc_info.value.available_gb == 2.0
+        assert exc_info.value.min_gb == 5.0
+        assert "/opt/netalertx" in str(exc_info.value)
+
+    def test_disk_space_too_low_error_message(self):
+        from netalertx.disk_check import DiskSpaceTooLowError
+
+        exc = DiskSpaceTooLowError(1.5, 5.0, "/some/path")
+        assert "1.5" in str(exc)
+        assert "5.0" in str(exc)
+        assert "/some/path" in str(exc)
+
+    def test_backward_compat_alias_in_docker_installer(self):
+        """check_disk_space alias in docker_installer still resolves."""
+        from netalertx.docker_installer import check_disk_space, DiskSpaceTooLowError
+
+        assert callable(check_disk_space)
+        exc = DiskSpaceTooLowError(2.0, 5.0, "/mnt")
+        assert exc.available_gb == 2.0
+
+    def test_check_target_disk_space_raises_on_bad_df_output(self):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.disk_check import check_target_disk_space
+
+        ssh = FakeSSHClient(
+            command_results={"df -BG / 2>/dev/null || df -BG /": (1, "", "error")}
+        )
+        with pytest.raises(RuntimeError):
+            asyncio.run(check_target_disk_space(ssh, "/", 5.0))
+
+    def test_installer_aborts_when_ha_disk_too_low(self, tmp_path, monkeypatch):
+        """HA installer returns NOT_INSTALLED without advancing when disk too low."""
+        import datetime
+        from unittest.mock import AsyncMock, MagicMock
+
+        import sqlite3
+        from netalertx.installer import run_steps_1_to_4
+
+        # Set up DB
+        db = tmp_path / "test.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        # SSH that returns 2 GB free (below 5 GB min)
+        df_output = (
+            "Filesystem  1G-blocks  Used  Available  Use%  Mounted on\n"
+            "/dev/sda1      100      98         2   98%  /\n"
+        )
+        from utils.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={"df -BG / 2>/dev/null || df -BG /": (0, df_output, "")}
+        )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = MagicMock()
+        gate.require_approval = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(
+            "netalertx.installer.NETALERTX_DOCKER_MIN_DISK_GB", 5.0, raising=False
+        )
+
+        final_state = asyncio.run(
+            run_steps_1_to_4(
+                ssh_client=ssh,
+                gate=gate,
+                notifier=notifier,
+                db_path=str(db),
+            )
+        )
+        assert final_state == "NOT_INSTALLED"
+        notifier.send.assert_called_once()
+        call_kwargs = notifier.send.call_args[1] if notifier.send.call_args[1] else {}
+        call_args = notifier.send.call_args[0]
+        subject = call_kwargs.get("subject", call_args[0] if call_args else "")
+        assert "disk" in subject.lower() or "space" in subject.lower()
+
+
+# ── resource.py: NetAlertX migration card ───────────────────────────────────
+
+
+class TestNetalertxMigrateCard:
+    """Migration card surfaces when disk CRITICAL + deploy_target=ha + NAX FULLY_OPERATIONAL."""
+
+    def _make_poller(self, notifier, tmp_db, monkeypatch, deploy_target="ha"):
+        """Return a ResourcePoller with minimal config wired."""
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+
+        # Minimal SSH that won't be called for migration card checks
+        ssh = FakeSSHClient(command_results={})
+        monkeypatch.setattr(
+            "utils.resource.import",
+            lambda *a, **kw: None,
+            raising=False,
+        )
+        poller = ResourcePoller(
+            ssh_client=ssh,
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+        )
+        return poller
+
+    def test_migrate_card_sent_when_conditions_met(self, tmp_path, monkeypatch):
+        """Card sent when deploy_target=ha and NAX is FULLY_OPERATIONAL."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO netalertx_install_state VALUES (1,'FULLY_OPERATIONAL','cid',datetime('now'),'{}')"
+            )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        monkeypatch.setattr(
+            "utils.resource.import", lambda *a, **kw: None, raising=False
+        )
+
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_DEPLOY_TARGET", "ha")
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        monkeypatch.setattr(_cfg, "NETALERTX_DOCKER_HOST", "")
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(command_results={}),
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+        )
+
+        asyncio.run(poller._maybe_send_migrate_card())
+
+        notifier.send.assert_called_once()
+        call = notifier.send.call_args
+        payload = call[1].get("payload", {}) if call[1] else {}
+        assert payload.get("card_type") == "netalertx_migrate"
+
+    def test_migrate_card_suppressed_when_deploy_target_docker(
+        self, tmp_path, monkeypatch
+    ):
+        """Card not sent when deploy_target=docker (already migrated)."""
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "NETALERTX_DEPLOY_TARGET", "docker")
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(command_results={}),
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+        )
+        asyncio.run(poller._maybe_send_migrate_card())
+        notifier.send.assert_not_called()
+
+    def test_migrate_card_suppressed_when_nax_not_operational(
+        self, tmp_path, monkeypatch
+    ):
+        """Card not sent when NAX is not FULLY_OPERATIONAL."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+        import config as _cfg
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO netalertx_install_state VALUES (1,'NOT_INSTALLED','cid',datetime('now'),'{}')"
+            )
+
+        monkeypatch.setattr(_cfg, "NETALERTX_DEPLOY_TARGET", "ha")
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(command_results={}),
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+        )
+        asyncio.run(poller._maybe_send_migrate_card())
+        notifier.send.assert_not_called()
+
+    def test_migrate_card_suppressed_after_first_send(self, tmp_path, monkeypatch):
+        """Card only sent once; subsequent calls are no-ops."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+        from utils.resource import ResourcePoller
+        from utils.ssh_client import FakeSSHClient
+        import config as _cfg
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO netalertx_install_state VALUES (1,'FULLY_OPERATIONAL','cid',datetime('now'),'{}')"
+            )
+
+        monkeypatch.setattr(_cfg, "NETALERTX_DEPLOY_TARGET", "ha")
+        monkeypatch.setattr(_cfg, "DB_PATH", str(db))
+        monkeypatch.setattr(_cfg, "NETALERTX_DOCKER_HOST", "")
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(command_results={}),
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+        )
+        asyncio.run(poller._maybe_send_migrate_card())
+        asyncio.run(poller._maybe_send_migrate_card())
+
+        assert notifier.send.call_count == 1
