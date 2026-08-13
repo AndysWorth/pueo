@@ -279,15 +279,22 @@ if $WRITE_CONFIG; then
         info "Hardware recommendation: ${RECOMMENDED_MODEL} (press Enter to keep current, or type the new model name)"
     fi
     ask "Ollama model"                      "$CONFIGURED_MODEL"             OLLAMA_MODEL
-    if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
-        warn "Model ${OLLAMA_MODEL} is not installed locally."
-        read -rp "  Pull it now? [Y/n]: " pull_new_model
-        if [[ "${pull_new_model:-Y}" =~ ^[Yy] ]]; then
-            info "Pulling ${OLLAMA_MODEL} (this may take several minutes)..."
-            ollama pull "${OLLAMA_MODEL}"
-            ok "Model ${OLLAMA_MODEL} ready"
-        else
-            warn "Skipped. Run 'ollama pull ${OLLAMA_MODEL}' before starting Pueo."
+    if ! [[ "$OLLAMA_MODEL" =~ ^[a-zA-Z0-9./:_-]+$ ]]; then
+        warn "Model name '${OLLAMA_MODEL}' looks invalid. Using default: ${CONFIGURED_MODEL}"
+        OLLAMA_MODEL="$CONFIGURED_MODEL"
+    fi
+    if [[ "$OLLAMA_MODEL" != "$CONFIGURED_MODEL" ]]; then
+        # User changed the model — check and pull if needed (CONFIGURED_MODEL already verified above)
+        if ! ollama list | grep -q "^${OLLAMA_MODEL}"; then
+            warn "Model ${OLLAMA_MODEL} is not installed locally."
+            read -rp "  Pull it now? [Y/n]: " pull_new_model
+            if [[ "${pull_new_model:-Y}" =~ ^[Yy] ]]; then
+                info "Pulling ${OLLAMA_MODEL} (this may take several minutes)..."
+                ollama pull "${OLLAMA_MODEL}"
+                ok "Model ${OLLAMA_MODEL} ready"
+            else
+                warn "Skipped. Run 'ollama pull ${OLLAMA_MODEL}' before starting Pueo."
+            fi
         fi
     fi
     ask "Local SQLite database path"        "ha_agent_state.db"             DB_PATH
