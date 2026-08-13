@@ -394,8 +394,9 @@ if $WRITE_CONFIG; then
                     ${NAX_DOCKER_SSH_USER:-$(whoami)}@${NAX_DOCKER_HOST}"
                 if $_DOCKER_SSH "echo ok" &>/dev/null 2>&1; then
                     ok "SSH to Docker host (${NAX_DOCKER_HOST}) succeeded"
-                    docker_avail_gb=$($_DOCKER_SSH "df -BG /opt 2>/dev/null || df -BG /" 2>/dev/null \
-                        | awk 'NR==2{gsub(/G/,"",$4); print $4}')
+                    # df -k is portable across Linux and macOS; avail is column 4 in KB
+                    docker_avail_gb=$({ $_DOCKER_SSH "df -k /opt 2>/dev/null || df -k /" 2>/dev/null || true; } \
+                        | awk 'NR==2{printf "%d", $4/1048576}')
                     if [[ -n "$docker_avail_gb" && "$docker_avail_gb" -ge 5 ]]; then
                         ok "Docker host disk: ${docker_avail_gb} GB free (≥ 5 GB required)"
                     elif [[ -n "$docker_avail_gb" ]]; then
@@ -404,7 +405,7 @@ if $WRITE_CONFIG; then
                     fi
                 else
                     warn "SSH to Docker host (${NAX_DOCKER_HOST}) failed — check credentials."
-                    warn "You can edit config.yaml later and run: python main.py --mode netalertx-docker-setup"
+                    warn "You can edit config.yaml later and run: pueo --mode netalertx-docker-setup"
                 fi
             fi
         fi
@@ -577,7 +578,7 @@ else
         info "Pueo will start automatically at login and restart on crash."
         info "Dashboard → http://127.0.0.1:8080"
     else
-        info "Skipped — start manually: python main.py"
+        info "Skipped — start manually: pueo"
     fi
 fi
 
@@ -608,7 +609,7 @@ else
         ok "RAG refresh job installed: ${RAG_PLIST_LABEL} (runs Sundays at 03:00)"
         info "Run immediately: launchctl start ${RAG_PLIST_LABEL}"
     else
-        info "Skipped — run manually: python main.py --mode rag-refresh"
+        info "Skipped — run manually: pueo --mode rag-refresh"
     fi
 fi
 
@@ -633,11 +634,11 @@ echo
 echo "  Start Pueo           : pueo"
 echo "  Live log              : tail -f pueo.log"
 echo
-echo "  Other modes (in venv): source .venv/bin/activate"
-echo "    python main.py --mode monitor"
-echo "    python main.py --mode diagnose"
-echo "    python main.py --mode dashboard"
+echo "  Other modes          :"
+echo "    pueo --mode monitor"
+echo "    pueo --mode diagnose"
+echo "    pueo --mode dashboard"
 echo
-echo "  NetAlertX install    : python main.py --mode netalertx-setup"
-echo "  NetAlertX diagnose   : python main.py --mode netalertx-diagnose"
+echo "  NetAlertX install    : pueo --mode netalertx-setup"
+echo "  NetAlertX diagnose   : pueo --mode netalertx-diagnose"
 echo

@@ -14,7 +14,7 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
 *   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
-*   **Active Dashboard:** Approves and executes HITL repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8099`.
+*   **Active Dashboard:** Approves and executes HITL repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
 *   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
 *   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS component changelogs, and installed integration docs are embedded locally via ChromaDB and `nomic-embed-text`. The agent queries this knowledge automatically during repair cycles — no internet access required.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
@@ -35,46 +35,7 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 > ```
 > `setup.sh` will remind you if the agent is not active or the key is not loaded.
 
-### 2. Credentials
-
-`setup.sh` will ask for three sets of credentials. Have these ready, or leave them blank and set them in `config.yaml` after the first install.
-
-#### HA Long-Lived Access Token
-Required for update monitoring and notification polling.
-1. In Home Assistant, click your profile picture (bottom-left)
-2. Scroll to **Security → Long-Lived Access Tokens**
-3. Click **Create Token**, name it `pueo`, and copy the value
-
-Config key: `home_assistant.api_token`
-
-#### NetAlertX API Token
-Required for device name sync and health monitoring via the NetAlertX REST API.
-
-> **First-time setup:** Leave this blank. NetAlertX doesn't exist yet. Pueo will send a dashboard card with step-by-step instructions immediately after the first successful install.
-
-After first install:
-1. Open the NetAlertX web UI at `http://<your-ha-host>:20212`
-2. Go to **Settings → Main Settings → API Key** and copy the value
-3. Set `netalertx.api_token` in `config.yaml` and restart Pueo
-
-Config key: `netalertx.api_token`
-
-#### MQTT Credentials (optional — only if Mosquitto authentication is enabled)
-
-**Step 1 — Create a dedicated HA user for Mosquitto:**
-`Settings → People → Users → Add User` (enable "Local access only")
-
-**Step 2 — Enable authentication in the Mosquitto add-on:**
-`Settings → Apps → Mosquitto broker → Configuration`
-Add the user to the `logins:` list and save.
-
-Leave both fields blank to use anonymous access.
-
-Config keys: `netalertx.mqtt_user`, `netalertx.mqtt_password`
-
----
-
-### 3. Installation & Configuration
+### 2. Installation & Configuration
 Clone the repository and run the setup script:
 ```bash
 git clone https://github.com/AndysWorth/pueo
@@ -82,21 +43,11 @@ cd pueo
 ./setup.sh
 ```
 
-`setup.sh` is idempotent — safe to re-run at any time. It will:
-- Locate Python 3.14 (Homebrew or pyenv) and create a `.venv`
-- Check that Ollama is installed and running, and pull `qwen2.5-coder:7b` and `nomic-embed-text` if missing
-- Generate an SSH key if none exists and show instructions for adding it to the Terminal & SSH App
-- Check that the SSH agent is running and the key is loaded
-- Prompt for your HA hostname, SSH settings, and agent preferences, then write `config.yaml`
-- Connect to HA over SSH, detect the HA version, and warn if the log file is missing
-- Offer to install Pueo as a macOS launchd service (auto-start at login)
-- Offer to install a weekly launchd job that refreshes the RAG knowledge base every Sunday
-- Symlink `bin/pueo` to `/usr/local/bin/pueo` so you can start Pueo from anywhere
-- Run `./setup.sh --clean` to wipe all generated files and start from scratch
+`setup.sh` is idempotent — safe to re-run at any time. It installs dependencies, detects your hardware and recommends an Ollama model, generates an SSH key if needed, writes `config.yaml`, and optionally installs Pueo as a macOS launchd service. For a detailed walkthrough of every prompt — credentials to gather, LLM provider options, autonomy levels, notifier setup, and NetAlertX configuration — see **[docs/setup-guide.md](docs/setup-guide.md)**.
 
-A reference template for `config.yaml` is available in `config.yaml.default`.
+Run `./setup.sh --clean` to wipe all generated files and start from scratch. A reference template is in `config.yaml.default`.
 
-### 4. Running the Agent
+### 3. Running the Agent
 
 #### Starting Pueo
 ```bash
@@ -117,48 +68,52 @@ If the symlink install failed (check `setup.sh` output), you can start manually:
 ```bash
 cd /path/to/pueo
 source .venv/bin/activate
-python main.py
+python main.py  # equivalent to: pueo
 ```
 
 #### What the supervisor starts
 
-`python main.py` (no flags) is the default supervisor mode. It starts all monitoring loops
+`pueo` (no flags) is the default supervisor mode. It starts all monitoring loops
 (HA log tail, resource polling, update checks, notification polling, NetAlertX) and the HITL
 dashboard in a single supervised process. The dashboard is available at
-`http://127.0.0.1:8099`. Crashed loops restart automatically with exponential backoff.
+`http://127.0.0.1:8080`. Crashed loops restart automatically with exponential backoff.
 
 `setup.sh` can install Pueo as a macOS launchd service (auto-start at login, auto-restart
-on crash) — choose the option when prompted, or run `python main.py --mode install-service`
+on crash) — choose the option when prompted, or run `pueo --mode install-service`
 afterwards. Once installed, use `stop-service` / `start-service` / `restart-service` to
 control the daemon without touching `launchctl` directly.
 
 #### Individual modes
 ```bash
 # Daemons (single-loop, no dashboard)
-python main.py --mode monitor             # live SSH log tail with AI triage
-python main.py --mode dashboard           # HITL web dashboard only (passive — no loops)
+pueo --mode monitor             # live SSH log tail with AI triage
+pueo --mode dashboard           # HITL web dashboard only (passive — no loops)
 
 # One-shot diagnostics
-python main.py --mode diagnose            # config fetch and analysis
-python main.py --mode advanced            # diagnose + SQLite memory + backup triggering
-python main.py --mode repair              # full sandbox-test-then-atomic-swap repair cycle
-python main.py --mode netalertx-diagnose  # NetAlertX health check and optional heal
-python main.py --mode update-check        # check for available HA Core/OS/add-on updates
-python main.py --mode notifications       # triage HA persistent notifications
-python main.py --mode backup-status       # print backup inventory table
-python main.py --mode audit               # self-diagnostics gap report (saved to audits/)
+pueo --mode diagnose            # config fetch and analysis
+pueo --mode advanced            # diagnose + SQLite memory + backup triggering
+pueo --mode repair              # full sandbox-test-then-atomic-swap repair cycle
+pueo --mode netalertx-diagnose  # NetAlertX health check and optional heal
+pueo --mode update-check        # check for available HA Core/OS/add-on updates
+pueo --mode notifications       # triage HA persistent notifications
+pueo --mode backup-status       # print backup inventory table
+pueo --mode audit               # self-diagnostics gap report (saved to audits/)
 
 # Setup and maintenance
-python main.py --mode netalertx-setup     # install and configure NetAlertX on HA
-python main.py --mode netalertx           # monitor NetAlertX logs continuously (daemon)
-python main.py --mode rag-refresh         # refresh the local RAG knowledge base (see below)
-python main.py --mode install-service     # install as macOS launchd service
-python main.py --mode stop-service        # stop the launchd service (stays stopped until start-service)
-python main.py --mode start-service       # re-enable and start the launchd service
-python main.py --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
+pueo --mode netalertx-setup     # install and configure NetAlertX on HA
+pueo --mode netalertx           # monitor NetAlertX logs continuously (daemon)
+pueo --mode rag-refresh         # refresh the local RAG knowledge base (see below)
+pueo --mode install-service     # install as macOS launchd service
+pueo --mode stop-service        # stop the launchd service (stays stopped until start-service)
+pueo --mode start-service       # re-enable and start the launchd service
+pueo --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
 ```
 
-Pass `--config /path/to/config.yaml` if your config file is not in the project directory.
+Pass `--config /path/to/config.yaml` if your config file is not in the project directory:
+```bash
+pueo --mode diagnose --config /path/to/config.yaml
+pueo start --config /path/to/config.yaml   # supervisor with custom config, daemonized
+```
 
 ---
 
@@ -184,7 +139,7 @@ rather than prepending every prompt with the full knowledge base.
 To refresh on demand:
 
 ```bash
-python main.py --mode rag-refresh
+pueo --mode rag-refresh
 ```
 
 Embedded data is stored in `chromadb/` in the project directory. The embeddings use
@@ -194,7 +149,7 @@ Embedded data is stored in `chromadb/` in the project directory. The embeddings 
 
 ## 💬 Ask Pueo
 
-The **Chat** tab in the HITL dashboard (`http://127.0.0.1:8099/chat`) lets you talk directly
+The **Chat** tab in the HITL dashboard (`http://127.0.0.1:8080/chat`) lets you talk directly
 to the agent between incidents. It uses the same `AgentLoop` that drives reactive repair
 sessions — same tool registry, same safety gates — with a conversational system prompt and
 a `finish_chat` termination signal instead of `finish_repair`.
