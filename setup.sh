@@ -275,7 +275,10 @@ if $WRITE_CONFIG; then
     ask "Update check interval (hours, 0 = disabled)"  "6"  HA_UPDATE_CHECK_INTERVAL_HOURS
     echo
     ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
-    ask "Ollama model"                      "$DEFAULT_MODEL"                OLLAMA_MODEL
+    if [[ "$CONFIGURED_MODEL" != "$RECOMMENDED_MODEL" ]]; then
+        info "Hardware recommendation: ${RECOMMENDED_MODEL} (press Enter to keep current, or type the new model name)"
+    fi
+    ask "Ollama model"                      "$CONFIGURED_MODEL"             OLLAMA_MODEL
     if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
         warn "Model ${OLLAMA_MODEL} is not installed locally."
         read -rp "  Pull it now? [Y/n]: " pull_new_model
