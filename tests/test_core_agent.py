@@ -1797,6 +1797,98 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "netalertx_setup" not in started
 
+    def test_netalertx_setup_routes_to_ha_installer_when_target_is_ha(
+        self, monkeypatch, tmp_path
+    ):
+        """When deploy_target='ha', the HA installer main() is launched (not docker)."""
+        cfg_data = {
+            "home_assistant": {"host": "ha.local"},
+            "netalertx": {"setup_desired": True, "deploy_target": "ha"},
+            "agent": {"notify_watch_dir": str(tmp_path / "hitl")},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg_data))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.docker_installer as nax_docker
+        import netalertx.installer as nax_inst
+        import uvicorn
+
+        monkeypatch.setattr(nax_inst, "get_install_state", lambda db: "ADDON_RUNNING")
+
+        ha_called: list = []
+        docker_called: list = []
+
+        async def _ha_main(**kw):
+            ha_called.append(True)
+
+        async def _docker_main(**kw):
+            docker_called.append(True)
+
+        monkeypatch.setattr(nax_inst, "main", _ha_main)
+        monkeypatch.setattr(nax_docker, "main", _docker_main)
+
+        # Yield to the event loop once so tasks can execute their first iteration.
+        class _YieldingServer:
+            async def serve(self):
+                await asyncio.sleep(0)
+
+        monkeypatch.setattr(uvicorn, "Server", lambda c: _YieldingServer())
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_setup" in started
+        assert ha_called
+        assert not docker_called
+
+    def test_netalertx_setup_routes_to_docker_installer_when_target_is_docker(
+        self, monkeypatch, tmp_path
+    ):
+        """When deploy_target='docker', the Docker installer main() is launched (not HA)."""
+        cfg_data = {
+            "home_assistant": {"host": "ha.local"},
+            "netalertx": {"setup_desired": True, "deploy_target": "docker"},
+            "agent": {"notify_watch_dir": str(tmp_path / "hitl")},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(cfg_data))
+        (tmp_path / "hitl").mkdir(exist_ok=True)
+        started = self._patch_all(monkeypatch, config_path)
+
+        import netalertx.docker_installer as nax_docker
+        import netalertx.installer as nax_inst
+        import uvicorn
+
+        monkeypatch.setattr(nax_inst, "get_install_state", lambda db: "NOT_INSTALLED")
+
+        ha_called: list = []
+        docker_called: list = []
+
+        async def _ha_main(**kw):
+            ha_called.append(True)
+
+        async def _docker_main(**kw):
+            docker_called.append(True)
+
+        monkeypatch.setattr(nax_inst, "main", _ha_main)
+        monkeypatch.setattr(nax_docker, "main", _docker_main)
+
+        # Yield to the event loop once so tasks can execute their first iteration.
+        class _YieldingServer:
+            async def serve(self):
+                await asyncio.sleep(0)
+
+        monkeypatch.setattr(uvicorn, "Server", lambda c: _YieldingServer())
+
+        import main as m
+
+        asyncio.run(m.supervisor_main(config_path))
+        assert "netalertx_setup" in started
+        assert docker_called
+        assert not ha_called
+
     def test_supervisor_wires_knowledge_store_when_path_exists(
         self, monkeypatch, tmp_path
     ):
