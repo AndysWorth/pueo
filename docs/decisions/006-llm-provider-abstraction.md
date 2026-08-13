@@ -19,7 +19,7 @@ Make the LLM inference engine a configurable setting (`LLM_PROVIDER`) with three
 
 - `"local"` (default) — Ollama only; all existing behavior preserved; no WAN for inference
 - `"cloud"` — Anthropic API as primary LLM; all inference calls go to Anthropic
-- `"both"` — Ollama handles autonomous repair and monitoring cycles; Claude is available as a HITL-approved escalation when the local loop exhausts its budget
+- `"both"` — Ollama handles autonomous repair and monitoring cycles; Claude is available as a HITL-approved escalation when the local loop hits the tool-call cap or wall-clock timeout without reaching `finish_repair`
 
 The implementation lives in two new files:
 - `utils/cloud_client.py` — `ClaudeAPIClient` implementing `LLMClientProtocol`

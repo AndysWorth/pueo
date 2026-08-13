@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # pueo — manage the Pueo supervisor process.
-# Usage: pueo [start|stop|status]  (default: start)
+# Usage: pueo [start|stop|status] [--config FILE]   (default: start)
+#        pueo --mode MODE [--config FILE] [--since DATE]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +18,8 @@ _running() {
 
 case "$CMD" in
     start)
+        shift  # remove "start" from positional args
+        EXTRA_ARGS=("$@")  # capture remaining flags, e.g. --config /path/config.yaml
         if [ ! -f "$PYTHON" ]; then
             echo "Error: .venv not found. Run setup.sh first." >&2
             exit 1
@@ -25,8 +28,17 @@ case "$CMD" in
             echo "Pueo is already running (PID $(cat "$PID_FILE")). Log: $LOG" >&2
             exit 1
         fi
+        # Source user env so the background process inherits secrets like ANTHROPIC_API_KEY.
+        # shellcheck disable=SC1091
+        [ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
+        if grep -q "LLM_PROVIDER.*both\|LLM_PROVIDER.*cloud" "$PROJECT_DIR/config.yaml" 2>/dev/null; then
+            if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "Error: ANTHROPIC_API_KEY is not set. Add it to ~/.zshenv and retry." >&2
+                exit 1
+            fi
+        fi
         cd "$PROJECT_DIR"
-        "$PYTHON" main.py > /dev/null 2>&1 &
+        "$PYTHON" main.py "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>&1 &
         echo $! > "$PID_FILE"
         echo "Pueo started (PID $!). Log: $LOG"
         ;;
@@ -43,14 +55,21 @@ case "$CMD" in
         ;;
     status)
         if _running; then
-            echo "Pueo is running (PID $(cat "$PID_FILE")). Log: $LOG"
+            echo "Pueo is running (PID $(cat "$PID_FILE"))  Log: $LOG"
         else
             echo "Pueo is not running."
             [ -f "$PID_FILE" ] && rm "$PID_FILE"
         fi
         ;;
     *)
-        echo "Usage: pueo [start|stop|status]" >&2
-        exit 1
+        # Passthrough: pueo --mode X [--config Y] → python main.py --mode X [--config Y]
+        if [ ! -f "$PYTHON" ]; then
+            echo "Error: .venv not found. Run setup.sh first." >&2
+            exit 1
+        fi
+        # shellcheck disable=SC1091
+        [ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
+        cd "$PROJECT_DIR"
+        exec "$PYTHON" main.py "$@"
         ;;
 esac
