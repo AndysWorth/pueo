@@ -879,6 +879,36 @@ async def _execute_disk_recovery(
                 f"offload_backups: offloaded {len(rows)} backup(s), deleted {purged} from HA"
             )
 
+        if "cleanup_orphaned_addon_dirs" in action_keys:
+            orphan_opt = next(
+                (
+                    o
+                    for o in hitl_opts
+                    if o.get("action_key") == "cleanup_orphaned_addon_dirs"
+                ),
+                None,
+            )
+            orphaned_slugs = (orphan_opt or {}).get("orphaned_slugs", [])
+            deleted_paths: list = []
+            for entry in orphaned_slugs:
+                for path in entry.get("paths", []):
+                    await ssh.run(f"rm -rf {path}", check=False)
+                    deleted_paths.append(path)
+            actions_run.append(
+                f"cleanup_orphaned_addon_dirs: removed {len(deleted_paths)} path(s)"
+            )
+            try:
+                from utils.timeline import write_timeline_event as _write_ev
+
+                _write_ev(
+                    "INFO",
+                    "disk_recovery",
+                    f"Orphaned add-on dirs removed: {', '.join(deleted_paths)}",
+                    {"deleted_paths": deleted_paths},
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
+
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
@@ -1616,6 +1646,67 @@ async def disk_tab(request: Request) -> HTMLResponse:
             "pueo_local_max_gb": PUEO_LOCAL_MAX_GB,
         },
     )
+
+
+@app.post("/disk/queue-orphan-cleanup")
+async def disk_queue_orphan_cleanup() -> JSONResponse:
+    """Queue a HITL card to clean up orphaned add-on data directories."""
+    import config as _config
+    from utils.card_types import CARD_TYPE_DISK_RECOVERY
+    from utils.disk_recovery import scan_orphaned_addon_dirs
+    from utils.notify import get_notifier
+    from utils.ssh_client import AsyncSSHClient
+
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    try:
+        orphans = await scan_orphaned_addon_dirs(ssh)
+        if not orphans:
+            return JSONResponse(
+                {"ok": True, "message": "No orphaned directories found."}
+            )
+        total_bytes = sum(o.size_bytes for o in orphans)
+        slugs = ", ".join(o.slug for o in orphans)
+        notifier = get_notifier(_config.NOTIFY_WATCH_DIR)
+        await notifier.send(
+            subject="Pueo: orphaned add-on data cleanup requested",
+            body=(
+                f"Found {len(orphans)} orphaned add-on data directory(s) ({slugs}), "
+                f"totalling ~{total_bytes // (1024 * 1024)} MB. "
+                "Approve to delete them from the HA host."
+            ),
+            payload={
+                "card_type": CARD_TYPE_DISK_RECOVERY,
+                "type": "resource_alert",
+                "severity": "INFO",
+                "ranked_hitl_options": [
+                    {
+                        "name": "Remove orphaned app data directories",
+                        "description": (
+                            f"Delete leftover data directories for uninstalled apps: {slugs}."
+                        ),
+                        "estimated_savings": f"~{total_bytes // (1024 * 1024)} MB",
+                        "risk": "LOW",
+                        "action_key": "cleanup_orphaned_addon_dirs",
+                        "orphaned_slugs": [
+                            {
+                                "slug": o.slug,
+                                "paths": o.paths,
+                                "size_display": o.size_display,
+                            }
+                            for o in orphans
+                        ],
+                    }
+                ],
+            },
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "message": f"Cleanup card queued for {len(orphans)} orphan(s).",
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.post("/disk/refresh")

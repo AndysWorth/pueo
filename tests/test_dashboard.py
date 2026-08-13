@@ -3182,6 +3182,183 @@ class TestExecuteDiskRecovery:
         saved = _json.loads(json_path.read_text())
         assert "fix_error" in saved
 
+    def test_cleanup_orphaned_addon_dirs_deletes_listed_paths(
+        self, tmp_path, monkeypatch
+    ):
+        """cleanup_orphaned_addon_dirs runs rm -rf on each listed path."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "")
+
+        deleted_paths: list = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                if cmd.startswith("rm -rf"):
+                    deleted_paths.append(cmd.split("rm -rf ", 1)[1].strip())
+                return (0, "", "")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: _FakeSSH())
+
+        orphaned_slugs = [
+            {
+                "slug": "db21ed7f_netalertx",
+                "paths": [
+                    "/mnt/data/supervisor/addons/db21ed7f_netalertx",
+                    "/addon_configs/db21ed7f_netalertx",
+                ],
+                "size_display": "60M",
+            }
+        ]
+        hitl_opts = [
+            {
+                "action_key": "cleanup_orphaned_addon_dirs",
+                "orphaned_slugs": orphaned_slugs,
+            }
+        ]
+        data = {
+            "notification_id": "dr-orphan-1",
+            "subject": "Disk recovery",
+            "body": "b",
+            "payload": {
+                "card_type": "disk_recovery",
+                "ranked_hitl_options": hitl_opts,
+            },
+            "sent_at": 0,
+        }
+        json_path = tmp_path / "dr-orphan-1.json"
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_disk_recovery("dr-orphan-1", data, json_path, tmp_path)
+        )
+
+        assert (tmp_path / "dr-orphan-1.approved").exists()
+        assert "/mnt/data/supervisor/addons/db21ed7f_netalertx" in deleted_paths
+        assert "/addon_configs/db21ed7f_netalertx" in deleted_paths
+
+    def test_cleanup_orphaned_addon_dirs_skips_installed_slugs_not_in_list(
+        self, tmp_path, monkeypatch
+    ):
+        """cleanup_orphaned_addon_dirs only removes paths explicitly listed in orphaned_slugs."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ssh_client as ssh_mod
+        import config as _config
+
+        monkeypatch.setattr(_config, "HA_API_TOKEN", "")
+
+        deleted_paths: list = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=False):
+                if cmd.startswith("rm -rf"):
+                    deleted_paths.append(cmd.split("rm -rf ", 1)[1].strip())
+                return (0, "", "")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: _FakeSSH())
+
+        # Only the orphan slug is listed — installed slug must not be deleted
+        orphaned_slugs = [
+            {
+                "slug": "db21ed7f_netalertx",
+                "paths": ["/addon_configs/db21ed7f_netalertx"],
+                "size_display": "10M",
+            }
+        ]
+        hitl_opts = [
+            {
+                "action_key": "cleanup_orphaned_addon_dirs",
+                "orphaned_slugs": orphaned_slugs,
+            }
+        ]
+        data = {
+            "notification_id": "dr-orphan-2",
+            "subject": "s",
+            "body": "b",
+            "payload": {"card_type": "disk_recovery", "ranked_hitl_options": hitl_opts},
+            "sent_at": 0,
+        }
+        json_path = tmp_path / "dr-orphan-2.json"
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_disk_recovery("dr-orphan-2", data, json_path, tmp_path)
+        )
+
+        assert "/addon_configs/db21ed7f_netalertx" in deleted_paths
+        assert not any("netalertx_fa" in p for p in deleted_paths)
+
+
+class TestDiskQueueOrphanCleanup:
+    """Tests for the POST /disk/queue-orphan-cleanup endpoint."""
+
+    def test_returns_ok_with_card_queued(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        import utils.disk_recovery as dr_mod
+        import utils.ssh_client as ssh_mod
+        import utils.notify as notify_mod
+        import web.dashboard as dashboard
+        import config as _config
+
+        monkeypatch.setattr(_config, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        from utils.disk_recovery import OrphanedAddonDir
+
+        async def _fake_scan(ssh):
+            return [
+                OrphanedAddonDir(
+                    slug="old_addon",
+                    paths=["/mnt/data/supervisor/addons/old_addon"],
+                    size_display="50M",
+                    size_bytes=50 * 1024**2,
+                )
+            ]
+
+        monkeypatch.setattr(dr_mod, "scan_orphaned_addon_dirs", _fake_scan)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        send_calls: list = []
+
+        class _FakeNotifier:
+            async def send(self, **kw):
+                send_calls.append(kw)
+
+        monkeypatch.setattr(
+            notify_mod, "get_notifier", lambda *a, **kw: _FakeNotifier()
+        )
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/disk/queue-orphan-cleanup")
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert len(send_calls) == 1
+        payload = send_calls[0]["payload"]
+        assert payload["card_type"] == "disk_recovery"
+        opts = payload["ranked_hitl_options"]
+        assert any(o["action_key"] == "cleanup_orphaned_addon_dirs" for o in opts)
+
+    def test_returns_ok_no_card_when_no_orphans(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+        import utils.disk_recovery as dr_mod
+        import utils.ssh_client as ssh_mod
+        import web.dashboard as dashboard
+
+        async def _empty_scan(ssh):
+            return []
+
+        monkeypatch.setattr(dr_mod, "scan_orphaned_addon_dirs", _empty_scan)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post("/disk/queue-orphan-cleanup")
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert "No orphaned" in response.json()["message"]
+
 
 # ── Overview tab + SSE /events (item 59) ─────────────────────────────────────
 
