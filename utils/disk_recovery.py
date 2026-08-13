@@ -217,6 +217,14 @@ class TmpAuditItem:
     size_bytes_approx: int
 
 
+@dataclass
+class OrphanedAddonDir:
+    slug: str
+    paths: list
+    size_display: str
+    size_bytes: int
+
+
 async def audit_supervisor_tmp(
     ssh_client: SSHClientProtocol,
 ) -> list[TmpAuditItem]:
@@ -249,6 +257,95 @@ async def audit_supervisor_tmp(
     except Exception as e:
         log.warning("disk_recovery_tmp_audit_failed", error=str(e))
         return []
+
+
+async def scan_orphaned_addon_dirs(
+    ssh_client: SSHClientProtocol,
+) -> list:
+    """Return OrphanedAddonDir entries for add-on data dirs left on disk after uninstall.
+
+    Compares installed slugs (ha apps list --raw-json) against directories in
+    /mnt/data/supervisor/addons/ and /addon_configs/. Returns [] on any error.
+    """
+    import json as _json
+
+    try:
+        _, addon_json, _ = await ssh_client.run("ha apps list --raw-json", check=False)
+        try:
+            _data = _json.loads(addon_json)
+            installed_slugs = {
+                a["slug"]
+                for a in _data.get("data", {}).get("addons", [])
+                if "slug" in a
+            }
+        except Exception:
+            installed_slugs = set()
+
+        _, addons_ls, _ = await ssh_client.run(
+            "ls /mnt/data/supervisor/addons/ 2>/dev/null || true", check=False
+        )
+        _, configs_ls, _ = await ssh_client.run(
+            "ls /addon_configs/ 2>/dev/null || true", check=False
+        )
+
+        addons_on_disk = {s for s in addons_ls.split() if s.strip()}
+        configs_on_disk = {s for s in configs_ls.split() if s.strip()}
+        orphaned_slugs = (addons_on_disk | configs_on_disk) - installed_slugs
+
+        results = []
+        for slug in sorted(orphaned_slugs):
+            paths = []
+            if slug in addons_on_disk:
+                paths.append(f"/mnt/data/supervisor/addons/{slug}")
+            if slug in configs_on_disk:
+                paths.append(f"/addon_configs/{slug}")
+
+            paths_arg = " ".join(paths)
+            _, du_out, _ = await ssh_client.run(
+                f"du -sh {paths_arg} 2>/dev/null | awk '{{sum += $1}} END {{print sum}}'",
+                check=False,
+            )
+            # du -sh with multiple paths: sum the sizes. Try to get a combined display.
+            _, du_display, _ = await ssh_client.run(
+                f"du -sh {paths_arg} 2>/dev/null",
+                check=False,
+            )
+            # Parse total size from display lines
+            total_bytes = 0
+            for line in du_display.strip().splitlines():
+                parts = line.split(None, 1)
+                if parts:
+                    total_bytes += _parse_du_size(parts[0])
+            size_disp = (
+                du_display.strip().splitlines()[0].split(None, 1)[0]
+                if du_display.strip()
+                else "?"
+            )
+            if len(paths) > 1:
+                size_disp = f"~{_bytes_to_human(total_bytes)}"
+
+            results.append(
+                OrphanedAddonDir(
+                    slug=slug,
+                    paths=paths,
+                    size_display=size_disp,
+                    size_bytes=total_bytes,
+                )
+            )
+        return results
+    except Exception as e:
+        log.warning("scan_orphaned_addon_dirs_failed", error=str(e))
+        return []
+
+
+def _bytes_to_human(n: int) -> str:
+    if n >= 1024**3:
+        return f"{n / 1024**3:.1f} G"
+    if n >= 1024**2:
+        return f"{n / 1024**2:.1f} M"
+    if n >= 1024:
+        return f"{n / 1024:.1f} K"
+    return f"{n} B"
 
 
 def _parse_du_size(size_str: str) -> int:

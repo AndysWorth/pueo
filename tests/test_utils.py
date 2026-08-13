@@ -4589,6 +4589,138 @@ class TestDiskUsagePollerRun:
         assert call_count >= 2  # retried after error
 
 
+# ── utils/disk_recovery.py — scan_orphaned_addon_dirs ────────────────────────────
+
+
+class TestScanOrphanedAddonDirs:
+    """Tests for scan_orphaned_addon_dirs() in utils/disk_recovery.py."""
+
+    def _make_ssh(self, installed_json, addons_ls, configs_ls, du_display=""):
+        """Return a FakeSSHClient wired with the needed command results."""
+        from utils.ssh_client import FakeSSHClient
+
+        return FakeSSHClient(
+            command_results={
+                "ha apps list --raw-json": (0, installed_json, ""),
+                "ls /mnt/data/supervisor/addons/": (0, addons_ls, ""),
+                "ls /addon_configs/": (0, configs_ls, ""),
+                "du -sh": (0, du_display, ""),
+            }
+        )
+
+    def test_returns_empty_when_no_orphans(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = (
+            '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
+        )
+        # on-disk matches installed — no orphans
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="db21ed7f_netalertx_fa\n",
+            configs_ls="db21ed7f_netalertx_fa\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert result == []
+
+    def test_detects_orphan_in_addons_dir(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = (
+            '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
+        )
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
+            configs_ls="db21ed7f_netalertx_fa\n",
+            du_display="50M\t/mnt/data/supervisor/addons/db21ed7f_netalertx\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert len(result) == 1
+        assert result[0].slug == "db21ed7f_netalertx"
+        assert "/mnt/data/supervisor/addons/db21ed7f_netalertx" in result[0].paths
+
+    def test_detects_orphan_in_configs_dir(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = (
+            '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
+        )
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="db21ed7f_netalertx_fa\n",
+            configs_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
+            du_display="10M\t/addon_configs/db21ed7f_netalertx\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert len(result) == 1
+        assert result[0].slug == "db21ed7f_netalertx"
+        assert "/addon_configs/db21ed7f_netalertx" in result[0].paths
+
+    def test_detects_orphan_in_both_dirs(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = (
+            '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
+        )
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
+            configs_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
+            du_display=(
+                "50M\t/mnt/data/supervisor/addons/db21ed7f_netalertx\n"
+                "10M\t/addon_configs/db21ed7f_netalertx\n"
+            ),
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert len(result) == 1
+        orphan = result[0]
+        assert orphan.slug == "db21ed7f_netalertx"
+        assert len(orphan.paths) == 2
+
+    def test_installed_slugs_not_returned_as_orphans(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = (
+            '{"result":"ok","data":{"addons":['
+            '{"slug":"db21ed7f_netalertx_fa"},'
+            '{"slug":"some_other_addon"}]}}'
+        )
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="db21ed7f_netalertx_fa\nsome_other_addon\n",
+            configs_ls="db21ed7f_netalertx_fa\nsome_other_addon\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert result == []
+
+    def test_bad_json_treats_all_as_orphaned(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        ssh = self._make_ssh(
+            installed_json="not json at all",
+            addons_ls="some_addon\n",
+            configs_ls="",
+            du_display="5M\t/mnt/data/supervisor/addons/some_addon\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert any(o.slug == "some_addon" for o in result)
+
+    def test_size_bytes_parsed_from_du_output(self):
+        from utils.disk_recovery import scan_orphaned_addon_dirs
+
+        installed = '{"result":"ok","data":{"addons":[]}}'
+        ssh = self._make_ssh(
+            installed_json=installed,
+            addons_ls="old_addon\n",
+            configs_ls="",
+            du_display="50M\t/mnt/data/supervisor/addons/old_addon\n",
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert len(result) == 1
+        assert result[0].size_bytes == 50 * 1024**2
+
+
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 
 _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"

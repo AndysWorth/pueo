@@ -213,6 +213,42 @@
 </div>
 {% endif %}
 
+<!-- Orphaned add-on data directories -->
+{% if breakdown and breakdown.orphaned_addons %}
+<div class="card" style="margin-bottom:1rem;border-left:3px solid #fd7e14;">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;
+    margin-bottom:0.6rem;">
+    <span class="disk-section-label" style="color:#fd7e14;">
+      Orphaned App Data (uninstalled add-ons)
+    </span>
+    <button id="orphan-cleanup-btn" class="btn" onclick="requestOrphanCleanup()"
+      style="background:#fd7e14;color:#fff;padding:0.25rem 0.75rem;font-size:0.8rem;">
+      Request cleanup
+    </button>
+  </div>
+  <div id="orphan-cleanup-result" style="display:none;margin-bottom:0.5rem;
+    padding:0.4rem 0.6rem;border-radius:4px;font-size:0.8rem;"></div>
+  <p style="font-size:0.78rem;color:#888;margin:0 0 0.5rem;">
+    These directories remain on disk after an app was uninstalled. Pueo can remove them via
+    a HITL approval card.
+  </p>
+  {% for orphan in breakdown.orphaned_addons %}
+  <div class="disk-item-row">
+    <span class="disk-item-name" style="color:#555;">
+      {{ orphan.slug }}
+      <span style="font-size:0.72rem;color:#bbb;">
+        ({{ orphan.paths | join(", ") }})
+      </span>
+    </span>
+    <span class="disk-item-size">{{ orphan.size_display }}</span>
+    <div class="disk-mini-bar-bg">
+      <div class="disk-mini-bar" style="background:#fd7e14;width:100%;"></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <!-- Pueo Local Storage -->
 {% if pueo_footprint %}
 {% set pueo_total_gb = pueo_footprint.total_bytes / 1073741824 %}
@@ -265,6 +301,37 @@
 {% endif %}
 
 <script>
+async function requestOrphanCleanup() {
+  var btn = document.getElementById('orphan-cleanup-btn');
+  var result = document.getElementById('orphan-cleanup-result');
+  btn.disabled = true;
+  btn.textContent = 'Queuing…';
+  try {
+    var resp = await fetch('/disk/queue-orphan-cleanup', {method: 'POST'});
+    var data = await resp.json();
+    result.style.display = 'block';
+    if (data.ok) {
+      result.textContent = data.message || 'Cleanup card queued — approve it in the HITL queue.';
+      result.style.background = '#d4edda';
+      result.style.color = '#155724';
+      btn.textContent = 'Queued';
+    } else {
+      result.textContent = 'Error: ' + (data.error || 'unknown');
+      result.style.background = '#f8d7da';
+      result.style.color = '#721c24';
+      btn.disabled = false;
+      btn.textContent = 'Request cleanup';
+    }
+  } catch (e) {
+    result.style.display = 'block';
+    result.textContent = 'Request failed: ' + e.message;
+    result.style.background = '#f8d7da';
+    result.style.color = '#721c24';
+    btn.disabled = false;
+    btn.textContent = 'Request cleanup';
+  }
+}
+
 async function refreshDisk() {
   var btn = document.getElementById('refresh-btn');
   var result = document.getElementById('refresh-result');
