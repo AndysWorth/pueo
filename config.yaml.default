@@ -59,6 +59,7 @@ netalertx:
   docker_config_path: "/opt/netalertx/config" # Config volume path on Docker host
   docker_image: "ghcr.io/jokob-sk/netalertx:latest"  # Docker image to pull and run
   docker_min_disk_gb: 5.0                     # Abort Docker install if host has less free space (GB)
+  severity_confidence_threshold: 0.9          # Minimum confidence score to classify as HIGH severity
 
 agent:
   db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
@@ -108,8 +109,10 @@ agent:
   ha_repair_poll_interval_minutes: 5   # How often to poll for HA repair issues (0 = off; requires api_token)
   log_triage_cooldown_hours: 4         # Min hours between HITL cards for the same recurring log error (persistent dedup)
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
-  agent_max_tool_calls: 20            # Hard cap on tool invocations per agent loop run
-  agent_max_wall_seconds: 120.0       # Wall-clock timeout for the entire agent loop (seconds)
+  agent_max_tool_calls: 30            # Hard cap on tool invocations per agent loop run
+  agent_max_wall_seconds: 300.0       # Wall-clock timeout for the entire agent loop (seconds)
+  agent_max_extension_calls: 15       # Max additional calls the LLM may request per limit-review
+  agent_max_total_calls: 60           # Absolute ceiling across base budget + all extensions
   # ha_profile_refresh_hours: 24       # How often to rebuild the HA environment profile (integrations, versions)
   # chat_memory_top_k: 10             # Max memory entries returned per recall() call
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + HITL required)

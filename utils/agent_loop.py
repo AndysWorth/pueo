@@ -14,7 +14,14 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
-from config import AGENT_MAX_TOOL_CALLS, AGENT_MAX_WALL_SECONDS
+from pydantic import BaseModel, Field
+
+from config import (
+    AGENT_MAX_EXTENSION_CALLS,
+    AGENT_MAX_TOOL_CALLS,
+    AGENT_MAX_TOTAL_CALLS,
+    AGENT_MAX_WALL_SECONDS,
+)
 from utils.logging import get_logger
 from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 
@@ -26,6 +33,29 @@ if TYPE_CHECKING:
     from utils.tool_registry import ToolRegistry
 
 log = get_logger("agent_loop")
+
+
+class LimitReviewDecision(BaseModel):
+    reason_limit_hit: str = Field(description="Why the limit was reached")
+    can_resolve_with_more: bool = Field(
+        description="Would more budget/time lead to a solution?"
+    )
+    additional_calls_requested: int = Field(
+        default=0, description="How many more tool calls needed (0 if giving up)"
+    )
+    summary_if_giving_up: str = Field(
+        default="", description="What was learned, if cannot resolve"
+    )
+
+
+def _format_step_trace(steps: list["AgentStep"]) -> str:
+    """One line per step, truncated to 80 chars each."""
+    lines = []
+    for s in steps:
+        status = "OK" if s.tool_result.success else "ERR"
+        detail = (s.tool_result.output or s.tool_result.error or "")[:60]
+        lines.append(f"  {s.step_number}. {s.tool_call.name} → {status}: {detail}")
+    return "\n".join(lines) if lines else "  (no tool calls)"
 
 
 def _parse_content_as_tool_call(
@@ -144,6 +174,7 @@ class AgentLoop:
         self._trigger = trigger
         self._db_path = db_path
         self._escalated = escalated
+        self._absolute_max = AGENT_MAX_TOTAL_CALLS
 
     def _build_episode(
         self,
@@ -214,6 +245,58 @@ class AgentLoop:
         )
         return episode.id
 
+    def _review_timeout(self, steps: list[AgentStep], elapsed: float) -> float:
+        """Adaptive timeout for the limit-review call.
+
+        Uses 3× the observed average per-step time, clamped to [30s, 300s].
+        Falls back to 60s if no steps recorded yet.
+        """
+        if not steps:
+            return 60.0
+        avg = elapsed / len(steps)
+        return max(30.0, min(3.0 * avg, 300.0))
+
+    async def _review_limit(
+        self,
+        messages: list[dict],
+        steps: list[AgentStep],
+        reason: str,
+        total_calls_used: int,
+        elapsed: float,
+    ) -> LimitReviewDecision:
+        """Ask the LLM whether to extend the budget or give up gracefully."""
+        step_trace = _format_step_trace(steps)
+        review_prompt = (
+            f"[LIMIT REVIEW] You have hit the {reason} limit "
+            f"({total_calls_used} tool calls used, {elapsed:.0f}s elapsed). "
+            f"Step trace:\n{step_trace}\n\n"
+            "Assess: (1) Why did you hit this limit? "
+            "(2) Would additional calls lead to a solution — if so, how many? "
+            "(3) If you cannot make progress, summarize what you learned."
+        )
+        timeout = self._review_timeout(steps, elapsed)
+        try:
+            review_messages = messages + [{"role": "user", "content": review_prompt}]
+            response = await asyncio.wait_for(
+                self._llm.chat(
+                    model=self._model,
+                    messages=review_messages,
+                    options={"temperature": 0.0},
+                    format=LimitReviewDecision.model_json_schema(),
+                ),
+                timeout=timeout,
+            )
+            return LimitReviewDecision.model_validate_json(
+                response["message"]["content"]
+            )
+        except Exception:
+            log.warning("limit_review_failed", timeout_used=timeout)
+            return LimitReviewDecision(
+                reason_limit_hit="review failed",
+                can_resolve_with_more=False,
+                summary_if_giving_up="",
+            )
+
     async def run(
         self,
         initial_context: str,
@@ -258,12 +341,54 @@ class AgentLoop:
             )
             outcome, episode_stub = result
         except asyncio.TimeoutError:
+            elapsed = time.monotonic() - start_time
             log.warning(
                 "agent_loop_timeout",
                 wall_seconds=self._max_wall_seconds,
                 steps=len(steps),
             )
-            outcome = "timeout"
+            decision = await self._review_limit(
+                messages, steps, "timeout", len(steps), elapsed
+            )
+            if (
+                decision.can_resolve_with_more
+                and decision.additional_calls_requested > 0
+                and len(steps) < self._absolute_max
+            ):
+                headroom = self._absolute_max - len(steps)
+                grant = min(
+                    decision.additional_calls_requested,
+                    AGENT_MAX_EXTENSION_CALLS,
+                    headroom,
+                )
+                if grant > 0:
+                    self._max_tool_calls = len(steps) + grant
+                    self._max_wall_seconds += 120.0
+                    log.info(
+                        "agent_loop_timeout_extension",
+                        grant=grant,
+                        total_cap=self._absolute_max,
+                    )
+                    try:
+                        result = await asyncio.wait_for(
+                            self._loop_body(
+                                messages, tools, steps, len(steps), start_time
+                            ),
+                            timeout=self._max_wall_seconds,
+                        )
+                        outcome, episode_stub = result
+                    except asyncio.TimeoutError:
+                        outcome = "timeout"
+                        if decision.summary_if_giving_up and episode_stub is None:
+                            episode_stub = {"summary": decision.summary_if_giving_up}
+                else:
+                    outcome = "timeout"
+                    if decision.summary_if_giving_up and episode_stub is None:
+                        episode_stub = {"summary": decision.summary_if_giving_up}
+            else:
+                outcome = "timeout"
+                if decision.summary_if_giving_up and episode_stub is None:
+                    episode_stub = {"summary": decision.summary_if_giving_up}
 
         log.info(
             "agent_loop_complete",
@@ -288,6 +413,44 @@ class AgentLoop:
             gap_description=(episode_stub or {}).get("gap_description", ""),
         )
 
+    async def _maybe_extend_budget(
+        self,
+        messages: list[dict],
+        steps: list[AgentStep],
+        tool_call_count: int,
+        start_time: float,
+        reason: str,
+        episode_stub: Optional[dict],
+    ) -> tuple[bool, Optional[dict]]:
+        """Ask the LLM whether to extend the budget. Returns (extended, episode_stub).
+
+        If extended=True the caller should continue the loop (self._max_tool_calls
+        has been raised). If False the caller should return "exhausted".
+        """
+        elapsed = time.monotonic() - start_time
+        decision = await self._review_limit(
+            messages, steps, reason, tool_call_count, elapsed
+        )
+        if decision.summary_if_giving_up and episode_stub is None:
+            episode_stub = {"summary": decision.summary_if_giving_up}
+        if decision.can_resolve_with_more and decision.additional_calls_requested > 0:
+            headroom = self._absolute_max - tool_call_count
+            grant = min(
+                decision.additional_calls_requested,
+                AGENT_MAX_EXTENSION_CALLS,
+                headroom,
+            )
+            if grant > 0:
+                self._max_tool_calls = tool_call_count + grant
+                log.info(
+                    "agent_loop_budget_extended",
+                    reason=reason,
+                    grant=grant,
+                    total_cap=self._absolute_max,
+                )
+                return True, episode_stub
+        return False, episode_stub
+
     async def _loop_body(
         self,
         messages: list[dict],
@@ -300,7 +463,17 @@ class AgentLoop:
         no_tool_streak = 0  # consecutive plain-text responses with no tool calls
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
 
-        while tool_call_count < self._max_tool_calls:
+        while True:
+            # Budget check at top of loop so extensions can continue without restart.
+            if tool_call_count >= self._max_tool_calls:
+                log.warning("agent_loop_budget_exhausted", count=tool_call_count)
+                extended, episode_stub = await self._maybe_extend_budget(
+                    messages, steps, tool_call_count, start_time, "budget", episode_stub
+                )
+                if extended:
+                    continue
+                return "exhausted", episode_stub
+
             response = await self._llm.chat_with_tools(
                 model=self._model,
                 messages=messages,
@@ -334,6 +507,17 @@ class AgentLoop:
                         )
                         if last_plain_text and episode_stub is None:
                             episode_stub = {"summary": last_plain_text}
+                        extended, episode_stub = await self._maybe_extend_budget(
+                            messages,
+                            steps,
+                            tool_call_count,
+                            start_time,
+                            "no_tool_streak",
+                            episode_stub,
+                        )
+                        if extended:
+                            no_tool_streak = 0
+                            continue
                         return "exhausted", episode_stub
                     # Single plain-text response — inject a recovery nudge and
                     # retry rather than giving up immediately.
@@ -371,8 +555,20 @@ class AgentLoop:
 
             for tc_raw in tool_calls_raw:
                 if tool_call_count >= self._max_tool_calls:
-                    log.warning("agent_loop_budget_exhausted", count=tool_call_count)
-                    return "exhausted", episode_stub
+                    log.warning(
+                        "agent_loop_budget_exhausted_mid_batch", count=tool_call_count
+                    )
+                    extended, episode_stub = await self._maybe_extend_budget(
+                        messages,
+                        steps,
+                        tool_call_count,
+                        start_time,
+                        "budget",
+                        episode_stub,
+                    )
+                    if not extended:
+                        return "exhausted", episode_stub
+                    # Extended — fall through and execute this tool call.
 
                 fn = tc_raw.get("function", {})
                 tool_call = ToolCall(
@@ -438,6 +634,3 @@ class AgentLoop:
             messages.append(
                 {"role": "user", "content": "Continue. Call the next tool."}
             )
-
-        log.warning("agent_loop_budget_exhausted", count=tool_call_count)
-        return "exhausted", episode_stub

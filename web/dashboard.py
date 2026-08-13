@@ -979,62 +979,32 @@ async def _execute_cloud_escalation(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Re-run the HA repair agent loop with ClaudeAPIClient on approved escalation."""
-    from utils.billing import BillingCapError, check_billing_caps, estimate_cost
-    from utils.cloud_client import ClaudeAPIClient
+    """Re-run the HA repair agent loop with ClaudeAPIClient on HITL-approved escalation."""
+    from utils.billing import BillingCapError
+    from utils.autonomy import AutonomyGate
+    from utils.cloud_escalation import run_cloud_escalation
+    from utils.notify import get_notifier
     from utils.ssh_client import AsyncSSHClient
+    from utils.tool_registry import build_ha_tool_registry
+    from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
 
     payload = data.get("payload", {})
     initial_context = payload.get("initial_context", "")
-    cloud_model = payload.get("cloud_model", "")
-    per_incident_cap = payload.get("per_incident_cap_usd", 0.50)
-    daily_cap = payload.get("daily_cap_usd", 5.00)
 
     try:
-        # Pre-flight billing check before starting the loop
-        try:
-            check_billing_caps(nid, cloud_model, 2000, 512)
-        except BillingCapError as exc:
-            data["error"] = f"Billing cap exceeded: {exc}"
-            json_path.write_text(json.dumps(data, indent=2))
-            (watch_dir / f"{nid}.rejected").touch()
-            return
-
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import AutonomyGate
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import build_ha_tool_registry
-        from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
-        from utils.notify import get_notifier
-
-        claude_client = ClaudeAPIClient(incident_id=nid)
         ssh = AsyncSSHClient()
         notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
         gate = AutonomyGate(AUTONOMY_LEVEL)
-        executor = ToolExecutor(
-            ha_ssh_client=ssh,
-            gate=gate,
-            notifier=notifier,
-        )
         registry = build_ha_tool_registry()
-        from config import DB_PATH as _DB_PATH
 
-        loop = AgentLoop(
-            llm_client=claude_client,
-            tool_executor=executor,
+        result = await run_cloud_escalation(
+            initial_context=initial_context,
             tool_registry=registry,
-            model=cloud_model,
-            trigger="escalated",
-            db_path=_DB_PATH,
-            escalated=True,
+            gate=gate,
+            ha_ssh_client=ssh,
+            notifier=notifier,
+            incident_id=nid,
         )
-
-        if not initial_context:
-            initial_context = (
-                "Analyze the Home Assistant configuration.yaml for issues "
-                "and apply a fix if needed."
-            )
-        result = await loop.run(initial_context)
 
         data["cloud_outcome"] = result.outcome
         data["cloud_steps"] = len(result.steps)
@@ -1045,6 +1015,10 @@ async def _execute_cloud_escalation(
         else:
             (watch_dir / f"{nid}.rejected").touch()
 
+    except BillingCapError as exc:
+        data["error"] = f"Billing cap exceeded: {exc}"
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
     except Exception as exc:
         data["error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
