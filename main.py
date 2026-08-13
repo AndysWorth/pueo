@@ -539,11 +539,16 @@ async def supervisor_main(config_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Pueo — Home Assistant guardian agent",
+        description="Pueo — Home Assistant guardian agent\n\nRun with no arguments to start in supervisor mode (all loops + dashboard).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "commands (bin/pueo only — handled before Python starts):\n"
+            "  start [--config FILE]   start supervisor in background; logs to pueo.log (default when no command given)\n"
+            "  stop                    stop the running supervisor\n"
+            "  status                  show whether Pueo is running, PID, and log path\n"
+            "\n"
             "modes:\n"
-            "  supervisor          all loops + dashboard in one process (default)\n"
+            "  supervisor          all loops + dashboard in one process (default; same as no arguments)\n"
             "  monitor             live SSH log tail with AI triage (single-loop daemon)\n"
             "  diagnose            one-shot config fetch and analysis\n"
             "  advanced            diagnose + SQLite memory + backup triggering\n"
