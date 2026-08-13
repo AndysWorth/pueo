@@ -1302,21 +1302,74 @@ async def _execute_queued_fix(
 
 @app.post("/reject/{nid}")
 async def reject(nid: str) -> RedirectResponse:
+    from config import REJECTION_COOLDOWN_HOURS
+    from utils.hitl_tracker import mark_card_rejected
+
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         (watch_dir / f"{nid}.rejected").touch()
+        data = json.loads(json_path.read_text())
+        suppression_key = data.get("payload", {}).get("suppression_key", "")
+        if suppression_key:
+            with sqlite3.connect(DB_PATH) as conn:
+                mark_card_rejected(conn, suppression_key, REJECTION_COOLDOWN_HOURS)
     return RedirectResponse(url="/queue", status_code=303)
 
 
 @app.post("/defer/{nid}")
 async def defer(nid: str) -> RedirectResponse:
+    from utils.hitl_tracker import mark_card_deferred
+
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         (watch_dir / f"{nid}.deferred").touch()
         # Write .rejected so wait_for_approval() unblocks with False
         (watch_dir / f"{nid}.rejected").touch()
+        data = json.loads(json_path.read_text())
+        suppression_key = data.get("payload", {}).get("suppression_key", "")
+        if suppression_key:
+            with sqlite3.connect(DB_PATH) as conn:
+                mark_card_deferred(conn, suppression_key, hours=24.0)
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.post("/suppress/{nid}")
+async def suppress(nid: str) -> RedirectResponse:
+    """Mark a card as a Known Issue — suppress until the condition resolves."""
+    from utils.hitl_tracker import mark_card_acknowledged
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        suppression_key = data.get("payload", {}).get("suppression_key", "")
+        if suppression_key:
+            with sqlite3.connect(DB_PATH) as conn:
+                mark_card_acknowledged(conn, suppression_key)
+        # Remove card from queue
+        (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.get("/known-issues")
+async def known_issues() -> JSONResponse:
+    """Return all active Known Issues as JSON."""
+    from utils.hitl_tracker import get_known_issues
+
+    with sqlite3.connect(DB_PATH) as conn:
+        issues = get_known_issues(conn)
+    return JSONResponse(issues)
+
+
+@app.post("/known-issues/resolve/{card_key:path}")
+async def resolve_known_issue(card_key: str) -> RedirectResponse:
+    """Clear a Known Issue; next occurrence will start fresh."""
+    from utils.hitl_tracker import mark_card_resolved
+
+    with sqlite3.connect(DB_PATH) as conn:
+        mark_card_resolved(conn, card_key)
     return RedirectResponse(url="/queue", status_code=303)
 
 

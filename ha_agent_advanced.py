@@ -326,6 +326,28 @@ def _migrate_v21(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v22(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hitl_suppression (
+            card_key          TEXT PRIMARY KEY,
+            card_type         TEXT NOT NULL DEFAULT '',
+            description       TEXT NOT NULL DEFAULT '',
+            first_sent_at     REAL NOT NULL DEFAULT 0,
+            last_sent_at      REAL NOT NULL DEFAULT 0,
+            send_count        INTEGER NOT NULL DEFAULT 1,
+            last_action       TEXT,
+            last_action_at    REAL,
+            rejection_count   INTEGER NOT NULL DEFAULT 0,
+            next_allowed_at   REAL,
+            known_issue       INTEGER NOT NULL DEFAULT 0,
+            known_issue_note  TEXT,
+            resolved_at       REAL
+        )
+        """
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -348,6 +370,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (19, _migrate_v19),
     (20, _migrate_v20),
     (21, _migrate_v21),
+    (22, _migrate_v22),
 ]
 
 

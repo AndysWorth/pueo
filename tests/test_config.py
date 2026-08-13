@@ -966,6 +966,36 @@ class TestHAUpdateManagerConfig:
 
         assert config.LOG_TRIAGE_COOLDOWN_HOURS == 8
 
+    def test_rejection_cooldown_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.REJECTION_COOLDOWN_HOURS == 24.0
+
+    def test_rejection_cooldown_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"rejection_cooldown_hours": 48}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.REJECTION_COOLDOWN_HOURS == 48.0
+
+    def test_known_issue_reminder_days_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.KNOWN_ISSUE_REMINDER_DAYS == 7
+
+    def test_known_issue_reminder_days_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"known_issue_reminder_days": 14}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.KNOWN_ISSUE_REMINDER_DAYS == 14
+
     def test_disk_usage_poll_interval_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

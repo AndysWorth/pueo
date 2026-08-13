@@ -312,10 +312,13 @@
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
         {% endif %}
+      {% set _sk = r.payload.get("suppression_key", "") %}
+      {% set _rc = r.payload.get("_rejection_count", 0) %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
         <strong style="color:#222;">Approve</strong> — {{ hint_approve }} &nbsp;·&nbsp;
         <strong style="color:#222;">Reject</strong> — {{ hint_reject }} &nbsp;·&nbsp;
         <strong style="color:#222;">Defer</strong> — Ask again in 24 hours
+        {% if _sk %}&nbsp;·&nbsp;<strong style="color:#222;">Suppress</strong> — Add to Known Issues; no more cards until the condition resolves{% endif %}
       </p>
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Approve</button>
@@ -326,6 +329,11 @@
       <form method="POST" action="/defer/{{ r.notification_id }}">
         <button class="btn btn-defer" type="submit">Defer (24h)</button>
       </form>
+      {% if _sk %}
+      <form method="POST" action="/suppress/{{ r.notification_id }}">
+        <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Suppress (Known Issue)</button>
+      </form>
+      {% endif %}
       {% else %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
@@ -340,11 +348,58 @@
   </div>
   {% endfor %}
 {% endif %}
+
+<div id="known-issues-section" style="margin-top:2rem;">
+  <h3 style="font-size:1rem;font-weight:600;margin:0 0 0.5rem;">Known Issues</h3>
+  <p style="font-size:0.8rem;color:#666;margin:0 0 0.75rem;">Conditions you've suppressed. Pueo will stop sending cards for these until they resolve or you remove them.</p>
+  <div id="known-issues-list"><em style="font-size:0.85rem;color:#999;">Loading…</em></div>
+</div>
+
 <script>
 (function () {
   if (document.querySelector('.spinner')) {
     setTimeout(function () { location.reload(); }, 5000);
   }
+
+  function fmtDate(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts * 1000);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+
+  fetch('/known-issues').then(function(r){ return r.json(); }).then(function(issues) {
+    var el = document.getElementById('known-issues-list');
+    if (!issues || issues.length === 0) {
+      el.innerHTML = '<em style="font-size:0.85rem;color:#999;">None.</em>';
+      return;
+    }
+    var rows = issues.map(function(iss) {
+      var key = encodeURIComponent(iss.card_key);
+      return '<tr>' +
+        '<td style="padding:0.4rem 0.6rem;"><span style="background:#e9ecef;border-radius:3px;padding:0.1rem 0.4rem;font-size:0.78rem;">' + (iss.card_type || '—') + '</span></td>' +
+        '<td style="padding:0.4rem 0.6rem;font-size:0.88rem;">' + (iss.description || '—') + '</td>' +
+        '<td style="padding:0.4rem 0.6rem;font-size:0.8rem;color:#666;white-space:nowrap;">' + fmtDate(iss.first_sent_at) + '</td>' +
+        '<td style="padding:0.4rem 0.6rem;font-size:0.8rem;text-align:center;">' + (iss.rejection_count || 0) + '×</td>' +
+        '<td style="padding:0.4rem 0.6rem;">' +
+          '<form method="POST" action="/known-issues/resolve/' + key + '" style="display:inline;">' +
+            '<button type="submit" style="background:#28a745;color:#fff;border:none;padding:0.25rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">Resolve</button>' +
+          '</form>' +
+        '</td>' +
+        '</tr>';
+    });
+    el.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">' +
+      '<thead><tr style="border-bottom:1px solid #dee2e6;">' +
+        '<th style="padding:0.3rem 0.6rem;text-align:left;font-weight:600;font-size:0.8rem;">Type</th>' +
+        '<th style="padding:0.3rem 0.6rem;text-align:left;font-weight:600;font-size:0.8rem;">Description</th>' +
+        '<th style="padding:0.3rem 0.6rem;text-align:left;font-weight:600;font-size:0.8rem;">Since</th>' +
+        '<th style="padding:0.3rem 0.6rem;text-align:center;font-weight:600;font-size:0.8rem;">×</th>' +
+        '<th style="padding:0.3rem 0.6rem;font-size:0.8rem;"></th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows.join('') + '</tbody>' +
+      '</table>';
+  }).catch(function() {
+    document.getElementById('known-issues-list').innerHTML = '<em style="font-size:0.85rem;color:#999;">Could not load known issues.</em>';
+  });
 })();
 </script>
 {% endblock %}

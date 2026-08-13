@@ -195,6 +195,43 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
         await asyncio.sleep(600)
 
 
+async def _known_issues_poll_loop(
+    db_path: str, reminder_days: int, notifier: Any
+) -> None:
+    """Hourly: fire one reminder card for each Known Issue older than reminder_days."""
+    import sqlite3
+
+    from utils.hitl_tracker import check_reminders_due, touch_reminder_sent
+    from utils.logging import get_logger as _gl
+
+    _log = _gl("main")
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            with sqlite3.connect(db_path) as conn:
+                due = check_reminders_due(conn, reminder_days)
+            for issue in due:
+                await notifier.send(
+                    subject=f"Pueo: Known Issue reminder — {issue['description']}",
+                    body=(
+                        f"This issue has been suppressed for over {reminder_days} day(s).\n"
+                        f"Type: {issue['card_type']}\n"
+                        f"Rejected {issue['rejection_count']} time(s) before suppression.\n"
+                        f"Resolve it from the Known Issues section in the HITL queue."
+                    ),
+                    payload={
+                        "card_type": "known_issue_reminder",
+                        "card_key": issue["card_key"],
+                        "original_card_type": issue["card_type"],
+                        "description": issue["description"],
+                    },
+                )
+                with sqlite3.connect(db_path) as conn:
+                    touch_reminder_sent(conn, issue["card_key"])
+        except Exception as exc:
+            _log.warning("known_issues_poll_failed", error=str(exc))
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     import config as cfg
@@ -397,6 +434,7 @@ async def supervisor_main(config_path: Path) -> None:
             rest_client=_rest_client_for_poller,
             llm_client=make_llm_client(),
             knowledge_store=knowledge_store,
+            db_path=cfg.DB_PATH,
         ).run(),
     )
 
@@ -434,6 +472,15 @@ async def supervisor_main(config_path: Path) -> None:
             "repair_poll",
             lambda: poll_for_repairs(notifier=notifier),
         )
+
+    # Known Issues reminder loop — checks hourly for suppressed issues older than
+    # KNOWN_ISSUE_REMINDER_DAYS and sends a one-shot reminder card for each.
+    supervisor.start(
+        "known_issues_poll",
+        lambda: _known_issues_poll_loop(
+            cfg.DB_PATH, cfg.KNOWN_ISSUE_REMINDER_DAYS, notifier
+        ),
+    )
 
     # NetAlertX log monitor (only if host is configured — non-empty means NetAlertX active)
     if cfg.NETALERTX_HOST:
