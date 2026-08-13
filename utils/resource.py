@@ -115,6 +115,7 @@ class ResourcePoller:
         rest_client=None,  # Optional[HARestClientProtocol] — not typed to avoid circular import
         llm_client=None,  # Optional[LLMClientProtocol] — not typed to avoid circular import
         knowledge_store=None,  # Optional[KnowledgeStoreClientProtocol]
+        db_path: str = "",
     ) -> None:
         self._ssh = ssh_client
         self._notifier = notifier
@@ -125,6 +126,7 @@ class ResourcePoller:
         self._rest_client = rest_client
         self._llm_client = llm_client
         self._knowledge_store = knowledge_store
+        self._db_path = db_path
         self._alerted: set[str] = set()
         self._last_recovery_at: float = 0.0
 
@@ -237,8 +239,29 @@ class ResourcePoller:
             # Only send a HITL card on the first breach or after a successful recovery
             # retry (cooldown elapsed). Subsequent polls within the cooldown are silent.
             if is_first_breach or cooldown_elapsed:
+                import sqlite3 as _sqlite3
+
                 import config as _cfg  # type: ignore[assignment]
                 from utils.card_types import CARD_TYPE_DISK_RECOVERY
+                from utils.hitl_tracker import (
+                    mark_card_sent,
+                    should_send_card,
+                )
+
+                _db = self._db_path or _cfg.DB_PATH
+                with _sqlite3.connect(_db) as _sup_conn:
+                    # Cooldown-elapsed retries bypass the pending-state guard so the
+                    # poller can re-send while disk stays critical; explicit user
+                    # suppression (rejection cooldown, known issues) still blocks.
+                    if not should_send_card(
+                        _sup_conn,
+                        "resource:disk_critical",
+                        skip_pending_check=cooldown_elapsed and not is_first_breach,
+                    ):
+                        self._alerted.add("disk_critical")
+                        if is_first_breach or cooldown_elapsed:
+                            await self._maybe_send_migrate_card()
+                        return
 
                 auto_actions = []
                 if auto_summary:
@@ -425,6 +448,7 @@ class ResourcePoller:
                     body="\n".join(body_lines),
                     payload={
                         "card_type": CARD_TYPE_DISK_RECOVERY,
+                        "suppression_key": "resource:disk_critical",
                         "type": "resource_alert",
                         "severity": "CRITICAL",
                         "disk_free_gb": status.disk_free_gb,
@@ -436,6 +460,13 @@ class ResourcePoller:
                         "disk_analysis": disk_analysis,
                     },
                 )
+                with _sqlite3.connect(_db) as _sup_conn2:
+                    mark_card_sent(
+                        _sup_conn2,
+                        "resource:disk_critical",
+                        CARD_TYPE_DISK_RECOVERY,
+                        f"Disk CRITICAL: {status.disk_free_gb:.1f} GB free",
+                    )
                 try:
                     from utils.timeline import write_timeline_event
 
@@ -459,80 +490,119 @@ class ResourcePoller:
                 if is_first_breach or cooldown_elapsed:
                     await self._maybe_send_migrate_card()
         else:
+            if "disk_critical" in self._alerted:
+                import sqlite3 as _sqlite3
+
+                import config as _cfg  # type: ignore[assignment]
+                from utils.hitl_tracker import mark_card_resolved
+
+                with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rc:
+                    mark_card_resolved(_rc, "resource:disk_critical")
             self._alerted.discard("disk_critical")
             if status.disk_warn:
                 if "disk_warn" not in self._alerted:
-                    log.warning(
-                        "disk_warn",
-                        disk_free_gb=status.disk_free_gb,
-                        threshold_gb=self._disk_warn_gb,
+                    import sqlite3 as _sqlite3
+
+                    import config as _cfg  # type: ignore[assignment]
+                    from utils.hitl_tracker import (
+                        mark_card_sent,
+                        should_send_card,
                     )
 
-                    # Proactive cleanup at WARN level — run safe recovery steps before
-                    # disk slides further to CRITICAL.
-                    warn_summary = None
-                    try:
-                        import config as _cfg
-                        from utils.disk_recovery import run_safe_disk_recovery
+                    _db_w = self._db_path or _cfg.DB_PATH
+                    with _sqlite3.connect(_db_w) as _sup_w:
+                        _send_warn = should_send_card(_sup_w, "resource:disk_warn")
+                    if not _send_warn:
+                        self._alerted.add("disk_warn")
+                    else:
+                        log.warning(
+                            "disk_warn",
+                            disk_free_gb=status.disk_free_gb,
+                            threshold_gb=self._disk_warn_gb,
+                        )
 
-                        if _cfg.DISK_RECOVERY_AUTO_ENABLED:
-                            warn_summary = await run_safe_disk_recovery(
-                                ssh_client=self._ssh,
-                                rest_client=self._rest_client,
-                                recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
-                                journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
-                            )
-                            try:
-                                import ha_agent_advanced as _adv
+                        # Proactive cleanup at WARN level — run safe recovery steps before
+                        # disk slides further to CRITICAL.
+                        warn_summary = None
+                        try:
+                            from utils.disk_recovery import run_safe_disk_recovery
 
-                                await _adv.offload_pending_backups(ssh_client=self._ssh)
-                                await _adv.enforce_ha_retention(
+                            if _cfg.DISK_RECOVERY_AUTO_ENABLED:
+                                warn_summary = await run_safe_disk_recovery(
                                     ssh_client=self._ssh,
-                                    force_critical=False,
+                                    rest_client=self._rest_client,
+                                    recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
+                                    journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
                                 )
-                            except Exception:  # nosec B110
-                                pass
-                            self._last_recovery_at = time.monotonic()
-                    except Exception as _e:  # nosec B110
-                        log.warning("disk_recovery_warn_failed", error=str(_e))
+                                try:
+                                    import ha_agent_advanced as _adv
 
-                    warn_body = (
-                        f"Disk free: {status.disk_free_gb:.1f} GB — below warning threshold "
-                        f"{self._disk_warn_gb} GB."
-                    )
-                    if warn_summary and warn_summary.succeeded:
-                        freed_mb = warn_summary.total_freed_mb
-                        warn_body += (
-                            f"\nProactive recovery freed ~{freed_mb:.0f} MB."
-                            if freed_mb > 0
-                            else "\nProactive recovery ran; space freed will reflect in the next poll."
+                                    await _adv.offload_pending_backups(
+                                        ssh_client=self._ssh
+                                    )
+                                    await _adv.enforce_ha_retention(
+                                        ssh_client=self._ssh,
+                                        force_critical=False,
+                                    )
+                                except Exception:  # nosec B110
+                                    pass
+                                self._last_recovery_at = time.monotonic()
+                        except Exception as _e:  # nosec B110
+                            log.warning("disk_recovery_warn_failed", error=str(_e))
+
+                        warn_body = (
+                            f"Disk free: {status.disk_free_gb:.1f} GB — below warning threshold "
+                            f"{self._disk_warn_gb} GB."
                         )
+                        if warn_summary and warn_summary.succeeded:
+                            freed_mb = warn_summary.total_freed_mb
+                            warn_body += (
+                                f"\nProactive recovery freed ~{freed_mb:.0f} MB."
+                                if freed_mb > 0
+                                else "\nProactive recovery ran; space freed will reflect in the next poll."
+                            )
 
-                    await self._notifier.send(
-                        subject="Pueo WARNING: HA disk space low",
-                        body=warn_body,
-                        payload={
-                            "type": "resource_alert",
-                            "severity": "WARN",
-                            "disk_free_gb": status.disk_free_gb,
-                            "disk_total_gb": status.disk_total_gb,
-                            "mem_available_mb": round(status.mem_available_mb),
-                        },
-                    )
-                    try:
-                        from utils.timeline import write_timeline_event
-
-                        write_timeline_event(
-                            "WARN",
-                            "resource",
-                            f"Disk WARN: {status.disk_free_gb:.1f} GB free"
-                            f" — below {self._disk_warn_gb} GB threshold",
-                            {"disk_free_gb": status.disk_free_gb},
+                        await self._notifier.send(
+                            subject="Pueo WARNING: HA disk space low",
+                            body=warn_body,
+                            payload={
+                                "suppression_key": "resource:disk_warn",
+                                "type": "resource_alert",
+                                "severity": "WARN",
+                                "disk_free_gb": status.disk_free_gb,
+                                "disk_total_gb": status.disk_total_gb,
+                                "mem_available_mb": round(status.mem_available_mb),
+                            },
                         )
-                    except Exception:  # nosec B110
-                        pass
-                    self._alerted.add("disk_warn")
+                        with _sqlite3.connect(_db_w) as _sup_w2:
+                            mark_card_sent(
+                                _sup_w2,
+                                "resource:disk_warn",
+                                "resource_alert",
+                                f"Disk WARN: {status.disk_free_gb:.1f} GB free",
+                            )
+                        try:
+                            from utils.timeline import write_timeline_event
+
+                            write_timeline_event(
+                                "WARN",
+                                "resource",
+                                f"Disk WARN: {status.disk_free_gb:.1f} GB free"
+                                f" — below {self._disk_warn_gb} GB threshold",
+                                {"disk_free_gb": status.disk_free_gb},
+                            )
+                        except Exception:  # nosec B110
+                            pass
+                        self._alerted.add("disk_warn")
             else:
+                if "disk_warn" in self._alerted:
+                    import sqlite3 as _sqlite3
+
+                    import config as _cfg  # type: ignore[assignment]
+                    from utils.hitl_tracker import mark_card_resolved
+
+                    with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rw:
+                        mark_card_resolved(_rw, "resource:disk_warn")
                 self._alerted.discard("disk_warn")
 
         if status.mem_warn:
@@ -549,6 +619,7 @@ class ResourcePoller:
                         f"threshold {self._mem_warn_mb} MB."
                     ),
                     payload={
+                        "suppression_key": "resource:mem_warn",
                         "type": "resource_alert",
                         "severity": "WARN",
                         "mem_available_mb": round(status.mem_available_mb),

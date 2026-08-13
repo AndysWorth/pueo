@@ -1059,6 +1059,29 @@ class TestCheckDiskNotCritical:
 
 
 class TestResourcePollerAlerts:
+    _HITL_DDL = (
+        "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+        "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+        "description TEXT NOT NULL DEFAULT '', "
+        "first_sent_at REAL NOT NULL DEFAULT 0, "
+        "last_sent_at REAL NOT NULL DEFAULT 0, "
+        "send_count INTEGER NOT NULL DEFAULT 1, "
+        "last_action TEXT, last_action_at REAL, "
+        "rejection_count INTEGER NOT NULL DEFAULT 0, "
+        "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+        "known_issue_note TEXT, resolved_at REAL)"
+    )
+
+    @pytest.fixture(autouse=True)
+    def _patch_hitl_db(self, monkeypatch):
+        """Route sqlite3.connect to an in-memory DB so real suppression logic can run."""
+        import sqlite3 as _sq3
+
+        _mem = _sq3.connect(":memory:")
+        _mem.execute(self._HITL_DDL)
+        _mem.commit()
+        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
+
     def _make_status(
         self,
         disk_free: float = 6.0,

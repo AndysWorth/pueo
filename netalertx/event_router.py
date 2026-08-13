@@ -188,6 +188,7 @@ class NetAlertXEventRouter:
             body=device_desc,
             payload={
                 "card_type": CARD_TYPE_NETALERTX_NEW_DEVICE,
+                "suppression_key": f"netalertx:new_device:{mac.upper()}",
                 "severity": "INFO",
                 "mac": mac,
                 "ip": ip,

@@ -248,6 +248,7 @@ async def tail_remote_log_stream(
                             subject="Pueo: Actionable log event — approval required",
                             body=evaluation.root_cause_summary,
                             payload={
+                                "suppression_key": f"log_triage:{_fingerprint}",
                                 "cause": evaluation.root_cause_summary,
                                 "confidence": evaluation.confidence_score,
                                 "diagnosis": evaluation.model_dump(),
@@ -305,8 +306,6 @@ async def poll_for_updates(
         llm_client  # None → OllamaClient() inside analyze
     )
     _cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
-    # Track which entity_ids have already triggered a notification so we don't repeat
-    _notified: set[str] = set()
 
     while True:
         try:
@@ -317,7 +316,14 @@ async def poll_for_updates(
             continue
 
         for u in updates:
-            if u.update_available and u.entity_id not in _notified:
+            suppression_key = f"update:{u.entity_id}"
+            if u.update_available:
+                with sqlite3.connect(DB_PATH) as _sup_conn:
+                    from utils.hitl_tracker import mark_card_sent, should_send_card
+
+                    _should_send = should_send_card(_sup_conn, suppression_key)
+                if not _should_send:
+                    continue
                 log.info(
                     "update_available",
                     component=u.component,
@@ -376,6 +382,7 @@ async def poll_for_updates(
                         body="\n".join(body_parts),
                         payload={
                             "card_type": CARD_TYPE_UPDATE,
+                            "suppression_key": suppression_key,
                             "component": u.component,
                             "entity_id": u.entity_id,
                             "installed_version": u.installed_version,
@@ -399,6 +406,13 @@ async def poll_for_updates(
                             ),
                         },
                     )
+                    with sqlite3.connect(DB_PATH) as _sup_conn2:
+                        mark_card_sent(
+                            _sup_conn2,
+                            suppression_key,
+                            CARD_TYPE_UPDATE,
+                            f"Update: {u.component} {u.installed_version} → {u.latest_version}",
+                        )
                 try:  # pragma: no cover
                     from utils.timeline import write_timeline_event
 
@@ -416,10 +430,11 @@ async def poll_for_updates(
                     )
                 except Exception:  # nosec B110
                     pass
-                _notified.add(u.entity_id)
             elif not u.update_available:
-                # Clear the flag once the update entity goes back to "off"
-                _notified.discard(u.entity_id)
+                with sqlite3.connect(DB_PATH) as _sup_conn3:
+                    from utils.hitl_tracker import mark_card_resolved
+
+                    mark_card_resolved(_sup_conn3, suppression_key)
 
         await asyncio.sleep(interval)
 
@@ -526,6 +541,7 @@ async def poll_for_notifications(
                 payload: dict = {
                     "notification_id": card_id,
                     "ha_notification_id": nid,
+                    "suppression_key": f"notification:{nid}",
                     "is_notification_card": True,
                     "category": analysis.category,
                     "severity": analysis.severity,
@@ -606,6 +622,7 @@ async def poll_for_repairs(
                     body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
                 payload: dict = {
                     "card_type": CARD_TYPE_HA_REPAIR,
+                    "suppression_key": f"ha_repair:{issue.issue_key}",
                     "action": action,
                     "domain": issue.domain,
                     "issue_id": issue.issue_id,

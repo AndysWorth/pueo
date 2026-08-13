@@ -1403,6 +1403,147 @@ class TestDeferEndpoint:
         assert not (tmp_path / "upd3.deferred").exists()
 
 
+class TestSuppressAndKnownIssues:
+    """Tests for POST /suppress/{nid}, GET /known-issues, POST /known-issues/resolve/{key}."""
+
+    _HITL_DDL = (
+        "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+        "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+        "description TEXT NOT NULL DEFAULT '', first_sent_at REAL NOT NULL DEFAULT 0, "
+        "last_sent_at REAL NOT NULL DEFAULT 0, send_count INTEGER NOT NULL DEFAULT 1, "
+        "last_action TEXT, last_action_at REAL, rejection_count INTEGER NOT NULL DEFAULT 0, "
+        "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+        "known_issue_note TEXT, resolved_at REAL)"
+    )
+
+    def _setup(self, tmp_path, monkeypatch):
+        import sqlite3
+        import web.dashboard as dashboard
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as c:
+            c.execute(self._HITL_DDL)
+        monkeypatch.setattr(dashboard, "DB_PATH", db)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        return db
+
+    def _write_card(self, watch_dir, nid, suppression_key="resource:disk_critical"):
+        import json as _j
+        import time as _t
+
+        (watch_dir / f"{nid}.json").write_text(
+            _j.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {"suppression_key": suppression_key},
+                    "sent_at": int(_t.time()) - 5,
+                }
+            )
+        )
+
+    def test_suppress_writes_approved_file(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._setup(tmp_path, monkeypatch)
+        self._write_card(tmp_path, "s1")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/suppress/s1", follow_redirects=False)
+        assert (tmp_path / "s1.approved").exists()
+
+    def test_suppress_marks_known_issue_in_db(self, tmp_path, monkeypatch):
+        import sqlite3
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        db = self._setup(tmp_path, monkeypatch)
+        self._write_card(tmp_path, "s2", suppression_key="resource:disk_critical")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/suppress/s2", follow_redirects=False)
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT known_issue FROM hitl_suppression WHERE card_key=?",
+                ("resource:disk_critical",),
+            ).fetchone()
+        assert row is not None and row[0] == 1
+
+    def test_suppress_without_suppression_key_is_noop_on_db(
+        self, tmp_path, monkeypatch
+    ):
+        import sqlite3, json as _j, time as _t
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        db = self._setup(tmp_path, monkeypatch)
+        # Card with no suppression_key in payload
+        (tmp_path / "s3.json").write_text(
+            _j.dumps(
+                {
+                    "notification_id": "s3",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_t.time()) - 5,
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/suppress/s3", follow_redirects=False)
+        with sqlite3.connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM hitl_suppression").fetchone()[0]
+        assert count == 0
+
+    def test_known_issues_returns_empty_json(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        self._setup(tmp_path, monkeypatch)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/known-issues")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_known_issues_returns_active_items(self, tmp_path, monkeypatch):
+        import sqlite3
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.hitl_tracker import mark_card_acknowledged, mark_card_sent
+
+        db = self._setup(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            mark_card_sent(conn, "resource:disk_critical", "disk_recovery", "Disk full")
+            mark_card_acknowledged(conn, "resource:disk_critical")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/known-issues")
+        assert response.status_code == 200
+        issues = response.json()
+        assert len(issues) == 1
+        assert issues[0]["card_key"] == "resource:disk_critical"
+
+    def test_resolve_known_issue_clears_entry(self, tmp_path, monkeypatch):
+        import sqlite3
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.hitl_tracker import mark_card_acknowledged, mark_card_sent
+
+        db = self._setup(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            mark_card_sent(conn, "resource:disk_critical", "disk_recovery", "Disk full")
+            mark_card_acknowledged(conn, "resource:disk_critical")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post(
+            "/known-issues/resolve/resource:disk_critical", follow_redirects=False
+        )
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key=?",
+                ("resource:disk_critical",),
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+
 class TestDismissNotificationRoute:
     """Tests for the /dismiss-notification/{card_id} POST route."""
 
@@ -3601,6 +3742,7 @@ class TestTimelineRoutes:
                 disk_warn_gb=2.0,
                 disk_critical_gb=3.0,
                 mem_warn_mb=200,
+                db_path=db,
             )
             status = ResourceStatus(
                 disk_free_gb=1.0,

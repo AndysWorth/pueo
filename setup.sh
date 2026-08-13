@@ -526,6 +526,8 @@ agent:
   # repair_cooldown_seconds: 300
   # max_repairs_per_hour: 10
   # log_triage_cooldown_hours: 4  # Min hours between HITL cards for same recurring log error
+  # rejection_cooldown_hours: 24  # Hours a card is suppressed after rejection (doubles on repeat rejections)
+  # known_issue_reminder_days: 7  # Days before a Known Issue generates a reminder card
   # log_level: INFO
   # log_file: pueo.log
   # max_prompt_tokens: 7000

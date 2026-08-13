@@ -384,7 +384,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 21
+        assert version == 22
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_advanced
@@ -394,7 +394,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 21
+        assert rows[0][0] == 22
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_advanced
@@ -423,7 +423,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 21
+        assert version == 22
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_advanced
@@ -1290,7 +1290,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 21
+        assert version == 22
 
     def test_version_unchanged_on_second_init(self, db_path):
         import ha_agent_sandbox_engine
@@ -1300,7 +1300,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 21
+        assert rows[0][0] == 22
 
     def test_pre_migration_database_upgraded(self, db_path):
         import ha_agent_sandbox_engine
@@ -1328,7 +1328,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 21
+        assert version == 22
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         import ha_agent_sandbox_engine
@@ -6312,6 +6312,28 @@ class TestNotificationHistoryMigration:
 
 
 class TestPollForUpdates:
+    @pytest.fixture(autouse=True)
+    def _patch_hitl_tracker(self, monkeypatch):
+        """Route sqlite3.connect to an in-memory DB so real suppression logic can run."""
+        import sqlite3 as _sq3
+
+        _DDL = (
+            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+            "description TEXT NOT NULL DEFAULT '', "
+            "first_sent_at REAL NOT NULL DEFAULT 0, "
+            "last_sent_at REAL NOT NULL DEFAULT 0, "
+            "send_count INTEGER NOT NULL DEFAULT 1, "
+            "last_action TEXT, last_action_at REAL, "
+            "rejection_count INTEGER NOT NULL DEFAULT 0, "
+            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+            "known_issue_note TEXT, resolved_at REAL)"
+        )
+        _mem = _sq3.connect(":memory:")
+        _mem.execute(_DDL)
+        _mem.commit()
+        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
+
     @staticmethod
     def _make_update_entity(
         entity_id: str,
