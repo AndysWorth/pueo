@@ -550,6 +550,7 @@ async def _step9_create_webhook(
         ha_ssh, gate, notifier, details, cid, db_path
     )
     if ok:
+        details["platform"] = "docker"
         _write_install_state(db_path, "DOCKER_WEBHOOK_CREATED", details, cid)
         _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
         log.info("step9_complete", correlation_id=cid)

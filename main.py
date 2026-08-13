@@ -567,6 +567,8 @@ def main() -> None:
             "  netalertx-setup        install and configure NetAlertX on HA\n"
             "  netalertx-uninstall    remove NetAlertX from HA and reset install state\n"
             "  netalertx-docker-setup install NetAlertX FA on a separate Docker host\n"
+            "  netalertx-docker-uninstall remove NetAlertX Docker container and reset state\n"
+            "  netalertx-switch       move NetAlertX between HA and Docker (reads deploy_target)\n"
             "  netalertx           monitor NetAlertX logs continuously\n"
             "  netalertx-diagnose  one-shot NetAlertX health check and optional heal\n"
             "  backup-status       print backup inventory table (slug, size, age, HA, Pueo)\n"
@@ -599,6 +601,8 @@ def main() -> None:
             "netalertx-setup",
             "netalertx-uninstall",
             "netalertx-docker-setup",
+            "netalertx-docker-uninstall",
+            "netalertx-switch",
             "netalertx",
             "netalertx-diagnose",
             "backup-status",
@@ -642,6 +646,8 @@ def main() -> None:
                 "netalertx-setup",
                 "netalertx-uninstall",
                 "netalertx-docker-setup",
+                "netalertx-docker-uninstall",
+                "netalertx-switch",
                 "netalertx-diagnose",
             )
         )
@@ -683,6 +689,18 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.docker_installer.main())
+    elif args.mode == "netalertx-docker-uninstall":
+        import ha_agent_advanced
+        import netalertx.docker_uninstaller
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(netalertx.docker_uninstaller.main())
+    elif args.mode == "netalertx-switch":
+        import ha_agent_advanced
+        import netalertx.switch
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(netalertx.switch.main())
     elif args.mode == "netalertx":
         import ha_agent_advanced
         import netalertx.log_monitor

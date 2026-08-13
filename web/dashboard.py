@@ -34,6 +34,7 @@ from utils.card_types import (
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_NETALERTX_MIGRATE,
+    CARD_TYPE_NETALERTX_SWITCH,
     CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
@@ -1190,6 +1191,43 @@ async def _execute_netalertx_migrate(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_netalertx_switch(
+    nid: str,
+    data: dict,
+    json_path: "Path",
+    watch_dir: "Path",
+) -> None:
+    """Handle an approved NetAlertX switch card (HA ↔ Docker)."""
+    import config as _cfg
+    from utils.supervisor import get_supervisor_instance
+
+    try:
+        sv = get_supervisor_instance()
+        if sv is not None:
+            import netalertx.switch as _switch
+            from utils.autonomy import AutonomyGate
+            from utils.notify import get_notifier
+
+            _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
+            _notifier = get_notifier(
+                _cfg.NOTIFIER, _cfg.NOTIFY_URL, _cfg.NOTIFY_WATCH_DIR
+            )
+            sv.start(
+                "netalertx_switch",
+                lambda: _switch.main(gate=_gate, notifier=_notifier),
+            )
+            log.info("netalertx_switch_started", card_id=nid)
+
+        (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        log.error("netalertx_switch_failed", error=str(exc), card_id=nid)
+        data["error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -1198,6 +1236,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_HA_REPAIR: _execute_queued_ha_repair,
     CARD_TYPE_NETALERTX_HEAL: _execute_netalertx_heal,
     CARD_TYPE_NETALERTX_MIGRATE: _execute_netalertx_migrate,
+    CARD_TYPE_NETALERTX_SWITCH: _execute_netalertx_switch,
     CARD_TYPE_RESOURCE_ACTION: _execute_resource_action,
     CARD_TYPE_DISK_RECOVERY: _execute_disk_recovery,
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
