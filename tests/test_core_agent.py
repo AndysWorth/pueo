@@ -9660,6 +9660,251 @@ class TestAgentLoop:
         assert "mandatory" in prompt_lower or "required" in prompt_lower
         assert "plain text" in prompt_lower or "never return" in prompt_lower
 
+    def _make_review_loop(self, call_sequence, review_response_json, budget):
+        """Build an AgentLoop whose LLM responds to chat_with_tools from the sequence
+        and to chat() (the limit-review call) with review_response_json."""
+        import json
+
+        from utils.agent_loop import AgentLoop, LimitReviewDecision
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolDefinition, ToolRegistry
+
+        class _ReviewLLMClient:
+            def __init__(self, seq, review_json):
+                self._seq = seq
+                self._idx = 0
+                self._review_json = review_json
+                self.review_calls = 0
+
+            async def chat(self, model, messages, options, format):
+                self.review_calls += 1
+                return {"message": {"content": self._review_json}}
+
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                if self._idx >= len(self._seq):
+                    return {"role": "assistant", "content": ""}
+                resp = dict(self._seq[self._idx])
+                self._idx += 1
+                return {"role": "assistant", **resp}
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair", "apply_fix"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        client = _ReviewLLMClient(call_sequence, review_response_json)
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=client,
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=budget,
+            max_wall_seconds=30.0,
+        )
+        return loop, client
+
+    def test_limit_review_called_on_budget_exhaustion_and_extends(self):
+        """When budget fires and LLM says it can resolve with more, the loop extends."""
+        import json
+        from utils.agent_loop import LimitReviewDecision
+
+        extend_decision = LimitReviewDecision(
+            reason_limit_hit="needed more reads",
+            can_resolve_with_more=True,
+            additional_calls_requested=5,
+        )
+        finish_response = {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "finish_repair",
+                        "arguments": {"summary": "fixed", "action_taken": "fixed"},
+                    }
+                }
+            ]
+        }
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        # budget=1: read_config hits the cap; review extends; finish_repair succeeds
+        loop, client = self._make_review_loop(
+            call_sequence=[read_call, finish_response],
+            review_response_json=extend_decision.model_dump_json(),
+            budget=1,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+        assert client.review_calls >= 1
+
+    def test_limit_review_called_on_budget_exhaustion_gives_up(self):
+        """When budget fires and LLM says it cannot proceed, loop returns exhausted."""
+        import json
+        from utils.agent_loop import LimitReviewDecision
+
+        give_up = LimitReviewDecision(
+            reason_limit_hit="cannot make progress",
+            can_resolve_with_more=False,
+            summary_if_giving_up="no fix found",
+        )
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        loop, client = self._make_review_loop(
+            call_sequence=[read_call, read_call, read_call],
+            review_response_json=give_up.model_dump_json(),
+            budget=1,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "exhausted"
+        assert client.review_calls >= 1
+        assert result.episode_stub is not None
+        assert result.episode_stub.get("summary") == "no fix found"
+
+    def test_absolute_max_prevents_runaway_extension(self):
+        """AGENT_MAX_TOTAL_CALLS caps the total even when LLM keeps requesting more."""
+        from utils.agent_loop import AgentLoop, LimitReviewDecision
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolDefinition, ToolRegistry
+
+        always_extend = LimitReviewDecision(
+            reason_limit_hit="need more",
+            can_resolve_with_more=True,
+            additional_calls_requested=100,
+        )
+
+        class _AlwaysExtendClient:
+            def __init__(self):
+                self.review_calls = 0
+                self.tool_calls = 0
+
+            async def chat(self, model, messages, options, format):
+                self.review_calls += 1
+                return {"message": {"content": always_extend.model_dump_json()}}
+
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                self.tool_calls += 1
+                return {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": "read_config", "arguments": {}}}
+                    ],
+                }
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair", "apply_fix"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name}",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        client = _AlwaysExtendClient()
+        loop = AgentLoop(
+            llm_client=client,
+            tool_executor=ToolExecutor(
+                ha_ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+                notifier=FakeNotifier(approve=True),
+            ),
+            tool_registry=reg,
+            max_tool_calls=2,
+            max_wall_seconds=30.0,
+        )
+        loop._absolute_max = 4  # force a low absolute ceiling for the test
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "exhausted"
+        # Must not exceed absolute_max tool calls
+        assert client.tool_calls <= 4
+
+    def test_no_tool_streak_triggers_limit_review(self):
+        """Two consecutive plain-text responses call _review_limit before exhausting."""
+        from utils.agent_loop import LimitReviewDecision
+
+        give_up = LimitReviewDecision(
+            reason_limit_hit="no tools available",
+            can_resolve_with_more=False,
+            summary_if_giving_up="stuck on plain text",
+        )
+        loop, client = self._make_review_loop(
+            call_sequence=[
+                {"content": "I cannot help"},
+                {"content": "Still no tool"},
+            ],
+            review_response_json=give_up.model_dump_json(),
+            budget=5,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "exhausted"
+        assert client.review_calls >= 1
+
+    def test_limit_review_decision_schema_valid(self):
+        from utils.agent_loop import LimitReviewDecision
+
+        d = LimitReviewDecision(
+            reason_limit_hit="budget hit",
+            can_resolve_with_more=True,
+            additional_calls_requested=3,
+            summary_if_giving_up="",
+        )
+        assert d.can_resolve_with_more is True
+        assert d.additional_calls_requested == 3
+
+    def test_limit_review_decision_schema_defaults(self):
+        from utils.agent_loop import LimitReviewDecision
+
+        d = LimitReviewDecision(
+            reason_limit_hit="x",
+            can_resolve_with_more=False,
+        )
+        assert d.additional_calls_requested == 0
+        assert d.summary_if_giving_up == ""
+
+    def test_limit_review_decision_json_round_trip(self):
+        from utils.agent_loop import LimitReviewDecision
+
+        orig = LimitReviewDecision(
+            reason_limit_hit="timeout",
+            can_resolve_with_more=False,
+            summary_if_giving_up="gave up",
+        )
+        restored = LimitReviewDecision.model_validate_json(orig.model_dump_json())
+        assert restored.reason_limit_hit == "timeout"
+        assert restored.summary_if_giving_up == "gave up"
+
+    def test_format_step_trace_empty(self):
+        from utils.agent_loop import _format_step_trace
+
+        assert _format_step_trace([]) == "  (no tool calls)"
+
+    def test_format_step_trace_single_step(self):
+        from utils.agent_loop import _format_step_trace
+        from utils.tool_registry import AgentStep, ToolCall, ToolResult
+
+        step = AgentStep(
+            step_number=1,
+            tool_call=ToolCall(name="read_config", arguments={}),
+            tool_result=ToolResult(tool_name="read_config", success=True, output="ok"),
+            timestamp=0.0,
+        )
+        trace = _format_step_trace([step])
+        assert "read_config" in trace
+        assert "OK" in trace
+
 
 class TestRunRagRefresh:
     """Tests for run_rag_refresh() — all network-dependent functions are mocked."""

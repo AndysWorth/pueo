@@ -16,6 +16,7 @@ from config import (
     MAX_PROMPT_TOKENS,
     MAX_REPAIRS_PER_HOUR,
     NETALERTX_LOG_CONTAINER_NAME,
+    NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD,
     NETALERTX_SSH_HOST,
     NETALERTX_SSH_KEY_PATH,
     NETALERTX_SSH_USER,
@@ -124,7 +125,11 @@ def _evaluation_to_diagnostic(evaluation: LogEvaluation) -> "NetAlertXDiagnostic
     else:
         category = "networking"
 
-    severity = "HIGH" if evaluation.confidence_score > 0.9 else "MEDIUM"
+    severity = (
+        "HIGH"
+        if evaluation.confidence_score > NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD
+        else "MEDIUM"
+    )
 
     return NetAlertXDiagnostic(
         issue=evaluation.root_cause_summary,

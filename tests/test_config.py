@@ -525,6 +525,21 @@ class TestNetAlertXConfigKeys:
         assert config.NETALERTX_MQTT_SUBSCRIBE is False
         assert config.NETALERTX_MAX_DB_HISTORY_ROWS == 50000
 
+    def test_netalertx_severity_confidence_threshold_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD == 0.9
+
+    def test_netalertx_severity_confidence_threshold_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"netalertx": {"severity_confidence_threshold": 0.75}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD == 0.75
+
 
 class TestResourceSensingConfig:
     def test_resource_poll_interval_default(self, isolated_config):
@@ -738,7 +753,7 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AGENT_MAX_TOOL_CALLS == 20
+        assert config.AGENT_MAX_TOOL_CALLS == 30
 
     def test_agent_max_tool_calls_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"agent_max_tool_calls": 10}}))
@@ -751,7 +766,7 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AGENT_MAX_WALL_SECONDS == 120.0
+        assert config.AGENT_MAX_WALL_SECONDS == 300.0
 
     def test_agent_max_wall_seconds_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -761,6 +776,34 @@ class TestHAUpdateManagerConfig:
         import config
 
         assert config.AGENT_MAX_WALL_SECONDS == 60.0
+
+    def test_agent_max_extension_calls_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_EXTENSION_CALLS == 15
+
+    def test_agent_max_extension_calls_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"agent_max_extension_calls": 5}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_EXTENSION_CALLS == 5
+
+    def test_agent_max_total_calls_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_TOTAL_CALLS == 60
+
+    def test_agent_max_total_calls_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"agent_max_total_calls": 100}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_MAX_TOTAL_CALLS == 100
 
     def test_chromadb_path_default(self, isolated_config):
         importlib.reload(sys.modules["config"])

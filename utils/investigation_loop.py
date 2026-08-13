@@ -257,8 +257,8 @@ async def run_investigation(
     gate: Any = None,  # AutonomyGate — Any avoids circular import; defaults to AUTONOMOUS
     notifier: Any = None,  # NotifierProtocol — Any avoids circular import
     knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
-    max_tool_calls: int = 15,
-    max_wall_seconds: float = 90.0,
+    max_tool_calls: int = 20,
+    max_wall_seconds: float = 180.0,
 ) -> InvestigationReport:
     """Run a read-only investigation agent loop and return a structured report.
 
@@ -355,7 +355,7 @@ async def investigate_with_fallback(
     ssh_client: SSHClientProtocol,
     notifier: Any = None,
     knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
-    timeout: float = 60.0,
+    timeout: float = 180.0,
 ) -> tuple[Optional[InvestigationReport], bool]:
     """Run a read-only investigation with a timeout. Returns (report, is_fallback).
 

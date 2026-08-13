@@ -115,8 +115,10 @@ RAG_HACS_CACHE_DIR: str = _agent.get("rag_hacs_cache_dir", ".cache/hacs_changelo
 RAG_HA_DOCS_CACHE_DIR: str = _agent.get("rag_ha_docs_cache_dir", ".cache/ha_docs/")
 
 # Tool-calling agent loop
-AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 20))
-AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 120.0))
+AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 30))
+AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 300.0))
+AGENT_MAX_EXTENSION_CALLS: int = int(_agent.get("agent_max_extension_calls", 15))
+AGENT_MAX_TOTAL_CALLS: int = int(_agent.get("agent_max_total_calls", 60))
 
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
@@ -205,6 +207,9 @@ NETALERTX_DOCKER_IMAGE: str = _nax.get(
     "docker_image", "ghcr.io/jokob-sk/netalertx:latest"
 )
 NETALERTX_DOCKER_MIN_DISK_GB: float = float(_nax.get("docker_min_disk_gb", 5.0))
+NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD: float = float(
+    _nax.get("severity_confidence_threshold", 0.9)
+)
 
 # Autonomy control
 _netalertx_mode = _nax.get("mode", "")

@@ -716,28 +716,28 @@ async def main(
         )
 
     # When running in "both" mode and the local loop is unable to resolve the
-    # issue, offer a cloud escalation HITL card so the user can re-run with
-    # Claude instead of recording an unresolved failure.
+    # issue, gate a cloud escalation through AutonomyGate:
+    # - Level 4 (AUTONOMOUS): auto-proceeds immediately, no HITL card.
+    # - Level 2–3: sends a cloud_escalation HITL card and polls for approval.
+    # - Level 1 (REPORT_ONLY): require_approval returns False, skip silently.
     if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
-        from utils.billing import estimate_cost, get_daily_spend
+        from utils.agent_loop import _format_step_trace
+        from utils.billing import BillingCapError, estimate_cost, get_daily_spend
         from utils.card_types import CARD_TYPE_CLOUD_ESCALATION
 
         nid = str(uuid.uuid4())
-        step_lines = [
-            f"  {s.step_number}. {s.tool_call.name}({s.tool_call.arguments}) → "
-            f"{'OK' if s.tool_result.success else 'ERR'}: "
-            f"{(s.tool_result.output or s.tool_result.error or '')[:80]}"
-            for s in result.steps
-        ]
-        step_summary = "\n".join(step_lines) if step_lines else "(no tool calls)"
+        step_summary = _format_step_trace(result.steps)
         daily_spent = get_daily_spend()
         est_cost = estimate_cost(CLOUD_MODEL, 2000, 512)
 
-        await _notifier.send(
-            subject=f"Cloud escalation available: local loop {result.outcome}",
+        approved = await _gate.require_approval(
+            subject=f"Cloud LLM escalation: local loop {result.outcome}",
             body=(
-                f"The local Ollama loop ran {len(result.steps)} tool call(s) "
-                f"and {result.outcome}. Approve to re-run with {CLOUD_MODEL}."
+                f"Local Ollama loop ran {len(result.steps)} tool call(s) "
+                f"and {result.outcome}. "
+                f"Escalate to {CLOUD_MODEL}? "
+                f"Estimated cost: ${est_cost:.4f}. "
+                f"Daily spend: ${daily_spent:.4f} / ${CLOUD_MAX_DAILY_SPEND_USD:.2f}."
             ),
             payload={
                 "notification_id": nid,
@@ -752,14 +752,32 @@ async def main(
                 "daily_cap_usd": CLOUD_MAX_DAILY_SPEND_USD,
                 "per_incident_cap_usd": CLOUD_MAX_COST_PER_INCIDENT_USD,
             },
+            notifier=_notifier,
+            risk=RiskLevel.HIGH,
         )
         log.info(
-            "cloud_escalation_offered",
+            "cloud_escalation_gate",
             outcome=result.outcome,
+            approved=approved,
             steps=len(result.steps),
-            nid=nid,
         )
-        return
+        if approved:
+            from utils.cloud_escalation import run_cloud_escalation
+
+            try:
+                result = await run_cloud_escalation(
+                    initial_context=initial_context,
+                    tool_registry=registry,
+                    gate=_gate,
+                    ha_ssh_client=_ssh,
+                    notifier=_notifier,
+                    incident_id=nid,
+                )
+            except BillingCapError as exc:
+                log.error("cloud_escalation_billing_cap", error=str(exc))
+                return
+        else:
+            return
 
     action = {
         "success": "Repaired via agent loop",
