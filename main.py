@@ -493,16 +493,27 @@ async def supervisor_main(config_path: Path) -> None:
 
     # NetAlertX deferred setup: if the user requested setup and it isn't done yet,
     # run the installer as a supervised one-shot loop so HITL cards reach the dashboard.
+    # Route to the docker installer when deploy_target="docker"; HA installer otherwise.
     if cfg.NETALERTX_SETUP_DESIRED:
         import netalertx.installer as _nax_installer
         from utils.autonomy import AutonomyGate
 
         if _nax_installer.get_install_state(cfg.DB_PATH) != "FULLY_OPERATIONAL":
             _nax_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
-            supervisor.start(
-                "netalertx_setup",
-                lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
-            )
+            if cfg.NETALERTX_DEPLOY_TARGET == "docker":
+                import netalertx.docker_installer as _nax_docker_installer
+
+                supervisor.start(
+                    "netalertx_setup",
+                    lambda: _nax_docker_installer.main(
+                        gate=_nax_gate, notifier=notifier
+                    ),
+                )
+            else:
+                supervisor.start(
+                    "netalertx_setup",
+                    lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
+                )
 
     # Register signal handlers for clean shutdown.
     # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.
