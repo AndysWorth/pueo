@@ -320,6 +320,39 @@ class ResourcePoller:
                     },
                 ]
 
+                # Scan for orphaned add-on data directories and add as HITL option.
+                orphaned_addons: list = []
+                try:
+                    from utils.disk_recovery import scan_orphaned_addon_dirs
+
+                    orphaned_addons = await scan_orphaned_addon_dirs(self._ssh)
+                    if orphaned_addons:
+                        total_bytes = sum(o.size_bytes for o in orphaned_addons)
+                        slugs = ", ".join(o.slug for o in orphaned_addons)
+                        ranked_hitl_options.append(
+                            {
+                                "name": "Remove orphaned app data directories",
+                                "description": (
+                                    f"Delete leftover data directories for uninstalled apps: "
+                                    f"{slugs}. These exist in /mnt/data/supervisor/addons/ "
+                                    f"and/or /addon_configs/ but are no longer installed."
+                                ),
+                                "estimated_savings": f"~{total_bytes // (1024 * 1024)} MB",
+                                "risk": "LOW",
+                                "action_key": "cleanup_orphaned_addon_dirs",
+                                "orphaned_slugs": [  # type: ignore[dict-item]
+                                    {
+                                        "slug": o.slug,
+                                        "paths": o.paths,
+                                        "size_display": o.size_display,
+                                    }
+                                    for o in orphaned_addons
+                                ],
+                            }
+                        )
+                except Exception as _oe:  # nosec B110 — best-effort
+                    log.warning("orphaned_addon_scan_failed", error=str(_oe))
+
                 # Best-effort deep disk analysis — determines whether the HITL options
                 # are likely to resolve the issue and names the primary culprit if not.
                 disk_analysis: dict = {}

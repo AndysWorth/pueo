@@ -45,6 +45,9 @@ class DiskBreakdown:
     db_tables: Optional[list] = None  # list[tuple[str, int]]
     custom_components: Optional[list] = None  # list[DiskItem] — None if absent/empty
     container_images_estimated_gb: Optional[float] = None  # total_used minus visible
+    orphaned_addons: Optional[list] = (
+        None  # list[OrphanedAddonDir] — None if none found
+    )
 
 
 def _parse_size_to_bytes(size_str: str) -> int:
@@ -220,12 +223,19 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
     _, du_out, _ = await ssh_client.run(du_cmd, check=False)
     path_sizes = _parse_du_output(du_out)
 
-    # 3. Addon slug → friendly name mapping; custom components; DB tables — run in parallel
-    addon_names, custom_components, db_tables = await asyncio.gather(
-        _fetch_addon_names(ssh_client),
-        _fetch_custom_components(ssh_client),
-        _fetch_db_tables(ssh_client),
+    # 3. Addon slug → friendly name mapping; custom components; DB tables;
+    #    orphaned addon dirs — run in parallel
+    from utils.disk_recovery import scan_orphaned_addon_dirs
+
+    addon_names, custom_components, db_tables, orphaned_addons_raw = (
+        await asyncio.gather(
+            _fetch_addon_names(ssh_client),
+            _fetch_custom_components(ssh_client),
+            _fetch_db_tables(ssh_client),
+            scan_orphaned_addon_dirs(ssh_client),
+        )
     )
+    orphaned_addons = orphaned_addons_raw if orphaned_addons_raw else None
 
     # 4. Build the four user-actionable sections
     sections = [
@@ -267,6 +277,7 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
         db_tables=db_tables,
         custom_components=custom_components,
         container_images_estimated_gb=container_images_estimated_gb,
+        orphaned_addons=orphaned_addons,
     )
 
 

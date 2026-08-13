@@ -285,8 +285,11 @@
           {% set hint_reject = "Skip; no backups moved or deleted" %}
         {% elif ct == "disk_recovery" %}
           {% set _da = r.payload.get("disk_analysis", {}) %}
+          {% set _hitl_keys = r.payload.get("ranked_hitl_options", []) | map(attribute="action_key") | list %}
           {% if _da and _da.hitl_sufficient == false %}
             {% set hint_approve = "Run all listed recovery options — note: analysis above suggests these alone may not fully resolve the disk issue" %}
+          {% elif "cleanup_orphaned_addon_dirs" in _hitl_keys %}
+            {% set hint_approve = "Run all listed recovery options including removing orphaned add-on data directories" %}
           {% else %}
             {% set hint_approve = "Run all listed recovery options: repack recorder DB, purge supervisor tmp, offload and remove old backups" %}
           {% endif %}
