@@ -8671,3 +8671,648 @@ class TestMQTTSubscriberNAXTopics:
         from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         assert CARD_TYPE_NETALERTX_NEW_DEVICE == "netalertx_new_device"
+
+
+# ── platform tracking ──────────────────────────────────────────────────────────
+
+
+class TestPlatformTracking:
+    """Both installers record 'platform' in details_json at FULLY_OPERATIONAL."""
+
+    def test_platform_key_present_in_card_types(self):
+        from utils.card_types import CARD_TYPE_NETALERTX_SWITCH
+
+        assert CARD_TYPE_NETALERTX_SWITCH == "netalertx_switch"
+
+    def test_get_installed_platform_defaults_ha_for_unknown_state(self, tmp_path):
+        import sqlite3
+        import ha_agent_advanced
+        from netalertx.switch import _get_installed_platform
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                ("FULLY_OPERATIONAL", "cid", "2026-01-01", "{}"),
+            )
+        state, platform = _get_installed_platform(db)
+        assert state == "FULLY_OPERATIONAL"
+        assert platform == "ha"
+
+    def test_get_installed_platform_reads_docker_from_state_prefix(self, tmp_path):
+        import sqlite3
+        import ha_agent_advanced
+        from netalertx.switch import _get_installed_platform
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                ("DOCKER_RUNNING", "cid", "2026-01-01", "{}"),
+            )
+        state, platform = _get_installed_platform(db)
+        assert platform == "docker"
+
+    def test_get_installed_platform_reads_explicit_platform_field(self, tmp_path):
+        import json
+        import sqlite3
+        import ha_agent_advanced
+        from netalertx.switch import _get_installed_platform
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                (
+                    "FULLY_OPERATIONAL",
+                    "cid",
+                    "2026-01-01",
+                    json.dumps({"platform": "docker"}),
+                ),
+            )
+        _, platform = _get_installed_platform(db)
+        assert platform == "docker"
+
+    def test_get_installed_platform_returns_not_installed_for_empty_db(self, tmp_path):
+        import ha_agent_advanced
+        from netalertx.switch import _get_installed_platform
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        state, platform = _get_installed_platform(db)
+        assert state == "NOT_INSTALLED"
+        assert platform == "ha"
+
+    def test_read_platform_from_db_in_docker_uninstaller(self, tmp_path):
+        import json
+        import sqlite3
+        import ha_agent_advanced
+        from netalertx.docker_uninstaller import _read_platform_from_db
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                (
+                    "FULLY_OPERATIONAL",
+                    "cid",
+                    "2026-01-01",
+                    json.dumps({"platform": "docker"}),
+                ),
+            )
+        assert _read_platform_from_db(db) == "docker"
+
+    def test_read_platform_defaults_ha_for_missing_key(self, tmp_path):
+        import sqlite3
+        import ha_agent_advanced
+        from netalertx.docker_uninstaller import _read_platform_from_db
+
+        db = str(tmp_path / "test.db")
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                ("FULLY_OPERATIONAL", "cid", "2026-01-01", "{}"),
+            )
+        assert _read_platform_from_db(db) == "ha"
+
+
+# ── netalertx/docker_uninstaller.py ───────────────────────────────────────────
+
+
+def _make_docker_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL"):
+    """Create and migrate a test DB pre-seeded at *state*."""
+    import ha_agent_advanced
+    import netalertx.docker_uninstaller as du
+
+    db = tmp_path / "docker_uninstaller_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    monkeypatch.setattr(du, "DB_PATH", str(db))
+
+    from netalertx.uninstaller import _write_install_state
+
+    _write_install_state(str(db), state, "test-cid")
+    return str(db)
+
+
+class TestDockerUninstallerStateMachine:
+    def _gate_approve(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
+    def _gate_reject(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=False)
+
+    def _notifier(self, approve=True):
+        from utils.notify import FakeNotifier
+
+        return FakeNotifier(approve=approve)
+
+    def test_full_uninstall_resets_state_to_not_installed(self, tmp_path, monkeypatch):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_uninstaller import run_docker_uninstaller
+        from netalertx.uninstaller import _read_install_state
+
+        db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_CONFIG_PATH",
+            "/opt/netalertx/config",
+        )
+
+        docker_ssh = FakeSSHClient(
+            command_results={
+                "docker stop netalertx": (0, "", ""),
+                "docker rm netalertx": (0, "", ""),
+                "df -h / 2>/dev/null": (
+                    0,
+                    "Filesystem  Size  Used  Avail\n/dev/sda1  50G  20G  30G",
+                    "",
+                ),
+                "rm -rf /opt/netalertx/config": (0, "", ""),
+            }
+        )
+        ha_ssh = FakeSSHClient(
+            file_contents={
+                "/config/automations.yaml": (
+                    "- id: 'netalertx_event_handler'\n"
+                    "  alias: 'NetAlertX Event Handler'\n"
+                    "  trigger:\n"
+                    "    - platform: webhook\n"
+                )
+            }
+        )
+
+        final = asyncio.run(
+            run_docker_uninstaller(
+                docker_ssh=docker_ssh,
+                ha_ssh=ha_ssh,
+                gate=self._gate_approve(),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                config_path="/opt/netalertx/config",
+            )
+        )
+        assert final == "NOT_INSTALLED"
+        assert _read_install_state(db) == "NOT_INSTALLED"
+
+    def test_rejected_approval_leaves_state_unchanged(self, tmp_path, monkeypatch):
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_uninstaller import run_docker_uninstaller
+        from netalertx.uninstaller import _read_install_state
+
+        db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_CONFIG_PATH", ""
+        )
+
+        docker_ssh = FakeSSHClient(
+            command_results={
+                "df -h / 2>/dev/null": (0, "", ""),
+            }
+        )
+
+        final = asyncio.run(
+            run_docker_uninstaller(
+                docker_ssh=docker_ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_reject(),
+                notifier=self._notifier(approve=False),
+                db_path=db,
+                config_path="",
+            )
+        )
+        assert final == "FULLY_OPERATIONAL"
+        assert _read_install_state(db) == "FULLY_OPERATIONAL"
+
+    def test_container_stop_failure_continues(self, tmp_path, monkeypatch):
+        """A failed docker stop is a warning, not an abort."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_uninstaller import run_docker_uninstaller
+        from netalertx.uninstaller import _read_install_state
+
+        db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_CONFIG_PATH", ""
+        )
+
+        docker_ssh = FakeSSHClient(
+            command_results={
+                "docker stop netalertx": (1, "", "No such container"),
+                "docker rm netalertx": (1, "", "No such container"),
+                "df -h / 2>/dev/null": (0, "", ""),
+            }
+        )
+
+        final = asyncio.run(
+            run_docker_uninstaller(
+                docker_ssh=docker_ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(approve=False),
+                db_path=db,
+                config_path="",
+            )
+        )
+        assert final == "NOT_INSTALLED"
+        assert _read_install_state(db) == "NOT_INSTALLED"
+
+    def test_config_dir_kept_when_second_hitl_rejected(self, tmp_path, monkeypatch):
+        """Rejecting the config dir removal prompt keeps the directory."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_uninstaller import run_docker_uninstaller
+
+        db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_CONFIG_PATH",
+            "/opt/netalertx/config",
+        )
+
+        rm_called = []
+
+        class _TrackingSSH(FakeSSHClient):
+            async def run(self, cmd, **kw):
+                if cmd.startswith("rm -rf"):
+                    rm_called.append(cmd)
+                return await super().run(cmd, **kw)
+
+        docker_ssh = _TrackingSSH(
+            command_results={
+                "docker stop netalertx": (0, "", ""),
+                "docker rm netalertx": (0, "", ""),
+                "df -h / 2>/dev/null": (0, "", ""),
+            }
+        )
+
+        # Gate approves first (main HITL) then rejects second (config removal)
+        approvals = [True, False]
+
+        class _SequentialGate:
+            async def require_approval(self, **kw):
+                return approvals.pop(0) if approvals else False
+
+            async def should_auto_execute(self, **kw):
+                return False
+
+        asyncio.run(
+            run_docker_uninstaller(
+                docker_ssh=docker_ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=_SequentialGate(),
+                notifier=self._notifier(approve=False),
+                db_path=db,
+                config_path="/opt/netalertx/config",
+            )
+        )
+        assert (
+            not rm_called
+        ), "rm -rf should not have been called when config removal rejected"
+
+    def test_automation_removed_from_ha(self, tmp_path, monkeypatch):
+        """Webhook automation is removed from HA SSH client."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_uninstaller import run_docker_uninstaller
+
+        db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr(
+            "netalertx.docker_uninstaller.NETALERTX_DOCKER_CONFIG_PATH", ""
+        )
+
+        written_files: dict = {}
+
+        class _TrackingHA(FakeSSHClient):
+            async def write_file(self, path, content):
+                written_files[path] = content
+
+        ha_ssh = _TrackingHA(
+            file_contents={
+                "/config/automations.yaml": (
+                    "- id: 'netalertx_event_handler'\n"
+                    "  alias: 'NetAlertX Event Handler'\n"
+                    "  trigger:\n"
+                    "    - platform: webhook\n"
+                )
+            }
+        )
+        docker_ssh = FakeSSHClient(
+            command_results={
+                "docker stop netalertx": (0, "", ""),
+                "docker rm netalertx": (0, "", ""),
+                "df -h / 2>/dev/null": (0, "", ""),
+            }
+        )
+
+        asyncio.run(
+            run_docker_uninstaller(
+                docker_ssh=docker_ssh,
+                ha_ssh=ha_ssh,
+                gate=self._gate_approve(),
+                notifier=self._notifier(approve=False),
+                db_path=db,
+                config_path="",
+            )
+        )
+        assert "/config/automations.yaml" in written_files
+        assert (
+            "netalertx_event_handler" not in written_files["/config/automations.yaml"]
+        )
+
+
+# ── netalertx/switch.py ────────────────────────────────────────────────────────
+
+
+def _make_switch_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"):
+    import json
+    import sqlite3
+    import ha_agent_advanced
+    import netalertx.switch as sw
+
+    db = tmp_path / "switch_test.db"
+    monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+    ha_agent_advanced.init_local_database()
+    monkeypatch.setattr(sw, "DB_PATH", str(db))
+    if state != "NOT_INSTALLED":
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "INSERT INTO netalertx_install_state "
+                "(id, state, correlation_id, timestamp, details_json) VALUES (1,?,?,?,?)",
+                (
+                    state,
+                    "test-cid",
+                    "2026-01-01T00:00:00",
+                    json.dumps({"platform": platform}),
+                ),
+            )
+    return str(db)
+
+
+class TestNetAlertXSwitchFlow:
+    def _gate_approve(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=True)
+
+    def _gate_reject(self):
+        from utils.autonomy import FakeAutonomyGate
+
+        return FakeAutonomyGate(auto_execute_result=False)
+
+    def _notifier(self):
+        from utils.notify import FakeNotifier
+
+        return FakeNotifier(approve=True)
+
+    def test_no_mismatch_returns_current_state_without_uninstalling(
+        self, tmp_path, monkeypatch
+    ):
+        """When current == target platform, switch is a no-op."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"
+        )
+        monkeypatch.setattr("netalertx.switch.NETALERTX_DEPLOY_TARGET", "ha")
+
+        uninstall_called = []
+        monkeypatch.setattr(
+            "netalertx.switch.run_switch",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("should not be called")
+            ),
+        )
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(),
+                db_path=db,
+                target_platform="ha",
+            )
+        )
+        assert result == "FULLY_OPERATIONAL"
+        assert not uninstall_called
+
+    def test_not_operational_returns_current_state(self, tmp_path, monkeypatch):
+        """If not FULLY_OPERATIONAL, switch aborts early."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="NOT_INSTALLED", platform="ha"
+        )
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(),
+                db_path=db,
+                target_platform="docker",
+            )
+        )
+        assert result == "NOT_INSTALLED"
+
+    def test_mismatch_rejected_leaves_state_unchanged(self, tmp_path, monkeypatch):
+        """Rejecting the switch HITL card leaves state at FULLY_OPERATIONAL."""
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"
+        )
+
+        # auto_execute_result=False → delegates to notifier; FakeNotifier(approve=False) → rejected
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = FakeNotifier(approve=False)
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=gate,
+                notifier=notifier,
+                db_path=db,
+                target_platform="docker",
+            )
+        )
+        assert result == "FULLY_OPERATIONAL"
+
+    def test_mismatch_approved_calls_ha_uninstaller_when_current_is_ha(
+        self, tmp_path, monkeypatch
+    ):
+        """An approved HA→Docker switch calls run_uninstaller."""
+        import netalertx.uninstaller
+        import netalertx.docker_installer
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"
+        )
+
+        uninstall_results = ["NOT_INSTALLED"]
+
+        async def fake_run_uninstaller(ssh, gate, notifier, db_path):
+            return uninstall_results.pop(0)
+
+        installer_results = ["FULLY_OPERATIONAL"]
+
+        async def fake_run_docker_installer(
+            docker_ssh, ha_ssh, gate, notifier, db_path, **kw
+        ):
+            return installer_results.pop(0)
+
+        # Patch source modules — run_switch uses lazy `from X import Y` inside the body
+        monkeypatch.setattr(
+            netalertx.uninstaller, "run_uninstaller", fake_run_uninstaller
+        )
+        monkeypatch.setattr(
+            netalertx.docker_installer,
+            "run_docker_installer",
+            fake_run_docker_installer,
+        )
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(),
+                db_path=db,
+                target_platform="docker",
+            )
+        )
+        assert result == "FULLY_OPERATIONAL"
+        assert not uninstall_results, "run_uninstaller should have been called"
+
+    def test_mismatch_approved_calls_docker_uninstaller_when_current_is_docker(
+        self, tmp_path, monkeypatch
+    ):
+        """An approved Docker→HA switch calls run_docker_uninstaller."""
+        import netalertx.docker_uninstaller
+        import netalertx.installer
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="docker"
+        )
+
+        docker_uninstall_results = ["NOT_INSTALLED"]
+
+        async def fake_run_docker_uninstaller(
+            docker_ssh, ha_ssh, gate, notifier, db_path, **kw
+        ):
+            return docker_uninstall_results.pop(0)
+
+        installer_results = ["FULLY_OPERATIONAL"]
+
+        async def fake_run_installer(ssh, gate, notifier, db_path, **kw):
+            return installer_results.pop(0)
+
+        monkeypatch.setattr(
+            netalertx.docker_uninstaller,
+            "run_docker_uninstaller",
+            fake_run_docker_uninstaller,
+        )
+        monkeypatch.setattr(netalertx.installer, "run_installer", fake_run_installer)
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(),
+                db_path=db,
+                target_platform="ha",
+            )
+        )
+        assert result == "FULLY_OPERATIONAL"
+        assert (
+            not docker_uninstall_results
+        ), "run_docker_uninstaller should have been called"
+
+    def test_switch_aborts_if_uninstall_incomplete(self, tmp_path, monkeypatch):
+        """If the uninstaller returns something other than NOT_INSTALLED, installer is not called."""
+        import netalertx.uninstaller
+        import netalertx.docker_installer
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.switch import run_switch
+
+        db = _make_switch_db(
+            tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"
+        )
+
+        async def fake_run_uninstaller(ssh, gate, notifier, db_path):
+            return "FULLY_OPERATIONAL"
+
+        installer_called = []
+
+        async def fake_run_docker_installer(
+            docker_ssh, ha_ssh, gate, notifier, db_path, **kw
+        ):
+            installer_called.append(True)
+            return "FULLY_OPERATIONAL"
+
+        monkeypatch.setattr(
+            netalertx.uninstaller, "run_uninstaller", fake_run_uninstaller
+        )
+        monkeypatch.setattr(
+            netalertx.docker_installer,
+            "run_docker_installer",
+            fake_run_docker_installer,
+        )
+
+        result = asyncio.run(
+            run_switch(
+                docker_ssh=FakeSSHClient(),
+                ha_ssh=FakeSSHClient(),
+                gate=self._gate_approve(),
+                notifier=self._notifier(),
+                db_path=db,
+                target_platform="docker",
+            )
+        )
+        assert result == "FULLY_OPERATIONAL"
+        assert (
+            not installer_called
+        ), "Installer should not run if uninstall was incomplete"

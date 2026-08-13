@@ -122,7 +122,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>
@@ -280,6 +280,9 @@
         {% elif ct == "netalertx_migrate" %}
           {% set hint_approve = "Launch netalertx-uninstall (removes HA add-on), then netalertx-docker-setup (installs on separate machine)" %}
           {% set hint_reject = "Keep NetAlertX on HA for now; disk alert remains active" %}
+        {% elif ct == "netalertx_switch" %}
+          {% set hint_approve = "Uninstall from current platform, then reinstall on target platform — each phase has its own HITL confirmation" %}
+          {% set hint_reject = "Cancel; NetAlertX stays on current platform, install state unchanged" %}
         {% elif ct == "resource_action" %}
           {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}
           {% set hint_reject = "Skip; no backups moved or deleted" %}

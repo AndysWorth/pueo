@@ -1150,6 +1150,7 @@ async def _step8_create_webhook_automation(
     # Idempotency: skip if automation already present
     if original_content is not None and _check_automation_exists(original_content):
         log.info("step8_automation_exists", path=automations_path, correlation_id=cid)
+        details["platform"] = "ha"
         _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
         _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
         slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
@@ -1232,6 +1233,7 @@ async def _step8_create_webhook_automation(
         correlation_id=cid,
     )
 
+    details["platform"] = "ha"
     _write_install_state(db_path, "HA_AUTOMATION_CREATED", details, cid)
     _write_install_state(db_path, "FULLY_OPERATIONAL", details, cid)
     slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
