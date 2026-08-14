@@ -7,12 +7,12 @@ import time
 import uuid
 from typing import Optional
 
+import config as _config
 from config import (
     HA_HOST,
     HA_USER,
     SSH_KEY_PATH,
     CONFIG_REMOTE_PATH,
-    OLLAMA_MODEL,
     OLLAMA_ENDPOINT,
     DB_PATH,
     SSH_RETRY_ATTEMPTS,
@@ -560,9 +560,9 @@ async def analyze_config_locally(
         )
     user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
 
-    log.info("ollama_analyze_start", model=OLLAMA_MODEL)
+    log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
     response = await client.chat(
-        model=OLLAMA_MODEL,
+        model=_config.OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -572,7 +572,7 @@ async def analyze_config_locally(
     )
     raw_output = response["message"]["content"]
     trace = LLMTrace(
-        model=OLLAMA_MODEL,
+        model=_config.OLLAMA_MODEL,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         raw_response=raw_output,

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
-from config import OLLAMA_MODEL
+import config as _config
 from utils.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
@@ -140,7 +140,7 @@ async def diagnose_installer_failure(
     client = llm_client or make_llm_client()
     try:
         response = await client.chat(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -157,7 +157,7 @@ async def diagnose_installer_failure(
             can_auto_fix=result.can_auto_fix,
         )
         trace = LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -166,7 +166,7 @@ async def diagnose_installer_failure(
     except Exception as exc:
         log.error("installer_diagnosis_failed", error=str(exc))
         sentinel = LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",

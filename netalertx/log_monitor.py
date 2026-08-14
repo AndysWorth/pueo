@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
+import config as _config
 from config import (
     AUTONOMY_LEVEL,
     CONFIDENCE_THRESHOLD,
@@ -23,7 +24,6 @@ from config import (
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
-    OLLAMA_MODEL,
     SSH_RETRY_BASE_DELAY,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
@@ -81,7 +81,7 @@ async def analyze_log_line_with_ai(
 
     try:
         response = await client.chat(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -91,7 +91,7 @@ async def analyze_log_line_with_ai(
         )
         raw_output = response["message"]["content"]
         trace = LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -104,7 +104,7 @@ async def analyze_log_line_with_ai(
             root_cause_summary="Inference crash",
             confidence_score=0.0,
         ), LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 import httpx
 from pydantic import BaseModel
 
+import config as _config
 from config import (
     AUTONOMY_LEVEL,
     HA_API_PORT,
@@ -25,7 +26,6 @@ from config import (
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
-    OLLAMA_MODEL,
     SSH_KEY_PATH,
     HA_USER,
 )
@@ -196,7 +196,7 @@ async def analyze_breaking_changes(
     ]
 
     response = await client.chat(
-        model=OLLAMA_MODEL,
+        model=_config.OLLAMA_MODEL,
         messages=messages,
         options={"temperature": 0.0},
         format=UpdateReadinessReport.model_json_schema(),
@@ -663,7 +663,7 @@ async def _self_check_llm_cross_reference(
     ]
 
     response = await client.chat(
-        model=OLLAMA_MODEL,
+        model=_config.OLLAMA_MODEL,
         messages=messages,
         options={"temperature": 0.0},
         format=SelfCheckCommandRisk.model_json_schema(),

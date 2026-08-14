@@ -237,12 +237,6 @@ async def supervisor_main(config_path: Path) -> None:
     import config as cfg
     import ha_agent_advanced
     import uvicorn
-    from ha_log_monitor import (
-        poll_for_notifications,
-        poll_for_repairs,
-        poll_for_updates,
-        tail_remote_log_stream,
-    )
     from utils.notify import get_notifier
     from utils.resource import ResourcePoller
     from utils.ssh_client import AsyncSSHClient
@@ -301,6 +295,14 @@ async def supervisor_main(config_path: Path) -> None:
                 cfg.OLLAMA_MODEL = _best
     except Exception:  # nosec B110 — hardware detection must not block startup
         pass
+
+    # Deferred after auto-select so ha_log_monitor.py captures the final OLLAMA_MODEL.
+    from ha_log_monitor import (
+        poll_for_notifications,
+        poll_for_repairs,
+        poll_for_updates,
+        tail_remote_log_stream,
+    )
 
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)

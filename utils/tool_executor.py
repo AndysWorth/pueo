@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import config as _config_mod
-from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH, OLLAMA_MODEL
+from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH
 from utils.logging import get_correlation_id, get_logger
 from utils.tool_registry import ToolCall, ToolResult
 

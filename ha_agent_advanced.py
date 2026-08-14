@@ -10,12 +10,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import config as _config
 from config import (
     HA_HOST,
     HA_USER,
     SSH_KEY_PATH,
     CONFIG_REMOTE_PATH,
-    OLLAMA_MODEL,
     DB_PATH,
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
@@ -1109,9 +1109,9 @@ async def analyze_config_locally(
     user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
 
     try:
-        log.info("ollama_analyze_start", model=OLLAMA_MODEL)
+        log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
         response = await client.chat(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
