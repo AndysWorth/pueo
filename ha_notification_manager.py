@@ -13,12 +13,12 @@ from pydantic import BaseModel
 
 from typing import TYPE_CHECKING
 
+import config as _config
 from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
     HA_NOTIFICATION_ENRICH_AUTH_FAILURES,
     MAX_PROMPT_TOKENS,
-    OLLAMA_MODEL,
 )
 from interfaces import (
     HARestClientProtocol,
@@ -302,7 +302,7 @@ async def analyze_notification(
     ]
 
     response = await client.chat(
-        model=OLLAMA_MODEL,
+        model=_config.OLLAMA_MODEL,
         messages=messages,
         options={"temperature": 0.0},
         format=_NotificationLLMOutput.model_json_schema(),

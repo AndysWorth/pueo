@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Optional
 
 import yaml
 
+import config as _config
 from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
     NETALERTX_LOG_CONTAINER_NAME,
-    OLLAMA_MODEL,
 )
 from netalertx.config_validator import (
     _SNAKE_TO_CAMEL,
@@ -195,7 +195,7 @@ class NetAlertXHealer:
             llm_client=llm_client,
             tool_executor=executor,
             tool_registry=registry,
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             trigger="netalertx",
             db_path=self._db_path,
         )

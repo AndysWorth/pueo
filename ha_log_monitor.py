@@ -12,6 +12,7 @@ import uuid
 from typing import Optional
 from pydantic import BaseModel, Field
 
+import config as _config
 from config import (
     DB_PATH,
     HA_API_PORT,
@@ -35,7 +36,6 @@ from config import (
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
-    OLLAMA_MODEL,
     AUTONOMY_LEVEL,
     CONFIDENCE_THRESHOLD,
     DEBOUNCE_WINDOW_SECONDS,
@@ -116,7 +116,7 @@ async def analyze_log_line_with_ai(
 
     try:
         response = await client.chat(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -126,7 +126,7 @@ async def analyze_log_line_with_ai(
         )
         raw_output = response["message"]["content"]
         trace = LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -139,7 +139,7 @@ async def analyze_log_line_with_ai(
             root_cause_summary="Inference crash",
             confidence_score=0.0,
         ), LLMTrace(
-            model=OLLAMA_MODEL,
+            model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",
@@ -171,7 +171,7 @@ async def tail_remote_log_stream(
 
             if CRITICAL_LOG_PATTERN.search(clean_line):
                 log.warning("log_line_intercepted", line=clean_line)
-                log.info("triage_start", model=OLLAMA_MODEL)
+                log.info("triage_start", model=_config.OLLAMA_MODEL)
                 evaluation, llm_trace = await analyze_log_line_with_ai(
                     list(_log_buffer), llm_client=llm_client
                 )
