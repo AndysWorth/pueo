@@ -7732,14 +7732,15 @@ class TestCheckDiskSpace:
         from utils.ssh_client import FakeSSHClient
         from netalertx.docker_installer import check_disk_space
 
+        # 31457280 KB = 30 GB
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           100       70         30   70%  /\n"
+            "Filesystem       1K-blocks  Used       Available  Use%  Mounted on\n"
+            "/dev/sda1        104857600  73400320   31457280   70%  /\n"
         )
-        # check_disk_space runs: df -BG {path} 2>/dev/null || df -BG /
+        # check_disk_space runs: df -k {path} 2>/dev/null || df -k /
         ssh = FakeSSHClient(
             command_results={
-                "df -BG /mnt/data 2>/dev/null || df -BG /": (0, df_output, "")
+                "df -k /mnt/data 2>/dev/null || df -k /": (0, df_output, "")
             }
         )
         result = asyncio.run(check_disk_space(ssh, "/mnt/data", 5.0))
@@ -7749,19 +7750,240 @@ class TestCheckDiskSpace:
         from utils.ssh_client import FakeSSHClient
         from netalertx.docker_installer import check_disk_space, DiskSpaceTooLowError
 
+        # 2097152 KB = 2 GB
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           10        8         2   80%  /\n"
+            "Filesystem       1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1        10485760   8388608  2097152    80%  /\n"
         )
         ssh = FakeSSHClient(
             command_results={
-                "df -BG /mnt/data 2>/dev/null || df -BG /": (0, df_output, "")
+                "df -k /mnt/data 2>/dev/null || df -k /": (0, df_output, "")
             }
         )
         with pytest.raises(DiskSpaceTooLowError) as exc_info:
             asyncio.run(check_disk_space(ssh, "/mnt/data", 5.0))
         assert exc_info.value.available_gb == 2.0
         assert exc_info.value.min_gb == 5.0
+
+
+class TestDockerInstallerMacOS:
+    """Tests for macOS Docker host detection and preflight checks."""
+
+    class _Gate:
+        def __init__(self, approve=True):
+            self.calls = []
+            self._approve = approve
+
+        async def require_approval(
+            self, subject="", body="", payload=None, notifier=None, risk=None
+        ):
+            self.calls.append({"subject": subject, "body": body, "risk": risk})
+            return self._approve
+
+        async def should_auto_execute(self, **kw):
+            return self._approve
+
+    class _Notifier:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, subject="", body="", payload=None, **kw):
+            self.sent.append({"subject": subject})
+
+        async def wait_for_approval(self, notification_id, **kw):
+            return True
+
+    def test_step1_detects_macos_target_os(self, tmp_path, monkeypatch):
+        """uname -s result is stored as 'darwin' in details when on macOS."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step1_verify_docker_ssh
+
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Darwin\n", ""),
+                "docker version --format '{{.Server.Version}}'": (0, "27.0.3\n", ""),
+            }
+        )
+        gate = self._Gate(approve=True)
+        notifier = self._Notifier()
+        details: dict = {}
+
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        result = asyncio.run(
+            _step1_verify_docker_ssh(
+                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
+            )
+        )
+        assert result is True
+        assert details["target_os"] == "darwin"
+
+    def test_step1_detects_linux_target_os(self, tmp_path, monkeypatch):
+        """uname -s result is stored as 'linux' when target is Linux."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step1_verify_docker_ssh
+
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Linux\n", ""),
+            }
+        )
+        gate = self._Gate(approve=True)
+        notifier = self._Notifier()
+        details: dict = {}
+
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        result = asyncio.run(
+            _step1_verify_docker_ssh(
+                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
+            )
+        )
+        assert result is True
+        assert details["target_os"] == "linux"
+
+    def test_step1b_macos_preflight_aborts_on_old_docker_desktop(self, tmp_path):
+        """macOS preflight returns False when Docker server version < 26."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step1_verify_docker_ssh
+
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Darwin\n", ""),
+                "docker version --format '{{.Server.Version}}'": (0, "25.0.3\n", ""),
+            }
+        )
+        gate = self._Gate(approve=True)
+        notifier = self._Notifier()
+        details: dict = {}
+
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        result = asyncio.run(
+            _step1_verify_docker_ssh(
+                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
+            )
+        )
+        assert result is False
+        assert any("Docker Desktop" in c["subject"] for c in gate.calls)
+        assert any(
+            "too old" in c["subject"].lower() or "upgrade" in c["body"].lower()
+            for c in gate.calls
+        )
+
+    def test_step1b_macos_preflight_shows_guidance_card(self, tmp_path):
+        """macOS preflight with Docker >= 26 issues a LOW-risk host networking card."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step1_verify_docker_ssh
+        from utils.autonomy import RiskLevel
+
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Darwin\n", ""),
+                "docker version --format '{{.Server.Version}}'": (0, "26.1.4\n", ""),
+            }
+        )
+        gate = self._Gate(approve=True)
+        notifier = self._Notifier()
+        details: dict = {}
+
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        result = asyncio.run(
+            _step1_verify_docker_ssh(
+                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
+            )
+        )
+        assert result is True
+        host_net_calls = [
+            c for c in gate.calls if "host networking" in c["body"].lower()
+        ]
+        assert host_net_calls, "Expected a host networking guidance card"
+        assert host_net_calls[0]["risk"] == RiskLevel.LOW
+
+    def test_step4_post_pull_df_failure_is_nonfatal(self, tmp_path, monkeypatch):
+        """RuntimeError from df in step 4 post-pull check is non-fatal; state advances."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import _step4_pull_image
+
+        import sqlite3
+
+        db = str(tmp_path / "step4.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE netalertx_install_state "
+                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
+                "timestamp TEXT, details_json TEXT)"
+            )
+
+        ssh = FakeSSHClient(
+            command_results={
+                "docker pull ghcr.io/jokob-sk/netalertx:latest": (
+                    0,
+                    "Pull complete",
+                    "",
+                ),
+                # df -k fails (macOS with unsupported path or busybox limitation)
+                "df -k /opt/netalertx 2>/dev/null || df -k /": (1, "", "df: error"),
+            }
+        )
+        gate = self._Gate(approve=True)
+        notifier = self._Notifier()
+
+        result = asyncio.run(
+            _step4_pull_image(
+                ssh,
+                gate,
+                notifier,
+                {},
+                "test-cid",
+                db,
+                "ghcr.io/jokob-sk/netalertx:latest",
+                "/opt/netalertx/config",
+                5.0,
+            )
+        )
+        assert result is True
+        from netalertx.docker_installer import _read_install_state
+
+        state, _ = _read_install_state(db)
+        assert state == "DOCKER_IMAGE_PULLED"
 
 
 class TestDockerInstallerStateMachine:
@@ -7822,14 +8044,15 @@ class TestDockerInstallerStateMachine:
         db = _make_docker_installer_db(
             tmp_path, monkeypatch, state="DOCKER_SSH_VERIFIED"
         )
+        # 1048576 KB = 1 GB (below 5 GB min)
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           10        9         1   90%  /\n"
+            "Filesystem       1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1        10485760   9437184  1048576    90%  /\n"
         )
         # parent of /opt/netalertx/config is /opt/netalertx
         ssh = FakeSSHClient(
             command_results={
-                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, ""),
+                "df -k /opt/netalertx 2>/dev/null || df -k /": (0, df_output, ""),
             }
         )
         state = asyncio.run(
@@ -7861,15 +8084,17 @@ class TestDockerInstallerStateMachine:
 
         db = _make_docker_installer_db(tmp_path, monkeypatch)
 
+        # 73400320 KB = 70 GB
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           100      30        70   30%  /\n"
+            "Filesystem       1K-blocks  Used       Available   Use%  Mounted on\n"
+            "/dev/sda1        104857600  31457280   73400320    30%  /\n"
         )
         docker_ssh = FakeSSHClient(
             command_results={
                 "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Linux\n", ""),
                 # parent of /opt/netalertx/config is /opt/netalertx
-                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, ""),
+                "df -k /opt/netalertx 2>/dev/null || df -k /": (0, df_output, ""),
                 "mkdir -p /opt/netalertx/config": (0, "", ""),
                 "docker pull ghcr.io/jokob-sk/netalertx:latest": (
                     0,
@@ -8074,13 +8299,14 @@ class TestDiskCheckModule:
         from utils.ssh_client import FakeSSHClient
         from netalertx.disk_check import check_target_disk_space
 
+        # 31457280 KB = 30 GB
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           100       70         30   70%  /\n"
+            "Filesystem       1K-blocks  Used       Available  Use%  Mounted on\n"
+            "/dev/sda1        104857600  73400320   31457280   70%  /\n"
         )
         ssh = FakeSSHClient(
             command_results={
-                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, "")
+                "df -k /opt/netalertx 2>/dev/null || df -k /": (0, df_output, "")
             }
         )
         result = asyncio.run(check_target_disk_space(ssh, "/opt/netalertx", 5.0))
@@ -8090,13 +8316,14 @@ class TestDiskCheckModule:
         from utils.ssh_client import FakeSSHClient
         from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 
+        # 2097152 KB = 2 GB
         df_output = (
-            "Filesystem       1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1           10        8         2   80%  /\n"
+            "Filesystem       1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1        10485760   8388608  2097152    80%  /\n"
         )
         ssh = FakeSSHClient(
             command_results={
-                "df -BG /opt/netalertx 2>/dev/null || df -BG /": (0, df_output, "")
+                "df -k /opt/netalertx 2>/dev/null || df -k /": (0, df_output, "")
             }
         )
         with pytest.raises(DiskSpaceTooLowError) as exc_info:
@@ -8126,7 +8353,7 @@ class TestDiskCheckModule:
         from netalertx.disk_check import check_target_disk_space
 
         ssh = FakeSSHClient(
-            command_results={"df -BG / 2>/dev/null || df -BG /": (1, "", "error")}
+            command_results={"df -k / 2>/dev/null || df -k /": (1, "", "error")}
         )
         with pytest.raises(RuntimeError):
             asyncio.run(check_target_disk_space(ssh, "/", 5.0))
@@ -8148,15 +8375,15 @@ class TestDiskCheckModule:
                 "timestamp TEXT, details_json TEXT)"
             )
 
-        # SSH that returns 2 GB free (below 5 GB min)
+        # SSH that returns 2 GB free (below 5 GB min); 2097152 KB = 2 GB
         df_output = (
-            "Filesystem  1G-blocks  Used  Available  Use%  Mounted on\n"
-            "/dev/sda1      100      98         2   98%  /\n"
+            "Filesystem  1K-blocks  Used     Available  Use%  Mounted on\n"
+            "/dev/sda1   104857600  102760448  2097152  98%  /\n"
         )
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
-            command_results={"df -BG / 2>/dev/null || df -BG /": (0, df_output, "")}
+            command_results={"df -k / 2>/dev/null || df -k /": (0, df_output, "")}
         )
 
         notifier = MagicMock()
