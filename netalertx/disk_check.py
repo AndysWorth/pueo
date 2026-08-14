@@ -34,10 +34,10 @@ async def check_target_disk_space(
     """Check available disk space on the SSH host at *path*.
 
     Returns available GB. Raises DiskSpaceTooLowError if below min_gb.
-    Uses ``df -BG`` for gigabyte-granular output; falls back to root filesystem
-    when *path* does not exist yet.
+    Uses ``df -k`` (universally supported on GNU/Linux, BusyBox/Alpine, and macOS);
+    falls back to root filesystem when *path* does not exist yet.
     """
-    ec, stdout, _ = await ssh_client.run(f"df -BG {path} 2>/dev/null || df -BG /")
+    ec, stdout, _ = await ssh_client.run(f"df -k {path} 2>/dev/null || df -k /")
     if ec != 0 or not stdout.strip():
         raise RuntimeError(f"df command failed on {path!r}")
     for line in stdout.splitlines():
@@ -45,9 +45,9 @@ async def check_target_disk_space(
             continue
         parts = line.split()
         if len(parts) >= 4:
-            avail_str = parts[3].rstrip("G")
+            avail_str = parts[3]
             try:
-                available_gb = float(avail_str)
+                available_gb = float(avail_str) / (1024 * 1024)  # KB → GB
                 if available_gb < min_gb:
                     raise DiskSpaceTooLowError(available_gb, min_gb, path)
                 return available_gb
