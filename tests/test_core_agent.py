@@ -11554,3 +11554,499 @@ class TestUpdatePreflightLogic:
         assert captured_body, "gate.require_approval was not called"
         assert "Pre-flight:" in captured_body[0]
         assert "old backup" in captured_body[0]
+
+
+# ── External resolution detection ─────────────────────────────────────────────────
+
+
+class TestExternalUpdateResolution:
+    """Two-poll confirmation for update cards resolved outside Pueo."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_hitl_tracker(self, monkeypatch):
+        import sqlite3 as _sq3
+
+        _DDL = (
+            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+            "description TEXT NOT NULL DEFAULT '', "
+            "first_sent_at REAL NOT NULL DEFAULT 0, "
+            "last_sent_at REAL NOT NULL DEFAULT 0, "
+            "send_count INTEGER NOT NULL DEFAULT 1, "
+            "last_action TEXT, last_action_at REAL, "
+            "rejection_count INTEGER NOT NULL DEFAULT 0, "
+            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+            "known_issue_note TEXT, resolved_at REAL)"
+        )
+        _mem = _sq3.connect(":memory:")
+        _mem.execute(_DDL)
+        _mem.commit()
+        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
+        self._mem = _mem
+
+    def _insert_pending_card(self, suppression_key: str) -> None:
+        self._mem.execute(
+            "INSERT INTO hitl_suppression "
+            "(card_key, card_type, description, first_sent_at, last_sent_at, send_count) "
+            "VALUES (?, 'update', 'test card', 1.0, 1.0, 1)",
+            (suppression_key,),
+        )
+        self._mem.commit()
+
+    @staticmethod
+    def _n_shot_sleep(n: int):
+        """Raises CancelledError after n calls."""
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] >= n:
+                raise asyncio.CancelledError()
+
+        return fake_sleep
+
+    def test_pending_update_absent_first_poll_does_not_resolve(
+        self, monkeypatch, tmp_path
+    ):
+        """Entity absent for one poll while card is pending must NOT resolve the card."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+
+        suppression_key = "update:update.matter_server_update"
+        self._insert_pending_card(suppression_key)
+
+        client = FakeHARestClient(states=[])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(1))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        row = self._mem.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row is not None and row[0] is None
+
+    def test_pending_update_absent_second_poll_resolves_and_writes_timeline(
+        self, monkeypatch, tmp_path
+    ):
+        """Two consecutive absent polls → card resolved + timeline event written once."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+
+        suppression_key = "update:update.matter_server_update"
+        self._insert_pending_card(suppression_key)
+
+        timeline_calls: list[dict] = []
+
+        def fake_write_timeline(level, source, message, detail=None):
+            timeline_calls.append(
+                {"level": level, "source": source, "message": message, "detail": detail}
+            )
+
+        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        client = FakeHARestClient(states=[])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        row = self._mem.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row is not None and row[0] is not None
+
+        update_check_calls = [
+            c for c in timeline_calls if c["source"] == "update_check"
+        ]
+        assert len(update_check_calls) == 1
+        assert "outside Pueo" in update_check_calls[0]["message"]
+
+    def test_pending_update_approved_sidecar_written_on_resolution(
+        self, monkeypatch, tmp_path
+    ):
+        """Second-poll resolution creates an .approved sidecar next to the card JSON."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.hitl_tracker import stable_nid
+
+        suppression_key = "update:update.matter_server_update"
+        nid = stable_nid(suppression_key)
+        self._insert_pending_card(suppression_key)
+
+        card_file = tmp_path / f"{nid}.json"
+        card_file.write_text(
+            '{"payload": {"component": "matter_server",'
+            ' "installed_version": "9.1.1", "latest_version": "9.2.0"}}'
+        )
+
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        client = FakeHARestClient(states=[])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        assert (tmp_path / f"{nid}.approved").exists()
+
+    def test_pending_update_update_available_false_two_polls_resolves(
+        self, monkeypatch, tmp_path
+    ):
+        """Entity present but update_available=False for two polls → card resolved."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+
+        suppression_key = "update:update.matter_server_update"
+        self._insert_pending_card(suppression_key)
+
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        entity = {
+            "entity_id": "update.matter_server_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "9.2.0",
+                "latest_version": "9.2.0",
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+        client = FakeHARestClient(states=[entity])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        row = self._mem.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_timer_reset_when_update_returns_available(self, monkeypatch, tmp_path):
+        """Entity absent first poll (timer set) then returns available → no resolution."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        suppression_key = "update:update.matter_server_update"
+        self._insert_pending_card(suppression_key)
+
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        # FakeHARestClient(states=[]) creates a fresh self._states=[] list that is
+        # not the same object as the empty list literal. Mutate client._states directly
+        # from the sleep callback so the client sees the updated state on poll 2.
+        client = FakeHARestClient()
+        call_count = [0]
+
+        async def controlling_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Bring the entity back as available after the first poll
+                client._states.append(
+                    {
+                        "entity_id": "update.matter_server_update",
+                        "state": "on",
+                        "attributes": {
+                            "installed_version": "9.1.1",
+                            "latest_version": "9.2.0",
+                            "release_url": None,
+                            "release_summary": None,
+                            "in_progress": False,
+                        },
+                    }
+                )
+            elif call_count[0] >= 3:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", controlling_sleep)
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_updates(ha_rest_client=client, notifier=FakeNotifier())
+            )
+
+        row = self._mem.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row is not None and row[0] is None  # timer reset, not resolved
+
+    def test_non_pending_card_resolves_immediately(self, monkeypatch, tmp_path):
+        """Card with last_action set + entity update_available=False → resolves on first poll."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+
+        suppression_key = "update:update.matter_server_update"
+        self._insert_pending_card(suppression_key)
+        # Simulate the user having already acted on this card
+        self._mem.execute(
+            "UPDATE hitl_suppression SET last_action='rejected' WHERE card_key = ?",
+            (suppression_key,),
+        )
+        self._mem.commit()
+
+        entity = {
+            "entity_id": "update.matter_server_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "9.2.0",
+                "latest_version": "9.2.0",
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+        client = FakeHARestClient(states=[entity])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(2))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        row = self._mem.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_resolution_reads_version_from_card_json(self, monkeypatch, tmp_path):
+        """Timeline event detail contains exact version strings read from card JSON."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.hitl_tracker import stable_nid
+
+        suppression_key = "update:update.matter_server_update"
+        nid = stable_nid(suppression_key)
+        self._insert_pending_card(suppression_key)
+
+        card_file = tmp_path / f"{nid}.json"
+        card_file.write_text(
+            '{"payload": {"component": "matter_server",'
+            ' "installed_version": "9.1.1", "latest_version": "9.2.0"}}'
+        )
+
+        timeline_calls: list[dict] = []
+
+        def fake_write_timeline(level, source, message, detail=None):
+            timeline_calls.append(
+                {
+                    "level": level,
+                    "source": source,
+                    "message": message,
+                    "detail": detail or {},
+                }
+            )
+
+        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        client = FakeHARestClient(states=[])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        update_check_calls = [
+            c for c in timeline_calls if c["source"] == "update_check"
+        ]
+        assert len(update_check_calls) == 1
+        detail = update_check_calls[0]["detail"]
+        assert detail.get("from_version") == "9.1.1"
+        assert detail.get("to_version") == "9.2.0"
+        assert detail.get("component") == "matter_server"
+
+
+class TestRepairReconcileTimeline:
+    """poll_for_repairs reconcile sweep writes a timeline event when an issue resolves."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_repair_reconcile_writes_timeline_event(self, db_path, monkeypatch):
+        """Repair absent from poll after HITL card sent → timeline INFO event written."""
+        import asyncio as asyncio_mod
+        import ha_agent_advanced
+        from ha_log_monitor import poll_for_repairs
+
+        issue_key = "pycync/uuid-timeline-001"
+        ha_agent_advanced.record_repair_seen(
+            issue_key, translation_key="config_entry_reauth"
+        )
+        ha_agent_advanced.mark_repair_hitl_sent(issue_key)
+
+        timeline_calls: list[dict] = []
+
+        def fake_write_timeline(level, source, message, detail=None):
+            timeline_calls.append(
+                {"level": level, "source": source, "message": message}
+            )
+
+        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+
+        class EmptyRepairWS:
+            async def get_repair_issues(self):
+                return []
+
+            async def get_device_registry(self):
+                return []
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=EmptyRepairWS(),
+                    db_path=db_path,
+                )
+            )
+
+        ha_repair_calls = [c for c in timeline_calls if c["source"] == "ha_repairs"]
+        assert len(ha_repair_calls) == 1
+        assert "config_entry_reauth" in ha_repair_calls[0]["message"]
+
+
+class TestResourceClearanceTimeline:
+    """ResourcePoller writes timeline events when disk alerts clear."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    @staticmethod
+    def _good_status():
+        from utils.resource import ResourceStatus
+
+        return ResourceStatus(
+            disk_free_gb=5.0,
+            disk_total_gb=32.0,
+            disk_used_gb=27.0,
+            mem_available_mb=512.0,
+            mem_total_mb=1024.0,
+            disk_warn=False,
+            disk_critical=False,
+            mem_warn=False,
+        )
+
+    def test_disk_critical_clears_writes_timeline_event(self, db_path, monkeypatch):
+        """When disk_critical clears, a timeline INFO event is written."""
+        from utils.notify import FakeNotifier
+        from utils.resource import ResourcePoller
+
+        timeline_calls: list[dict] = []
+
+        def fake_write_timeline(level, source, message, detail=None):
+            timeline_calls.append(
+                {"level": level, "source": source, "message": message}
+            )
+
+        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=60,
+            disk_warn_gb=2.5,
+            disk_critical_gb=3.0,
+            mem_warn_mb=256,
+            db_path=db_path,
+        )
+        poller._alerted.add("disk_critical")
+
+        asyncio.run(poller._check_and_alert(self._good_status()))
+
+        critical_clears = [
+            c
+            for c in timeline_calls
+            if c["source"] == "resource"
+            and "critical" in c["message"].lower()
+            and "cleared" in c["message"].lower()
+        ]
+        assert len(critical_clears) == 1
+
+    def test_disk_warn_clears_writes_timeline_event(self, db_path, monkeypatch):
+        """When disk_warn clears, a timeline INFO event is written."""
+        from utils.notify import FakeNotifier
+        from utils.resource import ResourcePoller
+
+        timeline_calls: list[dict] = []
+
+        def fake_write_timeline(level, source, message, detail=None):
+            timeline_calls.append(
+                {"level": level, "source": source, "message": message}
+            )
+
+        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=60,
+            disk_warn_gb=2.5,
+            disk_critical_gb=3.0,
+            mem_warn_mb=256,
+            db_path=db_path,
+        )
+        poller._alerted.add("disk_warn")
+
+        asyncio.run(poller._check_and_alert(self._good_status()))
+
+        warn_clears = [
+            c
+            for c in timeline_calls
+            if c["source"] == "resource"
+            and "warning" in c["message"].lower()
+            and "cleared" in c["message"].lower()
+        ]
+        assert len(warn_clears) == 1

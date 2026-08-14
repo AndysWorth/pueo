@@ -5,10 +5,12 @@ import asyncio
 import collections
 import datetime
 import hashlib
+import json
 import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -285,6 +287,67 @@ async def tail_remote_log_stream(
         raise
 
 
+def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> None:
+    """Retire a pending update HITL card that HA resolved without Pueo's involvement."""
+    from utils.hitl_tracker import mark_card_resolved, stable_nid
+
+    nid = stable_nid(suppression_key)
+    component = "unknown"
+    from_version = "unknown"
+    to_version = "unknown"
+
+    card_path = Path(watch_dir) / f"{nid}.json"
+    try:
+        if card_path.exists():
+            data = json.loads(card_path.read_text())
+            payload = data.get("payload", data)
+            component = payload.get("component", "unknown")
+            from_version = payload.get("installed_version", "unknown")
+            to_version = payload.get("latest_version", "unknown")
+    except Exception:  # nosec B110
+        pass
+
+    with sqlite3.connect(DB_PATH) as _conn:
+        mark_card_resolved(_conn, suppression_key)
+
+    try:
+        from utils.timeline import write_timeline_event
+
+        write_timeline_event(
+            "INFO",
+            "update_check",
+            f"{component} updated {from_version} → {to_version} outside Pueo"
+            " (HA auto-update or manual action in HA UI)",
+            {
+                "component": component,
+                "from_version": from_version,
+                "to_version": to_version,
+                "resolution": "external",
+                "explanation": (
+                    f"{component} moved from {from_version} to {to_version}"
+                    " without Pueo HITL approval."
+                ),
+            },
+        )
+    except Exception:  # nosec B110
+        pass
+
+    approved_path = Path(watch_dir) / f"{nid}.approved"
+    if card_path.exists() and not approved_path.exists():
+        try:
+            approved_path.write_text("")
+        except Exception:  # nosec B110
+            pass
+
+    log.info(
+        "update_resolved_externally",
+        suppression_key=suppression_key,
+        component=component,
+        from_version=from_version,
+        to_version=to_version,
+    )
+
+
 async def poll_for_updates(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
@@ -311,6 +374,10 @@ async def poll_for_updates(
     )
     _cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
 
+    _update_gone: dict[str, float] = (
+        {}
+    )  # suppression_key → time.monotonic() of first absence
+
     while True:
         try:
             updates = await get_update_status(_client)
@@ -322,6 +389,9 @@ async def poll_for_updates(
         for u in updates:
             suppression_key = f"update:{u.entity_id}"
             if u.update_available:
+                _update_gone.pop(
+                    suppression_key, None
+                )  # update came back — reset timer
                 with sqlite3.connect(DB_PATH) as _sup_conn:
                     from utils.hitl_tracker import mark_card_sent, should_send_card
 
@@ -449,15 +519,43 @@ async def poll_for_updates(
                         " WHERE card_key = ?",
                         (suppression_key,),
                     ).fetchone()
-                    # Don't resolve a pending unapproved card — the update entity may be
-                    # transiently absent during HA boot, which would cause a duplicate card
-                    # on the next poll when the entity comes back True.
-                    if (
-                        _pending_row is None
-                        or _pending_row[0] == 0
-                        or _pending_row[1] is not None
-                    ):
+                    _is_pending = (
+                        _pending_row is not None
+                        and _pending_row[0] > 0
+                        and _pending_row[1] is None
+                    )
+                    if not _is_pending:
+                        _update_gone.pop(suppression_key, None)
                         mark_card_resolved(_sup_conn3, suppression_key)
+                if _is_pending:
+                    if suppression_key not in _update_gone:
+                        _update_gone[suppression_key] = time.monotonic()
+                        log.info(
+                            "update_gone_first_detection",
+                            suppression_key=suppression_key,
+                        )
+                    else:
+                        _resolve_externally_applied_update(
+                            suppression_key, NOTIFY_WATCH_DIR
+                        )
+                        _update_gone.pop(suppression_key, None)
+
+        # Reconcile: pending update cards for entities entirely absent from HA response.
+        seen_keys = {f"update:{u.entity_id}" for u in updates}
+        with sqlite3.connect(DB_PATH) as _sweep_conn:
+            _absent_pending = _sweep_conn.execute(
+                "SELECT card_key FROM hitl_suppression"
+                " WHERE card_key LIKE 'update:%'"
+                "   AND send_count > 0 AND last_action IS NULL AND resolved_at IS NULL"
+            ).fetchall()
+        for (_abs_key,) in _absent_pending:
+            if _abs_key in seen_keys:
+                continue  # handled in per-entity loop above
+            if _abs_key not in _update_gone:
+                _update_gone[_abs_key] = time.monotonic()
+            else:
+                _resolve_externally_applied_update(_abs_key, NOTIFY_WATCH_DIR)
+                _update_gone.pop(_abs_key, None)
 
         await asyncio.sleep(interval)
 
@@ -695,13 +793,28 @@ async def poll_for_repairs(
 
         with _sqlite3.connect(db_path) as _conn:
             open_rows = _conn.execute(
-                "SELECT issue_key FROM ha_repair_history"
+                "SELECT issue_key, translation_key FROM ha_repair_history"
                 " WHERE hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
             ).fetchall()
-        for (issue_key,) in open_rows:
+        for issue_key, translation_key in open_rows:
             if issue_key not in active_keys:
                 mark_repair_resolved(issue_key)
                 log.info("repair_resolved", issue_key=issue_key)
+                try:
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "INFO",
+                        "ha_repairs",
+                        f"HA repair resolved: {translation_key or issue_key}",
+                        {
+                            "issue_key": issue_key,
+                            "translation_key": translation_key,
+                            "resolution": "external",
+                        },
+                    )
+                except Exception:  # nosec B110
+                    pass
 
 
 async def trigger_remediation_pipeline() -> None:
