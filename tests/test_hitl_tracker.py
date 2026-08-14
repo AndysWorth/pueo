@@ -15,6 +15,7 @@ from utils.hitl_tracker import (
     mark_card_resolved,
     mark_card_sent,
     should_send_card,
+    stable_nid,
     touch_reminder_sent,
 )
 
@@ -300,3 +301,25 @@ def test_touch_reminder_resets_clock(conn):
     touch_reminder_sent(conn, "k")
     due = check_reminders_due(conn, 7)
     assert due == []
+
+
+# ---------------------------------------------------------------------------
+# stable_nid
+# ---------------------------------------------------------------------------
+
+
+def test_stable_nid_deterministic():
+    assert stable_nid("update:foo") == stable_nid("update:foo")
+
+
+def test_stable_nid_different_keys_produce_different_nids():
+    assert stable_nid("update:foo") != stable_nid("update:bar")
+
+
+def test_stable_nid_length():
+    assert len(stable_nid("resource:disk_critical")) == 24
+
+
+def test_stable_nid_is_hex():
+    nid = stable_nid("log_triage:abc123")
+    assert all(c in "0123456789abcdef" for c in nid)

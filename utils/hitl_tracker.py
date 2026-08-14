@@ -1,8 +1,18 @@
 """DB-backed HITL card suppression: rejection memory, cooldown, and Known Issues."""
 
+import hashlib
 import sqlite3
 import time
 from typing import Any
+
+
+def stable_nid(suppression_key: str) -> str:
+    """Deterministic notification_id derived from suppression_key.
+
+    Using a stable id means FileNotifier.send() overwrites the same file rather
+    than accumulating new UUID-named files when a poller re-fires in error.
+    """
+    return hashlib.sha256(suppression_key.encode()).hexdigest()[:24]
 
 
 def should_send_card(
