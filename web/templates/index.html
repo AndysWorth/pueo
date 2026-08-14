@@ -123,6 +123,29 @@
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
       {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation") or has_fix %}
+      {% if ct == "repair" and r.payload.get("enrichment") %}
+      {% set enr = r.payload.enrichment %}
+      <div style="margin:0.75rem 0;">
+        {% set conf = enr.get("confidence", "low") %}
+        {% if conf == "high" %}
+        <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.78rem;font-weight:600;background:#d4edda;color:#155724;margin-bottom:0.5rem;">Confidence: high</span>
+        {% elif conf == "medium" %}
+        <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.78rem;font-weight:600;background:#fff3cd;color:#856404;margin-bottom:0.5rem;">Confidence: medium</span>
+        {% else %}
+        <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.78rem;font-weight:600;background:#f8d7da;color:#842029;margin-bottom:0.5rem;">Confidence: low</span>
+        {% endif %}
+        <p style="margin:0 0 0.4rem;">{{ enr.get("explanation", "") }}</p>
+        {% if conf == "high" and enr.get("suggested_fix_summary") %}
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;"><strong>Fix summary:</strong> {{ enr.suggested_fix_summary }}</p>
+        {% endif %}
+        {% if enr.get("relevant_config_section") %}
+        <details>
+          <summary><span class="section-label label-evidence">Context</span>Relevant config section</summary>
+          <pre style="white-space:pre-wrap;word-break:break-all;">{{ enr.relevant_config_section }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if ct == "code_proposal" %}
       <div style="margin:0.75rem 0;">
         <p style="margin:0 0 0.4rem;"><strong>Tool:</strong> <code>{{ r.payload.get("tool_name", "") }}</code></p>

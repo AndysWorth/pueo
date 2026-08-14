@@ -16,6 +16,13 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 
+class FixEnrichment(BaseModel):
+    relevant_config_section: str
+    explanation: str
+    confidence: Literal["high", "medium", "low"]
+    suggested_fix_summary: str | None = None
+
+
 class ToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = {}
