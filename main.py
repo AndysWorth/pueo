@@ -252,6 +252,22 @@ async def supervisor_main(config_path: Path) -> None:
 
         _gl("main").warning("backup_startup_failed", error=str(_e))
 
+    # Resolve any *.in_progress update cards left from a previous crashed run.
+    try:
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import get_notifier as _get_notifier
+        from utils.ssh_client import AsyncSSHClient as _SSH
+
+        _reconcile_ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+        _reconcile_notifier = _get_notifier(
+            cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR
+        )
+        await reconcile_in_progress_updates(_reconcile_ssh, _reconcile_notifier)
+    except Exception as _e:  # nosec B110
+        from utils.logging import get_logger as _gl
+
+        _gl("main").warning("update_reconcile_startup_failed", error=str(_e))
+
     # Detect local hardware and populate the model cache; optionally auto-select model
     try:
         from utils.hardware import (

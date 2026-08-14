@@ -12094,3 +12094,483 @@ class TestResourceClearanceTimeline:
             and "cleared" in c["message"].lower()
         ]
         assert len(warn_clears) == 1
+
+
+# ── reconcile_in_progress_updates ────────────────────────────────────────────────
+class TestReconcileInProgressUpdates:
+    """Tests for reconcile_in_progress_updates() in ha_update_manager."""
+
+    def _make_card_json(
+        self, latest_version: str, installed_version: str = "2026.8.1"
+    ) -> dict:
+        from utils.card_types import CARD_TYPE_UPDATE
+
+        return {
+            "payload": {
+                "card_type": CARD_TYPE_UPDATE,
+                "component": "core",
+                "entity_id": "update.home_assistant_core_update",
+                "installed_version": installed_version,
+                "latest_version": latest_version,
+                "release_url": None,
+                "release_summary": None,
+            }
+        }
+
+    def _core_info_stdout(self, version: str) -> str:
+        import json
+
+        return json.dumps({"data": {"version": version, "update_available": False}})
+
+    def test_version_matched_sends_success_card_and_deletes_marker(self, tmp_path):
+        """When current version matches latest_version, sends a success result card."""
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import FakeNotifier
+
+        stem = "abc123"
+        json_path = tmp_path / f"{stem}.json"
+        marker = tmp_path / f"{stem}.in_progress"
+        json_path.write_text(__import__("json").dumps(self._make_card_json("2026.8.2")))
+        marker.touch()
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info --raw-json": (0, self._core_info_stdout("2026.8.2"), "")
+            }
+        )
+        notifier = FakeNotifier()
+
+        asyncio.run(reconcile_in_progress_updates(ssh, notifier, watch_dir=tmp_path))
+
+        assert not marker.exists(), "marker should be deleted after reconciliation"
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["success"] is True
+        assert payload["latest_version"] == "2026.8.2"
+
+    def test_version_mismatch_sends_unknown_card_and_deletes_marker(self, tmp_path):
+        """When current version does not match, sends an 'outcome unknown' card."""
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import FakeNotifier
+
+        stem = "def456"
+        json_path = tmp_path / f"{stem}.json"
+        marker = tmp_path / f"{stem}.in_progress"
+        json_path.write_text(__import__("json").dumps(self._make_card_json("2026.8.2")))
+        marker.touch()
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info --raw-json": (0, self._core_info_stdout("2026.8.1"), "")
+            }
+        )
+        notifier = FakeNotifier()
+
+        asyncio.run(reconcile_in_progress_updates(ssh, notifier, watch_dir=tmp_path))
+
+        assert not marker.exists(), "marker should be deleted even on mismatch"
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["success"] is False
+
+    def test_ssh_failure_leaves_marker_in_place(self, tmp_path):
+        """If SSH fails, the marker is left for retry on next startup."""
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import FakeNotifier
+
+        stem = "ghi789"
+        json_path = tmp_path / f"{stem}.json"
+        marker = tmp_path / f"{stem}.in_progress"
+        json_path.write_text(__import__("json").dumps(self._make_card_json("2026.8.2")))
+        marker.touch()
+
+        class FailingSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                raise OSError("SSH connection refused")
+
+        notifier = FakeNotifier()
+
+        asyncio.run(
+            reconcile_in_progress_updates(FailingSSH(), notifier, watch_dir=tmp_path)
+        )
+
+        assert marker.exists(), "marker must survive an SSH failure"
+        assert notifier.sent == []
+
+    def test_non_update_card_skipped(self, tmp_path):
+        """Cards with a different card_type are ignored."""
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import FakeNotifier
+
+        stem = "skip001"
+        json_path = tmp_path / f"{stem}.json"
+        marker = tmp_path / f"{stem}.in_progress"
+        json_path.write_text(
+            __import__("json").dumps(
+                {"payload": {"card_type": "repair", "component": "core"}}
+            )
+        )
+        marker.touch()
+
+        notifier = FakeNotifier()
+        asyncio.run(
+            reconcile_in_progress_updates(FakeSSHClient(), notifier, watch_dir=tmp_path)
+        )
+
+        assert marker.exists(), "non-update markers must not be touched"
+        assert notifier.sent == []
+
+    def test_no_in_progress_files_is_noop(self, tmp_path):
+        """Empty watch dir returns without making any SSH calls."""
+        from ha_update_manager import reconcile_in_progress_updates
+        from utils.notify import FakeNotifier
+
+        ssh = FakeSSHClient()
+        notifier = FakeNotifier()
+        asyncio.run(reconcile_in_progress_updates(ssh, notifier, watch_dir=tmp_path))
+
+        assert ssh.commands_run == []
+        assert notifier.sent == []
+
+
+# ── disk monitoring in _poll_core_version ────────────────────────────────────────
+class TestPollCoreVersionDiskMonitoring:
+    """Tests for the disk-check side-effect in _poll_core_version."""
+
+    def _make_info_stdout(self, version: str) -> str:
+        import json
+
+        return json.dumps({"data": {"version": version, "update_available": False}})
+
+    def test_disk_critical_during_poll_logs_warning(self, monkeypatch):
+        """When disk drops below HA_DISK_CRITICAL_GB mid-poll, logs core_update_disk_critical_during_poll."""
+        import ha_update_manager
+        from ha_update_manager import _poll_core_version
+
+        target = "2026.8.2"
+
+        # Returns wrong version on first 4 polls, correct version on 5th.
+        call_count = [0]
+
+        async def fake_sleep(n):
+            pass
+
+        class SequentialSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                call_count[0] += 1
+                if call_count[0] >= 5:
+                    return 0, self._mk(target), ""
+                return 0, self._mk("2026.8.1"), ""
+
+            def _mk(self, v):
+                import json
+
+                return json.dumps({"data": {"version": v, "update_available": True}})
+
+        from utils.resource import ResourceStatus
+
+        critical_status = ResourceStatus(
+            disk_free_gb=0.5,
+            disk_total_gb=32.0,
+            disk_used_gb=31.5,
+            mem_available_mb=2048,
+            mem_total_mb=4096,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+
+        warning_calls: list[dict] = []
+
+        def fake_warning(event, **kwargs):
+            warning_calls.append({"event": event, **kwargs})
+
+        monkeypatch.setattr(ha_update_manager.log, "warning", fake_warning)
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_CRITICAL_GB", 1.0)
+
+        result = asyncio.run(
+            _poll_core_version(
+                target,
+                SequentialSSH(),
+                timeout_seconds=300,
+                interval=15,
+                _sleep=fake_sleep,
+                _get_disk=lambda: critical_status,
+            )
+        )
+
+        assert result is True
+        disk_events = [
+            e
+            for e in warning_calls
+            if e.get("event") == "core_update_disk_critical_during_poll"
+        ]
+        assert len(disk_events) >= 1
+        assert disk_events[0]["disk_free_gb"] == 0.5
+
+    def test_disk_check_does_not_abort_poll(self):
+        """Disk critical does not cause the poll to stop — update may still succeed."""
+        from ha_update_manager import _poll_core_version
+        from utils.resource import ResourceStatus
+
+        target = "2026.8.2"
+        call_count = [0]
+
+        async def fake_sleep(n):
+            pass
+
+        class SequentialSSH(FakeSSHClient):
+            async def run(self, command, check=False):
+                call_count[0] += 1
+                if call_count[0] >= 9:
+                    return 0, self._mk(target), ""
+                return 0, self._mk("2026.8.1"), ""
+
+            def _mk(self, v):
+                import json
+
+                return json.dumps({"data": {"version": v, "update_available": True}})
+
+        critical_status = ResourceStatus(
+            disk_free_gb=0.0,
+            disk_total_gb=32.0,
+            disk_used_gb=32.0,
+            mem_available_mb=2048,
+            mem_total_mb=4096,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+
+        result = asyncio.run(
+            _poll_core_version(
+                target,
+                SequentialSSH(),
+                timeout_seconds=600,
+                interval=15,
+                _sleep=fake_sleep,
+                _get_disk=lambda: critical_status,
+            )
+        )
+        assert result is True
+
+
+# ── disk exhaustion warning in HITL card ────────────────────────────────────────
+class TestDiskExhaustionWarningInCard:
+    """Verify request_update_approval() emits a clear disk-exhaustion risk warning."""
+
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        import ha_agent_advanced
+        import ha_update_manager
+        import utils.resource as _res
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(_res, "_last_resource_status", None)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_disk_exhaustion_risk_flag_set_when_disk_low(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        """When preflight.disk_ok is False, disk_exhaustion_risk=True in payload."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import request_update_approval
+        from utils.ha_rest_client import FakeHARestClient, UpdateStatus
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+
+        low_status = _res.ResourceStatus(
+            disk_free_gb=1.2,
+            disk_total_gb=32.0,
+            disk_used_gb=30.8,
+            mem_available_mb=2048,
+            mem_total_mb=4096,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(_res, "_last_resource_status", low_status)
+
+        async def fake_run(command, check=False):
+            if "ha host info" in command:
+                return 0, "disk_free: 1.2\ndisk_total: 32.0\ndisk_used: 30.8\n", ""
+            if "/proc/meminfo" in command:
+                return (
+                    0,
+                    "MemAvailable: 2097152 kB\nMemTotal: 4194304 kB\n",
+                    "",
+                )
+            return 0, "", ""
+
+        class FakeSSHForPreflight:
+            commands_run: list = []
+
+            async def run(self, command, check=False):
+                return await fake_run(command, check)
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.8.1",
+            latest_version="2026.8.2",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        notifier = FakeNotifier()
+
+        class CapturingGate:
+            payload_out: dict = {}
+
+            async def queue_for_approval(self, subject, body, payload, notifier, risk):
+                CapturingGate.payload_out = payload
+                return False
+
+        asyncio.run(
+            request_update_approval(
+                update=update,
+                gate=CapturingGate(),  # type: ignore[arg-type]
+                notifier=notifier,
+                ssh_client=FakeSSHForPreflight(),  # type: ignore[arg-type]
+                rest_client=FakeHARestClient(states=[]),
+                watch_dir=tmp_path,
+            )
+        )
+
+        assert CapturingGate.payload_out.get("disk_exhaustion_risk") is True
+
+    def test_disk_exhaustion_risk_false_when_disk_ok(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        """When preflight.disk_ok is True, disk_exhaustion_risk=False in payload."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import request_update_approval
+        from utils.ha_rest_client import FakeHARestClient, UpdateStatus
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+
+        good_status = _res.ResourceStatus(
+            disk_free_gb=8.0,
+            disk_total_gb=32.0,
+            disk_used_gb=24.0,
+            mem_available_mb=2048,
+            mem_total_mb=4096,
+            disk_warn=False,
+            disk_critical=False,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(_res, "_last_resource_status", good_status)
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.8.1",
+            latest_version="2026.8.2",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        class CapturingGate:
+            payload_out: dict = {}
+
+            async def queue_for_approval(self, subject, body, payload, notifier, risk):
+                CapturingGate.payload_out = payload
+                return False
+
+        asyncio.run(
+            request_update_approval(
+                update=update,
+                gate=CapturingGate(),  # type: ignore[arg-type]
+                notifier=FakeNotifier(),
+                rest_client=FakeHARestClient(states=[]),
+                watch_dir=tmp_path,
+            )
+        )
+
+        assert CapturingGate.payload_out.get("disk_exhaustion_risk") is False
+
+    def test_disk_exhaustion_body_mentions_supervisor_image_size(
+        self, db_path, monkeypatch, tmp_path
+    ):
+        """Card body explains the ~2-3 GB Supervisor image download risk."""
+        import ha_update_manager
+        import utils.resource as _res
+        from ha_update_manager import request_update_approval
+        from utils.ha_rest_client import FakeHARestClient, UpdateStatus
+        from utils.notify import FakeNotifier
+
+        monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
+
+        low_status = _res.ResourceStatus(
+            disk_free_gb=1.2,
+            disk_total_gb=32.0,
+            disk_used_gb=30.8,
+            mem_available_mb=2048,
+            mem_total_mb=4096,
+            disk_warn=True,
+            disk_critical=True,
+            mem_warn=False,
+        )
+        monkeypatch.setattr(_res, "_last_resource_status", low_status)
+
+        async def fake_run(command, check=False):
+            if "ha host info" in command:
+                return 0, "disk_free: 1.2\ndisk_total: 32.0\ndisk_used: 30.8\n", ""
+            if "/proc/meminfo" in command:
+                return 0, "MemAvailable: 2097152 kB\nMemTotal: 4194304 kB\n", ""
+            return 0, "", ""
+
+        class FakeSSHForPreflight:
+            commands_run: list = []
+
+            async def run(self, command, check=False):
+                return await fake_run(command, check)
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.8.1",
+            latest_version="2026.8.2",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+
+        captured_body: list[str] = []
+
+        class CapturingGate:
+            async def queue_for_approval(self, subject, body, payload, notifier, risk):
+                captured_body.append(body)
+                return False
+
+        asyncio.run(
+            request_update_approval(
+                update=update,
+                gate=CapturingGate(),  # type: ignore[arg-type]
+                notifier=FakeNotifier(),
+                ssh_client=FakeSSHForPreflight(),  # type: ignore[arg-type]
+                rest_client=FakeHARestClient(states=[]),
+                watch_dir=tmp_path,
+            )
+        )
+
+        assert captured_body, "gate.queue_for_approval was not called"
+        body = captured_body[0]
+        assert "2–3 GB" in body
+        assert "Supervisor" in body
+        assert "Free space before approving" in body

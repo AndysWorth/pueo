@@ -435,8 +435,9 @@ async def request_update_approval(
                 )
             if not preflight.disk_ok:
                 body_parts.append(
-                    f"⚠️ Disk still low ({preflight.disk_after_gb:.1f} GB) — "
-                    "update may not have enough space"
+                    f"⚠️ Disk exhaustion risk: HA Supervisor downloads ~2–3 GB during "
+                    f"a Core update. With {preflight.disk_after_gb:.1f} GB free, disk "
+                    "may reach 0 GB. Free space before approving."
                 )
             if (
                 preflight.supervisor_status == "update_available"
@@ -485,6 +486,7 @@ async def request_update_approval(
             preflight.supervisor_status if preflight else None
         ),
         "preflight_problems": preflight.problems if preflight else [],
+        "disk_exhaustion_risk": (preflight is not None and not preflight.disk_ok),
     }
 
     log.info(
@@ -785,16 +787,24 @@ _POLL_INTERVAL_OS = 15
 _POLL_INTERVAL_ADDON = 10
 
 
+_DISK_CHECK_EVERY_N_POLLS = 4  # check disk every ~60 s during a Core update poll
+
+
 async def _poll_core_version(
     target_version: str,
     ssh_client: SSHClientProtocol,
     timeout_seconds: int = _CORE_UPDATE_TIMEOUT,
     interval: int = _POLL_INTERVAL_CORE,
     _sleep: Optional[Callable] = None,
+    _get_disk: Optional[Callable] = None,
 ) -> bool:
     """Poll `ha core info` every ``interval`` seconds until version matches target or timeout."""
+    from utils.resource import get_resource_status
+
     sleep_fn = _sleep or asyncio.sleep
+    get_disk_fn = _get_disk or get_resource_status
     elapsed = 0
+    poll_count = 0
     while elapsed < timeout_seconds:
         try:
             _, stdout, _ = await ssh_client.run("ha core info --raw-json", check=False)
@@ -806,6 +816,18 @@ async def _poll_core_version(
                 return True
         except Exception as exc:
             log.warning("poll_core_version_error", error=str(exc))
+        poll_count += 1
+        if poll_count % _DISK_CHECK_EVERY_N_POLLS == 0:
+            disk_status = get_disk_fn()
+            if (
+                disk_status is not None
+                and disk_status.disk_free_gb < HA_DISK_CRITICAL_GB
+            ):
+                log.warning(
+                    "core_update_disk_critical_during_poll",
+                    disk_free_gb=round(disk_status.disk_free_gb, 2),
+                    elapsed=elapsed,
+                )
         await sleep_fn(interval)
         elapsed += interval
     return False
@@ -1344,3 +1366,94 @@ async def execute_update(
     return await execute_addon_update(
         update, ssh_client, notifier, gate, ha_rest_client=ha_rest_client
     )
+
+
+async def reconcile_in_progress_updates(
+    ssh_client: SSHClientProtocol,
+    notifier: "NotifierProtocol",
+    watch_dir: Optional[Path] = None,
+) -> None:
+    """On startup, resolve any *.in_progress update cards left from a previous run.
+
+    For each in-progress Core update card, queries `ha core info` to determine
+    whether the update succeeded. Sends a post-update result card and removes
+    the marker so the card does not sit unresolved indefinitely.
+    If SSH fails the marker is left in place and retried on next startup.
+    """
+    from utils.card_types import CARD_TYPE_UPDATE
+
+    _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
+    in_progress_files = list(_watch_dir.glob("*.in_progress"))
+    if not in_progress_files:
+        return
+
+    for marker in in_progress_files:
+        stem = marker.stem
+        json_path = _watch_dir / f"{stem}.json"
+        if not json_path.exists():
+            log.warning("reconcile_update_json_missing", stem=stem)
+            continue
+        try:
+            card_data = json.loads(json_path.read_text())
+        except Exception as exc:
+            log.warning("reconcile_update_json_parse_error", stem=stem, error=str(exc))
+            continue
+
+        payload = card_data.get("payload", {})
+        if payload.get("card_type") != CARD_TYPE_UPDATE:
+            continue
+        component = payload.get("component", "")
+        if component != "core":
+            continue
+
+        latest_version = payload.get("latest_version", "")
+        installed_version = payload.get("installed_version", "")
+        log.info(
+            "reconcile_core_update_start",
+            stem=stem,
+            latest_version=latest_version,
+        )
+
+        try:
+            _, stdout, _ = await ssh_client.run("ha core info --raw-json", check=False)
+            data = json.loads(stdout)
+            info = data.get("data", data)
+            current_version = info.get("version", "")
+        except Exception as exc:
+            log.warning("reconcile_core_update_ssh_failed", stem=stem, error=str(exc))
+            continue
+
+        update = UpdateStatus(
+            component="core",
+            entity_id=payload.get("entity_id", ""),
+            installed_version=installed_version,
+            latest_version=latest_version,
+            update_available=False,
+            release_url=payload.get("release_url"),
+            release_summary=payload.get("release_summary"),
+            in_progress=False,
+        )
+
+        if current_version == latest_version:
+            log.info(
+                "core_update_reconciled_success",
+                stem=stem,
+                version=current_version,
+            )
+            await _send_post_update_card(update, notifier, True, "", "")
+        else:
+            log.warning(
+                "core_update_reconciled_unknown",
+                stem=stem,
+                expected=latest_version,
+                current=current_version,
+            )
+            await _send_post_update_card(
+                update,
+                notifier,
+                False,
+                f"Reconciliation: current version is {current_version or 'unknown'}",
+                "",
+            )
+
+        marker.unlink(missing_ok=True)
