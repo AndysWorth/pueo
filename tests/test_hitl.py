@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HITL, autonomy gate, and notification tests — notifiers, requires_hitl logic, pipeline gate, AutonomyGate levels."""
+"""HITL, autonomy gate, and notification tests — notifiers, pipeline gate, AutonomyGate levels."""
 
 import asyncio
 import importlib
@@ -176,87 +176,6 @@ class TestGetNotifier:
         assert isinstance(n, FileNotifier)
 
 
-# ── requires_hitl ────────────────────────────────────────────────────────────────
-
-
-class TestRequiresHitl:
-    def _make_report(self, severity, issues):
-        from ha_agent_sandbox_engine import DiagnosticsReport
-
-        return DiagnosticsReport(
-            is_valid=False,
-            severity=severity,
-            identified_issues=issues,
-            recommended_fix_yaml=None,
-        )
-
-    def test_critical_severity_requires_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("CRITICAL", ["YAML error"])
-        assert requires_hitl(report) is True
-
-    def test_low_severity_no_keywords_does_not_require_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["wrong port number"])
-        assert requires_hitl(report) is False
-
-    def test_medium_severity_no_keywords_does_not_require_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("MEDIUM", ["deprecated syntax"])
-        assert requires_hitl(report) is False
-
-    def test_hacs_keyword_requires_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["HACS integration needs update"])
-        assert requires_hitl(report) is True
-
-    def test_hacs_keyword_case_insensitive(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("MEDIUM", ["hacs component failed"])
-        assert requires_hitl(report) is True
-
-    def test_database_keyword_requires_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["database schema migration needed"])
-        assert requires_hitl(report) is True
-
-    def test_multiple_issues_one_matching_requires_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["wrong port", "database corruption"])
-        assert requires_hitl(report) is True
-
-    def test_none_severity_clean_config_does_not_require_hitl(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("NONE", [])
-        assert requires_hitl(report) is False
-
-    def test_hitl_always_true_triggers_for_low_severity(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["minor formatting issue"])
-        assert requires_hitl(report, hitl_always=True) is True
-
-    def test_hitl_always_true_triggers_for_none_severity(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("NONE", [])
-        assert requires_hitl(report, hitl_always=True) is True
-
-    def test_hitl_always_false_preserves_normal_logic(self):
-        from ha_agent_sandbox_engine import requires_hitl
-
-        report = self._make_report("LOW", ["minor formatting issue"])
-        assert requires_hitl(report, hitl_always=False) is False
-
-
 # ── HITL config keys ─────────────────────────────────────────────────────────────
 
 
@@ -303,19 +222,6 @@ class TestHitlConfigKeys:
         import config
 
         assert config.NOTIFY_WATCH_DIR == "/var/pueo/hitl/"
-
-    def test_hitl_always_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_ALWAYS is False
-
-    def test_hitl_always_from_yaml(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"hitl_always": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_ALWAYS is True
 
 
 # ── HITL pipeline gate ────────────────────────────────────────────────────────────

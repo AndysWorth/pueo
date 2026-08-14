@@ -313,7 +313,6 @@ if $WRITE_CONFIG; then
     echo "              instance; you approve by touching the approval file via SSH"
     echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
     echo
-    ask "Require human approval before every repair? (true/false)"  "false"  HITL_ALWAYS
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
     ask "HITL dashboard port"  "8080"  DASHBOARD_PORT
     echo
@@ -397,6 +396,10 @@ if $WRITE_CONFIG; then
             ask "Docker host IP or hostname" "" NAX_DOCKER_HOST
             ask "SSH user on Docker host" "$(whoami)" NAX_DOCKER_SSH_USER
             ask "SSH key path for Docker host (blank = same as HA key)" "" NAX_DOCKER_SSH_KEY_PATH
+            echo
+            echo "  NetAlertX config files will be written to this directory on the Docker host."
+            echo "  The directory MUST be writable by the SSH user."
+            ask "NetAlertX config path on Docker host" "/opt/netalertx/config" NAX_DOCKER_CONFIG_PATH
             if [[ -n "$NAX_DOCKER_HOST" ]]; then
                 # Verify SSH access and check disk space
                 _DOCKER_SSH="ssh -i ${NAX_DOCKER_SSH_KEY_PATH:-$HA_SSH_KEY} \
@@ -494,7 +497,7 @@ netalertx:
   docker_host: "${NAX_DOCKER_HOST}"
   docker_ssh_user: "${NAX_DOCKER_SSH_USER}"
   docker_ssh_key_path: "${NAX_DOCKER_SSH_KEY_PATH}"
-  docker_config_path: "/opt/netalertx/config"
+  docker_config_path: "${NAX_DOCKER_CONFIG_PATH}"
   docker_image: "ghcr.io/jokob-sk/netalertx:latest"
   docker_min_disk_gb: 5.0
   # Advanced tuning — edit config.yaml directly to override these defaults:
@@ -517,7 +520,6 @@ agent:
   db_path: "${DB_PATH}"
   log_confidence_threshold: ${LOG_THRESHOLD}
   self_healing_enabled: ${SELF_HEALING}
-  hitl_always: ${HITL_ALWAYS}
   autonomy_level: ${AUTONOMY_LEVEL}
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab

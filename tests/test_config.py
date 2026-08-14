@@ -264,19 +264,6 @@ class TestHitlConfigKeys:
 
         assert config.NOTIFY_WATCH_DIR == "/var/pueo/hitl/"
 
-    def test_hitl_always_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_ALWAYS is False
-
-    def test_hitl_always_from_yaml(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"hitl_always": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.HITL_ALWAYS is True
-
 
 # ── AutonomyGate config keys ──────────────────────────────────────────────────────
 

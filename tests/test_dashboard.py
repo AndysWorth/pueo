@@ -4151,10 +4151,12 @@ class TestConfigEditor:
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.post("/config", json={"key": "hitl_always", "value": "false"})
+        response = client.post(
+            "/config", json={"key": "self_healing_enabled", "value": "false"}
+        )
         assert response.status_code == 200
         cfg = yaml.safe_load(cfg_path.read_text())
-        assert cfg["agent"]["hitl_always"] is False
+        assert cfg["agent"]["self_healing_enabled"] is False
 
     def test_valid_string_update(self, cfg_path, tmp_path, monkeypatch):
         import yaml
