@@ -537,6 +537,22 @@ class ResourcePoller:
 
                 with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rc:
                     mark_card_resolved(_rc, "resource:disk_critical")
+                try:
+                    from utils.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "INFO",
+                        "resource",
+                        f"Disk critical alert cleared — free space now above threshold"
+                        f" ({status.disk_free_gb:.1f} GB free)",
+                        {
+                            "disk_free_gb": status.disk_free_gb,
+                            "threshold_gb": self._disk_critical_gb,
+                            "resolution": "cleared",
+                        },
+                    )
+                except Exception:  # nosec B110
+                    pass
             self._alerted.discard("disk_critical")
             if status.disk_warn:
                 if "disk_warn" not in self._alerted:
@@ -646,6 +662,22 @@ class ResourcePoller:
 
                     with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rw:
                         mark_card_resolved(_rw, "resource:disk_warn")
+                    try:
+                        from utils.timeline import write_timeline_event
+
+                        write_timeline_event(
+                            "INFO",
+                            "resource",
+                            f"Disk warning cleared — free space now above threshold"
+                            f" ({status.disk_free_gb:.1f} GB free)",
+                            {
+                                "disk_free_gb": status.disk_free_gb,
+                                "threshold_gb": self._disk_warn_gb,
+                                "resolution": "cleared",
+                            },
+                        )
+                    except Exception:  # nosec B110
+                        pass
                 self._alerted.discard("disk_warn")
 
         if status.mem_warn:
