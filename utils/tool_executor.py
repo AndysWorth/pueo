@@ -25,11 +25,16 @@ from utils.logging import get_correlation_id, get_logger
 from utils.tool_registry import ToolCall, ToolResult
 
 if TYPE_CHECKING:
-    from interfaces import KnowledgeStoreClientProtocol, SSHClientProtocol
+    from interfaces import (
+        KnowledgeStoreClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from netalertx.api_client import NetAlertXAPIClient
     from utils.autonomy import AutonomyGate
     from utils.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
+    from utils.tool_registry import FixEnrichment
 
 log = get_logger("tool_executor")
 
@@ -87,6 +92,7 @@ class ToolExecutor:
         netalertx_container_name: str = "netalertx",
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
         db_path: str = DB_PATH,
+        llm_client: Optional["LLMClientProtocol"] = None,
     ) -> None:
         self._ha_ssh = ha_ssh_client
         self._nax_ssh = nax_ssh_client
@@ -96,6 +102,7 @@ class ToolExecutor:
         self._container = netalertx_container_name
         self._knowledge_store = knowledge_store
         self._db_path = db_path
+        self._llm_client = llm_client
         self._apply_fix_used = False
         self._pending_patch: dict[str, str] = {}
         self._sandbox_passed: bool = False
@@ -755,6 +762,43 @@ class ToolExecutor:
             awaiting_approval=True,
         )
 
+    async def _enrich_fix_context(
+        self,
+        original_config: str,
+        proposed_yaml: str,
+        description: str,
+    ) -> "FixEnrichment | None":
+        if self._llm_client is None:
+            return None
+
+        from utils.tool_registry import FixEnrichment
+
+        prompt = (
+            "You are reviewing a proposed Home Assistant configuration fix.\n\n"
+            f"Agent description: {description}\n\n"
+            "Current configuration.yaml (excerpt):\n"
+            f"```yaml\n{original_config[:3000]}\n```\n\n"
+            "Proposed replacement:\n"
+            f"```yaml\n{proposed_yaml[:3000]}\n```\n\n"
+            "Identify the specific lines being changed, explain in plain English "
+            "why the current configuration is wrong and how the fix addresses it, "
+            "rate your confidence, and summarise the fix only if confidence is high."
+        )
+        try:
+            import config as _cfg
+
+            response = await self._llm_client.chat(
+                model=_cfg.OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0},
+                format=FixEnrichment.model_json_schema(),
+            )
+            content = response.get("message", {}).get("content", "")
+            return FixEnrichment.model_validate_json(content)
+        except Exception as exc:
+            log.warning("fix_enrichment_failed", error=str(exc))
+            return None
+
     async def _apply_fix(self, yaml_content: str, description: str) -> ToolResult:
         if self._apply_fix_used:
             log.warning("apply_fix_already_used")
@@ -787,14 +831,23 @@ class ToolExecutor:
                 error=f"Content validation failed: {'; '.join(validation.reasons)}",
             )
 
+        enrichment = await self._enrich_fix_context(original, yaml_content, description)
+
         from utils.autonomy import RiskLevel
 
         from utils.card_types import CARD_TYPE_REPAIR
 
         nid = get_correlation_id() or str(uuid.uuid4())
+        if enrichment:
+            body = f"{enrichment.explanation}"
+            if enrichment.suggested_fix_summary:
+                body += f"\n\nSuggested fix: {enrichment.suggested_fix_summary}"
+            body += f"\n\nProposed YAML:\n{yaml_content[:500]}"
+        else:
+            body = f"Proposed fix:\n{yaml_content[:500]}"
         approved = await self._gate.queue_for_approval(
             subject=f"Pueo HITL: apply_fix — {description}",
-            body=f"Proposed fix:\n{yaml_content[:500]}",
+            body=body,
             payload={
                 "notification_id": nid,
                 "card_type": CARD_TYPE_REPAIR,
@@ -803,6 +856,7 @@ class ToolExecutor:
                 "correlation_id": nid,
                 "pending_fix_yaml": yaml_content,
                 "pending_fix_description": description,
+                "enrichment": enrichment.model_dump() if enrichment else None,
             },
             notifier=self._notifier,
             risk=RiskLevel.HIGH,

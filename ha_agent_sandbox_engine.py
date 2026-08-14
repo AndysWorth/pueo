@@ -622,6 +622,7 @@ async def _run_code_proposal_loop(
         gate=gate,
         notifier=notifier,
         db_path=db_path,
+        llm_client=llm_client,
     )
     registry = build_code_proposal_registry()
     proposal_loop = AgentLoop(
@@ -690,6 +691,7 @@ async def main(
         gate=_gate,
         notifier=_notifier,
         knowledge_store=_knowledge_store,
+        llm_client=_llm,
     )
     registry = build_ha_tool_registry()
     loop = AgentLoop(
