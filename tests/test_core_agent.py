@@ -6663,6 +6663,117 @@ class TestPollForUpdates:
         assert payload["card_type"] == "update"
         assert payload["risk"] == "MEDIUM"
 
+    def test_update_card_not_resolved_when_pending(self, monkeypatch):
+        """Bug 1: update entity goes away while card is still unapproved — must not resolve."""
+        import asyncio as asyncio_mod
+        import sqlite3 as _sq3
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        # First run: update available → card sent, DB updated
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update", installed="2026.1.0", latest="2026.2.0"
+        )
+        states = [entity]
+        client = FakeHARestClient(states=states)
+        notifier = FakeNotifier()
+
+        call_count = [0]
+
+        async def fake_sleep(seconds: float) -> None:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Simulate HA restart: update entity briefly disappears
+                states[0]["state"] = "off"
+            if call_count[0] >= 3:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        # Only one notification should have been sent (the initial one).
+        # The entity going to "off" while the card is pending must not resolve
+        # hitl_suppression, so the still-off entity on poll 3 doesn't re-fire.
+        assert len(notifier.sent) == 1
+
+    def test_update_card_resolved_when_acted_on(self, monkeypatch):
+        """Bug 1: update entity resolves after user acted — must call mark_card_resolved."""
+        import asyncio as asyncio_mod
+        import sqlite3 as _sq3
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update", installed="2026.1.0", latest="2026.2.0"
+        )
+        states = [entity]
+        client = FakeHARestClient(states=states)
+        notifier = FakeNotifier()
+
+        # The autouse _patch_hitl_tracker fixture routes all sqlite3.connect calls to
+        # the same in-memory DB. Access it via _sq3.connect() to simulate user action.
+        first_sleep = [True]
+
+        async def fake_sleep(seconds: float) -> None:
+            if first_sleep[0]:
+                first_sleep[0] = False
+                # Simulate user rejecting the card after the first poll sent it
+                with _sq3.connect("") as _c:
+                    _c.execute(
+                        "UPDATE hitl_suppression SET last_action='rejected'"
+                        " WHERE card_key='update:update.home_assistant_core_update'"
+                    )
+                states[0]["state"] = "off"
+            else:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        # User acted → entity went off → resolved_at must be set
+        with _sq3.connect("") as _c:
+            row = _c.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key='update:update.home_assistant_core_update'"
+            ).fetchone()
+        assert row is not None and row[0] is not None
+
+    def test_update_payload_has_stable_notification_id(self, monkeypatch):
+        """Stable notification_id derived from suppression_key must be in the payload."""
+        import asyncio as asyncio_mod
+
+        from ha_log_monitor import poll_for_updates
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+        from utils.hitl_tracker import stable_nid
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.1.0",
+            latest="2026.2.0",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        payload = notifier.sent[0]["payload"]
+        expected_nid = stable_nid("update:update.home_assistant_core_update")
+        assert payload["notification_id"] == expected_nid
+
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
 
@@ -10486,7 +10597,8 @@ class TestLogTriageDB:
             result = should_send_log_triage_hitl(conn, "fp2", cooldown_hours=4)
         assert result is False
 
-    def test_should_send_after_cooldown_expires(self, db_path):
+    def test_should_send_after_cooldown_expires_and_user_acted(self, db_path):
+        """Cooldown elapsed AND user acted on the prior card → allow re-fire."""
         import sqlite3
         import time
 
@@ -10500,6 +10612,12 @@ class TestLogTriageDB:
         with sqlite3.connect(db_path) as conn:
             record_log_triage_seen(conn, "fp3", old_time)
             mark_log_triage_hitl_sent(conn, "fp3", old_time)
+            # Simulate user rejecting the card — last_action IS NOT NULL
+            conn.execute(
+                "UPDATE hitl_suppression SET last_action='rejected'"
+                " WHERE card_key='log_triage:fp3'"
+            )
+            conn.commit()
             result = should_send_log_triage_hitl(conn, "fp3", cooldown_hours=4)
         assert result is True
 
@@ -10522,6 +10640,184 @@ class TestLogTriageDB:
             ).fetchone()
         assert row[0] == now + 1
         assert row[1] == 2
+
+    def test_should_not_send_when_card_pending_after_cooldown(self, db_path):
+        """Bug 2: cooldown elapsed but card still unapproved — must not re-fire."""
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+            should_send_log_triage_hitl,
+        )
+
+        old_time = time.time() - 5 * 3600  # 5 hours ago — past 4h cooldown
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp5", old_time)
+            mark_log_triage_hitl_sent(conn, "fp5", old_time)
+            # hitl_suppression now has send_count=1, last_action=NULL (pending)
+            result = should_send_log_triage_hitl(conn, "fp5", cooldown_hours=4)
+        assert result is False  # pending card must block re-fire
+
+    def test_should_send_after_cooldown_when_card_acted_on(self, db_path):
+        """Bug 2: cooldown elapsed and user acted — must allow re-fire."""
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+            should_send_log_triage_hitl,
+        )
+
+        old_time = time.time() - 5 * 3600  # 5 hours ago — past 4h cooldown
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp6", old_time)
+            mark_log_triage_hitl_sent(conn, "fp6", old_time)
+            # Simulate user deferred the card
+            conn.execute(
+                "UPDATE hitl_suppression SET last_action='deferred'"
+                " WHERE card_key='log_triage:fp6'"
+            )
+            conn.commit()
+            result = should_send_log_triage_hitl(conn, "fp6", cooldown_hours=4)
+        assert result is True  # user acted → allow re-fire after cooldown
+
+    def test_mark_hitl_sent_registers_in_hitl_suppression(self, db_path):
+        """mark_log_triage_hitl_sent must write to hitl_suppression for cross-check."""
+        import sqlite3
+        import time
+
+        from ha_agent_advanced import (
+            mark_log_triage_hitl_sent,
+            record_log_triage_seen,
+        )
+
+        now = time.time()
+        with sqlite3.connect(db_path) as conn:
+            record_log_triage_seen(conn, "fp7", now)
+            mark_log_triage_hitl_sent(conn, "fp7", now)
+            row = conn.execute(
+                "SELECT send_count, last_action FROM hitl_suppression"
+                " WHERE card_key='log_triage:fp7'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] >= 1
+        assert row[1] is None  # not yet acted on
+
+
+class TestRepairCardDedup:
+    """Bug 3: repair cards must not re-fire for the same logical issue after HA restart."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        db = tmp_path / "test.db"
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
+        ha_agent_advanced.init_local_database()
+        return str(db)
+
+    def test_translation_key_query_detects_duplicate(self, db_path):
+        """Same translation_key with a new UUID → query must find the prior sent row."""
+        import sqlite3
+
+        # Seed UUID-1 as already sent for translation_key="reboot_required"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, first_seen_at, translation_key, hitl_sent_at)"
+                " VALUES ('domain_uuid-1', ?, 'reboot_required', ?)",
+                (1.0, 1.0),
+            )
+            conn.commit()
+
+        # Now simulate poll seeing UUID-2 (new UUID after HA restart, same translation_key)
+        new_issue_key = "domain_uuid-2"
+        translation_key = "reboot_required"
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                (new_issue_key,),
+            ).fetchone()
+            tkey_row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history"
+                " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                " AND resolved_at IS NULL AND issue_key != ?",
+                (translation_key, new_issue_key),
+            ).fetchone()
+
+        # issue_key lookup finds nothing (UUID-2 not in history)
+        assert row is None
+        # translation_key lookup finds UUID-1's sent record → already_sent = True
+        assert tkey_row is not None
+        already_sent = (row is not None and row[0] is not None) or tkey_row is not None
+        assert already_sent is True
+
+    def test_translation_key_query_allows_new_issue_type(self, db_path):
+        """Different translation_key → new issue, must not be suppressed."""
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, first_seen_at, translation_key, hitl_sent_at)"
+                " VALUES ('domain_uuid-1', ?, 'reboot_required', ?)",
+                (1.0, 1.0),
+            )
+            conn.commit()
+
+        new_issue_key = "other_domain_uuid-3"
+        translation_key = "config_entry_reload"
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                (new_issue_key,),
+            ).fetchone()
+            tkey_row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history"
+                " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                " AND resolved_at IS NULL AND issue_key != ?",
+                (translation_key, new_issue_key),
+            ).fetchone()
+
+        already_sent = (row is not None and row[0] is not None) or tkey_row is not None
+        assert already_sent is False  # different translation_key → not a dup
+
+    def test_resolved_prior_does_not_suppress_new_occurrence(self, db_path):
+        """Resolved prior issue → new UUID for same translation_key must fire."""
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history"
+                " (issue_key, first_seen_at, translation_key, hitl_sent_at, resolved_at)"
+                " VALUES ('domain_uuid-1', ?, 'reboot_required', ?, ?)",
+                (1.0, 1.0, 2.0),
+            )
+            conn.commit()
+
+        new_issue_key = "domain_uuid-4"
+        translation_key = "reboot_required"
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                (new_issue_key,),
+            ).fetchone()
+            tkey_row = conn.execute(
+                "SELECT hitl_sent_at FROM ha_repair_history"
+                " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                " AND resolved_at IS NULL AND issue_key != ?",
+                (translation_key, new_issue_key),
+            ).fetchone()
+
+        already_sent = (row is not None and row[0] is not None) or tkey_row is not None
+        # resolved_at IS NOT NULL → excluded by query → new occurrence allowed
+        assert already_sent is False
 
 
 class TestUpdatePriority:

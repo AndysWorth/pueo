@@ -244,11 +244,17 @@ async def tail_remote_log_stream(
                             "autonomy_gate_blocked",
                             cause=evaluation.root_cause_summary,
                         )
+                        _suppression_key = f"log_triage:{_fingerprint}"
+                        from utils.hitl_tracker import stable_nid
+
+                        with sqlite3.connect(DB_PATH) as _triage_conn:
+                            mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
                         await _notifier.send(
                             subject="Pueo: Actionable log event — approval required",
                             body=evaluation.root_cause_summary,
                             payload={
-                                "suppression_key": f"log_triage:{_fingerprint}",
+                                "notification_id": stable_nid(_suppression_key),
+                                "suppression_key": _suppression_key,
                                 "cause": evaluation.root_cause_summary,
                                 "confidence": evaluation.confidence_score,
                                 "diagnosis": evaluation.model_dump(),
@@ -258,8 +264,6 @@ async def tail_remote_log_stream(
                                 "llm_trace": llm_trace.as_dict(),
                             },
                         )
-                        with sqlite3.connect(DB_PATH) as _triage_conn:
-                            mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
                         continue
                     log.warning("repair_triggered")
                     asyncio.create_task(trigger_remediation_pipeline())
@@ -374,6 +378,18 @@ async def poll_for_updates(
                             f"Advisory: {advisory} — {readiness.recommendation}"
                         )
 
+                    from utils.hitl_tracker import stable_nid
+
+                    # Mark sent in DB before writing file — if Pueo restarts between
+                    # the two, DB says "sent" (no card visible) rather than DB saying
+                    # "not sent" (duplicate card on next poll).
+                    with sqlite3.connect(DB_PATH) as _sup_conn2:
+                        mark_card_sent(
+                            _sup_conn2,
+                            suppression_key,
+                            CARD_TYPE_UPDATE,
+                            f"Update: {u.component} {u.installed_version} → {u.latest_version}",
+                        )
                     await _notifier.send(
                         subject=(
                             f"Update available: {u.component}"
@@ -381,6 +397,7 @@ async def poll_for_updates(
                         ),
                         body="\n".join(body_parts),
                         payload={
+                            "notification_id": stable_nid(suppression_key),
                             "card_type": CARD_TYPE_UPDATE,
                             "suppression_key": suppression_key,
                             "component": u.component,
@@ -406,13 +423,6 @@ async def poll_for_updates(
                             ),
                         },
                     )
-                    with sqlite3.connect(DB_PATH) as _sup_conn2:
-                        mark_card_sent(
-                            _sup_conn2,
-                            suppression_key,
-                            CARD_TYPE_UPDATE,
-                            f"Update: {u.component} {u.installed_version} → {u.latest_version}",
-                        )
                 try:  # pragma: no cover
                     from utils.timeline import write_timeline_event
 
@@ -434,7 +444,20 @@ async def poll_for_updates(
                 with sqlite3.connect(DB_PATH) as _sup_conn3:
                     from utils.hitl_tracker import mark_card_resolved
 
-                    mark_card_resolved(_sup_conn3, suppression_key)
+                    _pending_row = _sup_conn3.execute(
+                        "SELECT send_count, last_action FROM hitl_suppression"
+                        " WHERE card_key = ?",
+                        (suppression_key,),
+                    ).fetchone()
+                    # Don't resolve a pending unapproved card — the update entity may be
+                    # transiently absent during HA boot, which would cause a duplicate card
+                    # on the next poll when the entity comes back True.
+                    if (
+                        _pending_row is None
+                        or _pending_row[0] == 0
+                        or _pending_row[1] is not None
+                    ):
+                        mark_card_resolved(_sup_conn3, suppression_key)
 
         await asyncio.sleep(interval)
 
@@ -603,7 +626,20 @@ async def poll_for_repairs(
                     "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
                     (issue.issue_key,),
                 ).fetchone()
-            already_sent = _row is not None and _row[0] is not None
+                # Also check by translation_key: HA assigns new UUIDs after restart, so the
+                # same logical repair issue (e.g. "reboot_required") would bypass the
+                # issue_key check and generate a duplicate card.
+                _tkey_row = None
+                if issue.translation_key:
+                    _tkey_row = _conn.execute(
+                        "SELECT hitl_sent_at FROM ha_repair_history"
+                        " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                        " AND resolved_at IS NULL AND issue_key != ?",
+                        (issue.translation_key, issue.issue_key),
+                    ).fetchone()
+            already_sent = (
+                _row is not None and _row[0] is not None
+            ) or _tkey_row is not None
 
             if not already_sent:
                 is_reboot = "reboot" in (issue.translation_key or "").lower()
@@ -620,9 +656,17 @@ async def poll_for_repairs(
                     body_parts.append(f"Type: {issue.translation_key}")
                 if issue.breaks_in_ha_version:
                     body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
+                # Use translation_key as the stable suppression key when available so the
+                # same logical issue maps to the same card even after HA UUID reassignment.
+                _repair_sup_key = (
+                    f"ha_repair:{issue.translation_key or issue.issue_key}"
+                )
+                from utils.hitl_tracker import stable_nid
+
                 payload: dict = {
+                    "notification_id": stable_nid(_repair_sup_key),
                     "card_type": CARD_TYPE_HA_REPAIR,
-                    "suppression_key": f"ha_repair:{issue.issue_key}",
+                    "suppression_key": _repair_sup_key,
                     "action": action,
                     "domain": issue.domain,
                     "issue_id": issue.issue_id,
@@ -633,12 +677,12 @@ async def poll_for_repairs(
                     "breaks_in_ha_version": issue.breaks_in_ha_version,
                     "translation_key": issue.translation_key,
                 }
+                mark_repair_hitl_sent(issue.issue_key)
                 await _notifier.send(
                     subject=title,
                     body="\n".join(body_parts),
                     payload=payload,
                 )
-                mark_repair_hitl_sent(issue.issue_key)
                 log.info(
                     "repair_hitl_card_sent",
                     issue_key=issue.issue_key,

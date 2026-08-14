@@ -476,12 +476,25 @@ class ResourcePoller:
                         )
                     )
 
+                from utils.hitl_tracker import stable_nid as _stable_nid
+
+                _disk_crit_key = "resource:disk_critical"
+                # Mark sent before writing file — avoids the "not sent" DB state if
+                # Pueo restarts between the file write and the mark_card_sent call.
+                with _sqlite3.connect(_db) as _sup_conn2:
+                    mark_card_sent(
+                        _sup_conn2,
+                        _disk_crit_key,
+                        CARD_TYPE_DISK_RECOVERY,
+                        f"Disk CRITICAL: {status.disk_free_gb:.1f} GB free",
+                    )
                 await self._notifier.send(
                     subject="Pueo CRITICAL: HA disk almost full",
                     body="\n".join(body_lines),
                     payload={
+                        "notification_id": _stable_nid(_disk_crit_key),
                         "card_type": CARD_TYPE_DISK_RECOVERY,
-                        "suppression_key": "resource:disk_critical",
+                        "suppression_key": _disk_crit_key,
                         "type": "resource_alert",
                         "severity": "CRITICAL",
                         "disk_free_gb": status.disk_free_gb,
@@ -493,13 +506,6 @@ class ResourcePoller:
                         "disk_analysis": disk_analysis,
                     },
                 )
-                with _sqlite3.connect(_db) as _sup_conn2:
-                    mark_card_sent(
-                        _sup_conn2,
-                        "resource:disk_critical",
-                        CARD_TYPE_DISK_RECOVERY,
-                        f"Disk CRITICAL: {status.disk_free_gb:.1f} GB free",
-                    )
                 try:
                     from utils.timeline import write_timeline_event
 
@@ -595,11 +601,22 @@ class ResourcePoller:
                                 else "\nProactive recovery ran; space freed will reflect in the next poll."
                             )
 
+                        from utils.hitl_tracker import stable_nid as _stable_nid_w
+
+                        _disk_warn_key = "resource:disk_warn"
+                        with _sqlite3.connect(_db_w) as _sup_w2:
+                            mark_card_sent(
+                                _sup_w2,
+                                _disk_warn_key,
+                                "resource_alert",
+                                f"Disk WARN: {status.disk_free_gb:.1f} GB free",
+                            )
                         await self._notifier.send(
                             subject="Pueo WARNING: HA disk space low",
                             body=warn_body,
                             payload={
-                                "suppression_key": "resource:disk_warn",
+                                "notification_id": _stable_nid_w(_disk_warn_key),
+                                "suppression_key": _disk_warn_key,
                                 "type": "resource_alert",
                                 "severity": "WARN",
                                 "disk_free_gb": status.disk_free_gb,
@@ -607,13 +624,6 @@ class ResourcePoller:
                                 "mem_available_mb": round(status.mem_available_mb),
                             },
                         )
-                        with _sqlite3.connect(_db_w) as _sup_w2:
-                            mark_card_sent(
-                                _sup_w2,
-                                "resource:disk_warn",
-                                "resource_alert",
-                                f"Disk WARN: {status.disk_free_gb:.1f} GB free",
-                            )
                         try:
                             from utils.timeline import write_timeline_event
 

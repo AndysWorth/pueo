@@ -569,7 +569,13 @@ def record_log_triage_seen(
 def should_send_log_triage_hitl(
     conn: sqlite3.Connection, fingerprint: str, cooldown_hours: int
 ) -> bool:
-    """Return True if no HITL card has been sent for this fingerprint within the cooldown window."""
+    """Return True if a log triage HITL card should be sent for this fingerprint.
+
+    Returns False when:
+    - A card was sent within the cooldown window (time-based gate), OR
+    - A card is currently pending user action in hitl_suppression (queue-state gate).
+    The queue-state check prevents re-fire while the user hasn't acted, regardless of cooldown.
+    """
     import time as _time
 
     row = conn.execute(
@@ -580,13 +586,30 @@ def should_send_log_triage_hitl(
         return True
     if row[0] is None:
         return True
-    return row[0] < _time.time() - cooldown_hours * 3600
+    if row[0] >= _time.time() - cooldown_hours * 3600:
+        return False
+    # Cooldown elapsed — also check if a card is still pending in the HITL queue.
+    card_key = f"log_triage:{fingerprint}"
+    sup_row = conn.execute(
+        "SELECT send_count, last_action, resolved_at FROM hitl_suppression WHERE card_key = ?",
+        (card_key,),
+    ).fetchone()
+    if sup_row is not None:
+        send_count, last_action, resolved_at = sup_row
+        if send_count > 0 and last_action is None and resolved_at is None:
+            return False  # Card is pending; do not re-fire until user acts.
+    return True
 
 
 def mark_log_triage_hitl_sent(
     conn: sqlite3.Connection, fingerprint: str, now: float
 ) -> None:
-    """Record that a HITL card was sent for this fingerprint and increment the send counter."""
+    """Record that a HITL card was sent for this fingerprint.
+
+    Updates both log_triage_history (cooldown tracking) and hitl_suppression
+    (queue-state tracking) so the pending-state dedup check in
+    should_send_log_triage_hitl() works correctly.
+    """
     conn.execute(
         "UPDATE log_triage_history"
         " SET hitl_sent_at = ?, send_count = send_count + 1"
@@ -594,6 +617,16 @@ def mark_log_triage_hitl_sent(
         (now, fingerprint),
     )
     conn.commit()
+    # Register in hitl_suppression so the queue-pending check in
+    # should_send_log_triage_hitl() can block cooldown-elapsed re-fires.
+    from utils.hitl_tracker import mark_card_sent
+
+    mark_card_sent(
+        conn,
+        f"log_triage:{fingerprint}",
+        "log_triage",
+        f"Log triage: {fingerprint}",
+    )
 
 
 def is_reboot_required_active() -> bool:
