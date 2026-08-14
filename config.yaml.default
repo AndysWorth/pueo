@@ -76,7 +76,6 @@ agent:
   notifier: "file"                   # HITL notifier backend: "file", "ntfy", or "webhook"
   notify_url: ""                     # URL for ntfy topic or webhook endpoint (unused for "file" notifier)
   notify_watch_dir: "hitl/"          # Directory watched by FileNotifier for .approved/.rejected signals
-  hitl_always: false                 # Set to true to require human approval before every repair, not just CRITICAL
   autonomy_level: 2                  # 1=report-only · 2=suggest(approve all) · 3=guided(auto-LOW) · 4=autonomous(auto-LOW/MED/HIGH)
   dashboard_port: 8080               # Port for the HITL web dashboard (python main.py --mode dashboard)
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab

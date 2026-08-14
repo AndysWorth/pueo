@@ -82,15 +82,6 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "group": "Autonomy",
         "restart_required": False,
     },
-    "hitl_always": {
-        "yaml_section": "agent",
-        "yaml_key": "hitl_always",
-        "config_attr": "HITL_ALWAYS",
-        "val_type": "bool",
-        "description": "Force HITL approval for every action regardless of autonomy level",
-        "group": "Autonomy",
-        "restart_required": False,
-    },
     # ── Monitoring intervals ──────────────────────────────────────────────────
     "resource_poll_interval_seconds": {
         "yaml_section": "agent",

@@ -21,7 +21,6 @@ from config import (
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
-    HITL_ALWAYS,
     AUTONOMY_LEVEL,
     CHROMADB_PATH,
     RAG_EMBED_MODEL,
@@ -578,19 +577,6 @@ async def analyze_config_locally(
         raw_response=raw_output,
     )
     return DiagnosticsReport.model_validate_json(raw_output), trace
-
-
-# ==========================================
-# HITL GATE
-# ==========================================
-def requires_hitl(report: DiagnosticsReport, hitl_always: bool = False) -> bool:
-    """Returns True when the repair requires human approval before proceeding."""
-    if hitl_always:
-        return True
-    if report.severity == "CRITICAL":
-        return True
-    joined = " ".join(report.identified_issues).lower()
-    return any(kw in joined for kw in ("hacs", "database"))
 
 
 _CODE_PROPOSAL_SYSTEM_PROMPT = """\
