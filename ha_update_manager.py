@@ -494,7 +494,7 @@ async def request_update_approval(
         risk=risk.name,
         notification_id=nid,
     )
-    return await gate.require_approval(subject, body, payload, notifier, risk)
+    return await gate.queue_for_approval(subject, body, payload, notifier, risk)
 
 
 async def run_update_check(

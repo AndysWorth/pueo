@@ -3218,6 +3218,48 @@ class TestRunUpdateCheck:
         out = capsys.readouterr().out
         assert "Warning" in out
 
+    def test_run_update_check_does_not_block_when_updates_available(self, tmp_path):
+        """Standalone --mode update-check must write the HITL card and return immediately.
+
+        Regression for: run_update_check called gate.require_approval (blocking)
+        instead of gate.queue_for_approval (non-blocking), hanging forever when the
+        dashboard was not running to respond to the approval request.
+        """
+        from ha_update_manager import run_update_check
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_rest_client import FakeHARestClient
+        from utils.notify import FakeNotifier
+
+        fake = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                }
+            ]
+        )
+        gate = FakeAutonomyGate(auto_execute_result=False)
+        notifier = FakeNotifier()
+
+        # This must return — not block waiting for an approval file.
+        updates = asyncio.run(
+            run_update_check(
+                ha_rest_client=fake,
+                cache_dir=str(tmp_path),
+                gate=gate,
+                notifier=notifier,
+            )
+        )
+
+        assert len(updates) == 1
+        # Card was queued for the dashboard to handle.
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["component"] == "core"
+
 
 # ── UpdateReadinessReport schema ─────────────────────────────────────────────────
 class TestUpdateReadinessReport:
@@ -3704,7 +3746,9 @@ class TestRequestUpdateApproval:
         result = asyncio.run(
             request_update_approval(self._make_update("core"), gate, notifier)
         )
-        assert result is True
+        assert (
+            result is False
+        )  # queue_for_approval returns False — dashboard handles execution
         assert len(gate.require_approval_calls) == 1
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
 
@@ -3864,7 +3908,7 @@ class TestRequestUpdateApproval:
         result = asyncio.run(
             request_update_approval(self._make_update("core"), gate, notifier)
         )
-        assert result is True
+        assert result is False  # queue_for_approval — card queued, dashboard handles it
         assert len(notifier.sent) == 1  # HITL card was sent
 
 
@@ -11456,7 +11500,7 @@ class TestUpdatePreflightLogic:
         captured_body: list[str] = []
 
         class CapturingGate:
-            async def require_approval(self, subject, body, payload, notifier, risk):
+            async def queue_for_approval(self, subject, body, payload, notifier, risk):
                 captured_body.append(body)
                 return False
 
@@ -11481,7 +11525,7 @@ class TestUpdatePreflightLogic:
             )
         )
 
-        assert captured_body, "gate.require_approval was not called"
+        assert captured_body, "gate.queue_for_approval was not called"
         body = captured_body[0]
         assert "Component: core" in body
         assert "Risk: CRITICAL" in body
@@ -11525,7 +11569,7 @@ class TestUpdatePreflightLogic:
         captured_body: list[str] = []
 
         class CapturingGate:
-            async def require_approval(self, subject, body, payload, notifier, risk):
+            async def queue_for_approval(self, subject, body, payload, notifier, risk):
                 captured_body.append(body)
                 return False
 
@@ -11551,7 +11595,7 @@ class TestUpdatePreflightLogic:
             )
         )
 
-        assert captured_body, "gate.require_approval was not called"
+        assert captured_body, "gate.queue_for_approval was not called"
         assert "Pre-flight:" in captured_body[0]
         assert "old backup" in captured_body[0]
 
