@@ -330,6 +330,9 @@
           {% if r.payload.get("action") == "reboot" %}
             {% set hint_approve = "Create HA backup, then reboot the HA host; Pueo will poll until HA is back online" %}
             {% set hint_reject = "Skip this reboot; the repair issue stays open in HA" %}
+          {% elif r.payload.get("action") == "restart" %}
+            {% set hint_approve = "Restart HA Core to load the updated integration; Pueo will wait until HA is back online" %}
+            {% set hint_reject = "Skip this restart; the repair issue stays open in HA" %}
           {% else %}
             {% set hint_approve = "Dismiss this repair issue in HA" %}
             {% set hint_reject = "Keep the repair issue open in HA" %}

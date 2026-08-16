@@ -11280,6 +11280,46 @@ class TestRepairCardClassification:
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
 
+    def test_restart_required_translation_key_classified_as_restart(
+        self, db_path, monkeypatch
+    ):
+        """Repairs with 'restart' in translation_key (e.g. HACS restart_required) must be
+        classified as restart (HA Core restart), not dismiss."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "hacs",
+                    "issue_id": "restart_required_abc123_tags/v0.5.0",
+                    "severity": "warning",
+                    "translation_key": "restart_required",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "restart"
+
+    def test_reboot_in_translation_key_not_overridden_by_restart_check(
+        self, db_path, monkeypatch
+    ):
+        """A translation_key containing 'reboot' must yield 'reboot', not 'restart',
+        even though 'reboot' also contains 'restart' as a substring."""
+        notifier = self._run_one_poll(
+            [
+                {
+                    "domain": "hassio",
+                    "issue_id": "abc-uuid-reboot-006",
+                    "severity": "warning",
+                    "translation_key": "issue_system_reboot_required",
+                }
+            ],
+            monkeypatch,
+            db_path,
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "reboot"
+
     def test_already_sent_repair_not_re_sent(self, db_path, monkeypatch):
         """A repair whose HITL card was already sent is not sent again on the next poll."""
         import ha_agent_advanced
