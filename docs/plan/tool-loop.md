@@ -38,7 +38,7 @@ All tools are defined as Pydantic schemas. The registry produces Ollama-compatib
 **`apply_fix` constraints:**
 - Internally calls `execute_remote_backup()` before any write — safety invariant unchanged, lives inside the tool
 - May be called at most once per loop run (prevents thrashing)
-- Calls `AutonomyGate.require_approval()` before the backup trigger — HITL gate position unchanged
+- Calls `AutonomyGate.require_approval()` before the backup trigger — approval gate position unchanged
 
 **`run_ha_command` allowlist (initial):**
 `ha core check`, `ha core restart`, `ha core stop`, `ha host info`, `ha backups list`, `ha backups new`, `ha apps list`, `ha os info`
@@ -67,7 +67,7 @@ AgentLoop.run(initial_context: str) -> AgentLoopResult
 | `timeout` | Wall time exceeded |
 | `fix_failed` | `apply_fix` + `verify_fix` returned failure |
 
-Both `exhausted` and `timeout` surface an escalation offer in the HITL dashboard when Milestone 7 is installed.
+Both `exhausted` and `timeout` surface an escalation offer in the dashboard when Milestone 7 is installed.
 
 **Result type:**
 ```python

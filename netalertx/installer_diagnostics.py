@@ -1,7 +1,7 @@
 """Evidence-first installer diagnostics — item 22.
 
 Gathers SSH observations when an installer step fails, calls local Ollama to produce
-a structured InstallerDiagnostic, and formats it for HITL notification bodies.
+a structured InstallerDiagnostic, and formats it for approval notification bodies.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ async def diagnose_installer_failure(
 
 
 def format_diagnostic_for_hitl(diagnostic: InstallerDiagnostic) -> str:
-    """Render InstallerDiagnostic as human-readable text for HITL notification body."""
+    """Render InstallerDiagnostic as human-readable text for approval notification body."""
     pct = int(diagnostic.confidence * 100)
     lines = [
         f"Diagnosis: {diagnostic.primary_hypothesis} (confidence: {pct}%)",

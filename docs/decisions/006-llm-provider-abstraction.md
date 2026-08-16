@@ -19,7 +19,7 @@ Make the LLM inference engine a configurable setting (`LLM_PROVIDER`) with three
 
 - `"local"` (default) — Ollama only; all existing behavior preserved; no WAN for inference
 - `"cloud"` — Anthropic API as primary LLM; all inference calls go to Anthropic
-- `"both"` — Ollama handles autonomous repair and monitoring cycles; Claude is available as a HITL-approved escalation when the local loop hits the tool-call cap or wall-clock timeout without reaching `finish_repair`
+- `"both"` — Ollama handles autonomous repair and monitoring cycles; Claude is available as an approved escalation when the local loop hits the tool-call cap or wall-clock timeout without reaching `finish_repair`
 
 The implementation lives in two new files:
 - `utils/cloud_client.py` — `ClaudeAPIClient` implementing `LLMClientProtocol`
@@ -31,7 +31,7 @@ All call-sites that previously fell back to `OllamaClient()` are migrated to `ma
 
 **The `LLMClientProtocol` boundary makes this safe.** Every agent function already accepts an optional injected `llm_client: Optional[LLMClientProtocol]`. The `"cloud"` path simply changes what the factory returns — no caller needs to know about the provider.
 
-**`"both"` mode preserves the local-first property for autonomous cycles.** The factory returns `OllamaClient` in `"both"` mode. Claude is only invoked when a human approves a HITL escalation card — it is never called during an unattended repair cycle.
+**`"both"` mode preserves the local-first property for autonomous cycles.** The factory returns `OllamaClient` in `"both"` mode. Claude is only invoked when a human approves an approved escalation card — it is never called during an unattended repair cycle.
 
 **RAG embeddings stay local in all modes.** `nomic-embed-text` via Ollama is used for vector embeddings regardless of `LLM_PROVIDER`. Embedding models are small and fast; privacy of indexed content is worth keeping local.
 

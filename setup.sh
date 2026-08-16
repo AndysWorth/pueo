@@ -169,7 +169,7 @@ hdr "2.5. LLM Provider"
 echo "  Choose how Pueo runs LLM inference:"
 echo "    local  — Ollama only (default, no WAN; privacy-first)"
 echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
-echo "    both   — Ollama for autonomous cycles + Claude available for HITL escalation"
+echo "    both   — Ollama for autonomous cycles + Claude available for approved escalation"
 echo
 ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
 CLOUD_MODEL_VAL="claude-sonnet-5"
@@ -270,7 +270,7 @@ if $WRITE_CONFIG; then
     echo
     echo "  ── HA polling features (require api_token) ──"
     echo "  When an api_token is set, Pueo can poll for HA updates and surface"
-    echo "  persistent HA notifications as HITL cards on the dashboard."
+    echo "  persistent HA notifications as approval cards on the dashboard."
     echo "  Set the update check interval to 0 to disable update checking."
     ask "Update check interval (hours, 0 = disabled)"  "6"  HA_UPDATE_CHECK_INTERVAL_HOURS
     echo
@@ -302,7 +302,7 @@ if $WRITE_CONFIG; then
     ask "Self-healing enabled"              "true"                          SELF_HEALING
 
     echo
-    echo "  ── HITL (human-in-the-loop) notifications ──"
+    echo "  ── Approval notifications ──"
     echo "  When Pueo encounters a CRITICAL issue it pauses and waits for your"
     echo "  approval before writing to Home Assistant. Choose how it notifies you."
     echo
@@ -314,11 +314,11 @@ if $WRITE_CONFIG; then
     echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
     echo
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
-    ask "HITL dashboard port"  "8080"  DASHBOARD_PORT
+    ask "Dashboard port"  "8080"  DASHBOARD_PORT
     echo
     echo "  Chat tool registration allows the conversational agent to write and register"
     echo "  new Python tools at runtime. Each tool requires sandbox CI validation and"
-    echo "  explicit HITL approval before it is loaded, but the agent can still generate"
+    echo "  explicit approval before it is loaded, but the agent can still generate"
     echo "  arbitrary code. Leave disabled unless you understand the risk."
     ask "Allow chat agent to register new tools? (true/false)"  "false"  CHAT_ALLOW_TOOL_REGISTRATION
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
@@ -534,7 +534,7 @@ agent:
   # debounce_window_seconds: 30
   # repair_cooldown_seconds: 300
   # max_repairs_per_hour: 10
-  # log_triage_cooldown_hours: 4  # Min hours between HITL cards for same recurring log error
+  # log_triage_cooldown_hours: 4  # Min hours between approval cards for same recurring log error
   # rejection_cooldown_hours: 24  # Hours a card is suppressed after rejection (doubles on repeat rejections)
   # known_issue_reminder_days: 7  # Days before a Known Issue generates a reminder card
   # log_level: INFO
@@ -564,7 +564,7 @@ hdr "5. NetAlertX"
 
 if [[ "$NAX_SETUP_DESIRED" == "true" ]]; then
     ok "NetAlertX will be installed and configured automatically when Pueo starts."
-    info "Approve the HITL cards that appear on the dashboard to proceed through each setup step."
+    info "Approve the cards that appear on the dashboard to proceed through each setup step."
 else
     info "NetAlertX setup is disabled."
     info "To enable: set 'netalertx.setup_desired: true' in config.yaml and restart Pueo."

@@ -1,4 +1,4 @@
-"""LLM interaction trace capture for HITL payload enrichment (item 23)."""
+"""LLM interaction trace capture for approval card payload enrichment (item 23)."""
 
 from __future__ import annotations
 

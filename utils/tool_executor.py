@@ -666,7 +666,7 @@ class ToolExecutor:
 
         nid = get_correlation_id() or str(uuid.uuid4())
         await self._notifier.send(
-            subject=f"Pueo HITL: add_tool — {name}",
+            subject=f"Pueo: add_tool approval required — {name}",
             body=f"Register new tool: {name}\n\n{description}",
             payload={
                 "notification_id": nid,
@@ -682,7 +682,7 @@ class ToolExecutor:
         return ToolResult(
             tool_name="add_tool",
             success=False,
-            output=f"Tool registration queued for HITL approval (id={nid})",
+            output=f"Tool registration queued for approval (id={nid})",
             awaiting_approval=True,
         )
 
@@ -742,7 +742,7 @@ class ToolExecutor:
 
         nid = get_correlation_id() or str(uuid.uuid4())
         await self._notifier.send(
-            subject=f"Pueo HITL: open_pr — {title}",
+            subject=f"Pueo: open_pr approval required — {title}",
             body=f"Open GitHub PR: {title}\n\n{reason}",
             payload={
                 "notification_id": nid,
@@ -758,7 +758,7 @@ class ToolExecutor:
         return ToolResult(
             tool_name="open_pr",
             success=False,
-            output=f"PR queued for HITL approval (id={nid}). Branch: {branch_name!r}",
+            output=f"PR queued for approval (id={nid}). Branch: {branch_name!r}",
             awaiting_approval=True,
         )
 
@@ -846,7 +846,7 @@ class ToolExecutor:
         else:
             body = f"Proposed fix:\n{yaml_content[:500]}"
         approved = await self._gate.queue_for_approval(
-            subject=f"Pueo HITL: apply_fix — {description}",
+            subject=f"Pueo: apply_fix approval required — {description}",
             body=body,
             payload={
                 "notification_id": nid,
@@ -869,7 +869,7 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="apply_fix",
                 success=False,
-                output=f"Fix queued for HITL approval (id={nid}); agent loop exiting",
+                output=f"Fix queued for approval (id={nid}); agent loop exiting",
                 awaiting_approval=True,
             )
 

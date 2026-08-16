@@ -569,7 +569,7 @@ def record_log_triage_seen(
 def should_send_log_triage_hitl(
     conn: sqlite3.Connection, fingerprint: str, cooldown_hours: int
 ) -> bool:
-    """Return True if a log triage HITL card should be sent for this fingerprint.
+    """Return True if a log triage approval card should be sent for this fingerprint.
 
     Returns False when:
     - A card was sent within the cooldown window (time-based gate), OR
@@ -588,7 +588,7 @@ def should_send_log_triage_hitl(
         return True
     if row[0] >= _time.time() - cooldown_hours * 3600:
         return False
-    # Cooldown elapsed — also check if a card is still pending in the HITL queue.
+    # Cooldown elapsed — also check if a card is still pending in the approval queue.
     card_key = f"log_triage:{fingerprint}"
     sup_row = conn.execute(
         "SELECT send_count, last_action, resolved_at FROM hitl_suppression WHERE card_key = ?",
@@ -604,7 +604,7 @@ def should_send_log_triage_hitl(
 def mark_log_triage_hitl_sent(
     conn: sqlite3.Connection, fingerprint: str, now: float
 ) -> None:
-    """Record that a HITL card was sent for this fingerprint.
+    """Record that an approval card was sent for this fingerprint.
 
     Updates both log_triage_history (cooldown tracking) and hitl_suppression
     (queue-state tracking) so the pending-state dedup check in
@@ -630,7 +630,7 @@ def mark_log_triage_hitl_sent(
 
 
 def is_reboot_required_active() -> bool:
-    """True when ha_repair_history has an unresolved reboot repair with a sent HITL card.
+    """True when ha_repair_history has an unresolved reboot repair with a sent approval card.
 
     Matches on translation_key containing 'reboot' — HA uses UUID issue_ids so there is no
     stable issue_id string to match against.

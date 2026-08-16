@@ -102,7 +102,7 @@ NOT_INSTALLED → MQTT_INSTALLED → MQTT_RUNNING → ADDON_REPO_ADDED
 
 **Step 4 — Add add-on repository and resolve add-on slug**
 - SSH: `ha store repositories list`; if `netalertx.addon_repository_url` already present → log and skip the add.
-- If absent → SSH: `ha store repositories add <netalertx.addon_repository_url>`; re-verify; abort + HITL if still absent.
+- If absent → SSH: `ha store repositories add <netalertx.addon_repository_url>`; re-verify; abort + approval card if still absent.
 - Resolve slug: SSH: `ha store addons` filtered by repository URL; parse slug. If `netalertx.addon_slug` is blank in config, persist resolved slug to `details_json`. A non-blank config value takes precedence and skips this lookup.
 - Advance to `ADDON_REPO_ADDED`.
 
@@ -149,7 +149,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 **Step 7 — Verify HA MQTT integration** (cannot be automated — UI-only on current HA)
 - HTTP GET `http://<home_assistant.host>:8123/api/config/config_entries` with Bearer token; search for `domain == "mqtt"`.
 - Found → log and advance to `HA_MQTT_INTEGRATION_VERIFIED`.
-- Not found → `gate.require_approval(risk=LOW, ...)` with step-by-step UI instructions: "Go to Settings → Devices & Services → Add Integration → MQTT → broker: `<host>`, port: 1883, no credentials. Then signal approval." Polls indefinitely until the user approves or rejects via the HITL dashboard.
+- Not found → `gate.require_approval(risk=LOW, ...)` with step-by-step UI instructions: "Go to Settings → Devices & Services → Add Integration → MQTT → broker: `<host>`, port: 1883, no credentials. Then signal approval." Polls indefinitely until the user approves or rejects via the dashboard.
 - Note: `mqtt:` cannot be added programmatically — adding that YAML key disables MQTT auto-discovery on current HA (see Phase 4 version constraints).
 
 **Step 8 — Create HA webhook automation for NetAlertX events** (risk=HIGH)
@@ -196,7 +196,7 @@ Extends `netalertx/installer.py` with steps 5–8.
 - `netalertx-setup` on a HA system with named devices writes those names and locks `devName` in NetAlertX.
 - `TestHaNameSyncReadSources` covers all three source readers and merge priority (Source 1 wins on conflict; Source 3 fills gaps not covered by 1 or 2).
 - `TestHaNameSyncCases1And2` covers write+lock (Case 1) and idempotent-lock (Case 2); verifies call counts via `FakeSSHClient` and `httpx.MockTransport`.
-- Assumption-check HITL fires when device registry has zero MAC entries.
+- Assumption-check approval card fires when device registry has zero MAC entries.
 
 ---
 
@@ -220,9 +220,9 @@ Extends `netalertx/ha_name_sync.py`:
 `async def sync_device(mac: str) -> None` — targeted single-device sync; reads HA name sources, processes just this MAC through Cases 1–4. This method is called by `netalertx/health.py` (item 16) when a device with `devIsNew == true` or blank `devName` is detected.
 
 **Done when:**
-- A name mismatch triggers a HITL conflict notification; no write occurs until approved.
+- A name mismatch triggers a approval conflict notification; no write occurs until approved.
 - A device with no HA name and a usable reverse-DNS hostname gets that hostname written and locked.
-- A device with no HA name, no plugin name, and no DNS entry appears in the HITL unnamed list.
+- A device with no HA name, no plugin name, and no DNS entry appears in the approval unnamed list.
 - `sync_device()` on a new MAC processes it through all Cases 1–4.
 - `TestHaNameSyncCases3And4` covers: conflict detection; approval writes+locks; rejection skips; Step A/B/C fallback paths; `sync_device()` triggered by a new device.
 
@@ -303,8 +303,8 @@ Extends `netalertx/ha_name_sync.py`:
 **Done when:**
 - Level 1: config problem produces a notifier event and `FakeSSHClient.write_calls == []`.
 - Level 3: `app.conf` rewrite proceeds automatically; `configuration.yaml` write pauses for approval.
-- Level 4: repeated scan failure triggers a container restart + rescan without HITL.
-- Version bump at level 3 triggers HITL before any action.
+- Level 4: repeated scan failure triggers a container restart + rescan without approval.
+- Version bump at level 3 triggers an approval card before any action.
 - All four levels tested with `FakeSSHClient`, `FakeNotifier`, and `FakeAutonomyGate`.
 
 ---

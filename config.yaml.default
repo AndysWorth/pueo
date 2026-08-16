@@ -22,7 +22,7 @@ llm:
   provider: "local"  # "local" | "cloud" | "both"
                      # local: Ollama only (default, no WAN for inference)
                      # cloud: Anthropic API as primary LLM
-                     # both: Ollama for autonomous cycles + Claude available for HITL escalation
+                     # both: Ollama for autonomous cycles + Claude available for approved escalation
                      # Note: "cloud" and "both" require ANTHROPIC_API_KEY env var — never put it here
 
 cloud:
@@ -73,22 +73,22 @@ agent:
   log_level: "INFO"                  # Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
   log_file: "pueo.log"               # Path to the structured JSON log file
   max_prompt_tokens: 7000            # Maximum tokens sent to Ollama per request (8k context minus headroom)
-  notifier: "file"                   # HITL notifier backend: "file", "ntfy", or "webhook"
+  notifier: "file"                   # approval notification backend: "file", "ntfy", or "webhook"
   notify_url: ""                     # URL for ntfy topic or webhook endpoint (unused for "file" notifier)
   notify_watch_dir: "hitl/"          # Directory watched by FileNotifier for .approved/.rejected signals
   autonomy_level: 2                  # 1=report-only · 2=suggest(approve all) · 3=guided(auto-LOW) · 4=autonomous(auto-LOW/MED/HIGH)
-  dashboard_port: 8080               # Port for the HITL web dashboard (python main.py --mode dashboard)
+  dashboard_port: 8080               # Port for the web dashboard (python main.py --mode dashboard)
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   resource_poll_interval_seconds: 300  # How often to poll HA disk/memory (seconds)
   # disk_usage_poll_interval_seconds: 300  # How often to scan per-path disk usage (seconds)
-  ha_disk_warn_gb: 5.0               # HITL alert when HA disk free drops below this value (GB)
+  ha_disk_warn_gb: 5.0               # Send an approval card when HA disk free drops below this value (GB)
   ha_disk_critical_gb: 3.0           # Block backup creation and escalate to CRITICAL below this value (GB).
                                      # Must stay well above 1.0: the HA Supervisor independently hard-blocks ALL
                                      # operations (including backup creation) when free space < 1 GB. The default
                                      # of 3.0 GB leaves a 2 GB write buffer so a typical 1-2 GB backup can
                                      # complete without hitting the Supervisor's block. Raise this value if your
                                      # HA backups are consistently larger than 2 GB.
-  ha_mem_warn_mb: 256                # HITL alert when HA memory available drops below this value (MB)
+  ha_mem_warn_mb: 256                # Send an approval card when HA memory available drops below this value (MB)
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
   backup_local_dir: "./backups/"     # Local directory for offloaded backup files
   backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
@@ -102,11 +102,11 @@ agent:
   pueo_archive_max_gb: 2.0             # Max local storage for archived HA logs and journal dumps (GB)
   pueo_local_max_gb: 20.0              # Soft-warn threshold for Pueo's total local storage footprint (GB)
   update_check_interval_hours: 6      # How often to poll for HA updates (0 = off; requires api_token)
-  # update_notify_on_available: true  # Send HITL notification when any update entity flips to on
+  # update_notify_on_available: true  # Send an approval notification when any update entity flips to on
   # update_release_notes_cache_dir: ".cache/ha_release_notes/"  # Local cache for fetched HA release notes
   notification_poll_interval_minutes: 5  # How often to poll for HA persistent notifications (requires api_token)
   ha_repair_poll_interval_minutes: 5   # How often to poll for HA repair issues (0 = off; requires api_token)
-  log_triage_cooldown_hours: 4         # Min hours between HITL cards for the same recurring log error (persistent dedup)
+  log_triage_cooldown_hours: 4         # Min hours between approval cards for the same recurring log error (persistent dedup)
   rejection_cooldown_hours: 24         # Hours a card is suppressed after the user rejects it (doubles on repeat rejections)
   known_issue_reminder_days: 7         # Days before a Known Issue generates a reminder card
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
@@ -116,7 +116,7 @@ agent:
   agent_max_total_calls: 60           # Absolute ceiling across base budget + all extensions
   # ha_profile_refresh_hours: 24       # How often to rebuild the HA environment profile (integrations, versions)
   # chat_memory_top_k: 10             # Max memory entries returned per recall() call
-  # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + HITL required)
+  # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
   # chromadb_path: "./chromadb/"      # Local ChromaDB vector store directory (RAG knowledge layer)
   # rag_top_k: 5                      # Number of knowledge chunks returned per query_knowledge call
   # rag_ha_versions_to_fetch: 12      # How many recent HA releases to fetch from GitHub on rag-refresh

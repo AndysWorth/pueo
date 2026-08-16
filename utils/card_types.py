@@ -1,4 +1,4 @@
-"""HITL card type constants used by callers and the dashboard dispatch table."""
+"""Approval card type constants used by callers and the dashboard dispatch table."""
 
 CARD_TYPE_REPAIR = "repair"
 CARD_TYPE_UPDATE = "update"

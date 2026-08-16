@@ -1,7 +1,7 @@
 """Shared cloud-escalation coroutine (ADR 007).
 
 Used by ha_agent_sandbox_engine (autonomy-level-4 auto-path) and
-web/dashboard._execute_cloud_escalation (HITL-approve path at levels 2–3).
+web/dashboard._execute_cloud_escalation (approval path at levels 2–3).
 """
 
 from __future__ import annotations

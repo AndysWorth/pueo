@@ -1,4 +1,4 @@
-"""HITL web dashboard — queue approval/rejection of pending repair actions."""
+"""Pueo web dashboard — queue approval/rejection of pending repair actions."""
 
 import asyncio
 import json
@@ -43,7 +43,7 @@ from utils.card_types import (
 
 log = get_logger("dashboard")
 
-app = FastAPI(title="Pueo HITL Dashboard")
+app = FastAPI(title="Pueo Dashboard")
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).parent / "static")),
@@ -172,7 +172,7 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "yaml_key": "notifier",
         "config_attr": "NOTIFIER",
         "val_type": "str",
-        "description": "HITL delivery method",
+        "description": "Approval notification delivery method",
         "group": "Notifications",
         "restart_required": False,
         "options": ["file", "ntfy", "webhook"],
@@ -211,7 +211,7 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "yaml_key": "provider",
         "config_attr": "LLM_PROVIDER",
         "val_type": "str",
-        "description": "local = Ollama only (no WAN) · cloud = Anthropic API · both = Ollama for autonomous cycles + Claude available for HITL escalation",
+        "description": "local = Ollama only (no WAN) · cloud = Anthropic API · both = Ollama for autonomous cycles + Claude available for approved escalation",
         "group": "LLM Provider",
         "restart_required": True,
         "options": ["local", "cloud", "both"],
@@ -467,7 +467,7 @@ async def _execute_queued_update(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run the update pipeline for a HITL-approved update card."""
+    """Run the update pipeline for an approved update card."""
     import config as _config
     from ha_update_manager import execute_update
     from utils.autonomy import AutonomyGate
@@ -652,7 +652,7 @@ async def _execute_netalertx_heal(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run the NetAlertX heal action for a HITL-approved card."""
+    """Run the NetAlertX heal action for an approved card."""
     import config as _config
     from netalertx.api_client import NetAlertXAPIClient
     from netalertx.healer import NetAlertXHealer
@@ -726,7 +726,7 @@ async def _execute_resource_action(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run a resource management action for a HITL-approved card."""
+    """Run a resource management action for an approved card."""
     import sqlite3 as _sqlite3
 
     import config as _config
@@ -816,7 +816,7 @@ async def _execute_disk_recovery(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run all HITL disk recovery options from a disk_recovery card."""
+    """Run all approved disk recovery options from a disk_recovery card."""
     import config as _config
     from ha_agent_advanced import (
         enforce_ha_retention,
@@ -1021,7 +1021,7 @@ async def _execute_cloud_escalation(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Re-run the HA repair agent loop with ClaudeAPIClient on HITL-approved escalation."""
+    """Re-run the HA repair agent loop with ClaudeAPIClient on approved escalation."""
     from utils.billing import BillingCapError
     from utils.autonomy import AutonomyGate
     from utils.cloud_escalation import run_cloud_escalation
@@ -1189,7 +1189,7 @@ async def _execute_netalertx_migrate(
 ) -> None:
     """Handle an approved NetAlertX migration card.
 
-    Starts the uninstall supervised task (which will issue its own HITL card for
+    Starts the uninstall supervised task (which will issue its own approval card for
     final confirmation before removing the add-on). If docker_host is configured,
     also queues the docker installer to run after uninstall completes.
     """
@@ -1339,7 +1339,7 @@ async def _execute_queued_fix(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Run the backup → sandbox → atomic-swap pipeline for a queued HITL fix."""
+    """Run the backup → sandbox → atomic-swap pipeline for a queued fix approval."""
     from ha_agent_advanced import (
         enforce_ha_retention,
         offload_backup_to_local,
@@ -1661,7 +1661,7 @@ async def disk_tab(request: Request) -> HTMLResponse:
 
 @app.post("/disk/queue-orphan-cleanup")
 async def disk_queue_orphan_cleanup() -> JSONResponse:
-    """Queue a HITL card to clean up orphaned add-on data directories."""
+    """Queue an approval card to clean up orphaned add-on data directories."""
     import config as _config
     from utils.card_types import CARD_TYPE_DISK_RECOVERY
     from utils.disk_recovery import scan_orphaned_addon_dirs
@@ -1742,7 +1742,7 @@ def _load_notification_dashboard_data(
     severity_filter: str = "",
     sort_by: str = "first_seen_at",
 ) -> tuple[list[dict], list[dict]]:
-    """Load notification_history rows enriched with HITL card payload data.
+    """Load notification_history rows enriched with approval card payload data.
 
     Returns (pending, history) where pending items have dismissed_at IS NULL.
     history contains all records (filtered and sorted).
@@ -2655,7 +2655,7 @@ async def submit_episode_to_case_library(
 def run_dashboard() -> None:
     import uvicorn
 
-    print(f"Pueo HITL Dashboard → http://localhost:{DASHBOARD_PORT}")
+    print(f"Pueo Dashboard → http://localhost:{DASHBOARD_PORT}")
     uvicorn.run(
         app,
         host="0.0.0.0",  # nosec B104 — local dashboard, binding all interfaces is intentional

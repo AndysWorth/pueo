@@ -291,7 +291,7 @@ async def run_diagnose(
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
 
-    # 7. Heal — the healer + autonomy gate handle auto-execute vs. HITL blocking.
+    # 7. Heal — the healer + autonomy gate handle auto-execute vs. approval-required blocking.
     # At level 4, healer runs immediately. At levels 2–3, healer calls
     # require_approval(), sends a dashboard notification, and blocks until the
     # user approves or rejects. At level 1 (report only), require_approval

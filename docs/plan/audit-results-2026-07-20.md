@@ -55,7 +55,7 @@ Recommended fix: Change both phase headers to `✅ Complete` with the last-item 
 ### Section 3 — Roadmap ↔ Plan Alignment
 
 **Milestone table completeness**
-❌ Fail — `docs/roadmap.md` milestone table shows only 5 rows (Read-only diagnostics, Local RAG, Safe execution, Closed-loop healing, Evals). Phases 3.5 (Autonomy), 4 (NetAlertX), 4.5 (HITL UX), and 5 (Status Logging) — representing all 20 completed implementation plan items — have no rows in the table.
+❌ Fail — `docs/roadmap.md` milestone table shows only 5 rows (Read-only diagnostics, Local RAG, Safe execution, Closed-loop healing, Evals). Phases 3.5 (Autonomy), 4 (NetAlertX), 4.5 (Approval UX), and 5 (Status Logging) — representing all 20 completed implementation plan items — have no rows in the table.
 Recommended fix: Add milestone rows for Phases 3.5, 4, 4.5, and 5, or add a note clarifying that roadmap milestones are strategic objectives and implementation-plan phases are the tactical backlog.
 
 **Milestones with no plan detail file**
@@ -173,7 +173,7 @@ Recommended fix: Remove "`/develop`" from the CLAUDE.md CI description.
 **Patterns in code with no CLAUDE.md Key Patterns entry and no ADR**
 ❌ Fail — **Rate limiter / debouncer** (`utils/rate_limiter.py`: `Debouncer`, `RateLimiter`) governs repair frequency. Not mentioned in Key Patterns, no ADR.
 ❌ Fail — **Token budget management** (`utils/context.py`: `estimate_tokens`, `truncate_to_budget`) enforces the 8,000-token evaluation matrix constraint. Not in Key Patterns, no ADR.
-❌ Fail — **Autonomy gate pattern** (`utils/autonomy.py`: `AutonomyGate`) is the central HITL decision point imported by every module. Not in Key Patterns. CLAUDE.md Layer 3 description (line ~63) still references the deleted `requires_hitl()` function; should read `AutonomyGate.require_approval()`.
+❌ Fail — **Autonomy gate pattern** (`utils/autonomy.py`: `AutonomyGate`) is the central approval decision point imported by every module. Not in Key Patterns. CLAUDE.md Layer 3 description (line ~63) still references the deleted `requires_hitl()` function; should read `AutonomyGate.require_approval()`.
 ⚠️ Warning — **Dependency injection via Protocol interfaces** (`interfaces.py`) mentioned in Phase 1–3 description but has no Key Patterns entry and no ADR.
 ⚠️ Warning — **Plain-text console formatter** (`_TextFormatter`, item 20) — not mentioned anywhere in CLAUDE.md.
 
@@ -206,7 +206,7 @@ Recommended fix: Annotate the line: `~~agent.hitl_timeout_minutes~~  *(Deleted i
 ❌ Fail — Item 10 dependency line references `hitl_timeout_minutes config key` — stale (key never existed in final code).
 Recommended fix: Remove `hitl_timeout_minutes config key` from the item 10 dependency statement.
 ❌ Fail — Step 7 description (line ~150) references `agent.hitl_timeout_minutes` for polling timeout. Key does not exist; polling is now indefinite.
-Recommended fix: Replace with "polls indefinitely until user approves or rejects via the HITL dashboard."
+Recommended fix: Replace with "polls indefinitely until user approves or rejects via the dashboard."
 ❌ Fail — No cross-reference to `autonomy.md` for the `netalertx.mode` deprecation. The shim in `config.py` (lines 84–94) maps `netalertx.mode` → `agent.autonomy_level` but neither the item 10 preamble nor any netalertx.md section mentions it.
 Recommended fix: Add a note in item 10's preamble: "`netalertx.mode` is deprecated and mapped to `agent.autonomy_level` via a shim in `config.py` — see `autonomy.md` for the migration rationale."
 
@@ -259,6 +259,6 @@ Larger issues (> 30 min) requiring design decisions:
 
 - **Roadmap milestone table** — Phases 3.5, 4, 4.5, and 5 have no rows. Updating the table is straightforward writing, but it also warrants a decision about whether the roadmap should track implementation plan phases or only strategic milestones. Low code risk but documentation architecture decision. Update `docs/roadmap.md` directly; no ADR needed.
 
-- **Missing ADRs** — At least four decisions lack records: (a) SSH `known_hosts=None` — security-sensitive, warrants ADR 004; (b) asyncio over LangGraph/CrewAI — strategic architectural choice, warrants ADR 005; (c) rate limiter/debouncer behavioral contract; (d) autonomy gate as the single HITL decision point. These could be batched into a "write missing ADRs" session. Add Key Patterns entries to CLAUDE.md for each once their ADRs exist.
+- **Missing ADRs** — At least four decisions lack records: (a) SSH `known_hosts=None` — security-sensitive, warrants ADR 004; (b) asyncio over LangGraph/CrewAI — strategic architectural choice, warrants ADR 005; (c) rate limiter/debouncer behavioral contract; (d) autonomy gate as the single approval decision point. These could be batched into a "write missing ADRs" session. Add Key Patterns entries to CLAUDE.md for each once their ADRs exist.
 
 - **CLAUDE.md Key Patterns gaps** — Rate limiter, token budget management, autonomy gate, DI via Protocol, plain-text console formatter are all undocumented patterns. Updating Key Patterns is a pure documentation task but touches CLAUDE.md which auto-loads in every session; quality matters. Bundle with the ADR writing session.

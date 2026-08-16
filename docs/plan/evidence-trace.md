@@ -1,4 +1,4 @@
-# Phase 7 — Evidence Capture and HITL Display (Items 23–24)
+# Phase 7 — Evidence Capture and Approval Card Display (Items 23–24)
 
 ## Version Compatibility (audited 2026-07-21)
 
@@ -19,9 +19,9 @@ Items 23–24 introduce **zero new API calls or CLI commands**. They only captur
 
 ## Motivation
 
-When Pueo encounters a problem it can't fix, it sends a HITL notification to the web dashboard. Today that notification contains only a short text summary. All the useful context — raw command outputs, log buffer snapshots, the full structured diagnosis, and the LLM prompt and response — is discarded immediately after use. The user then has to manually re-gather evidence to understand what went wrong.
+When Pueo encounters a problem it can't fix, it sends a approval notification to the web dashboard. Today that notification contains only a short text summary. All the useful context — raw command outputs, log buffer snapshots, the full structured diagnosis, and the LLM prompt and response — is discarded immediately after use. The user then has to manually re-gather evidence to understand what went wrong.
 
-This phase closes that gap by: (1) capturing evidence and LLM interactions at each failure path and storing them in the HITL payload (which is already persisted to disk as a `.json` file), and (2) rendering that data in named collapsible sections in the web dashboard.
+This phase closes that gap by: (1) capturing evidence and LLM interactions at each failure path and storing them in the approval card payload (which is already persisted to disk as a `.json` file), and (2) rendering that data in named collapsible sections in the web dashboard.
 
 ---
 
@@ -44,7 +44,7 @@ class LLMTrace:
 
     def as_dict(self) -> dict:
         # Caps system_prompt and user_prompt at 4000 chars (with truncation marker)
-        # to keep HITL JSON files from growing unbounded.
+        # to keep approval card JSON files from growing unbounded.
         # Uses truncate_to_budget() from utils/context.py for the cap.
         ...
 ```
@@ -64,11 +64,11 @@ The `_truncate(s, limit=4000)` helper inside this module calls `utils/context.py
 
 At each site: capture `raw_output` before `model_validate_json`, build `LLMTrace(...)`, return as tuple. Exception / early-exit branches return a sentinel `LLMTrace(raw_response="")` — keeps the return type uniform and avoids `Optional[LLMTrace]` infecting callers (except for `diagnose_health_report`'s existing `None` early-exit path).
 
-`diagnose_installer_failure` returns a **3-tuple** because the raw evidence dict (`gather_*_evidence` output) is built inside that function and must be surfaced to callers so it can be included in the HITL payload without duplicating the SSH calls.
+`diagnose_installer_failure` returns a **3-tuple** because the raw evidence dict (`gather_*_evidence` output) is built inside that function and must be surfaced to callers so it can be included in the approval card payload without duplicating the SSH calls.
 
-### 23.3 — Thread trace + evidence to HITL payload
+### 23.3 — Thread trace + evidence to approval card payload
 
-Five HITL call sites need enrichment:
+Five approval card call sites need enrichment:
 
 **`ha_agent_sandbox_engine.py` — `main()`**
 ```python
@@ -79,7 +79,7 @@ report, llm_trace = await analyze_config_locally(...)
 "llm_trace": llm_trace.as_dict(),
 ```
 
-**`ha_log_monitor.py` — HITL path in triage function**
+**`ha_log_monitor.py` — approval path in triage function**
 ```python
 evaluation, llm_trace = await analyze_log_line_with_ai(...)
 # in notifier.send payload:
@@ -97,10 +97,10 @@ diagnostic, llm_trace, evidence = await diagnose_installer_failure(...)
 "llm_trace": llm_trace.as_dict(),
 ```
 
-**`netalertx/log_monitor.py` — HITL path**
+**`netalertx/log_monitor.py` — approval path**
 Same pattern as `ha_log_monitor.py`.
 
-**Non-HITL callers** (`ha_agent_core.main()`, `netalertx/healer.py`) unpack the tuple and discard the trace with `_trace`.
+**Non-approval callers** (`ha_agent_core.main()`, `netalertx/healer.py`) unpack the tuple and discard the trace with `_trace`.
 
 ### 23.4 — Test changes (`tests/test_core.py`)
 
@@ -154,7 +154,7 @@ Add to existing `<style>` block: colour-coded section label chips (blue=evidence
 
 ### 24.3 — `web/templates/index.html` — 3 new collapsible sections
 
-Insert between the existing `<p class="body">` and the existing full-payload `<details>`. All three guarded with `{% if r.payload.get(...) %}` so older HITL JSON files render unchanged.
+Insert between the existing `<p class="body">` and the existing full-payload `<details>`. All three guarded with `{% if r.payload.get(...) %}` so older approval card JSON files render unchanged.
 
 **Evidence** (`payload.evidence_raw`):
 - `log_buffer_snapshot` key → render as `<pre>` with lines joined by newline
@@ -185,8 +185,8 @@ New `TestDashboardRichPayload` class (7 tests), reusing the existing `httpx.Asyn
 ### Validation gate
 
 - `pytest --cov --cov-fail-under=90` — all existing + new tests pass
-- Visual: open `http://localhost:8080` with an enriched HITL JSON file → Evidence, Diagnosis, LLM Interaction sections render; "Full payload (raw JSON)" still visible
-- Visual: open a pre-Item-23 HITL JSON file → no empty `<details>` sections; page renders cleanly
+- Visual: open `http://localhost:8080` with an enriched approval card JSON file → Evidence, Diagnosis, LLM Interaction sections render; "Full payload (raw JSON)" still visible
+- Visual: open a pre-Item-23 approval card JSON file → no empty `<details>` sections; page renders cleanly
 
 ---
 
@@ -196,12 +196,12 @@ New `TestDashboardRichPayload` class (7 tests), reusing the existing `httpx.Asyn
 |---|---|
 | `utils/llm_trace.py` | **NEW** — `LLMTrace` dataclass + `_truncate` helper |
 | `ha_agent_core.py` | Return type change |
-| `ha_agent_sandbox_engine.py` | Return type change + HITL payload enrichment |
-| `ha_log_monitor.py` | Return type change + HITL payload enrichment |
+| `ha_agent_sandbox_engine.py` | Return type change + approval card payload enrichment |
+| `ha_log_monitor.py` | Return type change + approval card payload enrichment |
 | `netalertx/installer_diagnostics.py` | Return type → 3-tuple; surface evidence dict |
-| `netalertx/installer.py` | 3-tuple unpack + HITL payload enrichment at steps 2/5a/5b |
+| `netalertx/installer.py` | 3-tuple unpack + approval card payload enrichment at steps 2/5a/5b |
 | `netalertx/diagnosis.py` | Return type → Optional tuple |
-| `netalertx/log_monitor.py` | Return type change + HITL payload enrichment |
+| `netalertx/log_monitor.py` | Return type change + approval card payload enrichment |
 | `netalertx/healer.py` | Tuple unpack (trace discarded) |
 | `web/dashboard.py` | `epoch_to_iso` Jinja2 filter |
 | `web/templates/base.html` | CSS additions |

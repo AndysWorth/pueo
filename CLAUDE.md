@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Pueo** is a local, privacy-first agentic AI system that monitors and self-heals a Home Assistant (HA) instance. It runs on macOS Apple Silicon. The LLM inference engine is configurable (`LLM_PROVIDER`): local Ollama only (default, no WAN for inference), Anthropic Claude API, or both (Ollama for autonomous cycles + Claude available for HITL escalation). All HA communication goes over SSH/SFTP.
+**Pueo** is a local, privacy-first agentic AI system that monitors and self-heals a Home Assistant (HA) instance. It runs on macOS Apple Silicon. The LLM inference engine is configurable (`LLM_PROVIDER`): local Ollama only (default, no WAN for inference), Anthropic Claude API, or both (Ollama for autonomous cycles + Claude available for approved escalation). All HA communication goes over SSH/SFTP.
 
 Source code lives in `pueo/`.
 
@@ -60,7 +60,7 @@ Extends core with a local SQLite database (`ha_agent_state.db`) persisting `stat
 ### Layer 3 — Reasoning + Acting: `ha_agent_sandbox_engine.py`
 Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
-2. `AutonomyGate.require_approval()` — if CRITICAL severity or current autonomy level requires HITL, notify and wait for human approval
+2. `AutonomyGate.require_approval()` — if CRITICAL severity or current autonomy level requires human approval, notify and wait
 3. Trigger HA backup (mandatory)
 4. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
 5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
@@ -83,7 +83,7 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **Sandbox path derivation**: `SANDBOX_REMOTE_DIR` and `SANDBOX_REMOTE_FILE` in `ha_agent_sandbox_engine.py` are derived from `CONFIG_REMOTE_PATH`, not independently hardcoded, so changing the config path in `config.yaml` automatically keeps the sandbox path in sync.
 
-**Autonomy gate**: `AutonomyGate` in `utils/autonomy.py` is the single HITL decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
+**Autonomy gate**: `AutonomyGate` in `utils/autonomy.py` is the single approval decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
 
 **Rate limiter / debouncer**: `Debouncer` and `RateLimiter` in `utils/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
 

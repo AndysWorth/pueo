@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HA Update Manager — detects available updates and surfaces them as HITL cards."""
+"""HA Update Manager — detects available updates and surfaces them as approval cards."""
 
 import asyncio
 import json
@@ -262,13 +262,13 @@ async def run_update_preflight(
     rest_client: Optional[HARestClientProtocol] = None,
     watch_dir: Optional[Path] = None,
 ) -> UpdatePreflight:
-    """Pre-flight check before a Core or OS update HITL card is sent.
+    """Pre-flight check before a Core or OS update approval card is sent.
 
     1. Read cached (or live) disk free on the HA host.
     2. If disk is below HA_DISK_WARN_GB + 1.5 GB, run enforce_ha_retention() to delete
        confirmed-offloaded backups from HA, then re-poll disk.
     3. Check whether the Supervisor has a pending update via REST or watch-dir scan.
-    Returns a structured summary that is embedded in the update HITL card body.
+    Returns a structured summary that is embedded in the update approval card body.
     """
     from ha_agent_advanced import enforce_ha_retention
     from utils.resource import get_resource_status, poll_host_resources
@@ -365,7 +365,7 @@ async def run_update_preflight(
 def _component_risk_level(component: str) -> RiskLevel:
     """Return the risk level for a component update.
 
-    Core and OS updates always require HITL approval (CRITICAL).
+    Core and OS updates always require approval (CRITICAL).
     Supervisor updates are HIGH risk.
     Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4.
     """
@@ -389,7 +389,7 @@ async def request_update_approval(
     ssh_client: Optional[SSHClientProtocol] = None,
     rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
-    """Send a per-component HITL update approval card and wait for a decision.
+    """Send a per-component update approval card and wait for a decision.
 
     Returns True if the update should proceed, False if rejected or deferred.
     Risk is always CRITICAL for core/os, HIGH for supervisor, MEDIUM for add-ons.
@@ -507,7 +507,7 @@ async def run_update_check(
     gate: Optional["AutonomyGate | FakeAutonomyGate"] = None,
     notifier: Optional["NotifierProtocol"] = None,
 ) -> list[UpdateStatus]:
-    """One-shot: print update status table, advisory breaking-change analysis, and HITL cards."""
+    """One-shot: print update status table, advisory breaking-change analysis, and approval cards."""
     if not ha_rest_client and not HA_API_TOKEN:
         log.error(
             "update_check_no_token",
@@ -539,7 +539,7 @@ async def run_update_check(
             if u.release_url:
                 print(f"  {u.component}: {u.release_url}")
 
-    # Breaking-change analysis for any Core update; collect reports for HITL cards.
+    # Breaking-change analysis for any Core update; collect reports for approval cards.
     reports: dict[str, UpdateReadinessReport] = {}
     core_updates = [u for u in available if u.component == "core"]
     for core_update in core_updates:
@@ -578,7 +578,7 @@ async def run_update_check(
             log.error("breaking_change_analysis_failed", error=str(exc))
             print(f"\nWarning: breaking-change analysis failed: {exc}")
 
-    # HITL approval cards — Core/OS always require approval; add-ons defer to autonomy level.
+    # Approval cards — Core/OS always require approval; add-ons defer to autonomy level.
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
 
@@ -589,7 +589,7 @@ async def run_update_check(
         readiness = reports.get(update.component)
         await request_update_approval(update, _gate, _notifier, readiness)
         # Execution is handled by the dashboard's _execute_queued_update on approve.
-        # run_update_check() only creates the HITL card; it never calls execute_update().
+        # run_update_check() only creates the approval card; it never calls execute_update().
 
     return updates
 

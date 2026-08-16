@@ -230,7 +230,7 @@
     padding:0.4rem 0.6rem;border-radius:4px;font-size:0.8rem;"></div>
   <p style="font-size:0.78rem;color:#888;margin:0 0 0.5rem;">
     These directories remain on disk after an app was uninstalled. Pueo can remove them via
-    a HITL approval card.
+    an approval card.
   </p>
   {% for orphan in breakdown.orphaned_addons %}
   <div class="disk-item-row">
@@ -274,7 +274,7 @@
     ("RAG caches (release notes, HACS, docs)", pueo_footprint.cache_bytes),
     ("Database (ha_agent_state.db)", pueo_footprint.db_bytes),
     ("Log (pueo.log)", pueo_footprint.log_bytes),
-    ("HITL cards", pueo_footprint.hitl_bytes),
+    ("Approval cards", pueo_footprint.hitl_bytes),
   ] %}
   {% set pueo_max_cat = pueo_categories|map(attribute=1)|max %}
   {% for cat_name, cat_bytes in pueo_categories %}
@@ -311,7 +311,7 @@ async function requestOrphanCleanup() {
     var data = await resp.json();
     result.style.display = 'block';
     if (data.ok) {
-      result.textContent = data.message || 'Cleanup card queued — approve it in the HITL queue.';
+      result.textContent = data.message || 'Cleanup card queued — approve it in the dashboard.';
       result.style.background = '#d4edda';
       result.style.color = '#155724';
       btn.textContent = 'Queued';

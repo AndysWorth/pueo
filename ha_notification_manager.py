@@ -382,7 +382,7 @@ def record_notification_seen(
     """Insert notification into history if new; update last_seen_at if existing.
 
     If ha_created_at is newer than the stored value, resets hitl_sent_at so the
-    new occurrence generates a fresh HITL card.
+    new occurrence generates a fresh approval card.
 
     Returns True if newly seen (first time), False if already in history.
     """
@@ -435,7 +435,7 @@ def mark_notification_hitl_sent(
     notification_id: str,
     db_path: str = DB_PATH,
 ) -> None:
-    """Record that a HITL card was dispatched for this notification."""
+    """Record that an approval card was dispatched for this notification."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE notification_history SET hitl_sent_at = ? WHERE notification_id = ?",
@@ -448,7 +448,7 @@ def mark_notification_dismissed(
     dismissed_by: str = "user",
     db_path: str = DB_PATH,
 ) -> None:
-    """Record dismissal after the user clicks Dismiss in the HITL card."""
+    """Record dismissal after the user clicks Dismiss in the approval card."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE notification_history SET dismissed_at = ?, dismissed_by = ? WHERE notification_id = ?",
@@ -480,11 +480,11 @@ def get_pending_notifications(
     return [dict(row) for row in rows]
 
 
-# ── HITL card formatting ──────────────────────────────────────────────────────
+# ── Approval card formatting ──────────────────────────────────────────────────
 
 
 def _format_notification_subject(analysis: "NotificationAnalysis") -> str:
-    """Build the HITL card subject line for a notification."""
+    """Build the approval card subject line for a notification."""
     if analysis.notification_id in ("http-login", "ip-ban"):
         ec = analysis.enriched_context
         if not ec.get("is_known_device", True):
@@ -503,7 +503,7 @@ def _format_notification_subject(analysis: "NotificationAnalysis") -> str:
 
 
 def _format_notification_body(analysis: "NotificationAnalysis") -> str:
-    """Build the HITL card body text for a notification."""
+    """Build the approval card body text for a notification."""
     lines = [analysis.human_explanation]
     if analysis.recommended_action:
         lines.append(f"\nRecommended action: {analysis.recommended_action}")
@@ -522,9 +522,9 @@ async def run_notifications(
     notifier: Optional["NotifierProtocol"] = None,
     db_path: str = DB_PATH,
 ) -> int:
-    """Poll persistent_notification.* entities and send HITL cards for new ones.
+    """Poll persistent_notification.* entities and send approval cards for new ones.
 
-    Returns the count of new HITL cards sent.
+    Returns the count of new approval cards sent.
     """
     from config import (
         HA_API_PORT,
@@ -639,6 +639,6 @@ async def run_notifications(
     if new_count == 0:
         print("No new notifications to triage.")
     else:
-        print(f"\n{new_count} notification HITL card(s) sent.")
+        print(f"\n{new_count} notification approval card(s) sent.")
 
     return new_count

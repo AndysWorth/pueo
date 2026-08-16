@@ -1030,7 +1030,7 @@ async def _step7_verify_mqtt_integration(
 ) -> bool:
     """Check that the HA MQTT integration is configured (UI-only step).
 
-    If not configured, requests HITL with manual instructions.
+    If not configured, requests approval with manual instructions.
     Advances state to HA_MQTT_INTEGRATION_VERIFIED.
     """
     log.info("step7_start", step="verify_mqtt_integration", correlation_id=cid)
@@ -1074,7 +1074,7 @@ async def _step7_verify_mqtt_integration(
         _write_install_state(db_path, "HA_MQTT_INTEGRATION_VERIFIED", details, cid)
         return True
 
-    # Not found — send HITL with manual setup instructions
+    # Not found — send approval card with manual setup instructions
     if NETALERTX_MQTT_USER:
         cred_hint = f"Username: {NETALERTX_MQTT_USER} / Password: (from config.yaml)"
     else:

@@ -50,8 +50,8 @@ When the local loop still cannot reach `finish_repair` after all limit reviews:
 - `LLM_PROVIDER=both` triggers a cloud escalation attempt
 - The escalation is treated as a HIGH-risk action and passed through `AutonomyGate`
 - At autonomy level 4 (AUTONOMOUS), `gate.require_approval(risk=HIGH)` returns True
-  immediately — no HITL card, no human delay
-- At level 3 (GUIDED) or 2 (SUGGEST), a HITL `cloud_escalation` card is created; the
+  immediately — no approval card, no human delay
+- At level 3 (GUIDED) or 2 (SUGGEST), an approval `cloud_escalation` card is created; the
   human decides whether to invoke the cloud model
 - At level 1 (REPORT_ONLY), cloud escalation is never offered
 
@@ -76,10 +76,10 @@ Every limit an operator might reasonably want to adjust belongs in `config.yaml`
 - `AgentLoop._loop_body()` and `AgentLoop.run()` gain limit-review logic at exhaustion
   and timeout boundaries.
 - Cloud escalation in `both` mode is gated by autonomy level via `AutonomyGate`.
-- The HITL `cloud_escalation` card path is preserved for levels 1–3; at level 4 it is
+- The approval `cloud_escalation` card path is preserved for levels 1–3; at level 4 it is
   bypassed entirely and cloud runs immediately.
 - A shared `run_cloud_escalation()` coroutine in `utils/cloud_escalation.py` is used by
-  both the auto-path (level 4) and the HITL-approve path (levels 2–3).
+  both the auto-path (level 4) and the approve path (levels 2–3).
 - `NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD` added to config; hardcoded `0.9` removed.
 - `utils/investigation_loop.py` defaults raised to match the main loop.
 

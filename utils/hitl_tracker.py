@@ -1,4 +1,4 @@
-"""DB-backed HITL card suppression: rejection memory, cooldown, and Known Issues."""
+"""DB-backed approval card suppression: rejection memory, cooldown, and Known Issues."""
 
 import hashlib
 import sqlite3
@@ -44,7 +44,7 @@ def should_send_card(
         return next_allowed_at is None or next_allowed_at <= time.time()
     if skip_pending_check:
         return True  # Caller owns retry cadence; only explicit suppression blocks here.
-    # Card is in the HITL queue (sent, no action yet) — do not re-fire.
+    # Card is in the approval queue (sent, no action yet) — do not re-fire.
     return send_count == 0
 
 

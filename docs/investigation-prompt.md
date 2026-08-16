@@ -54,7 +54,7 @@ For each option, assess four dimensions:
 - `CRITICAL` — production outage or unrecoverable data loss risk
 
 **Autonomy classification:**
-- `auto_actions` — LOW risk, reversible-or-acceptable-loss, no service interruption → execute immediately without HITL
+- `auto_actions` — LOW risk, reversible-or-acceptable-loss, no service interruption → execute immediately without approval
 - `hitl_actions` — MEDIUM/HIGH risk, or any action with meaningful data loss or downtime → require user approval
 - `manual_only` — requires physical access, hypervisor changes, or human judgment on content (e.g. "which camera recordings to keep")
 
@@ -78,14 +78,14 @@ Call `finish_investigation` with:
 
 The disk-critical domain is fully implemented in `utils/disk_recovery.py` as a hardcoded
 version of this pattern. The `ResourcePoller._check_and_alert()` runs the safe steps
-automatically and produces a `CARD_TYPE_DISK_RECOVERY` HITL card for destructive options.
+automatically and produces a `CARD_TYPE_DISK_RECOVERY` approval card for destructive options.
 
 **Auto-safe (run immediately on disk critical):**
 - Truncate `/config/home-assistant.log` — can free 100 MB – 28 GB; HA keeps the file handle
 - Vacuum systemd journal to ≤200 MB — typically saves 1–5 GB
 - `recorder.purge(keep_days=30, repack=False)` — frees logical space quickly
 
-**HITL-required:**
+**approval-required:**
 - `recorder.purge(repack=True)` — physical compaction; needs ~2.5× DB size free space
 - Aggressive purge (keep_days=7) — larger history loss
 - Clear `/mnt/data/supervisor/tmp/` — orphaned failed-backup temp files (up to 60 GB)
@@ -104,7 +104,7 @@ To investigate a new problem domain (e.g. "network latency", "memory leak", "HAC
 1. Call `run_investigation(topic="...", goal="...", context="...")` from wherever the trigger fires.
 2. The agent uses `build_investigation_tool_registry()` (read-only tools + `finish_investigation`).
 3. Parse `report.auto_actions` and execute safe steps immediately.
-4. Send `report.hitl_actions` to a domain-appropriate HITL card.
+4. Send `report.hitl_actions` to a domain-appropriate approval card.
 5. List `report.manual_only` in the card body.
 
 No bespoke code needed for new domains — the prompt template and structured output schema

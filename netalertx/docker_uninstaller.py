@@ -1,10 +1,10 @@
 """NetAlertX Docker uninstaller — removes the container and cleans up Pueo state.
 
 Reverses the docker_installer's steps:
-  1. HITL CRITICAL approval
+  1. CRITICAL approval required
   2. Stop container: `docker stop netalertx` on Docker SSH host
   3. Remove container: `docker rm netalertx`
-  4. Offer config dir removal (separate HITL question) — default: keep
+  4. Offer config dir removal (separate approval step) — default: keep
   5. Remove webhook automation from HA (reuse uninstaller logic)
   6. Reset netalertx_install_state to NOT_INSTALLED
 
@@ -100,7 +100,7 @@ async def run_docker_uninstaller(
     current_state = _read_install_state(db_path)
     disk_before = await _report_disk_space(docker_ssh)
 
-    # ── HITL approval (CRITICAL — destructive, irreversible) ──────────────────
+    # ── Approval required (CRITICAL — destructive, irreversible) ─────────────
     approved = await gate.require_approval(
         subject="NetAlertX Docker uninstall: remove container from Docker host",
         body=(
@@ -172,7 +172,7 @@ async def run_docker_uninstaller(
             correlation_id=cid,
         )
 
-    # ── Step 3: offer config dir removal (optional HITL) ─────────────────────
+    # ── Step 3: offer config dir removal (optional approval step) ────────────
     if config_path:
         remove_config = await gate.require_approval(
             subject=f"Remove NetAlertX config directory on Docker host ({config_path})?",

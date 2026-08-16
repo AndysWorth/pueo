@@ -1,16 +1,16 @@
-# HITL Web Dashboard — Item 19.5
+# Approval Web Dashboard — Item 19.5
 
 Part of the [Implementation Plan](../implementation-plan.md) · Phase 4.5 · 1 session.
 
 ---
 
-### 19.5. HITL Web Dashboard ✅ Done (2026-07-20) — PR #33
+### 19.5. Approval Web Dashboard ✅ Done (2026-07-20) — PR #33
 
 **Problem:** `AutonomyGate.require_approval()` blocked the entire monitoring loop via `asyncio.wait_for()` for up to 60 minutes waiting for the user to touch a `.approved` file. This was doubly broken: (a) the monitor stopped processing new log events while waiting, and (b) the 60-minute timeout caused silent skip — a repair that needed human attention was silently abandoned with no feedback to the user. The replacement: eliminate the timeout entirely, make monitoring loops fire healing as a background task so they stay alive, and add a local web dashboard that queues issues with full context and lets the user approve or reject via browser at their own pace.
 
 **Built:**
 
-**1. Remove HITL timeout**
+**1. Remove approval timeout**
 - Deleted `HITL_TIMEOUT_MINUTES` from `config.py`, `config.yaml.default`, and `setup.sh`.
 - Removed `asyncio.wait_for()` wrapper from `AutonomyGate.require_approval()`. The gate now calls `notifier.wait_for_approval(nid)` directly and polls indefinitely. `FileNotifier.wait_for_approval()` already yields via `asyncio.sleep()` so the event loop is never starved.
 - Removed `timeout_minutes` parameter from `AutonomyGate.__init__()` and all four call sites (`ha_agent_sandbox_engine.py`, `ha_log_monitor.py`, `netalertx/log_monitor.py`, `netalertx/installer.py`).
@@ -33,7 +33,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 4.5 · 1 s
 **4. New config key: `DASHBOARD_PORT`**
 - `config.py`: `DASHBOARD_PORT: int = int(_agent.get("dashboard_port", 8080))`
 - `config.yaml.default`: `dashboard_port: 8080` under `agent:` (replaces `hitl_timeout_minutes`)
-- `setup.sh`: `ask "HITL dashboard port" "8080" DASHBOARD_PORT`; `dashboard_port: ${DASHBOARD_PORT}` in config heredoc; `"  HITL dashboard       : python main.py --mode dashboard"` in Done block
+- `setup.sh`: `ask "dashboard port" "8080" DASHBOARD_PORT`; `dashboard_port: ${DASHBOARD_PORT}` in config heredoc; `"  dashboard       : python main.py --mode dashboard"` in Done block
 
 **5. `main.py`**
 - Added `"dashboard"` to choices and epilog

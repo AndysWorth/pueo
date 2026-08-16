@@ -559,7 +559,7 @@ async def _step8_route_mqtt(
     """Configure HA Mosquitto to accept external connections from the Docker host.
 
     Writes /ssl/mosquitto_custom.conf, enables customize mode via Supervisor API,
-    then restarts Mosquitto.  All three actions are wrapped in a single HITL card
+    then restarts Mosquitto.  All three actions are wrapped in a single approval card
     (HIGH risk) because restarting Mosquitto briefly interrupts all HA MQTT traffic.
     """
     log.info("step8_start", step="route_mqtt", correlation_id=cid)

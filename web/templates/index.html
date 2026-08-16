@@ -304,7 +304,7 @@
           {% set hint_approve = "Launch netalertx-uninstall (removes HA add-on), then netalertx-docker-setup (installs on separate machine)" %}
           {% set hint_reject = "Keep NetAlertX on HA for now; disk alert remains active" %}
         {% elif ct == "netalertx_switch" %}
-          {% set hint_approve = "Uninstall from current platform, then reinstall on target platform — each phase has its own HITL confirmation" %}
+          {% set hint_approve = "Uninstall from current platform, then reinstall on target platform — each phase has its own approval step" %}
           {% set hint_reject = "Cancel; NetAlertX stays on current platform, install state unchanged" %}
         {% elif ct == "resource_action" %}
           {% set hint_approve = "Execute the disk management action (offload backup to Pueo, or purge old local copies)" %}

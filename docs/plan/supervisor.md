@@ -13,7 +13,7 @@ In practice only `--mode dashboard` tends to stay running, and it is passive: it
 web UI but cannot execute approved actions or run any background monitoring. The result (from
 `audits/ha-operational-state-2026-07-29.md`) is that:
 
-- Approved HITL actions (e.g. the pending HA Core 2026.7.4 update) never execute because
+- Approved actions (e.g. the pending HA Core 2026.7.4 update) never execute because
   the process that sent the card has exited before the user approves.
 - No monitoring loops run: disk is at CRITICAL with no alert sent, pycync errors go unnoticed,
   NetAlertX has never scanned.
@@ -27,7 +27,7 @@ web UI but cannot execute approved actions or run any background monitoring. The
 
 1. Runs all monitoring loops concurrently as asyncio tasks.
 2. Serves the FastAPI dashboard (which becomes the user-facing face of Pueo).
-3. Executes HITL-approved actions directly in-process, rather than relying on a
+3. Executes approved actions directly in-process, rather than relying on a
    now-exited process to pick up a `.approved` file.
 4. Stays alive via a launchd plist that restarts it on crash or after login.
 
@@ -45,7 +45,7 @@ python main.py
   ├── uvicorn (FastAPI dashboard)          port 8080, 127.0.0.1 only
   │     └── SSE /events endpoint  ──────► browser auto-refresh
   │
-  ├── asyncio.Task: ha_log_monitor_loop    SSH log tail → AI triage → HITL card
+  ├── asyncio.Task: ha_log_monitor_loop    SSH log tail → AI triage → approval card
   ├── asyncio.Task: resource_poll_loop     disk/memory every resource_poll_interval_s
   ├── asyncio.Task: update_check_loop      update entity poll every update_check_interval_hours
   ├── asyncio.Task: notification_poll_loop persistent_notification.* every notification_poll_interval_s
@@ -86,9 +86,9 @@ JSON payload:
 
 The browser reconnects automatically if the stream drops (standard SSE behaviour).
 
-### HITL card dispatch
+### approval card dispatch
 
-All HITL cards gain a `card_type` string field (set by the caller). The dashboard
+All approval cards gain a `card_type` string field (set by the caller). The dashboard
 `POST /approve/{nid}` dispatches to a typed handler:
 
 | `card_type`           | Handler                     | Calls into                              |
@@ -130,7 +130,7 @@ task restarts after backoff; SIGTERM cancels cleanly.
 
 `utils/card_types.py` — string constants (`CARD_TYPE_REPAIR`, `CARD_TYPE_UPDATE`, etc.).
 
-Update every HITL card creation call site to include `"card_type": CARD_TYPE_X` in the JSON
+Update every approval card creation call site to include `"card_type": CARD_TYPE_X` in the JSON
 payload:
 - `ha_update_manager.py` → `CARD_TYPE_UPDATE`
 - `ha_agent_sandbox_engine.py` → `CARD_TYPE_REPAIR`
@@ -178,17 +178,17 @@ call `netalertx.healer.run_heal(heal_action, target)`. Same success/failure patt
 
 ### Item 59 — Dashboard home: system status overview
 
-Replace the current HITL-cards-only homepage (`/`) with an overview tab layout:
+Replace the current approval-cards-only homepage (`/`) with an overview tab layout:
 
 **Overview tab (default):**
 - HA state card: version, update available badge, config check status, last backup time
 - Resource gauges: disk free bar (red at critical), memory free
 - Loop health table: one row per loop — name, status (running/paused/error), last run,
   next scheduled run, error count since last start
-- Pending HITL count with link to Queue tab
+- Pending approval count with link to Queue tab
 - Recent events: last 10 timeline entries
 
-**Queue tab:** current HITL cards (moved from `/`)
+**Queue tab:** current approval cards (moved from `/`)
 
 **SSE wiring:** `GET /events` endpoint reads from the `EventBus` asyncio queue and streams
 to the browser. Overview tab subscribes with `EventSource('/events')` and updates loop rows,
@@ -204,7 +204,7 @@ All significant Pueo actions emit a `timeline` event to the event bus with a `de
 
 **Events emitted:**
 - Log triage result (INFO / WARN / ERROR actionable) → `detail_url=/events/<id>`
-- HITL card sent → `detail_url=/cards/<nid>`
+- approval card sent → `detail_url=/cards/<nid>`
 - Repair executed (success/fail) → `detail_url=/repairs/<nid>`
 - Disk alert → `detail_url=/resources`
 - Update check result → `detail_url=/updates`
@@ -295,7 +295,7 @@ operational state and its actual state. Output saved to `audits/pueo-audit-<date
 - Which loops are currently running (via PID file or launchctl query)
 - HA disk free vs. `ha_disk_critical_gb` threshold
 - Backup registry: slugs present on HA vs. tracked in DB; any unknown slugs
-- Pending HITL cards (cards with no `.approved`/`.rejected` file)
+- Pending approval cards (cards with no `.approved`/`.rejected` file)
 - NetAlertX: last scan age, device count, MQTT status
 - `state_history`: ratio of `is_valid=0` entries; any `unknown_slug` rows
 - Update check: last run time, any pending updates

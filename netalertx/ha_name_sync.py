@@ -8,11 +8,11 @@ Reads friendly names from three HA sources (priority: Source 1 wins):
 sync_names() applies all four cases:
   Case 1 — blank/auto-generated devName + HA name known → write devName + lock
   Case 2 — devName already matches HA name (case-insensitive) → lock only
-  Case 3 — devName non-empty and differs from HA name → single HITL; write+lock on approval
+  Case 3 — devName non-empty and differs from HA name → single approval card; write+lock on approval
   Case 4 — no HA name found:
     Step A — existing plausible devName → lock and keep
     Step B — reverse DNS lookup → write hostname + lock if usable
-    Step C — still unnamed → single LOW-risk HITL listing unnamed devices
+    Step C — still unnamed → single LOW-risk approval card listing unnamed devices
 
 sync_device(mac) runs a single MAC through Cases 1–4; called by the health monitor
 when a device with devIsNew or blank devName is detected.
@@ -206,7 +206,7 @@ class HaNameSync:
                 report.locked.append(mac)
                 log.info("name_already_correct", mac=mac)
             else:
-                # Case 3: conflict → collect for batch HITL after the loop
+                # Case 3: conflict → collect for batch approval card after the loop
                 report.conflicted.append(
                     ConflictEntry(mac=mac, ha_name=ha_name, netalertx_name=dev_name)
                 )
@@ -227,7 +227,7 @@ class HaNameSync:
                     report.reverse_dns.append(mac)
                     log.info("reverse_dns_name_written", mac=mac, rdns_name=rdns_name)
                 else:
-                    # Step C: truly unnamed → collect for HITL
+                    # Step C: truly unnamed → collect for approval card
                     report.unnamed.append(
                         UnnamedEntry(
                             mac=mac,
@@ -237,7 +237,7 @@ class HaNameSync:
                     )
 
     async def _resolve_conflicts(self, report: SyncReport) -> None:
-        """Issue a single MEDIUM-risk HITL for all collected conflicts; write+lock on approval."""
+        """Issue a single MEDIUM-risk approval card for all collected conflicts; write+lock on approval."""
         from utils.autonomy import RiskLevel
 
         conflict_table = "\n".join(
@@ -269,7 +269,7 @@ class HaNameSync:
                 log.info("conflict_skipped", mac=entry.mac)
 
     async def _notify_unnamed(self, report: SyncReport) -> None:
-        """Issue a single LOW-risk HITL listing all still-unnamed devices."""
+        """Issue a single LOW-risk approval card listing all still-unnamed devices."""
         from utils.autonomy import RiskLevel
 
         unnamed_table = "\n".join(

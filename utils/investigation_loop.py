@@ -1,7 +1,7 @@
 """General-purpose investigation loop for Pueo.
 
 Encodes the pattern: gather evidence → consult knowledge → identify root causes →
-rank remediation options by safety/reversibility/impact → classify as auto/HITL/manual → report.
+rank remediation options by safety/reversibility/impact → classify as auto/approval-required/manual → report.
 
 Usage:
     report = await run_investigation(

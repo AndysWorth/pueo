@@ -8,7 +8,7 @@ Provider semantics:
   "local"  (default) — OllamaClient; no WAN for inference
   "cloud"            — ClaudeAPIClient; all inference goes to Anthropic
   "both"             — OllamaClient for autonomous cycles; ClaudeAPIClient is
-                       instantiated explicitly for HITL escalation (item 76)
+                       instantiated explicitly for approved escalation (item 76)
 """
 
 from __future__ import annotations

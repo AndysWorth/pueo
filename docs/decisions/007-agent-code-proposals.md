@@ -12,7 +12,7 @@ site-specific hardware fault — it has two options: escalate to a human enginee
 writes code manually, or declare the incident unresolved.
 
 Both options leave the gap open for every future occurrence. Milestone 10 adds a third path:
-the agent identifies the gap, writes the code, validates it against CI, and surfaces a HITL
+the agent identifies the gap, writes the code, validates it against CI, and surfaces an approval card
 approval card to open a PR. Approved changes become permanent capabilities available to every
 future repair cycle.
 
@@ -39,7 +39,7 @@ The proposal flow is a linear, gated sequence:
    and runs the full CI gate (`black`, `flake8`, `mypy`, `pytest`); temp dir cleaned up
    unconditionally in `finally` regardless of outcome
 4. **`open_pr`** (or **`add_tool`** for session-local registration) — only callable after
-   `sandbox_code` succeeds; always queues a HITL approval card; never auto-fires
+   `sandbox_code` succeeds; always queues a approval card; never auto-fires
 
 `open_pr` approval causes Pueo to create a feature branch and execute `gh pr create` with a
 body that includes the full diff, CI output, and a reference to this ADR.
@@ -64,11 +64,11 @@ components, absolute escapes). `read_source` and `propose_patch` both go through
 — no `shell=True`, no user-supplied shell fragments, no network access. The temp directory is
 outside the live working tree; even a CI tool that writes files cannot contaminate the repo.
 
-**HITL gate is unconditional.** `open_pr` always queues a notification and waits for human
+**approval gate is unconditional.** `open_pr` always queues a notification and waits for human
 approval before calling `gh pr create`. This is hard-coded in `_open_pr`, not gated through
 `AutonomyGate` — raising the autonomy level cannot bypass it. The same applies to `add_tool`.
 
-**CI must pass before the HITL card fires.** `open_pr` and `add_tool` both check
+**CI must pass before the approval card fires.** `open_pr` and `add_tool` both check
 `self._sandbox_passed` and return a tool error if the sandbox has not been run or did not
 pass. The agent cannot queue an approval card for a patch that does not compile or fails
 existing tests.
@@ -83,12 +83,12 @@ timeout enforcement, structured LLM output, and client injection already in plac
 **Two registration paths for two durations.** `add_tool` registers a tool in-process for the
 current session only — useful for chat experiments and one-off tasks. `open_pr` creates a
 persistent PR that, once merged, becomes part of the checked-in tool registry for all future
-sessions. Both require sandbox pass and HITL approval; only the persistence scope differs.
+sessions. Both require sandbox pass and approval; only the persistence scope differs.
 
 **`sandbox_code` runs the full CI gate, not just syntax checking.** Parsing and import
 checking catch obvious errors; the full gate (`black` + `flake8` + `mypy` + `pytest`) catches
 type regressions, logic errors that break existing tests, and style violations that would fail
-CI on the PR. The sandbox output (truncated to 3 000 characters) is included in the HITL card
+CI on the PR. The sandbox output (truncated to 3 000 characters) is included in the approval card
 so the reviewer can see exactly what passed.
 
 **Gap detection is a `finish_repair` field, not a separate tool call.** The agent signals a
