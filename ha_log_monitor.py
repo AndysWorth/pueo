@@ -740,9 +740,12 @@ async def poll_for_repairs(
             ) or _tkey_row is not None
 
             if not already_sent:
+                is_restart = "restart" in (issue.translation_key or "").lower()
                 is_reboot = "reboot" in (issue.translation_key or "").lower()
                 action = (
-                    "reboot" if is_reboot or issue.severity == "critical" else "dismiss"
+                    "restart"
+                    if is_restart
+                    else ("reboot" if is_reboot or issue.severity == "critical" else "dismiss")
                 )
                 title = f"HA repair: {issue.domain}/{issue.issue_id}"
                 body_parts = [
