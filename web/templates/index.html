@@ -327,7 +327,10 @@
           {% set hint_approve = "Apply patch to live tree, commit, push branch, and open a GitHub PR via gh pr create" %}
           {% set hint_reject = "Discard; no files changed and no PR opened" %}
         {% elif ct == "ha_repair" %}
-          {% if r.payload.get("action") == "reboot" %}
+          {% if r.payload.get("action") == "restart" %}
+            {% set hint_approve = "Restart HA Core; Pueo will poll until the HA API is back online" %}
+            {% set hint_reject = "Skip this restart; the repair issue stays open in HA" %}
+          {% elif r.payload.get("action") == "reboot" %}
             {% set hint_approve = "Create HA backup, then reboot the HA host; Pueo will poll until HA is back online" %}
             {% set hint_reject = "Skip this reboot; the repair issue stays open in HA" %}
           {% else %}
