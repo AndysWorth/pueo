@@ -586,7 +586,30 @@ async def _execute_queued_ha_repair(
         issue_id = payload.get("issue_id", "")
         issue_key = payload.get("issue_key", f"{domain}/{issue_id}")
 
-        if action == "reboot":
+        if action == "restart":
+            from ha_update_manager import _poll_ha_api_ready
+
+            ssh = AsyncSSHClient()
+            await ssh.run("ha core restart", check=False)
+            success = await _poll_ha_api_ready(
+                _config.HA_HOST,
+                _config.HA_API_PORT,
+                _config.HA_API_TOKEN,
+                timeout_seconds=120,
+            )
+            if success:
+                from ha_agent_advanced import mark_repair_resolved
+
+                mark_repair_resolved(issue_key)
+                data["fix_applied"] = True
+                json_path.write_text(json.dumps(data, indent=2))
+                (watch_dir / f"{nid}.approved").touch()
+                asyncio.create_task(_post_reboot_repair_scan(settle_seconds=10))
+            else:
+                data["fix_error"] = "HA did not come back online after Core restart"
+                json_path.write_text(json.dumps(data, indent=2))
+                (watch_dir / f"{nid}.rejected").touch()
+        elif action == "reboot":
             from ha_update_manager import execute_ha_reboot
 
             ssh = AsyncSSHClient()
