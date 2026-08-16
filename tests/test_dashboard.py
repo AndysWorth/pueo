@@ -5134,6 +5134,82 @@ class TestExecuteQueuedHARepair:
         assert (watch_dir / f"{nid}.rejected").exists()
         assert len(tasks_created) == 0
 
+    def test_restart_action_calls_core_restart_and_marks_resolved(
+        self, tmp_path, monkeypatch
+    ):
+        """action='restart' SSHes ha core restart, polls for HA API ready, writes .approved."""
+        import asyncio
+        import ha_agent_advanced
+        import utils.ssh_client as ssh_mod
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import web.dashboard as dashboard
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        nid = "repair-restart-ok-1"
+        self._write_repair_card(watch_dir, nid, action="restart")
+        json_path = watch_dir / f"{nid}.json"
+        data = __import__("json").loads(json_path.read_text())
+
+        tasks_created = []
+
+        def fake_create_task(coro, **kwargs):
+            tasks_created.append(
+                coro.__name__ if hasattr(coro, "__name__") else str(coro)
+            )
+            coro.close()
+            return MagicMock()
+
+        mock_resolve = MagicMock()
+        fake_ssh = AsyncMock()
+        fake_ssh.run = AsyncMock(return_value=(0, "", ""))
+
+        monkeypatch.setattr(ha_agent_advanced, "mark_repair_resolved", mock_resolve)
+        monkeypatch.setattr(dashboard.asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: fake_ssh)
+
+        with patch(
+            "ha_update_manager._poll_ha_api_ready", new=AsyncMock(return_value=True)
+        ):
+            asyncio.run(
+                dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
+            )
+
+        fake_ssh.run.assert_called_once_with("ha core restart")
+        mock_resolve.assert_called_once_with("homeassistant/reboot_required")
+        assert (watch_dir / f"{nid}.approved").exists()
+        assert len(tasks_created) == 1
+
+    def test_restart_action_failure_writes_rejected(self, tmp_path, monkeypatch):
+        """If HA does not come back online after restart, .rejected is written."""
+        import asyncio
+        import utils.ssh_client as ssh_mod
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import web.dashboard as dashboard
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        nid = "repair-restart-fail-1"
+        self._write_repair_card(watch_dir, nid, action="restart")
+        json_path = watch_dir / f"{nid}.json"
+        data = __import__("json").loads(json_path.read_text())
+
+        fake_ssh = AsyncMock()
+        fake_ssh.run = AsyncMock(return_value=(0, "", ""))
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: fake_ssh)
+
+        with patch(
+            "ha_update_manager._poll_ha_api_ready", new=AsyncMock(return_value=False)
+        ):
+            asyncio.run(
+                dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
+            )
+
+        assert (watch_dir / f"{nid}.rejected").exists()
+        assert not (watch_dir / f"{nid}.approved").exists()
+
 
 class TestPostRebootRepairScan:
     def test_calls_supervisor_run_now(self, monkeypatch):
