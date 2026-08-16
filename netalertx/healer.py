@@ -435,7 +435,7 @@ class NetAlertXHealer:
     # ------------------------------------------------------------------
 
     async def run_heal(self, action: str) -> None:
-        """Execute a named heal action approved via the HITL dashboard."""
+        """Execute a named heal action approved via the dashboard."""
         if action == "fix_webhook_fields":
             await self._fix_ha_automation_fields()
         else:

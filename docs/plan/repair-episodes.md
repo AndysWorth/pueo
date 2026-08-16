@@ -36,7 +36,7 @@ RepairEpisode(
 |------|-------------|
 | 59 | `repair_episodes` SQLite table (new migration version); `RepairEpisode` dataclass; serialization helper |
 | 60 | Serialization hook at `finish_repair` tool call in `AgentLoop`; update `LLMTrace` to include episode reference |
-| 61 | `--mode export-episodes --since <date>` CLI: anonymized YAML output; episodes tab in HITL dashboard |
+| 61 | `--mode export-episodes --since <date>` CLI: anonymized YAML output; episodes tab in dashboard |
 
 ---
 

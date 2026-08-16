@@ -20,13 +20,13 @@ Make the LLM inference engine a first-class switchable setting (`LLM_PROVIDER`),
 |------|-----------|---------------|-------------|
 | `local` (default) | Ollama (local) | Ollama / nomic-embed-text | None |
 | `cloud` | Anthropic API | Ollama / nomic-embed-text | Every inference call |
-| `both` | Ollama for autonomous cycles; Claude available via HITL escalation | Ollama / nomic-embed-text | Only on approved escalations |
+| `both` | Ollama for autonomous cycles; Claude available vian approved escalation | Ollama / nomic-embed-text | Only on approved escalations |
 
 RAG embeddings always use local Ollama regardless of `LLM_PROVIDER` — `nomic-embed-text` is a small model and its privacy/locality properties are desirable.
 
 The "0 WAN during autonomous fix cycles" evaluation-matrix constraint is explicitly overridden by this milestone. It is replaced with: _WAN during autonomous fix cycles = 0 when `LLM_PROVIDER=local` (default); cloud mode intentionally sends inference traffic to Anthropic._
 
-HITL escalation — the original M7 scope — becomes the natural behavior of `both` mode: when `AgentLoop` returns `outcome = "exhausted"` or `"timeout"`, a `CARD_TYPE_CLOUD_ESCALATION` HITL card is surfaced. The user approves per-incident; the same tool registry re-runs under Claude with the full failed-loop step history as context.
+approved escalation — the original M7 scope — becomes the natural behavior of `both` mode: when `AgentLoop` returns `outcome = "exhausted"` or `"timeout"`, a `CARD_TYPE_CLOUD_ESCALATION` approval card is surfaced. The user approves per-incident; the same tool registry re-runs under Claude with the full failed-loop step history as context.
 
 ---
 
@@ -107,7 +107,7 @@ llm:
   provider: "local"  # "local" | "cloud" | "both"
                      # local: Ollama only (default, no WAN for inference)
                      # cloud: Anthropic API as primary LLM
-                     # both: Ollama for autonomous cycles + Claude available for HITL escalation
+                     # both: Ollama for autonomous cycles + Claude available for approved escalation
 
 cloud:
   model: "claude-sonnet-4-5"           # Claude model for cloud/both modes
@@ -180,7 +180,7 @@ Helpers in `web/database.py` (or a new `utils/billing.py`):
 
 ---
 
-### HITL Escalation Card (LLM_PROVIDER = "both")
+### Approved Escalation Card (LLM_PROVIDER = "both")
 
 Triggered when `AgentLoop` returns `outcome in ("exhausted", "timeout")` and `LLM_PROVIDER == "both"`:
 

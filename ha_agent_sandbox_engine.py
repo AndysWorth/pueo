@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Layer 3 — full repair pipeline: content validation, HITL gate, backup, sandbox test, atomic swap."""
+"""Layer 3 — full repair pipeline: content validation, approval gate, backup, sandbox test, atomic swap."""
 
 import hashlib
 import sqlite3
@@ -590,7 +590,7 @@ MANDATORY FLOW — follow exactly in this order:
    (e.g. utils/tool_executor.py, utils/tool_registry.py).
 2. Call propose_patch to stage the proposed change (complete new file content).
 3. Call sandbox_code to run CI validation (black, flake8, mypy, pytest).
-4. If CI passes, call open_pr to queue a HITL PR-approval card.
+4. If CI passes, call open_pr to queue a PR approval card.
 5. Call finish_repair when done:
    - action_taken='fixed' if open_pr was successfully queued
    - action_taken='fix_failed' if sandbox CI failed or no valid patch could be produced
@@ -611,7 +611,7 @@ async def _run_code_proposal_loop(
 
     Called automatically when a repair AgentLoop result has capability_gap=True.
     The loop reads relevant source, proposes a patch, validates it in the sandbox,
-    and queues an open_pr HITL card — all without human input until the final approval.
+    and queues an open_pr approval card — all without human input until the final approval.
     """
     from utils.agent_loop import AgentLoop
     from utils.tool_executor import ToolExecutor
@@ -712,7 +712,7 @@ async def main(
 
     # Autonomous gap detection (item 84): when the agent signalled a capability gap,
     # automatically start a code-proposal loop that drafts a patch, validates it in
-    # sandbox CI, and queues an open_pr HITL card for human review.
+    # sandbox CI, and queues an open_pr approval card for human review.
     if result.capability_gap and result.gap_description:
         log.info(
             "gap_detection_triggered",
@@ -728,8 +728,8 @@ async def main(
 
     # When running in "both" mode and the local loop is unable to resolve the
     # issue, gate a cloud escalation through AutonomyGate:
-    # - Level 4 (AUTONOMOUS): auto-proceeds immediately, no HITL card.
-    # - Level 2–3: sends a cloud_escalation HITL card and polls for approval.
+    # - Level 4 (AUTONOMOUS): auto-proceeds immediately, no approval card.
+    # - Level 2–3: sends a cloud_escalation approval card and polls for approval.
     # - Level 1 (REPORT_ONLY): require_approval returns False, skip silently.
     if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
         from utils.agent_loop import _format_step_trace

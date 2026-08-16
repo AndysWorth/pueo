@@ -102,7 +102,7 @@ _RECOVERY_COOLDOWN_SECONDS = 1800
 
 
 class ResourcePoller:
-    """Polls HA disk/memory on a fixed interval; sends HITL alerts on first threshold breach."""
+    """Polls HA disk/memory on a fixed interval; sends approval alerts on first threshold breach."""
 
     def __init__(
         self,
@@ -236,7 +236,7 @@ class ResourcePoller:
                 except Exception as _e:  # nosec B110
                     log.warning("disk_recovery_auto_failed", error=str(_e))
 
-            # Only send a HITL card on the first breach or after a successful recovery
+            # Only send an approval card on the first breach or after a successful recovery
             # retry (cooldown elapsed). Subsequent polls within the cooldown are silent.
             if is_first_breach or cooldown_elapsed:
                 import sqlite3 as _sqlite3
@@ -320,7 +320,7 @@ class ResourcePoller:
                     },
                 ]
 
-                # Scan for orphaned add-on data directories and add as HITL option.
+                # Scan for orphaned add-on data directories and add as approval option.
                 orphaned_addons: list = []
                 try:
                     from utils.disk_recovery import scan_orphaned_addon_dirs
@@ -353,7 +353,7 @@ class ResourcePoller:
                 except Exception as _oe:  # nosec B110 — best-effort
                     log.warning("orphaned_addon_scan_failed", error=str(_oe))
 
-                # Best-effort deep disk analysis — determines whether the HITL options
+                # Best-effort deep disk analysis — determines whether the approval options
                 # are likely to resolve the issue and names the primary culprit if not.
                 disk_analysis: dict = {}
                 try:
@@ -422,7 +422,7 @@ class ResourcePoller:
                             goal=(
                                 "Determine the root cause of the disk CRITICAL condition. "
                                 "Identify which recovery options will actually resolve it. "
-                                "If the offered HITL options are insufficient, name the "
+                                "If the offered approval options are insufficient, name the "
                                 "structural change required (specific add-on to remove, "
                                 "storage expansion, etc.)."
                             ),

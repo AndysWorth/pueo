@@ -1,4 +1,4 @@
-"""HITL notification infrastructure.
+"""Approval notification infrastructure.
 
 Three concrete notifiers:
   FileNotifier   — writes a JSON file; agent polls for .approved/.rejected sibling

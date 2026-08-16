@@ -103,10 +103,10 @@ HA_REPAIR_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("ha_repair_poll_interval_minutes", 5)
 )
 
-# Log triage deduplication — suppress repeat HITL cards for the same recurring error
+# Log triage deduplication — suppress repeat approval cards for the same recurring error
 LOG_TRIAGE_COOLDOWN_HOURS: int = int(_agent.get("log_triage_cooldown_hours", 4))
 
-# HITL queue deduplication — rejection memory and Known Issues
+# Approval queue deduplication — rejection memory and Known Issues
 REJECTION_COOLDOWN_HOURS: float = float(_agent.get("rejection_cooldown_hours", 24.0))
 KNOWN_ISSUE_REMINDER_DAYS: int = int(_agent.get("known_issue_reminder_days", 7))
 

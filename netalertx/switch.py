@@ -4,7 +4,7 @@ Flow:
   1. Read current platform from details_json (or infer from state name).
   2. Read desired platform from cfg.NETALERTX_DEPLOY_TARGET.
   3. Abort if no mismatch or if state is not FULLY_OPERATIONAL.
-  4. Issue CARD_TYPE_NETALERTX_SWITCH HITL card.
+  4. Issue CARD_TYPE_NETALERTX_SWITCH approval card.
   5. On approve: run the current-platform uninstaller, then the target-platform installer.
 
 Entry point: `python main.py --mode netalertx-switch`
@@ -100,7 +100,7 @@ async def run_switch(
             f"Current platform: {current_platform}\n"
             f"Target platform:  {target_platform}\n\n"
             "Steps:\n"
-            f"  1. Uninstall from {current_platform} (HITL approval required)\n"
+            f"  1. Uninstall from {current_platform} (approval required)\n"
             f"  2. Install on {target_platform}\n\n"
             "The current installation must be fully removed before the new one starts. "
             "Approve to begin the switch."

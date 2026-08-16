@@ -14,7 +14,7 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
 *   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
-*   **Active Dashboard:** Approves and executes HITL repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
+*   **Active Dashboard:** Review and approve pending repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
 *   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
 *   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS component changelogs, and installed integration docs are embedded locally via ChromaDB and `nomic-embed-text`. The agent queries this knowledge automatically during repair cycles — no internet access required.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
@@ -74,7 +74,7 @@ python main.py  # equivalent to: pueo
 #### What the supervisor starts
 
 `pueo` (no flags) is the default supervisor mode. It starts all monitoring loops
-(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the HITL
+(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the
 dashboard in a single supervised process. The dashboard is available at
 `http://127.0.0.1:8080`. Crashed loops restart automatically with exponential backoff.
 
@@ -87,7 +87,7 @@ control the daemon without touching `launchctl` directly.
 ```bash
 # Daemons (single-loop, no dashboard)
 pueo --mode monitor             # live SSH log tail with AI triage
-pueo --mode dashboard           # HITL web dashboard only (passive — no loops)
+pueo --mode dashboard           # web dashboard only (passive — no loops)
 
 # One-shot diagnostics
 pueo --mode diagnose            # config fetch and analysis
@@ -108,6 +108,8 @@ pueo --mode stop-service        # stop the launchd service (stays stopped until 
 pueo --mode start-service       # re-enable and start the launchd service
 pueo --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
 ```
+
+> **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`, `audit`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts.
 
 Pass `--config /path/to/config.yaml` if your config file is not in the project directory:
 ```bash
@@ -149,7 +151,7 @@ Embedded data is stored in `chromadb/` in the project directory. The embeddings 
 
 ## 💬 Ask Pueo
 
-The **Chat** tab in the HITL dashboard (`http://127.0.0.1:8080/chat`) lets you talk directly
+The **Chat** tab in the dashboard (`http://127.0.0.1:8080/chat`) lets you talk directly
 to the agent between incidents. It uses the same `AgentLoop` that drives reactive repair
 sessions — same tool registry, same safety gates — with a conversational system prompt and
 a `finish_chat` termination signal instead of `finish_repair`.
@@ -164,7 +166,7 @@ a `finish_chat` termination signal instead of `finish_repair`.
 
 **Extending Pueo with new tools** (opt-in):
 Set `CHAT_ALLOW_TOOL_REGISTRATION = true` in `config.yaml` to enable the code-sandbox flow.
-With it enabled, you can ask Pueo to write a new tool, review the proposed code in a HITL
+With it enabled, you can ask Pueo to write a new tool, review the proposed code in an
 approval card, and — once approved — have the tool registered and callable in the next
 session. Tools are stored in `user_tools/` and loaded automatically on startup.
 

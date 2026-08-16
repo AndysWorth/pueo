@@ -12,19 +12,19 @@ Pueo's safety invariant requires a confirmed backup before every write. The HA Y
 
 ### Feature 1 — Disk & Memory Sensing (item 29)
 
-Poll `ha host info` via SSH on a configurable interval. Extract disk and memory fields from the JSON response. Surface alerts in the HITL dashboard when thresholds are crossed.
+Poll `ha host info` via SSH on a configurable interval. Extract disk and memory fields from the JSON response. Surface alerts in the dashboard when thresholds are crossed.
 
 **New config keys:**
 
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `RESOURCE_POLL_INTERVAL_SECONDS` | 300 | How often to check disk/memory |
-| `HA_DISK_WARN_GB` | 5 | HITL alert threshold |
+| `HA_DISK_WARN_GB` | 5 | approval alert threshold |
 | `HA_DISK_CRITICAL_GB` | 3 | Block new backups; surface as CRITICAL |
-| `HA_MEM_WARN_MB` | 256 | HITL alert threshold |
+| `HA_MEM_WARN_MB` | 256 | approval alert threshold |
 
 **Behaviour:**
-- HITL dashboard card when disk < WARN or memory < WARN
+- dashboard card when disk < WARN or memory < WARN
 - `execute_remote_backup()` blocks early (before SSH round-trip) when disk < CRITICAL — raises `DiskCriticalError` with the current free-space value in the message
 - Polling runs as an `asyncio.create_task()` alongside the existing monitoring loop
 
@@ -45,7 +45,7 @@ The full three-tier picture for HA disk free:
 
 | Free space | Who acts | Effect |
 |---|---|---|
-| < `HA_DISK_WARN_GB` (default 5 GB) | Pueo | HITL warning card; triggers backup offload + retention cleanup |
+| < `HA_DISK_WARN_GB` (default 5 GB) | Pueo | approval warning card; triggers backup offload + retention cleanup |
 | < `HA_DISK_CRITICAL_GB` (default 3 GB) | Pueo | `DiskCriticalError`; repair pipeline aborted |
 | < 1 GB | HA Supervisor | All Supervisor operations hard-blocked, including `ha backups new` |
 
@@ -114,7 +114,7 @@ After `execute_remote_backup()` confirms a slug, SFTP-pull the `.tar` file to Pu
 ### Implementation notes (item 29, 2026-07-24) — PR #61
 
 - `poll_disk_and_memory(ssh_client)` in `ha_agent_advanced.py`: runs `ha host info --raw-json` over SSH; extracts `disk_free` (float GB) and computes `mem_available_mb` from `/proc/meminfo MemAvailable`
-- `DiskCriticalError` exception raised by `execute_remote_backup()` when `disk_free < HA_DISK_CRITICAL_GB`; polling loop surfaces HITL dashboard cards for WARN thresholds
+- `DiskCriticalError` exception raised by `execute_remote_backup()` when `disk_free < HA_DISK_CRITICAL_GB`; polling loop surfaces dashboard cards for WARN thresholds
 - Config keys added: `RESOURCE_POLL_INTERVAL_SECONDS` (300), `HA_DISK_WARN_GB` (5), `HA_DISK_CRITICAL_GB` (3), `HA_MEM_WARN_MB` (256)
 - Verified `ha host info` field names on live HAOS 18.1: `disk_free`, `disk_total`, `disk_used` (float GB); memory from `/proc/meminfo` (no memory fields in `ha host info`)
 
@@ -143,7 +143,7 @@ After `execute_remote_backup()` confirms a slug, SFTP-pull the `.tar` file to Pu
 
 ### Done when
 
-- `ha host info` is polled on schedule; disk/memory alerts appear in the HITL dashboard when thresholds are crossed; `execute_remote_backup()` blocks when disk < CRITICAL
+- `ha host info` is polled on schedule; disk/memory alerts appear in the dashboard when thresholds are crossed; `execute_remote_backup()` blocks when disk < CRITICAL
 - Every new backup triggers an SFTP offload to Pueo; SHA-256 verified; inventory updated in SQLite
 - HA retains at most `BACKUP_RETAIN_ON_HA` backups; no backup deleted from HA without a confirmed local copy
 - `--mode backup-status` prints a clean inventory table

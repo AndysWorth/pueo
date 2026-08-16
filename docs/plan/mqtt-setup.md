@@ -14,7 +14,7 @@ Three gaps prevented end-to-end MQTT authentication:
    hints in `config.yaml`.
 2. `installer.py` step 6 wrote `MQTT_BROKER` and `MQTT_PORT` to `app.conf` but never
    wrote `MQTT_USER` or `MQTT_PASSWORD`, so credentials sat unused in `config.yaml`.
-3. `installer.py` step 7 HITL body hardcoded "no credentials" in its manual HA MQTT
+3. `installer.py` step 7 approval card body hardcoded "no credentials" in its manual HA MQTT
    integration instructions regardless of config.
 
 ## Solution
@@ -25,7 +25,7 @@ Three gaps prevented end-to-end MQTT authentication:
 - **`installer.py` step 6**: conditionally adds `MQTT_USER` and `MQTT_PASSWORD` to
   the `app.conf` merge when `NETALERTX_MQTT_USER` is non-empty; omits them for
   anonymous access.
-- **`installer.py` step 7**: HITL body now includes the configured credentials (or
+- **`installer.py` step 7**: approval card body now includes the configured credentials (or
   "no credentials") in the manual HA MQTT integration setup instructions.
 
 ## Files Changed

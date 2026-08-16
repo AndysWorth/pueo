@@ -14,7 +14,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 3.5 · 1 s
 | Level | Name | Behaviour |
 |-------|------|-----------|
 | 1 | Report Only | Observe, diagnose, and report. No file writes, no SSH state changes, no service restarts. Ask only for clarification needed to complete the report. |
-| 2 | Suggest | Propose every action; require explicit HITL approval before any execution. Ask preference questions when the answer would change what Pueo recommends. |
+| 2 | Suggest | Propose every action; require explicit approval before any execution. Ask preference questions when the answer would change what Pueo recommends. |
 | 3 | Guided | Auto-execute LOW-risk actions. Pause for approval on MEDIUM, HIGH, and CRITICAL. Ask preference questions only for non-trivial decisions. |
 | 4 | Autonomous | Auto-execute LOW, MEDIUM, and HIGH-risk actions. Pause only for CRITICAL or when no fix applies. Preference questions are skipped; use documented safe defaults instead. |
 
@@ -27,7 +27,7 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phase 3.5 · 1 s
 | HIGH | Writing to production HA `configuration.yaml`, restarting an add-on or container, calling `ha core restart` |
 | CRITICAL | Removing a top-level block from production config, bulk irreversible operations, any action when backup slug is unavailable |
 
-**Autonomy × Risk matrix** (✓ = auto-execute, ask = HITL approval required, skip = no action taken):
+**Autonomy × Risk matrix** (✓ = auto-execute, ask = approval required, skip = no action taken):
 
 ```
 Risk →     | LOW  | MEDIUM | HIGH  | CRITICAL
@@ -61,7 +61,7 @@ class AutonomyLevel(IntEnum):
 `AutonomyGate` — single decision point imported by all Pueo modules:
 - `gate.should_auto_execute(risk: RiskLevel) -> bool` — True if the current level permits executing at the given risk without asking.
 - `gate.should_ask_preference(context: str) -> bool` — True if a preference question is appropriate at the current level.
-- `async gate.require_approval(subject: str, body: str, payload: dict, notifier: NotifierProtocol, risk: RiskLevel) -> bool` — sends HITL notification and polls for `.approved`/`.rejected` up to `agent.hitl_timeout_minutes`; at level 1 returns False without notifying; at level 4 short-circuits to True for LOW/MEDIUM without notifying.
+- `async gate.require_approval(subject: str, body: str, payload: dict, notifier: NotifierProtocol, risk: RiskLevel) -> bool` — sends approval notification and polls for `.approved`/`.rejected` up to `agent.hitl_timeout_minutes`; at level 1 returns False without notifying; at level 4 short-circuits to True for LOW/MEDIUM without notifying.
 
 **New class: `FakeAutonomyGate`** — test double for `AutonomyGate`; configurable `auto_execute_result` and `approval_result` per risk level; exposes call counts for assertions. Lives in `utils/autonomy.py` alongside the real class.
 
@@ -79,6 +79,6 @@ class AutonomyLevel(IntEnum):
 **Done when:**
 - `agent.autonomy_level = 1`: HA sandbox pipeline with a known-bad config produces structured log output and a notifier event but zero SSH writes — `FakeSSHClient.write_calls == []`.
 - `agent.autonomy_level = 3`: LOW-risk action (device name lock) auto-proceeds; HIGH-risk (production config write) pauses for approval.
-- `agent.autonomy_level = 4`: full HA repair pipeline runs end-to-end without HITL for WARNING severity; CRITICAL severity still pauses.
+- `agent.autonomy_level = 4`: full HA repair pipeline runs end-to-end without approval for WARNING severity; CRITICAL severity still pauses.
 - `TestAutonomyGate` covers all 16 cells of the risk × level matrix for `should_auto_execute`; `should_ask_preference` returns correct values; `require_approval` short-circuits correctly at levels 1 and 4.
 - `TestSandboxHITL` (existing) continues to pass after the `requires_hitl()` refactor.

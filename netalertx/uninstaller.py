@@ -186,7 +186,7 @@ async def run_uninstaller(
     disk_before = await _report_disk_space(ssh_client)
     log.info("uninstaller_disk_before", disk=disk_before, correlation_id=cid)
 
-    # ── HITL approval (CRITICAL — destructive, irreversible on HA side) ────────
+    # ── Approval required (CRITICAL — destructive, irreversible on HA side) ───
     approved = await gate.require_approval(
         subject="NetAlertX uninstall: remove add-on from Home Assistant",
         body=(

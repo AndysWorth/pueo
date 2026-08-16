@@ -22,16 +22,16 @@ All other notifications use integration-specific or user-defined IDs. Unknown ID
 
 **Notification vs update entities.** HA 2022.4+ surfaces update availability as `update.*` entities (item 33), not persistent notifications. This phase handles `persistent_notification.*` entities only.
 
-**Dismissal.** `POST /api/services/persistent_notification/dismiss` with body `{ "notification_id": "<id>" }` clears the notification from the HA UI. Pueo only dismisses after explicit HITL approval — never automatically.
+**Dismissal.** `POST /api/services/persistent_notification/dismiss` with body `{ "notification_id": "<id>" }` clears the notification from the HA UI. Pueo only dismisses after explicit approval — never automatically.
 
 **IP enrichment.** For security notifications containing IP addresses, Pueo attempts three enrichment sources in order:
 1. Reverse DNS (`socket.gethostbyaddr()`) from Pueo's machine — fast, local
 2. NetAlertX device list (`GET /devices`) — matches IP to a friendly device name if NetAlertX is installed
 3. HA device registry via WebSocket `config/device_registry/list` — matches `["ip", "<addr>"]` connections entry
 
-All three are best-effort; enrichment failure does not block the HITL card.
+All three are best-effort; enrichment failure does not block the approval card.
 
-**Deduplication.** Notifications already presented as HITL cards are tracked by `notification_id` in a new SQLite table (`notification_history`). A notification is not re-presented unless it reappears after having been dismissed.
+**Deduplication.** Notifications already presented as approval cards are tracked by `notification_id` in a new SQLite table (`notification_history`). A notification is not re-presented unless it reappears after having been dismissed.
 
 ---
 
@@ -103,7 +103,7 @@ Enriched context example:
 }
 ```
 
-`is_known_device` is `True` if any enrichment source matched. If `is_known_device` is `False`, the HITL card flags it more urgently as a potentially external source.
+`is_known_device` is `True` if any enrichment source matched. If `is_known_device` is `False`, the approval card flags it more urgently as a potentially external source.
 
 **`invalid_config` — configuration error enrichment.** Include the current `configuration.yaml` content in the LLM context (truncated to token budget) so the explanation can cite the specific broken section.
 
@@ -113,9 +113,9 @@ Enriched context example:
 
 ---
 
-### Feature 3 — HITL Notification Cards + Dismissal (item 40)
+### Feature 3 — Approval Notification Cards + Dismissal (item 40)
 
-**One HITL card per notification.** The card shows:
+**One approval card per notification.** The card shows:
 - Notification title and original message
 - Category badge and severity indicator
 - Enriched context (IP details, device name, etc.)
@@ -123,23 +123,23 @@ Enriched context example:
 - LLM recommended action
 - Two buttons: **Dismiss in HA** (calls dismiss service + marks `dismissed_by = 'user'`) and **Keep** (closes card without dismissing; notification stays in HA UI)
 
-**`--mode notifications`** — one-shot: polls for all current `persistent_notification.*` entities, enriches and triages all of them, sends HITL cards for any not already in `notification_history`. Exits after cards are sent.
+**`--mode notifications`** — one-shot: polls for all current `persistent_notification.*` entities, enriches and triages all of them, sends approval cards for any not already in `notification_history`. Exits after cards are sent.
 
 **Risk level for dismissal.** Dismissing a notification is LOW risk (reversible — the notification reappears on next HA restart if the underlying condition persists). Auto-dismissal is never performed; the button triggers the dismiss service call only after user clicks it.
 
-**`http_login` special handling.** If `is_known_device = False`, severity is elevated to `CRITICAL` in the HITL card and the card subject line includes "⚠ Unknown source IP". If `is_known_device = True`, severity stays `HIGH` but the device name appears prominently ("Login attempt from Andy's Phone").
+**`http_login` special handling.** If `is_known_device = False`, severity is elevated to `CRITICAL` in the approval card and the card subject line includes "⚠ Unknown source IP". If `is_known_device = True`, severity stays `HIGH` but the device name appears prominently ("Login attempt from Andy's Phone").
 
 ---
 
 ### Feature 4 — Notification History in Dashboard (item 41)
 
-New **Notifications** tab in the HITL web dashboard (`web/dashboard.py`).
+New **Notifications** tab in the dashboard (`web/dashboard.py`).
 
 **Tab sections:**
 
 | Section | Content |
 |---------|---------|
-| Pending | Notifications currently showing in HA UI, not yet dismissed; each has inline HITL card |
+| Pending | Notifications currently showing in HA UI, not yet dismissed; each has inline approval card |
 | History | All past notifications from `notification_history`; sortable by first_seen, category, severity |
 | Detail view | Click any history row to expand: original message, enriched context, LLM explanation |
 
@@ -153,11 +153,11 @@ New **Notifications** tab in the HITL web dashboard (`web/dashboard.py`).
 
 - Monitor loop polls for `persistent_notification.*` entities every `HA_NOTIFICATION_POLL_INTERVAL_MINUTES`
 - `http_login` notifications are enriched with reverse DNS + NetAlertX name + HA device registry lookup
-- Unknown-source login attempts are escalated to CRITICAL in the HITL card
+- Unknown-source login attempts are escalated to CRITICAL in the approval card
 - All notifications receive an LLM plain-English explanation and recommended action
 - Dismissal fires `POST /api/services/persistent_notification/dismiss` only on explicit user action
 - `notification_history` SQLite table tracks all seen notifications and dismissal state
-- HITL dashboard has a Notifications tab with pending and history views
+- dashboard has a Notifications tab with pending and history views
 - `--mode notifications` works as a one-shot CLI entry point
 - `FakeHARestClient` and `FakeHAWebSocketClient` used in all unit tests
 - All new config keys have tests in `TestConfigDefaults`

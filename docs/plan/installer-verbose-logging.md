@@ -17,7 +17,7 @@ Specific gaps observed during a live install run (2026-07-21):
   output between attempts. The terminal looks hung.
 - **Slow SSH commands** — commands like `ha apps install`, `ha apps start`, `ha apps restart`, and
   `ha core restart` can take 30–120 seconds. There is no "about to run X" line before the wait.
-- **HITL gate waits** — after `gate.require_approval()` sends a notification, there is no terminal
+- **approval gate waits** — after `gate.require_approval()` sends a notification, there is no terminal
   line saying Pueo is waiting for human input. The user may not know an approval is pending.
 - **HA restart wait** — after the step 8 HA core restart, Pueo waits ~60 seconds for HA to come
   back up. No terminal output during this wait.
@@ -49,7 +49,7 @@ Add a `log.info("running_command", cmd=...)` line immediately before each long-r
 post-command log lines already capture success/failure; these new lines fill the gap before the
 command returns.
 
-### Before and after HITL gate waits
+### Before and after approval gate waits
 
 In `AutonomyGate.require_approval()`, log before blocking:
 
@@ -87,7 +87,7 @@ INFO     poll_waiting  addon_id='db21ed7f_netalertx_fa'  expected='running'  att
 INFO     step5_addon_running  slug='db21ed7f_netalertx_fa'
 ```
 
-And for an HITL wait (step 7):
+And for an approval wait (step 7):
 
 ```
 INFO     hitl_waiting_for_approval  subject='NetAlertX installer: configure MQTT integration in HA'  risk='MEDIUM'

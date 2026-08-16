@@ -141,8 +141,8 @@ Part of the [Implementation Plan](../implementation-plan.md) · Phases 1–3.
 
 ---
 
-### 9. HITL Notification Infrastructure ✅ Done (2026-07-15)
-**Problem:** The HITL gate requires a notification channel to be usable. Without one, "pause for human approval" means "pause forever."
+### 9. Approval Notification Infrastructure ✅ Done (2026-07-15)
+**Problem:** The approval gate requires a notification channel to be usable. Without one, "pause for human approval" means "pause forever."
 
 **Build:** `utils/notify.py`:
 - `NotifierProtocol` with `async def send(subject: str, body: str, payload: dict) -> None`

@@ -4,11 +4,11 @@
 Accepted
 
 ## Context
-HA can resolve pending conditions without going through Pueo's HITL flow. The most common case is HA auto-applying an update (e.g., `matter_server` 9.1.1 → 9.2.0 applied silently before Pueo's poll cycle). When this happens, the HITL card for that update sits pending forever — the update poll loop has a guard that correctly refuses to resolve unapproved pending cards on a single poll (transient HA boot gaps look identical to genuine external resolution), but there was no second path to confirm the update was truly applied.
+HA can resolve pending conditions without going through Pueo's approval flow. The most common case is HA auto-applying an update (e.g., `matter_server` 9.1.1 → 9.2.0 applied silently before Pueo's poll cycle). When this happens, the approval card for that update sits pending forever — the update poll loop has a guard that correctly refuses to resolve unapproved pending cards on a single poll (transient HA boot gaps look identical to genuine external resolution), but there was no second path to confirm the update was truly applied.
 
 The same gap exists for HA repair issues that clear on their own (e.g., a reboot-required repair after the user reboots HA directly) and disk alerts that recover without user action (e.g., HA's background cleanup frees space).
 
-Nothing appeared in the Event Timeline to explain what happened outside Pueo, leaving the user with stale HITL cards and no audit trail.
+Nothing appeared in the Event Timeline to explain what happened outside Pueo, leaving the user with stale approval cards and no audit trail.
 
 ## Decision
 
@@ -24,9 +24,9 @@ The timer is diagnostic state, not safety state. If Pueo restarts, the worst out
 
 ### Timeline event on external resolution
 
-When a condition resolves externally, Pueo writes an INFO timeline event with source `update_check`, `ha_repairs`, or `resource` explaining what happened. The HITL card is retired by setting `resolved_at` in `hitl_suppression`. For file-notifier deployments, an `.approved` sidecar is written to hide the card from the HITL queue.
+When a condition resolves externally, Pueo writes an INFO timeline event with source `update_check`, `ha_repairs`, or `resource` explaining what happened. The approval card is retired by setting `resolved_at` in `hitl_suppression`. For file-notifier deployments, an `.approved` sidecar is written to hide the card from the approval queue.
 
-No HITL card is created for the external resolution — only a timeline entry. The user can review it in the dashboard's Event Timeline tab.
+No approval card is created for the external resolution — only a timeline entry. The user can review it in the dashboard's Event Timeline tab.
 
 ### Reconcile sweep for absent entities
 
@@ -34,7 +34,7 @@ The update poll loop now includes a reconcile sweep after the per-entity loop. T
 
 ### Resource and repair clearance
 
-Disk critical and disk warn alert clearance sites in `utils/resource.py` now write a timeline event when the alert resolves. Repair reconcile in `ha_log_monitor.poll_for_repairs()` writes a timeline event when a previously-HITL'd issue no longer appears in HA's repair list.
+Disk critical and disk warn alert clearance sites in `utils/resource.py` now write a timeline event when the alert resolves. Repair reconcile in `ha_log_monitor.poll_for_repairs()` writes a timeline event when a previously-queued issue no longer appears in HA's repair list.
 
 ## Consequences
 

@@ -95,7 +95,7 @@ class NetAlertXEventRouter:
 
     Tracks recently-seen MAC addresses within ``dedup_window_seconds``.
     When a new-device alert arrives (via MQTT or webhook callback), the router
-    deduplicates, checks the autonomy gate, and sends a HITL notification card
+    deduplicates, checks the autonomy gate, and sends an approval notification card
     when the gate requires it.
     """
 

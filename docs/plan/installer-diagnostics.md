@@ -255,11 +255,11 @@ async def diagnose_installer_failure(
     # 4. Validate and return InstallerDiagnostic
 ```
 
-**HITL formatter:**
+**Approval card formatter:**
 
 ```python
 def format_diagnostic_for_hitl(diagnostic: InstallerDiagnostic) -> str:
-    """Render InstallerDiagnostic as human-readable text for HITL notification body.
+    """Render InstallerDiagnostic as human-readable text for approval notification body.
 
     Example output:
       Diagnosis: Port 1883 is in use by another process (confidence: 82%)
@@ -291,7 +291,7 @@ Add `llm_client: LLMClientProtocol | None = None` to:
 
 ```python
 # BEFORE: abort notification with "Aborting." body
-# AFTER: diagnose → enrich HITL body → optionally attempt auto-fix
+# AFTER: diagnose → enrich approval card body → optionally attempt auto-fix
 
 running = await _poll_addon_state(ssh_client, "core_mosquitto", "running")
 if not running:
@@ -383,5 +383,5 @@ No changes to: `interfaces.py`, `utils/autonomy.py`, `utils/notify.py`, `utils/o
 **Done when:**
 - `pytest --cov --cov-fail-under=90` passes with all new tests
 - `black --check . && flake8 . && mypy --ignore-missing-imports . && bandit -r . -x ./tests,./.venv`
-- Live test: HITL notification body for a Mosquitto failure contains a human-readable diagnosis
+- Live test: approval notification body for a Mosquitto failure contains a human-readable diagnosis
   with primary hypothesis, confidence %, evidence, and recommended action — not "Aborting."

@@ -26,7 +26,7 @@ This phase also implements the shared sandbox infrastructure (`read_source`, `pr
 
 **Code sandbox.** `propose_patch` stores a pending change in `ToolExecutor._pending_patch` (not applied to the live tree). `sandbox_code` copies the repo to a temp directory, applies the patch, and runs the full CI gate (`black`, `flake8`, `mypy`, `pytest`) in a subprocess with a 60-second timeout. The temp directory is cleaned up unconditionally in `finally`.
 
-**Dynamic tool registration.** `add_tool` writes approved code to `user_tools/<name>.py`, imports it, and registers it in `ToolExecutor._dynamic_tools` so future loops (both chat and repair) can call it. Persisted in `registered_tools` SQLite table; loaded at startup. Protected by `CHAT_ALLOW_TOOL_REGISTRATION = false` default and a mandatory HITL approval card (`code_proposal` card type).
+**Dynamic tool registration.** `add_tool` writes approved code to `user_tools/<name>.py`, imports it, and registers it in `ToolExecutor._dynamic_tools` so future loops (both chat and repair) can call it. Persisted in `registered_tools` SQLite table; loaded at startup. Protected by `CHAT_ALLOW_TOOL_REGISTRATION = false` default and a mandatory approval card (`code_proposal` card type).
 
 **`AgentLoop.terminal_tool_name`.** A new `terminal_tool_name: str = "finish_repair"` parameter on `AgentLoop.__init__` makes the loop termination signal configurable. Chat loops pass `"finish_chat"`. The existing repair loops use the default — no change to existing behavior.
 
@@ -42,7 +42,7 @@ This phase also implements the shared sandbox infrastructure (`read_source`, `pr
 | 68 | `/chat` GET route, `chat.html` template (session list + message thread + input), `base.html` nav link |
 | 69 | `POST /chat/message` + `GET /chat/events` SSE; `asyncio.create_task` loop dispatch; `chat_thinking`/`chat_done`/`chat_error` events |
 | 70 | `read_source`, `propose_patch`, `sandbox_code` tools: ToolDefinitions + ToolExecutor methods; subprocess CI gate; 60s timeout |
-| 71 | `add_tool` registration: migration v9 (`registered_tools`), `ToolExecutor._dynamic_tools`, `CARD_TYPE_CODE_PROPOSAL`, dashboard HITL handler, `user_tools/` loader on startup |
+| 71 | `add_tool` registration: migration v9 (`registered_tools`), `ToolExecutor._dynamic_tools`, `CARD_TYPE_CODE_PROPOSAL`, dashboard approval handler, `user_tools/` loader on startup |
 | 72 | Tests: `test_chat.py` (migrations v8+v9, remember/recall, chat registry, sandbox_code, read_source, add_tool); `TestConfigDefaults` entries for two new config keys |
 
 ---
@@ -211,7 +211,7 @@ Each subprocess call uses `asyncio.to_thread(subprocess.run, ..., capture_output
 
 ---
 
-### Item 71 — add_tool registration + code_proposal HITL card
+### Item 71 — add_tool registration + code_proposal approval card
 
 **Files:** `ha_agent_advanced.py`, `utils/tool_executor.py`, `utils/card_types.py`, `web/dashboard.py`, `web/templates/index.html`, `config.py`, `config.yaml.default`, `setup.sh`
 
@@ -236,7 +236,7 @@ CREATE TABLE IF NOT EXISTS registered_tools (
 1. Check `CHAT_ALLOW_TOOL_REGISTRATION` — return error if `False`
 2. `compile(code, "<string>", "exec")` — syntax check, raises `SyntaxError` on bad code
 3. Verify `_pending_patch` contains a sandbox-validated version of this code (i.e., `sandbox_code` was called and passed) — if `_sandbox_passed` flag is not set, return error "Run sandbox_code first"
-4. Queue a `code_proposal` HITL card with payload `{name, description, parameters_schema, code, sandbox_output}`
+4. Queue a `code_proposal` approval card with payload `{name, description, parameters_schema, code, sandbox_output}`
 5. Return `ToolResult(awaiting_approval=True)`
 
 **`ToolExecutor` state:** Add `_sandbox_passed: bool = False` and `_sandbox_output: str = ""` flags; `sandbox_code` sets these on success; `reset()` clears them.
@@ -275,14 +275,14 @@ CREATE TABLE IF NOT EXISTS registered_tools (
 | `TestAgentLoopTerminalTool` | `terminal_tool_name="finish_chat"` causes loop to terminate on `finish_chat`; default `"finish_repair"` unaffected |
 | `TestReadSource` | path within repo → returns content; path outside repo → rejected; non-allowed extension → rejected; path > 8000 chars → truncated |
 | `TestSandboxCode` | mocked subprocess exit 0 → `ToolResult.success=True`; mocked exit 1 → `success=False` with output; no pending patch → error |
-| `TestAddTool` | `CHAT_ALLOW_TOOL_REGISTRATION=False` → error; sandbox not run → error; valid flow (mocked HITL) → `awaiting_approval=True` |
+| `TestAddTool` | `CHAT_ALLOW_TOOL_REGISTRATION=False` → error; sandbox not run → error; valid flow (mocked approval) → `awaiting_approval=True` |
 
 ---
 
 ### Safety notes
 
-- `add_tool` requires sandbox pass + HITL approval regardless of autonomy level — hardcoded, not gated by `AutonomyGate.should_auto_execute()`
-- `read_source` and `propose_patch` are read-only and staging-only respectively; no writes to the live tree until HITL approval
+- `add_tool` requires sandbox pass + approval regardless of autonomy level — hardcoded, not gated by `AutonomyGate.should_auto_execute()`
+- `read_source` and `propose_patch` are read-only and staging-only respectively; no writes to the live tree until approval
 - `sandbox_code` runs in a temp directory copy — it cannot write to the real working tree
 - Safety-critical files (`utils/autonomy.py`, `interfaces.py`, `config.py`, `ha_agent_advanced.py`) are not explicitly blocked from `propose_patch` in Phase 17.5; that block list is implemented in Phase 21's security review (item 85)
 - `CHAT_ALLOW_TOOL_REGISTRATION` defaults to `false`; the feature is inert unless the user explicitly enables it
@@ -295,5 +295,5 @@ CREATE TABLE IF NOT EXISTS registered_tools (
 - Sending "What is the current HA disk usage?" causes Pueo to call `run_ha_command` or `read_config` and reply with disk info
 - Sending "Remember that the media server is at 192.168.1.50" stores a memory row; sending "What do you remember about my media server?" returns it
 - Chat history survives a page reload (session persisted in SQLite)
-- With `CHAT_ALLOW_TOOL_REGISTRATION=true`, sending "Write a tool that pings a host" causes propose_patch + sandbox_code; HITL card appears with diff; approving registers the tool; the tool is callable in the next chat session
+- With `CHAT_ALLOW_TOOL_REGISTRATION=true`, sending "Write a tool that pings a host" causes propose_patch + sandbox_code; approval card appears with diff; approving registers the tool; the tool is callable in the next chat session
 - `pytest tests/test_chat.py -v` all pass; CI gate passes (90% coverage)

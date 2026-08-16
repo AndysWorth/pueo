@@ -58,7 +58,7 @@ Config keys: `ollama.model`, `ollama.model_auto`
 | ------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `local` | Ollama only — all inference stays on device; zero cloud API calls                                                           |
 | `cloud` | Anthropic Claude as the primary model; all inference calls go to Anthropic                                                  |
-| `both`  | Ollama for autonomous repair cycles; Claude available as a HITL-approved escalation when the local loop hits the tool-call cap or wall-clock timeout without finishing |
+| `both`  | Ollama for autonomous repair cycles; Claude available as an approved escalation when the local loop hits the tool-call cap or wall-clock timeout without finishing |
 
 `both` mode preserves the local-first property during unattended repair — Claude is only invoked when a human approves a cloud-escalation card in the dashboard. A local loop that explicitly signals failure (e.g. the model determines no fix is possible) does *not* trigger escalation; only hitting the hard limits does.
 
@@ -186,7 +186,7 @@ Config key: `agent.self_healing_enabled`
 ---
 
 **Prompt: Require human approval before every repair?** (`true` / `false`, default: `false`)
-When `true`, forces HITL approval for every repair action regardless of the autonomy level below.
+When `true`, forces approval for every repair action regardless of the autonomy level below.
 
 Config key: `agent.hitl_always`
 
@@ -199,14 +199,14 @@ Controls how much Pueo acts on its own versus waiting for approval:
 |---|---|---|
 | `1` | Report only | Diagnoses and explains issues; never writes to HA |
 | `2` | Suggest | Generates proposed fixes and sends them to the dashboard; you approve each one |
-| `3` | Guided | Auto-executes LOW-severity fixes; HITL approval for MEDIUM and CRITICAL |
-| `4` | Autonomous | Auto-executes LOW and MEDIUM fixes; HITL approval for CRITICAL only |
+| `3` | Guided | Auto-executes LOW-severity fixes; approval for MEDIUM and CRITICAL |
+| `4` | Autonomous | Auto-executes LOW and MEDIUM fixes; approval for CRITICAL only |
 
 Config key: `agent.autonomy_level`
 
 ---
 
-**Prompt: HITL dashboard port** (default: `8080`)
+**Prompt: dashboard port** (default: `8080`)
 The local port for the web dashboard. Change this if port 8080 is already in use on your machine.
 
 Config key: `agent.dashboard_port`
@@ -214,14 +214,14 @@ Config key: `agent.dashboard_port`
 ---
 
 **Prompt: Allow chat agent to register new tools?** (`true` / `false`, default: `false`)
-When `true`, the conversational agent can write new Python tools at runtime — each goes through sandbox CI validation and an explicit HITL approval card before being loaded. Leave `false` unless you understand that the agent will be generating and executing arbitrary Python code.
+When `true`, the conversational agent can write new Python tools at runtime — each goes through sandbox CI validation and an explicit approval card before being loaded. Leave `false` unless you understand that the agent will be generating and executing arbitrary Python code.
 
 Config key: `agent.chat_allow_tool_registration`
 
 ---
 
 **Prompt: Notifier type** (`file` / `ntfy` / `webhook`, default: `file`)
-How Pueo alerts you when it needs HITL approval:
+How Pueo alerts you when it needs approval:
 
 | Choice | Behaviour |
 |---|---|
@@ -243,7 +243,7 @@ Setup connects to HA over SSH to verify credentials and detect the HA version. I
 ---
 
 **Prompt: Set up NetAlertX automatically when Pueo runs?** (`Y` / `n`)
-NetAlertX is a network-presence monitor that Pueo can install and manage as a HA App. If you say yes, Pueo installs it automatically on first start — you just approve the HITL cards that appear in the dashboard.
+NetAlertX is a network-presence monitor that Pueo can install and manage as a HA App. If you say yes, Pueo installs it automatically on first start — you just approve the approval cards that appear in the dashboard.
 
 You can change this decision later: set `netalertx.setup_desired: true` in `config.yaml` and restart Pueo.
 

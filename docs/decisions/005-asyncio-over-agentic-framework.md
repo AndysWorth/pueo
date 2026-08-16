@@ -13,7 +13,7 @@ Use plain `asyncio` for all orchestration. No LangGraph, CrewAI, or other agenti
 - Pueo's state machine is simple: fetch → diagnose → gate → backup → sandbox → swap. This is a linear pipeline, not a multi-agent graph.
 - The only branching is at the autonomy gate (approve / reject / auto-proceed) and the sandbox result (pass / fail). Both are two-branch conditionals, not complex graph traversals.
 - Adding LangGraph or CrewAI would introduce ~30–50 transitive dependencies, a framework-specific mental model for contributors, and framework version coupling — in exchange for abstractions Pueo does not use.
-- `asyncio.create_task()` satisfies Pueo's concurrency requirements: the HITL dashboard runs alongside monitoring loops without blocking.
+- `asyncio.create_task()` satisfies Pueo's concurrency requirements: the dashboard runs alongside monitoring loops without blocking.
 
 ## Consequences
 - If Pueo grows to require true multi-agent coordination (e.g., separate diagnosis, planning, and execution agents that communicate asynchronously), this decision should be revisited. The trigger is: more than one LLM call per repair cycle, or a need for agent-to-agent message passing.

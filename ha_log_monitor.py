@@ -217,7 +217,7 @@ async def tail_remote_log_stream(
                     except RateLimitExceeded:
                         log.warning("rate_limit_exceeded")
                         continue
-                    # Persistent dedup: skip if we already sent a HITL card for this
+                    # Persistent dedup: skip if we already sent an approval card for this
                     # error pattern within the cooldown window. Survives daemon restarts
                     # unlike the in-memory _debouncer.
                     from ha_agent_advanced import (
@@ -288,7 +288,7 @@ async def tail_remote_log_stream(
 
 
 def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> None:
-    """Retire a pending update HITL card that HA resolved without Pueo's involvement."""
+    """Retire a pending update approval card that HA resolved without Pueo's involvement."""
     from utils.hitl_tracker import mark_card_resolved, stable_nid
 
     nid = stable_nid(suppression_key)
@@ -325,7 +325,7 @@ def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> 
                 "resolution": "external",
                 "explanation": (
                     f"{component} moved from {from_version} to {to_version}"
-                    " without Pueo HITL approval."
+                    " without Pueo approval."
                 ),
             },
         )
@@ -355,7 +355,7 @@ async def poll_for_updates(
     llm_client: Optional[LLMClientProtocol] = None,
     cache_dir: Optional[str] = None,
 ) -> None:
-    """Periodically checks for available HA updates and fires full HITL approval cards."""
+    """Periodically checks for available HA updates and fires update approval cards."""
     from ha_update_manager import (
         UpdateReadinessReport,
         analyze_breaking_changes,
@@ -568,7 +568,7 @@ async def poll_for_notifications(
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     db_path: str = DB_PATH,
 ) -> None:
-    """Periodically checks for new HA persistent notifications and fires HITL alerts."""
+    """Periodically checks for new HA persistent notifications and fires approval alerts."""
     from ha_notification_manager import (
         _format_notification_body,
         _format_notification_subject,
@@ -686,7 +686,7 @@ async def poll_for_repairs(
     notifier: Optional[NotifierProtocol] = None,
     db_path: str = DB_PATH,
 ) -> None:
-    """Periodically polls HA repairs via WebSocket and fires HITL cards for new issues."""
+    """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from ha_agent_advanced import (
         mark_repair_hitl_sent,
         mark_repair_resolved,

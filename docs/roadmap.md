@@ -34,10 +34,10 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 1–3: Foundation, Observability, Architecture | ✅ Complete (2026-07-15) | 1–9     |
 | Phase 3.5: Autonomy Control                        | ✅ Complete (2026-07-19) | 9.5     |
 | Phase 4: NetAlertX Integration                     | ✅ Complete (2026-07-20) | 10–19   |
-| Phase 4.5: HITL Web Dashboard                      | ✅ Complete (2026-07-20) | 19.5    |
+| Phase 4.5: Approval Web Dashboard                  | ✅ Complete (2026-07-20) | 19.5    |
 | Phase 5: Observability UX                          | ✅ Complete (2026-07-20) | 20      |
 | Phase 6: Installer Intelligence                    | ✅ Complete (2026-07-21) | 21–22   |
-| Phase 7: Evidence Capture & HITL Display           | ✅ Complete (2026-07-21) | 23–24   |
+| Phase 7: Evidence Capture & Approval Display       | ✅ Complete (2026-07-21) | 23–24   |
 | Phase 8: NetAlertX Compatibility Maintenance       | ✅ Complete (2026-07-21) | 25      |
 | Phase 9: NetAlertX One-Shot Diagnosis              | ✅ Complete (2026-07-22) | 27      |
 | Phase 11: Resource Stewardship                     | ✅ Complete (2026-07-27) | 28–32   |
@@ -69,12 +69,12 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 **Delivered:** 2026-07-30 (Phase 17, items 55–64)
 
 `python main.py` (no flags) is now the single entry point. It starts all monitoring loops
-(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the HITL
+(HA log tail, resource polling, update checks, notification polling, NetAlertX) and the
 dashboard in one supervised asyncio process. `LoopSupervisor` wraps each task with
 exception catching and exponential-backoff restart (2s → 5-min cap); a crashed loop emits a
 `loop_error` SSE event and restarts automatically.
 
-HITL card approval executes repair actions in-process via a `card_type` dispatch table —
+Approving a card executes repair actions in-process via a `card_type` dispatch table —
 no more file-polling race where the one-shot process exits before the user approves. The
 dashboard (`http://127.0.0.1:<DASHBOARD_PORT>`) shows real-time loop health, a live event
 timeline with drill-down, resource gauges, a configuration editor with live-apply for runtime
@@ -87,7 +87,7 @@ Full spec: [plan/supervisor.md](plan/supervisor.md)
 
 ### Milestone 6.6 — Conversational Agent
 
-**Objective:** Add a Chat tab to the HITL dashboard so the user can talk directly to Pueo — querying live HA state, storing persistent notes across sessions, and proposing new tools through a sandboxed code flow. The same `AgentLoop` that drives reactive repair sessions drives the conversational agent; only the system prompt, tool registry, and termination signal differ.
+**Objective:** Add a Chat tab to the dashboard so the user can talk directly to Pueo — querying live HA state, storing persistent notes across sessions, and proposing new tools through a sandboxed code flow. The same `AgentLoop` that drives reactive repair sessions drives the conversational agent; only the system prompt, tool registry, and termination signal differ.
 
 **Why here:** Pueo is currently reactive only. Adding conversation lets the user interrogate the system at any time ("what's the state of sensor X?"), build up context that informs future repairs ("remember that the NAS is on 192.168.1.100"), and extend Pueo's capabilities without editing source code. The code-sandbox path (items 70–71) also delivers the shared infrastructure that Milestone 10 (Phase 21) reuses for its autonomous code-proposal flow.
 
@@ -95,7 +95,7 @@ Full spec: [plan/supervisor.md](plan/supervisor.md)
 - `AgentLoop` is reused unchanged, extended with a `terminal_tool_name` parameter (defaults to `"finish_repair"` to preserve existing behavior)
 - Memory uses SQLite keyword search — no new embedding overhead; ChromaDB can be wired in later
 - Chat responses stream via a dedicated `/chat/events` SSE endpoint (separate from the global `/events` stream)
-- `add_tool` requires sandbox pass + explicit HITL approval regardless of autonomy level — hardcoded, not gated by `AutonomyGate`
+- `add_tool` requires sandbox pass + explicit approval regardless of autonomy level — hardcoded, not gated by `AutonomyGate`
 - `CHAT_ALLOW_TOOL_REGISTRATION = false` default — inert until the user explicitly enables it
 
 **Tasks (Phase 17.5, items 65–72):**
@@ -105,10 +105,10 @@ Full spec: [plan/supervisor.md](plan/supervisor.md)
 - `/chat` dashboard route + `chat.html` template (session list, message thread, input)
 - `POST /chat/message` endpoint + `GET /chat/events` SSE; `asyncio.create_task` loop dispatch
 - `read_source`, `propose_patch`, `sandbox_code` tools (shared with Milestone 10)
-- `add_tool`: DB migration v9 (`registered_tools`), dynamic tool executor, `code_proposal` HITL card
+- `add_tool`: DB migration v9 (`registered_tools`), dynamic tool executor, `code_proposal` approval card
 - Tests: `test_chat.py` full coverage
 
-**Validation gate:** `/chat` tab accessible in dashboard; "What is the HA disk usage?" triggers `run_ha_command` and returns a human-readable answer; "remember that X" stores a memory; memory survives page reload; with `CHAT_ALLOW_TOOL_REGISTRATION=true`, a proposed tool clears sandbox and appears as a HITL card; approving it makes the tool callable in the next session.
+**Validation gate:** `/chat` tab accessible in dashboard; "What is the HA disk usage?" triggers `run_ha_command` and returns a human-readable answer; "remember that X" stores a memory; memory survives page reload; with `CHAT_ALLOW_TOOL_REGISTRATION=true`, a proposed tool clears sandbox and appears as a approval card; approving it makes the tool callable in the next session.
 
 Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 
@@ -124,7 +124,7 @@ Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 - Update availability read from `update.*` REST state entities — no WebSocket, no SSH parsing
 - Breaking-change analysis is **advisory only** — never a hard gate; human decides
 - Release notes fetched from GitHub once per version and cached locally — no WAN during active monitoring
-- Core and OS updates always require HITL approval regardless of autonomy level
+- Core and OS updates always require approval regardless of autonomy level
 - Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4
 - `execute_remote_backup()` runs before every update (safety invariant unchanged)
 
@@ -132,11 +132,11 @@ Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 - New `HARestClient` implementing `HARestClientProtocol`; `FakeHARestClient` for tests
 - Poll `update.*` entities via REST; `UpdateStatus` dataclass; `--mode update-check` CLI entry point
 - Fetch + cache HA release notes; `UpdateReadinessReport` Pydantic schema; LLM advisory analysis
-- HITL update approval cards with per-component approval and advisory breaking-changes section
+- Update approval cards with per-component approval and advisory breaking-changes section
 - `ha core update`, `ha os update`, Supervisor API add-on updates — all with backup invariant
 - Post-update: `ha core check`, log triage, Pueo command catalog smoke-test, LLM cross-reference
 
-**Validation gate:** `--mode update-check` correctly identifies an available Core update; breaking-change analysis flags a known deprecated config key; HITL card appears and requires approval; update executes with backup; self-check passes.
+**Validation gate:** `--mode update-check` correctly identifies an available Core update; breaking-change analysis flags a known deprecated config key; approval card appears and requires approval; update executes with backup; self-check passes.
 
 Full spec: [plan/ha-update-manager.md](plan/ha-update-manager.md)
 
@@ -144,7 +144,7 @@ Full spec: [plan/ha-update-manager.md](plan/ha-update-manager.md)
 
 ### Milestone 4.7 — HA Notification Intelligence
 
-**Objective:** Surface HA persistent notifications (failed logins, config errors, integration failures) as HITL-ready cards with plain-English explanations, enriched context, and clear recommended actions — rather than leaving them as raw technical strings in the HA UI.
+**Objective:** Surface HA persistent notifications (failed logins, config errors, integration failures) as approval-ready cards with plain-English explanations, enriched context, and clear recommended actions — rather than leaving them as raw technical strings in the HA UI.
 
 **Why here:** HA notifications are Pueo's early warning system. A failed login from an unknown IP, a broken integration, or a config error all appear as notifications before they become active incidents. Pueo can add value here without any repair capability — just explanation and triage.
 
@@ -153,17 +153,17 @@ Full spec: [plan/ha-update-manager.md](plan/ha-update-manager.md)
 - For `http_login` (failed auth): extract source IP, enrich with reverse DNS + NetAlertX device name + HA device registry; unknown-source logins escalated to CRITICAL
 - LLM explains each notification in plain English and recommends action
 - Dismissal only on explicit user action — never auto-dismissed
-- `notification_history` SQLite table prevents repeat HITL cards for the same notification
+- `notification_history` SQLite table prevents repeat approval cards for the same notification
 
 **Tasks:**
 - Poll `persistent_notification.*` REST entities on configurable interval
 - `NotificationAnalysis` Pydantic schema; `notification_history` SQLite migration
 - IP enrichment: reverse DNS (`socket.gethostbyaddr`) + NetAlertX `/devices` + HA device registry via WebSocket
-- Per-notification HITL cards; dismiss service call on approval
-- Notifications tab in HITL dashboard: pending, history, filters
+- Per-notification approval cards; dismiss service call on approval
+- Notifications tab in dashboard: pending, history, filters
 - `--mode notifications` one-shot CLI entry point
 
-**Validation gate:** A simulated `http_login` notification generates a HITL card with enriched device name; an unknown-IP login is escalated to CRITICAL; dismissal fires the HA dismiss service; notification history prevents duplicate cards.
+**Validation gate:** A simulated `http_login` notification generates a approval card with enriched device name; an unknown-IP login is escalated to CRITICAL; dismissal fires the HA dismiss service; notification history prevents duplicate cards.
 
 Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
@@ -228,10 +228,10 @@ Full spec: [plan/evals.md](plan/evals.md)
 
 ### Milestone 7 — Configurable LLM Provider + Cloud Escalation
 
-**Objective:** Make the LLM inference engine a first-class switchable setting so Pueo can run with local Ollama, an Anthropic cloud API, or both. The "0 WAN during autonomous fix cycles" design constraint is explicitly overridden here — cloud mode routes inference traffic to Anthropic. HITL escalation (the original M7 goal) becomes the natural behavior of `both` mode: local Ollama handles autonomous repair cycles; when the local loop exhausts its budget the user can approve a Claude escalation from the HITL dashboard.
+**Objective:** Make the LLM inference engine a first-class switchable setting so Pueo can run with local Ollama, an Anthropic cloud API, or both. The "0 WAN during autonomous fix cycles" design constraint is explicitly overridden here — cloud mode routes inference traffic to Anthropic. approved escalation (the original M7 goal) becomes the natural behavior of `both` mode: local Ollama handles autonomous repair cycles; when the local loop exhausts its budget the user can approve a Claude escalation from the dashboard.
 
 **Key design choices:**
-- `LLM_PROVIDER` setting: `"local"` (default, preserves all existing behavior), `"cloud"` (Anthropic as primary), `"both"` (Ollama for autonomous + Claude for HITL escalation)
+- `LLM_PROVIDER` setting: `"local"` (default, preserves all existing behavior), `"cloud"` (Anthropic as primary), `"both"` (Ollama for autonomous + Claude for approved escalation)
 - `LLMClientProtocol` already exists in `interfaces.py` — `ClaudeAPIClient` implements it without changing the interface or any caller that uses DI
 - `make_llm_client()` factory in `utils/llm_factory.py` is the single point that reads `LLM_PROVIDER`; all 20+ `OllamaClient()` fallbacks migrate to it
 - `ANTHROPIC_API_KEY` from environment only — never in `config.yaml`; startup raises if provider requires it and it is absent
@@ -244,10 +244,10 @@ Full spec: [plan/evals.md](plan/evals.md)
 - `make_llm_client()` factory + `_default_model_for_provider()` helper in `utils/llm_factory.py`
 - Config: `LLM_PROVIDER`, `CLOUD_MODEL`, billing keys; `ANTHROPIC_API_KEY` env guard + credential guard; `config.yaml.default` `llm:` + `cloud:` sections; `setup.sh` provider wizard
 - Dashboard `LLM Provider` settings group: provider dropdown (`options`), cloud model text, billing thresholds, API key status badge
-- Billing guard: `cloud_spend` DB migration v15; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` HITL card; re-run `AgentLoop` with `ClaudeAPIClient` on approval
+- Billing guard: `cloud_spend` DB migration v15; `BillingCapError`; `CARD_TYPE_CLOUD_ESCALATION` approval card; re-run `AgentLoop` with `ClaudeAPIClient` on approval
 - ADR 006: LLM provider abstraction
 
-**Validation gate:** `LLM_PROVIDER=local` (default): no cloud SDK touched; `LLM_PROVIDER=cloud`: all call-sites use `ClaudeAPIClient`; `LLM_PROVIDER=both` + loop exhaustion: HITL card appears; billing caps block over-budget escalations; `ANTHROPIC_API_KEY` never storable in `config.yaml`.
+**Validation gate:** `LLM_PROVIDER=local` (default): no cloud SDK touched; `LLM_PROVIDER=cloud`: all call-sites use `ClaudeAPIClient`; `LLM_PROVIDER=both` + loop exhaustion: approval card appears; billing caps block over-budget escalations; `ANTHROPIC_API_KEY` never storable in `config.yaml`.
 
 Full spec: [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
@@ -260,7 +260,7 @@ Full spec: [plan/cloud-escalation.md](plan/cloud-escalation.md)
 **Tasks:**
 - `repair_episodes` SQLite table (new migration), `RepairEpisode` dataclass, serialization hook at `finish_repair`
 - `--mode export-episodes --since <date>` → anonymized YAML (IPs, hostnames, device names replaced with placeholders)
-- Episodes tab in HITL dashboard: list, filter, detail view, "Prepare for submission" button
+- Episodes tab in dashboard: list, filter, detail view, "Prepare for submission" button
 
 **Validation gate:** Every successful `finish_repair` writes a record; export produces valid anonymized YAML; dashboard tab renders episode detail.
 
@@ -285,17 +285,17 @@ Full spec: [plan/federated-cases.md](plan/federated-cases.md)
 
 ### Milestone 10 — Self-Improving Code Proposals  *(stretch goal)*
 
-**Objective:** When Pueo identifies a capability gap during a repair loop, it proposes a Python diff, validates it against CI in a sandboxed temp directory, and surfaces a HITL approval card to open a PR. Approved changes become reusable tools for every future incident.
+**Objective:** When Pueo identifies a capability gap during a repair loop, it proposes a Python diff, validates it against CI in a sandboxed temp directory, and surfaces a approval card to open a PR. Approved changes become reusable tools for every future incident.
 
-**Foundation in Milestone 6.6:** The sandbox tools (`read_source`, `propose_patch`, `sandbox_code`) and the `code_proposal` HITL card were delivered in Phase 17.5 (Milestone 6.6) as part of the conversational agent's code-skill-building feature. Milestone 10 adds only the remaining pieces: the autonomous trigger and the formal `open_pr` path.
+**Foundation in Milestone 6.6:** The sandbox tools (`read_source`, `propose_patch`, `sandbox_code`) and the `code_proposal` approval card were delivered in Phase 17.5 (Milestone 6.6) as part of the conversational agent's code-skill-building feature. Milestone 10 adds only the remaining pieces: the autonomous trigger and the formal `open_pr` path.
 
 **Remaining tasks (Phase 21, items 83–86):**
-- `open_pr` tool: `gh pr create` integration; formal PR opens on HITL approval instead of in-process registration
-- Autonomous gap detection: `finish_repair` with `capability_gap=True` automatically triggers `propose_patch → sandbox_code → code_proposal` HITL card
+- `open_pr` tool: `gh pr create` integration; formal PR opens on approval instead of in-process registration
+- Autonomous gap detection: `finish_repair` with `capability_gap=True` automatically triggers `propose_patch → sandbox_code → code_proposal` approval card
 - Security review: sandbox escape vectors, safety-critical file block list (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain), `read_source` path traversal
 - ADR 007: agent-generated code proposals with sandboxed CI gate
 
-**Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; HITL approval opens a real PR; safety-critical block list tested; security review complete.
+**Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; approval opens a real PR; safety-critical block list tested; security review complete.
 
 Full spec: [plan/code-proposals.md](plan/code-proposals.md)
 

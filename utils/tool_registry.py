@@ -207,7 +207,7 @@ APPLY_FIX = ToolDefinition(
         "Write proposed YAML to the HA config sandbox, validate via 'ha core check', "
         "then atomically swap to production. Always triggers a backup first. "
         "May be called at most once per loop run. "
-        "Requires HITL approval unless autonomy level permits auto-execution."
+        "Requires approval unless autonomy level permits auto-execution."
     ),
     parameters={
         "type": "object",
@@ -469,7 +469,7 @@ ADD_TOOL = ToolDefinition(
     description=(
         "Register a new tool from the pending patch. "
         "Requires sandbox_code to have passed and CHAT_ALLOW_TOOL_REGISTRATION=true. "
-        "Queues a HITL approval card; the tool is available after the user approves."
+        "Queues an approval card; the tool is available after the user approves."
     ),
     parameters={
         "type": "object",
@@ -500,7 +500,7 @@ OPEN_PR = ToolDefinition(
     description=(
         "Open a GitHub pull request for the pending patch after sandbox CI has passed. "
         "Requires sandbox_code to have passed first. "
-        "Queues a HITL approval card; the PR is opened after the user approves."
+        "Queues an approval card; the PR is opened after the user approves."
     ),
     parameters={
         "type": "object",
@@ -580,7 +580,7 @@ def build_code_proposal_registry() -> ToolRegistry:
 
     Used when a repair loop finishes with capability_gap=True.  The loop
     reads relevant source, proposes a patch, validates it in the sandbox,
-    and queues an open_pr HITL card for human review.
+    and queues an open_pr approval card for human review.
     """
     reg = ToolRegistry()
     for tool in (

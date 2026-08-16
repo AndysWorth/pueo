@@ -181,11 +181,13 @@ async def check_backup_registry(
 
 
 def check_pending_hitl(watch_dir: str = "hitl/") -> AuditResult:
-    """Report HITL cards in the watch dir that have no .approved or .rejected file."""
+    """Report approval cards in the watch dir that have no .approved or .rejected file."""
     hitl_path = Path(watch_dir)
     if not hitl_path.exists():
         return AuditResult(
-            "pending_hitl", "OK", "HITL directory does not exist; no pending cards"
+            "pending_hitl",
+            "OK",
+            "Approval queue directory does not exist; no pending cards",
         )
 
     pending: list[tuple[str, float]] = []
@@ -203,7 +205,7 @@ def check_pending_hitl(watch_dir: str = "hitl/") -> AuditResult:
         pending.append((jf.name, sent_at))
 
     if not pending:
-        return AuditResult("pending_hitl", "OK", "No pending HITL cards")
+        return AuditResult("pending_hitl", "OK", "No pending approval cards")
 
     now = time.time()
     oldest_age_hours = max((now - sent_at) / 3600 for _, sent_at in pending)

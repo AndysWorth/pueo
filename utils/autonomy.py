@@ -2,7 +2,7 @@
 
 Levels:
   1 REPORT_ONLY  — observe and report; never execute or notify
-  2 SUGGEST      — propose every action; require explicit HITL approval for all
+  2 SUGGEST      — propose every action; require explicit approval for all
   3 GUIDED       — auto-execute LOW-risk; pause for MEDIUM / HIGH / CRITICAL
   4 AUTONOMOUS   — auto-execute LOW / MEDIUM / HIGH; pause only for CRITICAL
 
@@ -81,7 +81,7 @@ class AutonomyGate:
             return True
         if self._level == AutonomyLevel.GUIDED and risk == RiskLevel.LOW:
             return True
-        # Send HITL notification and poll indefinitely for response
+        # Send approval notification and poll indefinitely for response
         nid = payload.get("notification_id", str(uuid.uuid4()))
         log.info("hitl_waiting_for_approval", subject=subject, risk=risk.name)
         await notifier.send(subject, body, payload)
@@ -99,7 +99,7 @@ class AutonomyGate:
     ) -> bool:
         """Non-blocking approval check for use inside the agent loop.
 
-        Sends the HITL notification and returns immediately — True if
+        Sends the approval notification and returns immediately — True if
         auto-execute is permitted at the current level, False if the action
         has been queued for human review.  The caller is responsible for
         exiting the agent loop when False is returned so the dashboard can

@@ -5,11 +5,11 @@ Safe functions (auto-executable on disk critical):
   vacuum_journal      — rotate + size-cap the systemd journal
   purge_recorder      — call recorder.purge via HA REST API
 
-HITL-required functions (audit/report only; destruction happens via dashboard dispatch):
+Approval-required functions (audit/report only; destruction happens via dashboard dispatch):
   audit_supervisor_tmp — list /mnt/data/supervisor/tmp/* sizes; caller decides to delete
 
 Recovery sequence:
-  run_safe_disk_recovery — runs all auto-safe steps and returns a summary for the HITL card
+  run_safe_disk_recovery — runs all auto-safe steps and returns a summary for the approval card
 """
 
 from __future__ import annotations
@@ -374,9 +374,9 @@ def build_disk_conclusion(
     backup_section_bytes: int,
     ha_config_section_bytes: int = 0,
 ) -> dict:
-    """Compute a plain-English conclusion about whether HITL options will resolve the disk issue.
+    """Compute a plain-English conclusion about whether approval options will resolve the disk issue.
 
-    Uses a conservative heuristic to estimate max HITL savings:
+    Uses a conservative heuristic to estimate max savings from available approval options:
       - offload_backups: backup section size (all backups freed)
       - recorder purge/repack: 20% of HA Config section (rough recorder-DB estimate)
 
@@ -448,7 +448,7 @@ async def run_safe_disk_recovery(
       3. Purge recorder history (keep last N days, no repack)
 
     rest_client may be None if HA_API_TOKEN is not configured; recorder purge is skipped.
-    Returns a RecoverySummary with per-step outcomes for the HITL card.
+    Returns a RecoverySummary with per-step outcomes for the approval card.
     """
     summary = RecoverySummary()
 

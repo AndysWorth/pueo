@@ -217,7 +217,7 @@ async def _known_issues_poll_loop(
                         f"This issue has been suppressed for over {reminder_days} day(s).\n"
                         f"Type: {issue['card_type']}\n"
                         f"Rejected {issue['rejection_count']} time(s) before suppression.\n"
-                        f"Resolve it from the Known Issues section in the HITL queue."
+                        f"Resolve it from the Known Issues section in the approval queue."
                     ),
                     payload={
                         "card_type": "known_issue_reminder",
@@ -510,7 +510,7 @@ async def supervisor_main(config_path: Path) -> None:
         )
 
     # NetAlertX deferred setup: if the user requested setup and it isn't done yet,
-    # run the installer as a supervised one-shot loop so HITL cards reach the dashboard.
+    # run the installer as a supervised one-shot loop so approval cards reach the dashboard.
     # Route to the docker installer when deploy_target="docker"; HA installer otherwise.
     if cfg.NETALERTX_SETUP_DESIRED:
         import netalertx.installer as _nax_installer
@@ -591,9 +591,9 @@ def main() -> None:
             "  netalertx-diagnose  one-shot NetAlertX health check and optional heal\n"
             "  backup-status       print backup inventory table (slug, size, age, HA, Pueo)\n"
             "  update-check        one-shot update availability check (requires api_token)\n"
-            "  notifications       one-shot: triage HA persistent notifications and send HITL cards\n"
+            "  notifications       one-shot: triage HA persistent notifications and send approval cards\n"
             "  rag-refresh         embed cached HA release notes and HACS changelogs into ChromaDB\n"
-            "  dashboard           HITL web dashboard for approving/rejecting pending actions\n"
+            "  dashboard           web dashboard for approving/rejecting pending actions\n"
             "  install-service     install Pueo as a macOS launchd service (auto-start at login)\n"
             "  start-service       load and enable the launchd service\n"
             "  stop-service        unload the launchd service (suppresses KeepAlive restart)\n"

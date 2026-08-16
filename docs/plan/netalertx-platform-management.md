@@ -19,7 +19,7 @@ non-FA variant unconditionally.
 | A-1  | FA-only guard: `_parse_slug_from_store` + `_require_fa_slug` — refuse non-FA slugs |
 | A-2  | `netalertx/uninstaller.py` — `NetAlertXUninstaller` with 4-step reverse state machine |
 | A-3  | `--mode netalertx-uninstall` CLI entry point |
-| A-4  | `CARD_TYPE_NETALERTX_UNINSTALL` HITL card (CRITICAL risk) |
+| A-4  | `CARD_TYPE_NETALERTX_UNINSTALL` approval card (CRITICAL risk) |
 | A-5  | `setup.sh` fix: `ha addons info core_mosquitto` → `ha apps info core_mosquitto` |
 | A-6  | Tests: uninstaller state machine, FA guard, slug rejection, card registration |
 
@@ -49,7 +49,7 @@ netalertx:
 | Item | Concern |
 | ---- | ------- |
 | B-1  | `netalertx/docker_installer.py` — `DockerInstaller` 10-step state machine (SSH + Docker) |
-| B-2  | MQTT routing: configure HA Mosquitto to accept external connections via `/ssl/mosquitto_custom.conf` + `ha apps restart core_mosquitto` (HITL, HIGH risk) |
+| B-2  | MQTT routing: configure HA Mosquitto to accept external connections via `/ssl/mosquitto_custom.conf` + `ha apps restart core_mosquitto` (approval required, HIGH risk) |
 | B-3  | `detector.py` extension — when `deploy_target=docker`, SSH to `docker_host` instead of HA |
 | B-4  | `--mode netalertx-docker-setup` CLI entry point |
 | B-5  | Tests: Docker installer, disk-too-low abort, MQTT routing card |
@@ -93,11 +93,11 @@ disk-critical and NAX is on HA.
 | ---- | ------- |
 | D-1  | Expand `mqtt_subscriber.py`: `NetAlertX/alert/+`, `NetAlertX/device/+/state`, `NetAlertX/scan/complete` |
 | D-2  | Typed event dataclasses: `NewDeviceAlertEvent`, `DeviceStateEvent`, `ScanCompleteEvent` |
-| D-3  | `CARD_TYPE_NETALERTX_NEW_DEVICE` HITL card (LOW risk, notify-only; auto-approve at autonomy ≥ 4) |
+| D-3  | `CARD_TYPE_NETALERTX_NEW_DEVICE` approval card (LOW risk, notify-only; auto-approve at autonomy ≥ 4) |
 | D-4  | `netalertx/event_router.py` — `NetAlertXEventRouter`: merge + deduplicate MQTT and webhook streams |
 | D-5  | Tests + eval scenario `11_netalertx_new_device_mqtt.yaml` |
 
-**Done when:** Pueo receives all NetAlertX FA MQTT topics; new-device detection creates a HITL
+**Done when:** Pueo receives all NetAlertX FA MQTT topics; new-device detection creates an approval card
 card; MQTT and webhook streams are deduplicated; CI passes.
 
 ---
@@ -108,7 +108,7 @@ card; MQTT and webhook streams are deduplicated; CI passes.
 | ----------- | --------------- |
 | New config key | `config.py`, `config.yaml.default`, `setup.sh` |
 | New CLI mode | `main.py` (choices + dispatch + epilog), `tests/test_core_agent.py` (mode recognized) |
-| New HITL card type | `utils/card_types.py`, `web/templates/index.html` (is_actionable + elif hint), `web/dashboard.py` (dispatch table if execute handler needed) |
+| New approval card type | `utils/card_types.py`, `web/templates/index.html` (is_actionable + elif hint), `web/dashboard.py` (dispatch table if execute handler needed) |
 | New netalertx module | `tests/test_netalertx.py` |
 
 ---
@@ -120,6 +120,6 @@ After all four sessions:
 1. `python main.py --mode netalertx-uninstall` → add-on gone from HA; state = `NOT_INSTALLED`; `df -h` shows freed space
 2. `python main.py --mode netalertx-docker-setup` → container running on separate machine; health endpoint 200; MQTT probe passes
 3. `pueo monitor` (supervisor mode) → NAX log tail connects to Docker host; HA disk alerts not triggered by NAX
-4. New device joins → MQTT `NetAlertX/alert/+` event → HITL card in dashboard
+4. New device joins → MQTT `NetAlertX/alert/+` event → approval card in dashboard
 5. Simulate HA disk CRITICAL with `deploy_target=ha` (unit test) → migration card surfaces
 6. Full CI: `black --check . && flake8 ... && mypy ... && bandit ... && pytest --cov --cov-fail-under=90 --ignore=tests/integration`

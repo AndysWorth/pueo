@@ -130,9 +130,9 @@ Check:
 
 ### 9. Decision record completeness
 
-- CLAUDE.md documents these patterns: config centralization (ADR 001 ✅), backup-before-write (ADR 002 ✅), structured LLM output (ADR 003 ✅), structured logging + correlation IDs, dependency injection via Protocol interfaces, HITL notification infrastructure. Do the latter three have ADRs? If not, flag as ADR gaps.
+- CLAUDE.md documents these patterns: config centralization (ADR 001 ✅), backup-before-write (ADR 002 ✅), structured LLM output (ADR 003 ✅), structured logging + correlation IDs, dependency injection via Protocol interfaces, approval notification infrastructure. Do the latter three have ADRs? If not, flag as ADR gaps.
 - Are there patterns visible in code that are neither documented in CLAUDE.md nor in any ADR? (e.g., the rate limiter / debouncer behavior, token budget management, sandbox-then-swap pattern details)
-- Do existing ADRs cross-reference each other where relevant? (ADR 002 mentions HITL gates — does `docs/plan/autonomy.md` reference ADR 002?)
+- Do existing ADRs cross-reference each other where relevant? (ADR 002 mentions approval gates — does `docs/plan/autonomy.md` reference ADR 002?)
 - Is there a decision record gap for the "asyncio over LangGraph/CrewAI" choice? (Currently documented in roadmap.md as an architectural note — should it be promoted to an ADR?)
 
 ---

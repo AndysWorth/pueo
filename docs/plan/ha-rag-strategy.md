@@ -6,7 +6,7 @@ Part of the [Roadmap](../roadmap.md) · Phase 22 (items 87–93).
 
 ### Problem
 
-The existing RAG layer (Phase 15, items 49–52) was built around the assumption that the GitHub releases API `body` field contains the HA changelog. This is false for monthly GA releases: HA sets the GitHub `body` to a blog URL only (`https://www.home-assistant.io/blog/...`). The real changelog — breaking changes, migration notes, new integrations — lives on the HA blog. The current code caches this 60-byte stub as a `.txt` file and, during update analysis, invokes the LLM on near-empty input. The result is hallucinated breaking changes in the HITL update card.
+The existing RAG layer (Phase 15, items 49–52) was built around the assumption that the GitHub releases API `body` field contains the HA changelog. This is false for monthly GA releases: HA sets the GitHub `body` to a blog URL only (`https://www.home-assistant.io/blog/...`). The real changelog — breaking changes, migration notes, new integrations — lives on the HA blog. The current code caches this 60-byte stub as a `.txt` file and, during update analysis, invokes the LLM on near-empty input. The result is hallucinated breaking changes in the update approval card.
 
 Five specific gaps:
 

@@ -20,7 +20,7 @@ Pueo is also self-exposed: the SSH CLI commands it runs (`ha core check`, `ha ap
 
 **Add-on updates via Supervisor HTTP API.** There is no `ha apps update` CLI command. Add-on updates use `POST http://supervisor/store/addons/<slug>/update` with `Authorization: Bearer $SUPERVISOR_TOKEN` — the same curl-over-SSH pattern used in `installer.py` step 8.
 
-**No dry-run.** `ha core update` has no `--check` or `--dry-run` flag. Pre-update safety comes entirely from the breaking-change analysis (item 34) and HITL approval (item 35). The `--backup` flag on `ha core update` is intentionally NOT used because Pueo's safety invariant already triggers `execute_remote_backup()` before issuing the update command — two consecutive backups would waste disk.
+**No dry-run.** `ha core update` has no `--check` or `--dry-run` flag. Pre-update safety comes entirely from the breaking-change analysis (item 34) and approval (item 35). The `--backup` flag on `ha core update` is intentionally NOT used because Pueo's safety invariant already triggers `execute_remote_backup()` before issuing the update command — two consecutive backups would waste disk.
 
 **Update entity naming.** HA 2022.4+ surfaces updates as `update.*` entities:
 - `update.home_assistant_core_update`
@@ -30,7 +30,7 @@ Pueo is also self-exposed: the SSH CLI commands it runs (`ha core check`, `ha ap
 
 Entity state is `"on"` (update available) or `"off"` (up to date). Attributes: `installed_version`, `latest_version`, `release_summary`, `release_url`, `in_progress`, `update_percentage`.
 
-**Prerequisite.** Items 29–32 (Resource Stewardship) must be complete before this phase begins. `execute_remote_backup()` must already block on `DiskCriticalError`, and disk free must be visible before presenting an update HITL card.
+**Prerequisite.** Items 29–32 (Resource Stewardship) must be complete before this phase begins. `execute_remote_backup()` must already block on `DiskCriticalError`, and disk free must be visible before presenting an update approval card.
 
 ---
 
@@ -44,7 +44,7 @@ New `utils/ha_rest_client.py` with `HARestClient`. New protocol `HARestClientPro
 |-----|--------|---------|---------|
 | `HA_API_PORT` | `config.yaml` | `8123` | Port for the HA REST API |
 | `HA_API_TOKEN` | environment variable | — | Long-Lived Access Token (see credential note below) |
-| `HA_UPDATE_NOTIFY_ON_AVAILABLE` | `config.yaml` | `true` | HITL notification when any update entity flips to `on` |
+| `HA_UPDATE_NOTIFY_ON_AVAILABLE` | `config.yaml` | `true` | approval notification when any update entity flips to `on` |
 | `HA_UPDATE_CHECK_INTERVAL_HOURS` | `config.yaml` | `24` | How often the monitor loop polls for updates (0 = off) |
 
 **Credential vs. config.yaml — why the distinction matters.**
@@ -77,7 +77,7 @@ class UpdateStatus:
 
 **`--mode update-check`** — one-shot: prints a table of all components and their update status, runs the breaking-change analysis (item 34) for any Core update available, and exits. Does not modify anything.
 
-**Monitor loop integration** (in `ha_log_monitor.py`) — a periodic `asyncio.create_task()` alongside the existing log-tail loop. Every `HA_UPDATE_CHECK_INTERVAL_HOURS`, call `get_update_status()`; if any `update_available = true`, send a HITL notification and set an in-memory flag so the notification is not repeated until the update entity clears.
+**Monitor loop integration** (in `ha_log_monitor.py`) — a periodic `asyncio.create_task()` alongside the existing log-tail loop. Every `HA_UPDATE_CHECK_INTERVAL_HOURS`, call `get_update_status()`; if any `update_available = true`, send a approval notification and set an in-memory flag so the notification is not repeated until the update entity clears.
 
 ---
 
@@ -85,7 +85,7 @@ class UpdateStatus:
 
 LLM analysis of release notes against the current installation. Advisory only — never a hard gate.
 
-**Release notes fetch.** For any Core update, fetch the GitHub release page for the target version. URL pattern: `https://github.com/home-assistant/core/releases/tag/<version>`. Cache the response as plaintext in `HA_UPDATE_RELEASE_NOTES_CACHE_DIR` (new config key, default `.cache/ha_release_notes/`). One WAN fetch per version; subsequent calls read cache. This fetch happens during `--mode update-check` or when a HITL card is generated — never during an active repair cycle.
+**Release notes fetch.** For any Core update, fetch the GitHub release page for the target version. URL pattern: `https://github.com/home-assistant/core/releases/tag/<version>`. Cache the response as plaintext in `HA_UPDATE_RELEASE_NOTES_CACHE_DIR` (new config key, default `.cache/ha_release_notes/`). One WAN fetch per version; subsequent calls read cache. This fetch happens during `--mode update-check` or when a approval card is generated — never during an active repair cycle.
 
 **New `UpdateReadinessReport` Pydantic schema:**
 ```python
@@ -104,7 +104,7 @@ class UpdateReadinessReport(BaseModel):
 - Release notes plaintext (truncated to remaining token budget)
 - Pueo's SSH command catalog as a fixed list in the prompt
 
-**Output:** `UpdateReadinessReport` is attached to the HITL update card (item 35) and printed by `--mode update-check`.
+**Output:** `UpdateReadinessReport` is attached to the update approval card (item 35) and printed by `--mode update-check`.
 
 **New config key:**
 
@@ -114,7 +114,7 @@ class UpdateReadinessReport(BaseModel):
 
 ---
 
-### Feature 3 — HITL Update Approval Card (item 35)
+### Feature 3 — Update Approval Card (item 35)
 
 Always CRITICAL risk for Core and OS updates regardless of autonomy level. Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4.
 
@@ -130,24 +130,24 @@ Always CRITICAL risk for Core and OS updates regardless of autonomy level. Add-o
 | Disk free | From resource stewardship sensors; red if below WARN threshold |
 | Actions | **Approve**, **Defer** (per component independently) |
 
-**Approval scope.** Approving Core does not approve OS or add-ons. Each component requires its own approval. Deferring a component suppresses its HITL card for 24 hours.
+**Approval scope.** Approving Core does not approve OS or add-ons. Each component requires its own approval. Deferring a component suppresses its approval card for 24 hours.
 
-**No auto-dismiss.** The HITL card remains open until explicitly approved or deferred.
+**No auto-dismiss.** The approval card remains open until explicitly approved or deferred.
 
 ---
 
 ### Feature 4 — Safe Update Execution + Post-Update Validation (item 36)
 
-Only runs after explicit HITL approval from item 35.
+Only runs after explicit approval from item 35.
 
 **Execution sequence:**
 
 1. `execute_remote_backup()` → `record_backup_slug()` — safety invariant, as always
 2. `ha core update --no-progress` via SSH (suppress progress spinner for non-TTY)
 3. Poll `ha core info --raw-json` every 15 seconds until `version == latest_version` and `update_available == false`, or 8-minute timeout
-4. If timeout: surface HITL alert "Update may still be in progress — check HA UI" — do NOT attempt rollback (HA Supervisor manages its own rollback state)
+4. If timeout: surface approval alert "Update may still be in progress — check HA UI" — do NOT attempt rollback (HA Supervisor manages its own rollback state)
 5. On success: run `ha core check`, fetch 100 log lines, LLM triage (`LogEvaluation`)
-6. Post-update HITL card: update complete, config valid/invalid, log triage summary, Pueo self-check results (item 37)
+6. Post-update approval card: update complete, config valid/invalid, log triage summary, Pueo self-check results (item 37)
 
 **OS update.** Same sequence using `ha os update --no-progress`. OS updates typically require a reboot; poll for HA to come back online (TCP connect to `HA_HOST:8123`) rather than polling `ha os info`.
 
@@ -172,9 +172,9 @@ After a Core update completes, Pueo verifies its own integration is intact befor
 - `ha apps info db21ed7f_netalertx_fa` — confirms NetAlertX CLI path works
 - `ha backup new --name pueo_selfcheck_DELETE_ME` — optional; only if disk is well above WARN threshold; delete immediately after slug is confirmed. Skip if disk is constrained.
 
-**LLM cross-reference.** Pass the release notes + Pueo's full SSH command catalog to the LLM and ask: "Do any commands in this catalog appear in the breaking changes or migration notes?" Append results to the post-update HITL card under "Pueo self-check".
+**LLM cross-reference.** Pass the release notes + Pueo's full SSH command catalog to the LLM and ask: "Do any commands in this catalog appear in the breaking changes or migration notes?" Append results to the post-update approval card under "Pueo self-check".
 
-**Monitor-loop update detection.** In `ha_log_monitor.py`, add a periodic co-routine that calls `get_update_status()` every `HA_UPDATE_CHECK_INTERVAL_HOURS`. If any update is available, fire a HITL notification and pause re-checking until the update entity clears.
+**Monitor-loop update detection.** In `ha_log_monitor.py`, add a periodic co-routine that calls `get_update_status()` every `HA_UPDATE_CHECK_INTERVAL_HOURS`. If any update is available, fire a approval notification and pause re-checking until the update entity clears.
 
 ---
 
@@ -183,8 +183,8 @@ After a Core update completes, Pueo verifies its own integration is intact befor
 - `HARestClientProtocol` in `interfaces.py`; `FakeHARestClient` in tests
 - `GET /api/states/update.*` polling detects all available updates
 - `--mode update-check` prints a version table and advisory breaking-change report
-- Monitor loop fires a HITL notification when an update becomes available; does not repeat
-- Core and OS update HITL cards always require approval regardless of autonomy level
+- Monitor loop fires a approval notification when an update becomes available; does not repeat
+- Core and OS update approval cards always require approval regardless of autonomy level
 - Add-on updates are MEDIUM risk; auto-execute at autonomy level 4
 - `execute_remote_backup()` runs before every update (safety invariant)
 - Post-update: config check, log triage, and Pueo self-check all run and surface results
