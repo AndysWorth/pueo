@@ -7788,6 +7788,42 @@ class TestDockerInstallerStateMachine:
     def _notifier(self, approve=True):
         return self._FakeNotifier(approve=approve)
 
+    def test_step1_rejects_macos_host(self, tmp_path, monkeypatch):
+        """Abort with CRITICAL card when Docker host reports macOS (darwin)."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+        from utils.autonomy import RiskLevel
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        gate = self._make_gate(approve=True)
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Darwin\n", ""),
+            }
+        )
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=gate,
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "NOT_INSTALLED"
+        approval_calls = gate.require_approval_calls  # type: ignore[attr-defined]
+        assert any("macOS" in c.get("subject", "") for c in approval_calls)
+        assert any(
+            c.get("risk") == RiskLevel.CRITICAL
+            for c in approval_calls
+            if "macOS" in c.get("subject", "")
+        )
+
     def test_step1_fails_when_docker_unavailable(self, tmp_path, monkeypatch):
         """Abort when 'docker info' returns non-zero."""
         from utils.ssh_client import FakeSSHClient

@@ -193,6 +193,28 @@ async def _step1_verify_docker_ssh(
         log.error("step1_docker_unavailable", host=docker_host, correlation_id=cid)
         return False
 
+    _, uname_out, _ = await docker_ssh.run("uname -s")
+    if uname_out.strip().lower() == "darwin":
+        await gate.require_approval(
+            subject="NetAlertX Docker installer: macOS host not supported",
+            body=(
+                f"The Docker host {docker_host!r} is running macOS.\n\n"
+                "NetAlertX requires ARP scanning to discover home LAN devices, which "
+                "needs direct access to the physical network interface. Docker Desktop "
+                "on macOS runs containers inside a HyperKit VM — even with "
+                "--network=host, the container is attached to the VM's virtual network, "
+                "not your real LAN. NetAlertX will start but will never discover any "
+                "devices.\n\n"
+                "Re-run the installer pointing at a Linux host (a Raspberry Pi, a "
+                "Linux NAS, or any always-on Linux machine on your LAN)."
+            ),
+            payload={"notification_id": f"{cid}_step1_macos", "step": 1},
+            notifier=notifier,
+            risk=RiskLevel.CRITICAL,
+        )
+        log.error("step1_macos_host_unsupported", host=docker_host, correlation_id=cid)
+        return False
+
     _write_install_state(db_path, "DOCKER_SSH_VERIFIED", details, cid)
     log.info("step1_complete", host=docker_host, correlation_id=cid)
     return True
