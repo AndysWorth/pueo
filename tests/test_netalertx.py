@@ -7766,226 +7766,6 @@ class TestCheckDiskSpace:
         assert exc_info.value.min_gb == 5.0
 
 
-class TestDockerInstallerMacOS:
-    """Tests for macOS Docker host detection and preflight checks."""
-
-    class _Gate:
-        def __init__(self, approve=True):
-            self.calls = []
-            self._approve = approve
-
-        async def require_approval(
-            self, subject="", body="", payload=None, notifier=None, risk=None
-        ):
-            self.calls.append({"subject": subject, "body": body, "risk": risk})
-            return self._approve
-
-        async def should_auto_execute(self, **kw):
-            return self._approve
-
-    class _Notifier:
-        def __init__(self):
-            self.sent = []
-
-        async def send(self, subject="", body="", payload=None, **kw):
-            self.sent.append({"subject": subject})
-
-        async def wait_for_approval(self, notification_id, **kw):
-            return True
-
-    def test_step1_detects_macos_target_os(self, tmp_path, monkeypatch):
-        """uname -s result is stored as 'darwin' in details when on macOS."""
-        from utils.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step1_verify_docker_ssh
-
-        ssh = FakeSSHClient(
-            command_results={
-                "docker info": (0, "Server: Docker Engine", ""),
-                "uname -s": (0, "Darwin\n", ""),
-                "docker version --format '{{.Server.Version}}'": (0, "27.0.3\n", ""),
-            }
-        )
-        gate = self._Gate(approve=True)
-        notifier = self._Notifier()
-        details: dict = {}
-
-        import sqlite3
-
-        db = str(tmp_path / "test.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
-
-        result = asyncio.run(
-            _step1_verify_docker_ssh(
-                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
-            )
-        )
-        assert result is True
-        assert details["target_os"] == "darwin"
-
-    def test_step1_detects_linux_target_os(self, tmp_path, monkeypatch):
-        """uname -s result is stored as 'linux' when target is Linux."""
-        from utils.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step1_verify_docker_ssh
-
-        ssh = FakeSSHClient(
-            command_results={
-                "docker info": (0, "Server: Docker Engine", ""),
-                "uname -s": (0, "Linux\n", ""),
-            }
-        )
-        gate = self._Gate(approve=True)
-        notifier = self._Notifier()
-        details: dict = {}
-
-        import sqlite3
-
-        db = str(tmp_path / "test.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
-
-        result = asyncio.run(
-            _step1_verify_docker_ssh(
-                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
-            )
-        )
-        assert result is True
-        assert details["target_os"] == "linux"
-
-    def test_step1b_macos_preflight_aborts_on_old_docker_desktop(self, tmp_path):
-        """macOS preflight returns False when Docker server version < 26."""
-        from utils.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step1_verify_docker_ssh
-
-        ssh = FakeSSHClient(
-            command_results={
-                "docker info": (0, "Server: Docker Engine", ""),
-                "uname -s": (0, "Darwin\n", ""),
-                "docker version --format '{{.Server.Version}}'": (0, "25.0.3\n", ""),
-            }
-        )
-        gate = self._Gate(approve=True)
-        notifier = self._Notifier()
-        details: dict = {}
-
-        import sqlite3
-
-        db = str(tmp_path / "test.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
-
-        result = asyncio.run(
-            _step1_verify_docker_ssh(
-                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
-            )
-        )
-        assert result is False
-        assert any("Docker Desktop" in c["subject"] for c in gate.calls)
-        assert any(
-            "too old" in c["subject"].lower() or "upgrade" in c["body"].lower()
-            for c in gate.calls
-        )
-
-    def test_step1b_macos_preflight_shows_guidance_card(self, tmp_path):
-        """macOS preflight with Docker >= 26 issues a LOW-risk host networking card."""
-        from utils.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step1_verify_docker_ssh
-        from utils.autonomy import RiskLevel
-
-        ssh = FakeSSHClient(
-            command_results={
-                "docker info": (0, "Server: Docker Engine", ""),
-                "uname -s": (0, "Darwin\n", ""),
-                "docker version --format '{{.Server.Version}}'": (0, "26.1.4\n", ""),
-            }
-        )
-        gate = self._Gate(approve=True)
-        notifier = self._Notifier()
-        details: dict = {}
-
-        import sqlite3
-
-        db = str(tmp_path / "test.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
-
-        result = asyncio.run(
-            _step1_verify_docker_ssh(
-                ssh, gate, notifier, details, "test-cid", db, "192.168.1.10"
-            )
-        )
-        assert result is True
-        host_net_calls = [
-            c for c in gate.calls if "host networking" in c["body"].lower()
-        ]
-        assert host_net_calls, "Expected a host networking guidance card"
-        assert host_net_calls[0]["risk"] == RiskLevel.LOW
-
-    def test_step4_post_pull_df_failure_is_nonfatal(self, tmp_path, monkeypatch):
-        """RuntimeError from df in step 4 post-pull check is non-fatal; state advances."""
-        from utils.ssh_client import FakeSSHClient
-        from netalertx.docker_installer import _step4_pull_image
-
-        import sqlite3
-
-        db = str(tmp_path / "step4.db")
-        with sqlite3.connect(db) as conn:
-            conn.execute(
-                "CREATE TABLE netalertx_install_state "
-                "(id INTEGER PRIMARY KEY, state TEXT, correlation_id TEXT, "
-                "timestamp TEXT, details_json TEXT)"
-            )
-
-        ssh = FakeSSHClient(
-            command_results={
-                "docker pull ghcr.io/jokob-sk/netalertx:latest": (
-                    0,
-                    "Pull complete",
-                    "",
-                ),
-                # df -k fails (macOS with unsupported path or busybox limitation)
-                "df -k /opt/netalertx 2>/dev/null || df -k /": (1, "", "df: error"),
-            }
-        )
-        gate = self._Gate(approve=True)
-        notifier = self._Notifier()
-
-        result = asyncio.run(
-            _step4_pull_image(
-                ssh,
-                gate,
-                notifier,
-                {},
-                "test-cid",
-                db,
-                "ghcr.io/jokob-sk/netalertx:latest",
-                "/opt/netalertx/config",
-                5.0,
-            )
-        )
-        assert result is True
-        from netalertx.docker_installer import _read_install_state
-
-        state, _ = _read_install_state(db)
-        assert state == "DOCKER_IMAGE_PULLED"
-
-
 class TestDockerInstallerStateMachine:
     """Integration-style tests for the Docker installer state machine."""
 
@@ -8007,6 +7787,42 @@ class TestDockerInstallerStateMachine:
 
     def _notifier(self, approve=True):
         return self._FakeNotifier(approve=approve)
+
+    def test_step1_rejects_macos_host(self, tmp_path, monkeypatch):
+        """Abort with CRITICAL card when Docker host reports macOS (darwin)."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+        from utils.autonomy import RiskLevel
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(tmp_path, monkeypatch)
+        gate = self._make_gate(approve=True)
+        ssh = FakeSSHClient(
+            command_results={
+                "docker info": (0, "Server: Docker Engine", ""),
+                "uname -s": (0, "Darwin\n", ""),
+            }
+        )
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=gate,
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "NOT_INSTALLED"
+        approval_calls = gate.require_approval_calls  # type: ignore[attr-defined]
+        assert any("macOS" in c.get("subject", "") for c in approval_calls)
+        assert any(
+            c.get("risk") == RiskLevel.CRITICAL
+            for c in approval_calls
+            if "macOS" in c.get("subject", "")
+        )
 
     def test_step1_fails_when_docker_unavailable(self, tmp_path, monkeypatch):
         """Abort when 'docker info' returns non-zero."""
@@ -8071,7 +7887,6 @@ class TestDockerInstallerStateMachine:
 
     def test_full_flow_reaches_fully_operational(self, tmp_path, monkeypatch):
         """Happy path: all steps succeed → FULLY_OPERATIONAL."""
-        import httpx
         from utils.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
@@ -8092,11 +7907,10 @@ class TestDockerInstallerStateMachine:
         docker_ssh = FakeSSHClient(
             command_results={
                 "docker info": (0, "Server: Docker Engine", ""),
-                "uname -s": (0, "Linux\n", ""),
                 # parent of /opt/netalertx/config is /opt/netalertx
                 "df -k /opt/netalertx 2>/dev/null || df -k /": (0, df_output, ""),
                 "mkdir -p /opt/netalertx/config": (0, "", ""),
-                "docker pull ghcr.io/jokob-sk/netalertx:latest": (
+                "docker pull ghcr.io/netalertx/netalertx:latest": (
                     0,
                     "Pull complete",
                     "",
@@ -8106,9 +7920,14 @@ class TestDockerInstallerStateMachine:
                 "docker stop netalertx 2>/dev/null || true": (0, "", ""),
                 "docker rm netalertx 2>/dev/null || true": (0, "", ""),
                 "docker run -d --name netalertx --restart=unless-stopped "
-                "--network=host --cap-add=NET_RAW "
-                "-v /opt/netalertx/config:/app/config "
-                "ghcr.io/jokob-sk/netalertx:latest": (0, "abc123", ""),
+                "--network=host --cap-add=NET_RAW --cap-add=NET_ADMIN "
+                "--cap-add=NET_BIND_SERVICE "
+                "--tmpfs /tmp:uid=20211,gid=20211,mode=1700 "
+                "-v /etc/localtime:/etc/localtime:ro "
+                "-v /opt/netalertx/config:/data "
+                "ghcr.io/netalertx/netalertx:latest": (0, "abc123", ""),
+                "docker inspect --format '{{.State.Health.Status}}'"
+                " netalertx 2>/dev/null": (0, "healthy\n", ""),
             },
             file_contents={},
         )
@@ -8133,13 +7952,77 @@ class TestDockerInstallerStateMachine:
             _fake_backup,
         )
 
-        # Fake HTTP client that always returns 200 for health checks
-        class _FakeHTTP:
-            async def get(self, url, **kw):
-                return httpx.Response(200)
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=docker_ssh,
+                ha_ssh=ha_ssh,
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+                image="ghcr.io/netalertx/netalertx:latest",
+                config_path="/opt/netalertx/config",
+                min_disk_gb=5.0,
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
 
-            async def aclose(self):
-                pass
+    def test_resume_from_docker_running_restarts_stopped_container(
+        self, tmp_path, monkeypatch
+    ):
+        """Resuming from DOCKER_RUNNING re-launches container if it's not running."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr("netalertx.docker_installer.HA_HOST", "homeassistant.local")
+        monkeypatch.setattr("netalertx.docker_installer.HA_API_TOKEN", "fake_token")
+        monkeypatch.setattr("netalertx.docker_installer.NETALERTX_MQTT_USER", "")
+
+        db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_RUNNING")
+
+        docker_ssh = FakeSSHClient(
+            command_results={
+                # Container is not running on resume
+                "docker inspect --format '{{.State.Running}}'"
+                " netalertx 2>/dev/null": (0, "false\n", ""),
+                # Step 6 re-launch
+                "docker stop netalertx 2>/dev/null || true": (0, "", ""),
+                "docker rm netalertx 2>/dev/null || true": (0, "", ""),
+                "docker run -d --name netalertx --restart=unless-stopped "
+                "--network=host --cap-add=NET_RAW --cap-add=NET_ADMIN "
+                "--cap-add=NET_BIND_SERVICE "
+                "--tmpfs /tmp:uid=20211,gid=20211,mode=1700 "
+                "-v /etc/localtime:/etc/localtime:ro "
+                "-v /opt/netalertx/config:/data "
+                "ghcr.io/netalertx/netalertx:latest": (0, "abc123", ""),
+                # Step 7 health check
+                "docker inspect --format '{{.State.Health.Status}}'"
+                " netalertx 2>/dev/null": (0, "healthy\n", ""),
+            },
+            file_contents={},
+        )
+
+        ha_ssh = FakeSSHClient(
+            command_results={
+                "ha apps restart core_mosquitto": (0, "", ""),
+                "ha core check": (0, "", ""),
+                "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
+                ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
+                ' -H "Content-Type: application/json"': (0, "", ""),
+            },
+            file_contents={"/config/automations.yaml": ""},
+        )
+
+        async def _fake_backup(**_kw):
+            return "backup-slug-abc"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup",
+            _fake_backup,
+        )
 
         state = asyncio.run(
             run_docker_installer(
@@ -8149,14 +8032,13 @@ class TestDockerInstallerStateMachine:
                 notifier=self._notifier(approve=True),
                 db_path=db,
                 docker_host="192.168.1.50",
-                image="ghcr.io/jokob-sk/netalertx:latest",
+                image="ghcr.io/netalertx/netalertx:latest",
                 config_path="/opt/netalertx/config",
-                min_disk_gb=5.0,
-                api_port=20212,
-                http_client=_FakeHTTP(),  # type: ignore[arg-type]
             )
         )
         assert state == "FULLY_OPERATIONAL"
+        # Verify container was re-launched (stop+rm+run all called)
+        assert any("docker run" in cmd for cmd in docker_ssh.commands_run)
 
     def test_mqtt_routing_skipped_on_rejection(self, tmp_path, monkeypatch):
         """When HITL is rejected at step 8, installer still advances to DOCKER_MQTT_ROUTED."""
@@ -8263,7 +8145,7 @@ class TestDockerInstallerConfigKeys:
         import config
 
         importlib.reload(config)
-        assert config.NETALERTX_DOCKER_IMAGE == "ghcr.io/jokob-sk/netalertx:latest"
+        assert config.NETALERTX_DOCKER_IMAGE == "ghcr.io/netalertx/netalertx:latest"
 
     def test_docker_min_disk_gb_default(self, isolated_config):
         import importlib

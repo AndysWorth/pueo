@@ -21,8 +21,6 @@ import sqlite3
 import uuid
 from typing import TYPE_CHECKING
 
-import httpx
-
 from config import (
     DB_PATH,
     HA_API_TOKEN,
@@ -196,83 +194,29 @@ async def _step1_verify_docker_ssh(
         return False
 
     _, uname_out, _ = await docker_ssh.run("uname -s")
-    target_os = uname_out.strip().lower()
-    details["target_os"] = target_os
-    log.info("step1_os_detected", target_os=target_os, correlation_id=cid)
-
-    if target_os == "darwin":
-        ok = await _step1b_macos_preflight(
-            docker_ssh, gate, notifier, details, cid, docker_host
-        )
-        if not ok:
-            return False
-
-    _write_install_state(db_path, "DOCKER_SSH_VERIFIED", details, cid)
-    log.info("step1_complete", host=docker_host, correlation_id=cid)
-    return True
-
-
-async def _step1b_macos_preflight(
-    docker_ssh: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    docker_host: str,
-) -> bool:
-    """macOS-only: verify Docker Desktop version and confirm host networking is enabled."""
-    _, ver_out, _ = await docker_ssh.run(
-        "docker version --format '{{.Server.Version}}'"
-    )
-    server_version = ver_out.strip()
-    try:
-        major = int(server_version.split(".")[0])
-    except (ValueError, IndexError):
-        major = 0
-
-    # Docker Desktop 4.29+ ships server version ≥ 26.x
-    if major < 26:
+    if uname_out.strip().lower() == "darwin":
         await gate.require_approval(
-            subject="NetAlertX Docker installer: Docker Desktop too old (macOS)",
+            subject="NetAlertX Docker installer: macOS host not supported",
             body=(
-                f"Docker Desktop on {docker_host!r} reports server version "
-                f"{server_version!r}.\n\n"
-                "--network=host support for macOS requires Docker Desktop 4.29+ "
-                "(server version ≥ 26.x). Without it the container is isolated inside "
-                "Docker Desktop's VM and cannot discover your home LAN devices.\n\n"
-                "Upgrade Docker Desktop and re-run setup."
+                f"The Docker host {docker_host!r} is running macOS.\n\n"
+                "NetAlertX requires ARP scanning to discover home LAN devices, which "
+                "needs direct access to the physical network interface. Docker Desktop "
+                "on macOS runs containers inside a HyperKit VM — even with "
+                "--network=host, the container is attached to the VM's virtual network, "
+                "not your real LAN. NetAlertX will start but will never discover any "
+                "devices.\n\n"
+                "Re-run the installer pointing at a Linux host (a Raspberry Pi, a "
+                "Linux NAS, or any always-on Linux machine on your LAN)."
             ),
-            payload={"notification_id": f"{cid}_step1b_old_docker", "step": "1b"},
+            payload={"notification_id": f"{cid}_step1_macos", "step": 1},
             notifier=notifier,
             risk=RiskLevel.CRITICAL,
         )
-        log.error(
-            "step1b_docker_too_old",
-            server_version=server_version,
-            correlation_id=cid,
-        )
+        log.error("step1_macos_host_unsupported", host=docker_host, correlation_id=cid)
         return False
 
-    await gate.require_approval(
-        subject="NetAlertX Docker installer: enable host networking in Docker Desktop",
-        body=(
-            f"Docker Desktop {server_version} detected on {docker_host!r}.\n\n"
-            "Before proceeding, confirm that host networking is enabled:\n"
-            "  Docker Desktop → Settings → Resources → Network → Enable host networking\n\n"
-            "Without this, --network=host connects the container to Docker Desktop's "
-            "internal VM network — not your home LAN — and NetAlertX won't discover "
-            "network devices.\n\n"
-            "Approve once you have enabled host networking (or if it is already enabled)."
-        ),
-        payload={"notification_id": f"{cid}_step1b_host_network", "step": "1b"},
-        notifier=notifier,
-        risk=RiskLevel.LOW,
-    )
-    log.info(
-        "step1b_macos_preflight_complete",
-        server_version=server_version,
-        correlation_id=cid,
-    )
+    _write_install_state(db_path, "DOCKER_SSH_VERIFIED", details, cid)
+    log.info("step1_complete", host=docker_host, correlation_id=cid)
     return True
 
 
@@ -476,25 +420,20 @@ async def _step6_start_container(
         "--restart=unless-stopped "
         "--network=host "
         "--cap-add=NET_RAW "
-        f"-v {config_path}:/app/config "
+        "--cap-add=NET_ADMIN "
+        "--cap-add=NET_BIND_SERVICE "
+        "--tmpfs /tmp:uid=20211,gid=20211,mode=1700 "
+        "-v /etc/localtime:/etc/localtime:ro "
+        f"-v {config_path}:/data "
         f"{image}"
     )
     log.info("running_command", cmd=docker_cmd, correlation_id=cid)
     ec, _, stderr = await docker_ssh.run(docker_cmd)
     if ec != 0:
-        target_os = details.get("target_os", "linux")
-        if target_os == "darwin":
-            run_hint = (
-                "--network=host on macOS requires Docker Desktop ≥ 4.29 with host "
-                "networking enabled (Settings → Resources → Network → Enable host "
-                "networking). Check the Docker logs: `docker logs netalertx` on the "
-                "target Mac."
-            )
-        else:
-            run_hint = (
-                "Check that the image was pulled correctly and the host supports "
-                "--cap-add=NET_RAW (requires Linux kernel ≥ 3.19)."
-            )
+        run_hint = (
+            "Check that the image was pulled correctly and the host supports "
+            "--cap-add=NET_RAW (requires Linux kernel ≥ 3.19)."
+        )
         await gate.require_approval(
             subject="NetAlertX Docker installer: container failed to start",
             body=f"docker run failed.\n\nError: {stderr}\n\n{run_hint}",
@@ -509,36 +448,62 @@ async def _step6_start_container(
 
 
 async def _step7_wait_healthy(
-    docker_host: str,
-    api_port: int,
+    docker_ssh: "SSHClientProtocol",
     gate: "AutonomyGate",
     notifier: "NotifierProtocol",
     details: dict,
     cid: str,
     db_path: str,
-    http_client: httpx.AsyncClient,
 ) -> bool:
+    """Poll 'docker inspect' health status until healthy or 120 s elapsed.
+
+    Using docker inspect instead of HTTP avoids the macOS Docker Desktop
+    host-networking limitation where container ports are only reachable from
+    inside the Docker VM, not from the external network.
+    """
     import asyncio
 
-    log.info("step7_start", step="wait_healthy", host=docker_host, correlation_id=cid)
-    url = f"http://{docker_host}:{api_port}/health"
-    for attempt in range(12):  # 12 × 5 s = 60 s
-        try:
-            resp = await http_client.get(url, timeout=5)
-            if resp.status_code == 200:
-                _write_install_state(db_path, "DOCKER_HEALTHY", details, cid)
-                log.info("step7_healthy", url=url, attempt=attempt, correlation_id=cid)
-                return True
-        except Exception:  # nosec B110
-            pass
-        log.info("step7_waiting", attempt=attempt, url=url, correlation_id=cid)
+    log.info("step7_start", step="wait_healthy", correlation_id=cid)
+    inspect_cmd = (
+        f"docker inspect --format '{{{{.State.Health.Status}}}}'"
+        f" {_CONTAINER_NAME} 2>/dev/null"
+    )
+    for attempt in range(24):  # 24 × 5 s = 120 s
+        _, status_raw, _ = await docker_ssh.run(inspect_cmd)
+        status = status_raw.strip()
+        if status == "healthy":
+            _write_install_state(db_path, "DOCKER_HEALTHY", details, cid)
+            log.info("step7_healthy", attempt=attempt, correlation_id=cid)
+            return True
+        if status in ("unhealthy", ""):
+            # Container exited or health check permanently failed — get logs and bail
+            _, logs, _ = await docker_ssh.run(
+                f"docker logs {_CONTAINER_NAME} --tail 30 2>&1"
+            )
+            await gate.require_approval(
+                subject="NetAlertX Docker installer: container unhealthy",
+                body=(
+                    f"NetAlertX container reached status {status!r}.\n\n"
+                    f"Last 30 log lines:\n{logs}\n\n"
+                    f"Check `docker logs {_CONTAINER_NAME}` on the Docker host "
+                    "and re-run setup when the underlying issue is fixed."
+                ),
+                payload={"notification_id": f"{cid}_step7_unhealthy", "step": 7},
+                notifier=notifier,
+                risk=RiskLevel.HIGH,
+            )
+            return False
+        log.info("step7_waiting", attempt=attempt, status=status, correlation_id=cid)
         await asyncio.sleep(5)
+
+    _, logs, _ = await docker_ssh.run(f"docker logs {_CONTAINER_NAME} --tail 30 2>&1")
     await gate.require_approval(
         subject="NetAlertX Docker installer: health check timed out",
         body=(
-            f"NetAlertX did not respond at {url} within 60 seconds.\n\n"
-            "The container may still be initialising — check `docker logs netalertx` "
-            "on the Docker host and re-run setup when the service is up."
+            f"NetAlertX container did not reach 'healthy' state within 120 seconds.\n\n"
+            f"Last 30 log lines:\n{logs}\n\n"
+            f"Check `docker logs {_CONTAINER_NAME}` on the Docker host "
+            "and re-run setup when the service is up."
         ),
         payload={"notification_id": f"{cid}_step7_timeout", "step": 7},
         notifier=notifier,
@@ -660,8 +625,6 @@ async def run_docker_installer(
     image: str = NETALERTX_DOCKER_IMAGE,
     config_path: str = NETALERTX_DOCKER_CONFIG_PATH,
     min_disk_gb: float = NETALERTX_DOCKER_MIN_DISK_GB,
-    api_port: int = 20212,
-    http_client: httpx.AsyncClient | None = None,
 ) -> str:
     """Install NetAlertX FA on a separate Docker host.
 
@@ -681,118 +644,126 @@ async def run_docker_installer(
     log.info("docker_installer_resume", state=state, correlation_id=cid)
 
     rank = _STATE_RANK.get(state, 0)
-    _http = http_client or httpx.AsyncClient()
-    _owns_http = http_client is None
 
-    try:
-        if rank < _STATE_RANK["DOCKER_SSH_VERIFIED"]:
-            ok = await _step1_verify_docker_ssh(
-                docker_ssh, gate, notifier, details, cid, db_path, docker_host
+    if rank < _STATE_RANK["DOCKER_SSH_VERIFIED"]:
+        ok = await _step1_verify_docker_ssh(
+            docker_ssh, gate, notifier, details, cid, db_path, docker_host
+        )
+        if not ok:
+            return state
+        state = "DOCKER_SSH_VERIFIED"
+
+    if rank < _STATE_RANK["DOCKER_DISK_CHECKED"]:
+        ok = await _step2_check_disk(
+            docker_ssh,
+            gate,
+            notifier,
+            details,
+            cid,
+            db_path,
+            config_path,
+            min_disk_gb,
+        )
+        if not ok:
+            return state
+        state = "DOCKER_DISK_CHECKED"
+
+    if rank < _STATE_RANK["DOCKER_DIR_CREATED"]:
+        ok = await _step3_create_config_dir(
+            docker_ssh, gate, notifier, details, cid, db_path, config_path
+        )
+        if not ok:
+            return state
+        state = "DOCKER_DIR_CREATED"
+
+    if rank < _STATE_RANK["DOCKER_IMAGE_PULLED"]:
+        ok = await _step4_pull_image(
+            docker_ssh,
+            gate,
+            notifier,
+            details,
+            cid,
+            db_path,
+            image,
+            config_path,
+            min_disk_gb,
+        )
+        if not ok:
+            return state
+        state = "DOCKER_IMAGE_PULLED"
+
+    if rank < _STATE_RANK["DOCKER_CONFIGURED"]:
+        ok = await _step5_write_app_conf(
+            docker_ssh, details, cid, db_path, config_path, docker_host
+        )
+        if not ok:
+            return state
+        state = "DOCKER_CONFIGURED"
+
+    if rank < _STATE_RANK["DOCKER_RUNNING"]:
+        ok = await _step6_start_container(
+            docker_ssh, gate, notifier, details, cid, db_path, image, config_path
+        )
+        if not ok:
+            return state
+        state = "DOCKER_RUNNING"
+    elif rank == _STATE_RANK["DOCKER_RUNNING"]:
+        # Resuming from DOCKER_RUNNING: the container may have exited since the
+        # last run. Re-launch it so step 7 has something to poll.
+        _, running_raw, _ = await docker_ssh.run(
+            f"docker inspect --format '{{{{.State.Running}}}}'"
+            f" {_CONTAINER_NAME} 2>/dev/null"
+        )
+        if running_raw.strip().lower() != "true":
+            log.info(
+                "step6_container_not_running_on_resume",
+                container=_CONTAINER_NAME,
+                correlation_id=cid,
             )
-            if not ok:
-                return state
-            state = "DOCKER_SSH_VERIFIED"
-
-        if rank < _STATE_RANK["DOCKER_DISK_CHECKED"]:
-            ok = await _step2_check_disk(
-                docker_ssh,
-                gate,
-                notifier,
-                details,
-                cid,
-                db_path,
-                config_path,
-                min_disk_gb,
-            )
-            if not ok:
-                return state
-            state = "DOCKER_DISK_CHECKED"
-
-        if rank < _STATE_RANK["DOCKER_DIR_CREATED"]:
-            ok = await _step3_create_config_dir(
-                docker_ssh, gate, notifier, details, cid, db_path, config_path
-            )
-            if not ok:
-                return state
-            state = "DOCKER_DIR_CREATED"
-
-        if rank < _STATE_RANK["DOCKER_IMAGE_PULLED"]:
-            ok = await _step4_pull_image(
-                docker_ssh,
-                gate,
-                notifier,
-                details,
-                cid,
-                db_path,
-                image,
-                config_path,
-                min_disk_gb,
-            )
-            if not ok:
-                return state
-            state = "DOCKER_IMAGE_PULLED"
-
-        if rank < _STATE_RANK["DOCKER_CONFIGURED"]:
-            ok = await _step5_write_app_conf(
-                docker_ssh, details, cid, db_path, config_path, docker_host
-            )
-            if not ok:
-                return state
-            state = "DOCKER_CONFIGURED"
-
-        if rank < _STATE_RANK["DOCKER_RUNNING"]:
             ok = await _step6_start_container(
                 docker_ssh, gate, notifier, details, cid, db_path, image, config_path
             )
             if not ok:
                 return state
-            state = "DOCKER_RUNNING"
 
-        if rank < _STATE_RANK["DOCKER_HEALTHY"]:
-            ok = await _step7_wait_healthy(
-                docker_host, api_port, gate, notifier, details, cid, db_path, _http
-            )
-            if not ok:
-                return state
-            state = "DOCKER_HEALTHY"
-
-        if rank < _STATE_RANK["DOCKER_MQTT_ROUTED"]:
-            ok = await _step8_route_mqtt(
-                ha_ssh, gate, notifier, details, cid, db_path, docker_host
-            )
-            if not ok:
-                return state
-            state = "DOCKER_MQTT_ROUTED"
-
-        if rank < _STATE_RANK["DOCKER_WEBHOOK_CREATED"]:
-            ok = await _step9_create_webhook(
-                ha_ssh, gate, notifier, details, cid, db_path
-            )
-            if not ok:
-                return state
-            state = "FULLY_OPERATIONAL"
-
-        log.info("docker_installer_complete", state=state, correlation_id=cid)
-        await notifier.send(
-            subject="NetAlertX installed on Docker host",
-            body=(
-                f"NetAlertX Full Access is running on {docker_host}:{api_port}.\n\n"
-                "Next: set netalertx.host and netalertx.api_token in config.yaml, "
-                "then restart Pueo.\n\n"
-                f"  netalertx:\n"
-                f"    host: {docker_host!r}\n"
-                f"    api_port: {api_port}\n"
-                f"    api_token: <generate at http://{docker_host}:{api_port}>"
-            ),
-            payload={
-                "card_type": "netalertx_docker_setup",
-                "notification_id": f"{cid}_docker_install_done",
-            },
+    if rank < _STATE_RANK["DOCKER_HEALTHY"]:
+        ok = await _step7_wait_healthy(
+            docker_ssh, gate, notifier, details, cid, db_path
         )
-    finally:
-        if _owns_http:
-            await _http.aclose()
+        if not ok:
+            return state
+        state = "DOCKER_HEALTHY"
 
+    if rank < _STATE_RANK["DOCKER_MQTT_ROUTED"]:
+        ok = await _step8_route_mqtt(
+            ha_ssh, gate, notifier, details, cid, db_path, docker_host
+        )
+        if not ok:
+            return state
+        state = "DOCKER_MQTT_ROUTED"
+
+    if rank < _STATE_RANK["DOCKER_WEBHOOK_CREATED"]:
+        ok = await _step9_create_webhook(ha_ssh, gate, notifier, details, cid, db_path)
+        if not ok:
+            return state
+        state = "FULLY_OPERATIONAL"
+
+    log.info("docker_installer_complete", state=state, correlation_id=cid)
+    await notifier.send(
+        subject="NetAlertX installed on Docker host",
+        body=(
+            f"NetAlertX Full Access is running on {docker_host}.\n\n"
+            "Next: set netalertx.host and netalertx.api_token in config.yaml, "
+            "then restart Pueo.\n\n"
+            f"  netalertx:\n"
+            f"    host: {docker_host!r}\n"
+            f"    api_token: <generate at http://{docker_host}:20212>"
+        ),
+        payload={
+            "card_type": "netalertx_docker_setup",
+            "notification_id": f"{cid}_docker_install_done",
+        },
+    )
     return state
 
 
