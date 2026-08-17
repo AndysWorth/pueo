@@ -193,84 +193,8 @@ async def _step1_verify_docker_ssh(
         log.error("step1_docker_unavailable", host=docker_host, correlation_id=cid)
         return False
 
-    _, uname_out, _ = await docker_ssh.run("uname -s")
-    target_os = uname_out.strip().lower()
-    details["target_os"] = target_os
-    log.info("step1_os_detected", target_os=target_os, correlation_id=cid)
-
-    if target_os == "darwin":
-        ok = await _step1b_macos_preflight(
-            docker_ssh, gate, notifier, details, cid, docker_host
-        )
-        if not ok:
-            return False
-
     _write_install_state(db_path, "DOCKER_SSH_VERIFIED", details, cid)
     log.info("step1_complete", host=docker_host, correlation_id=cid)
-    return True
-
-
-async def _step1b_macos_preflight(
-    docker_ssh: "SSHClientProtocol",
-    gate: "AutonomyGate",
-    notifier: "NotifierProtocol",
-    details: dict,
-    cid: str,
-    docker_host: str,
-) -> bool:
-    """macOS-only: verify Docker Desktop version and confirm host networking is enabled."""
-    _, ver_out, _ = await docker_ssh.run(
-        "docker version --format '{{.Server.Version}}'"
-    )
-    server_version = ver_out.strip()
-    try:
-        major = int(server_version.split(".")[0])
-    except (ValueError, IndexError):
-        major = 0
-
-    # Docker Desktop 4.29+ ships server version ≥ 26.x
-    if major < 26:
-        await gate.require_approval(
-            subject="NetAlertX Docker installer: Docker Desktop too old (macOS)",
-            body=(
-                f"Docker Desktop on {docker_host!r} reports server version "
-                f"{server_version!r}.\n\n"
-                "--network=host support for macOS requires Docker Desktop 4.29+ "
-                "(server version ≥ 26.x). Without it the container is isolated inside "
-                "Docker Desktop's VM and cannot discover your home LAN devices.\n\n"
-                "Upgrade Docker Desktop and re-run setup."
-            ),
-            payload={"notification_id": f"{cid}_step1b_old_docker", "step": "1b"},
-            notifier=notifier,
-            risk=RiskLevel.CRITICAL,
-        )
-        log.error(
-            "step1b_docker_too_old",
-            server_version=server_version,
-            correlation_id=cid,
-        )
-        return False
-
-    await gate.require_approval(
-        subject="NetAlertX Docker installer: enable host networking in Docker Desktop",
-        body=(
-            f"Docker Desktop {server_version} detected on {docker_host!r}.\n\n"
-            "Before proceeding, confirm that host networking is enabled:\n"
-            "  Docker Desktop → Settings → Resources → Network → Enable host networking\n\n"
-            "Without this, --network=host connects the container to Docker Desktop's "
-            "internal VM network — not your home LAN — and NetAlertX won't discover "
-            "network devices.\n\n"
-            "Approve once you have enabled host networking (or if it is already enabled)."
-        ),
-        payload={"notification_id": f"{cid}_step1b_host_network", "step": "1b"},
-        notifier=notifier,
-        risk=RiskLevel.LOW,
-    )
-    log.info(
-        "step1b_macos_preflight_complete",
-        server_version=server_version,
-        correlation_id=cid,
-    )
     return True
 
 
@@ -475,25 +399,19 @@ async def _step6_start_container(
         "--network=host "
         "--cap-add=NET_RAW "
         "--cap-add=NET_ADMIN "
-        f"-v {config_path}:/app/config "
+        "--cap-add=NET_BIND_SERVICE "
+        "--tmpfs /tmp:uid=20211,gid=20211,mode=1700 "
+        "-v /etc/localtime:/etc/localtime:ro "
+        f"-v {config_path}:/data "
         f"{image}"
     )
     log.info("running_command", cmd=docker_cmd, correlation_id=cid)
     ec, _, stderr = await docker_ssh.run(docker_cmd)
     if ec != 0:
-        target_os = details.get("target_os", "linux")
-        if target_os == "darwin":
-            run_hint = (
-                "--network=host on macOS requires Docker Desktop ≥ 4.29 with host "
-                "networking enabled (Settings → Resources → Network → Enable host "
-                "networking). Check the Docker logs: `docker logs netalertx` on the "
-                "target Mac."
-            )
-        else:
-            run_hint = (
-                "Check that the image was pulled correctly and the host supports "
-                "--cap-add=NET_RAW (requires Linux kernel ≥ 3.19)."
-            )
+        run_hint = (
+            "Check that the image was pulled correctly and the host supports "
+            "--cap-add=NET_RAW (requires Linux kernel ≥ 3.19)."
+        )
         await gate.require_approval(
             subject="NetAlertX Docker installer: container failed to start",
             body=f"docker run failed.\n\nError: {stderr}\n\n{run_hint}",

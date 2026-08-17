@@ -57,7 +57,7 @@ netalertx:
   docker_ssh_user: ""                         # SSH user for Docker host (blank = same as HA user)
   docker_ssh_key_path: ""                     # SSH key for Docker host (blank = same as HA key)
   docker_config_path: "/opt/netalertx/config" # Config volume path on Docker host
-  docker_image: "ghcr.io/jokob-sk/netalertx:latest"  # Docker image to pull and run
+  docker_image: "ghcr.io/netalertx/netalertx:latest"  # Docker image to pull and run
   docker_min_disk_gb: 5.0                     # Abort Docker install if host has less free space (GB)
   severity_confidence_threshold: 0.9          # Minimum confidence score to classify as HIGH severity
 

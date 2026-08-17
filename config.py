@@ -207,7 +207,7 @@ NETALERTX_DOCKER_CONFIG_PATH: str = _nax.get(
     "docker_config_path", "/opt/netalertx/config"
 )
 NETALERTX_DOCKER_IMAGE: str = _nax.get(
-    "docker_image", "ghcr.io/jokob-sk/netalertx:latest"
+    "docker_image", "ghcr.io/netalertx/netalertx:latest"
 )
 NETALERTX_DOCKER_MIN_DISK_GB: float = float(_nax.get("docker_min_disk_gb", 5.0))
 NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD: float = float(

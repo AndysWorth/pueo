@@ -498,7 +498,7 @@ netalertx:
   docker_ssh_user: "${NAX_DOCKER_SSH_USER}"
   docker_ssh_key_path: "${NAX_DOCKER_SSH_KEY_PATH}"
   docker_config_path: "${NAX_DOCKER_CONFIG_PATH}"
-  docker_image: "ghcr.io/jokob-sk/netalertx:latest"
+  docker_image: "ghcr.io/netalertx/netalertx:latest"
   docker_min_disk_gb: 5.0
   # Advanced tuning — edit config.yaml directly to override these defaults:
   # host: <same as home_assistant.host>
