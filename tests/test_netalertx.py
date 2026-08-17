@@ -8071,7 +8071,6 @@ class TestDockerInstallerStateMachine:
 
     def test_full_flow_reaches_fully_operational(self, tmp_path, monkeypatch):
         """Happy path: all steps succeed → FULLY_OPERATIONAL."""
-        import httpx
         from utils.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
@@ -8106,9 +8105,11 @@ class TestDockerInstallerStateMachine:
                 "docker stop netalertx 2>/dev/null || true": (0, "", ""),
                 "docker rm netalertx 2>/dev/null || true": (0, "", ""),
                 "docker run -d --name netalertx --restart=unless-stopped "
-                "--network=host --cap-add=NET_RAW "
+                "--network=host --cap-add=NET_RAW --cap-add=NET_ADMIN "
                 "-v /opt/netalertx/config:/app/config "
                 "ghcr.io/jokob-sk/netalertx:latest": (0, "abc123", ""),
+                "docker inspect --format '{{.State.Health.Status}}'"
+                " netalertx 2>/dev/null": (0, "healthy\n", ""),
             },
             file_contents={},
         )
@@ -8133,14 +8134,6 @@ class TestDockerInstallerStateMachine:
             _fake_backup,
         )
 
-        # Fake HTTP client that always returns 200 for health checks
-        class _FakeHTTP:
-            async def get(self, url, **kw):
-                return httpx.Response(200)
-
-            async def aclose(self):
-                pass
-
         state = asyncio.run(
             run_docker_installer(
                 docker_ssh=docker_ssh,
@@ -8152,11 +8145,79 @@ class TestDockerInstallerStateMachine:
                 image="ghcr.io/jokob-sk/netalertx:latest",
                 config_path="/opt/netalertx/config",
                 min_disk_gb=5.0,
-                api_port=20212,
-                http_client=_FakeHTTP(),  # type: ignore[arg-type]
             )
         )
         assert state == "FULLY_OPERATIONAL"
+
+    def test_resume_from_docker_running_restarts_stopped_container(
+        self, tmp_path, monkeypatch
+    ):
+        """Resuming from DOCKER_RUNNING re-launches container if it's not running."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        monkeypatch.setattr("netalertx.docker_installer.HA_HOST", "homeassistant.local")
+        monkeypatch.setattr("netalertx.docker_installer.HA_API_TOKEN", "fake_token")
+        monkeypatch.setattr("netalertx.docker_installer.NETALERTX_MQTT_USER", "")
+
+        db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_RUNNING")
+
+        docker_ssh = FakeSSHClient(
+            command_results={
+                # Container is not running on resume
+                "docker inspect --format '{{.State.Running}}'"
+                " netalertx 2>/dev/null": (0, "false\n", ""),
+                # Step 6 re-launch
+                "docker stop netalertx 2>/dev/null || true": (0, "", ""),
+                "docker rm netalertx 2>/dev/null || true": (0, "", ""),
+                "docker run -d --name netalertx --restart=unless-stopped "
+                "--network=host --cap-add=NET_RAW --cap-add=NET_ADMIN "
+                "-v /opt/netalertx/config:/app/config "
+                "ghcr.io/jokob-sk/netalertx:latest": (0, "abc123", ""),
+                # Step 7 health check
+                "docker inspect --format '{{.State.Health.Status}}'"
+                " netalertx 2>/dev/null": (0, "healthy\n", ""),
+            },
+            file_contents={},
+        )
+
+        ha_ssh = FakeSSHClient(
+            command_results={
+                "ha apps restart core_mosquitto": (0, "", ""),
+                "ha core check": (0, "", ""),
+                "curl -sf -X POST http://supervisor/core/api/services/automation/reload"
+                ' -H "Authorization: Bearer $SUPERVISOR_TOKEN"'
+                ' -H "Content-Type: application/json"': (0, "", ""),
+            },
+            file_contents={"/config/automations.yaml": ""},
+        )
+
+        async def _fake_backup(**_kw):
+            return "backup-slug-abc"
+
+        monkeypatch.setattr(
+            "ha_agent_sandbox_engine.execute_remote_backup",
+            _fake_backup,
+        )
+
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=docker_ssh,
+                ha_ssh=ha_ssh,
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+                image="ghcr.io/jokob-sk/netalertx:latest",
+                config_path="/opt/netalertx/config",
+            )
+        )
+        assert state == "FULLY_OPERATIONAL"
+        # Verify container was re-launched (stop+rm+run all called)
+        assert any("docker run" in cmd for cmd in docker_ssh.commands_run)
 
     def test_mqtt_routing_skipped_on_rejection(self, tmp_path, monkeypatch):
         """When HITL is rejected at step 8, installer still advances to DOCKER_MQTT_ROUTED."""
