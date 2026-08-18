@@ -93,6 +93,12 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **Plain-text console formatter**: `_TextFormatter` in `utils/logging.py` is used on `stderr` when `setup_logging(console_text=True)` is called. The file handler always stays JSON. `main.py` enables `console_text` for `--mode netalertx-setup` to produce human-readable installer output.
 
+**LLM-guided all actions**: Every significant Pueo action — repair, update, cleanup, notification triage, code proposals — flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
+
+**Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`). The LLM can call `read_source("utils/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
+
+**HA live lookup**: `fetch_ha_docs(domain, filename)` fetches HA component source or docs from GitHub raw (`homeassistant/core/dev/homeassistant/components/{domain}/{filename}`). In `local` mode it serves from cache only — a cache miss raises `ToolError` and makes no network call. In `cloud`/`both` mode it fetches live and writes to cache. Cache lives at `HA_SOURCE_CACHE_DIR` (default `.cache/ha_source/`). The RAG refresh cycle pre-populates cache for all installed integrations. Allowed filenames: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file. See ADR 011.
+
 ## Configuration
 
 `config.py` loads `config.yaml` at import time and exposes all settings as typed module-level constants with fallback defaults. Agent scripts are run-able directly without a `config.yaml` (defaults kick in); `main.py` is needed to point at a non-default config path.
@@ -203,3 +209,7 @@ Rationale for key architectural choices is in `docs/decisions/`:
 @docs/decisions/005-asyncio-over-agentic-framework.md
 
 @docs/decisions/006-llm-provider-abstraction.md
+
+@docs/decisions/010-agent-self-awareness.md
+
+@docs/decisions/011-ha-live-lookup.md

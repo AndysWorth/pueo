@@ -25,6 +25,7 @@ Strategic capabilities in delivery order.
 | 9. Federated case library                     | ✅ Complete (2026-08-11) | `utils/case_submitter.py`, `utils/case_ingester.py` |
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
+| 12. Agent self-knowledge + HA live lookup     | 🔲 Planned               | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
 
 ### Implementation Phases
 
@@ -330,6 +331,33 @@ Full spec: [plan/transparency.md](plan/transparency.md)
 
 ---
 
+### Milestone 12 — Agent Self-Knowledge + HA Live Lookup
+
+**Objective:** Give every Pueo agent mode two complementary knowledge capabilities: (1) self-awareness of Pueo's own codebase so the LLM can reason about available tools and pipelines before choosing an action; (2) on-demand access to Home Assistant component source code and documentation so the LLM can look up current HA internals when the pre-indexed RAG returns insufficient context.
+
+**Why here:** Milestones 6, 6.6, and 11 established Pueo as an LLM-reasoned transparent system. A reasoning agent should know what it can do (self-knowledge) and should be able to look up the authoritative source on the system it manages (HA live lookup). Without these, the LLM must reason from incomplete information when facing an unfamiliar integration or an underdocumented config field — increasing the risk of a wrong fix.
+
+**Key design choices:**
+- `read_source` (already implemented, already in chat/code-proposal registries) is added to `build_ha_tool_registry()` and `build_netalertx_tool_registry()` so repair agents can inspect their own tool registry and pipeline code
+- New `fetch_ha_docs(domain, filename)` tool: serves from `.cache/ha_source/{domain}/{filename}` if cached; in `LLM_PROVIDER=local` mode raises `ToolError` on cache miss — zero WAN; in `cloud`/`both` mode fetches live from `raw.githubusercontent.com` and caches the result
+- RAG refresh cycle extended to pre-fetch `__init__.py`, `manifest.json`, `const.py` for all installed integrations — so local mode has source coverage for the user's actual setup without any inference-time WAN
+- `_AGENT_LOOP_SYSTEM_PROMPT` gains a 2-line note directing the model to `read_source` for capability queries and `fetch_ha_docs` for HA component details
+
+**Tasks:**
+- Add `READ_SOURCE` to `build_ha_tool_registry()` and `build_netalertx_tool_registry()` — one line each
+- `FETCH_HA_DOCS` ToolDefinition + `_fetch_ha_docs()` executor method with WAN gate, cache read/write, filename allowlist, and path-traversal guard
+- `ha_docs_scraper.py` `prefetch_installed_integration_sources()` — pre-populates cache at refresh time
+- Config key `HA_SOURCE_CACHE_DIR` (triple-update: `config.py` + `config.yaml.default` + `setup.sh`)
+- `_AGENT_LOOP_SYSTEM_PROMPT` update
+- Tests: 5 new `fetch_ha_docs` tests (cache hit, local miss, cloud live fetch, disallowed filename, path traversal); 3 new registry membership tests
+- ADRs 010 and 011
+
+**Validation gate:** In a repair session, `read_source("utils/tool_registry.py")` returns the tool list; an unfamiliar integration triggers `fetch_ha_docs`; `LLM_PROVIDER=local` + empty cache raises `ToolError`, no HTTP; CI passes.
+
+Full spec: [plan/ha-live-knowledge.md](plan/ha-live-knowledge.md)
+
+---
+
 ## Evaluation Matrix
 
 These constraints govern all ongoing development. Evaluate every new feature against them before merging.
@@ -348,9 +376,13 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 | Local fix rate | ≥ 80% resolved without cloud escalation | Tune tool count + model size if falling below; cloud escalation is the fallback |
 | Episode coverage | 100% of successful repairs recorded | `finish_repair` tool fires serialization unconditionally |
 | Cloud spend | Per-incident cap ($0.50) + daily cap ($5.00) | `BillingCapError` before each API call; tracked in `cloud_spend` SQLite table; caps configurable in UI |
+| HA knowledge currency | Installed integrations pre-cached at every RAG refresh; unknown domains fetchable on demand in `cloud`/`both` mode | Run RAG refresh after adding new integrations; check `.cache/ha_source/` for missing domains |
+| WAN during inference (HA lookup) | 0 when `LLM_PROVIDER=local` | `fetch_ha_docs` serves from cache only in local mode; raises `ToolError` on miss — never makes a network call |
 
 ---
 
-## Architectural Note
+## Architectural Notes
 
-The original plan specified LangGraph or CrewAI as the agentic framework. Plain `asyncio` was chosen instead — the current state machine is simple enough that a full framework would add dependency weight without benefit. Revisit if the system grows to require multi-agent coordination or complex branching state graphs.
+**Framework choice:** The original plan specified LangGraph or CrewAI as the agentic framework. Plain `asyncio` was chosen instead — the current state machine is simple enough that a full framework would add dependency weight without benefit. Revisit if the system grows to require multi-agent coordination or complex branching state graphs.
+
+**LLM-guided all actions:** LLM inference is the intended reasoning layer for every significant Pueo action — repair, update, cleanup, notification triage, code proposals. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a Pueo function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
