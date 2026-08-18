@@ -21,19 +21,26 @@ log = get_logger("hardware")
 # ---------------------------------------------------------------------------
 # Candidate model catalog
 # (name_prefix, tier)
-# tier ranks model quality for Pueo's use case (higher = better)
-# Models are listed best-first within each tier.
+# tier ranks model quality for Pueo's use case (higher = better).
+# qwen3 family is preferred over qwen2.5-coder at equivalent size due to
+# significantly better tool-call compliance and thinking-mode support.
+# Within a tier, list order breaks ties (first match wins).
 # ---------------------------------------------------------------------------
 CANDIDATE_MODELS: list[tuple[str, int]] = [
-    ("qwen2.5-coder:32b", 5),
-    ("qwen3:32b", 5),
+    # qwen3 — best tool compliance; thinking mode available via /think flag
+    ("qwen3:30b-a3b", 7),  # MoE: dense 32b quality at ~14b active-param footprint
+    ("qwen3:32b", 7),
+    ("qwen3:14b", 5),
+    ("qwen3:8b", 4),
+    ("qwen3:4b", 3),
+    # qwen2.5-coder — solid but lower tool-call reliability than qwen3
+    ("qwen2.5-coder:32b", 6),
     ("qwen2.5-coder:14b", 4),
-    ("qwen3:14b", 4),
     ("qwen2.5-coder:7b", 3),
-    ("qwen3:8b", 3),
-    ("mistral", 3),
     ("qwen2.5-coder:3b", 2),
     ("qwen2.5-coder:1.5b", 1),
+    # other models
+    ("mistral", 3),
     ("llama3.2", 1),
 ]
 
