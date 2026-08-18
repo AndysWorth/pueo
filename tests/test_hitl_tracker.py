@@ -365,3 +365,48 @@ def test_mark_card_approved_on_new_key_inserts_row(conn):
     assert row is not None
     assert row[0] == "approved"
     assert row[1] is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: poll_for_updates must not re-fire _resolve_externally_applied_update
+# after mark_card_resolved() has already set resolved_at.
+# The _is_pending predicate must include "resolved_at IS NULL" or it treats a
+# resolved card as still-pending and re-invokes the resolution every two polls.
+# ---------------------------------------------------------------------------
+
+
+def _is_pending_query(conn: sqlite3.Connection, card_key: str) -> bool:
+    """Mirror of the _is_pending predicate in poll_for_updates (ha_log_monitor.py)."""
+    row = conn.execute(
+        "SELECT send_count, last_action, resolved_at FROM hitl_suppression"
+        " WHERE card_key = ?",
+        (card_key,),
+    ).fetchone()
+    return row is not None and row[0] > 0 and row[1] is None and row[2] is None
+
+
+def test_is_pending_false_after_mark_card_resolved(conn):
+    # Simulate: card sent, then resolved externally (mark_card_resolved sets resolved_at
+    # but leaves last_action=NULL and send_count=1 — the state that triggered the bug).
+    mark_card_sent(conn, "update:core", "update", "Core update available")
+    mark_card_resolved(conn, "update:core")
+    row = conn.execute(
+        "SELECT send_count, last_action, resolved_at FROM hitl_suppression"
+        " WHERE card_key = 'update:core'"
+    ).fetchone()
+    assert row[0] == 1  # send_count unchanged
+    assert row[1] is None  # last_action still NULL
+    assert row[2] is not None  # resolved_at set by mark_card_resolved
+    # The _is_pending predicate must return False so the update poller does not
+    # re-call _resolve_externally_applied_update on the next poll cycle.
+    assert _is_pending_query(conn, "update:core") is False
+
+
+def test_is_pending_true_while_genuinely_pending(conn):
+    # Card sent but not yet resolved — should be considered pending.
+    mark_card_sent(conn, "update:core", "update", "Core update available")
+    assert _is_pending_query(conn, "update:core") is True
+
+
+def test_is_pending_false_for_unknown_key(conn):
+    assert _is_pending_query(conn, "update:never_seen") is False

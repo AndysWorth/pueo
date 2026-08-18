@@ -521,14 +521,15 @@ async def poll_for_updates(
                     from utils.hitl_tracker import mark_card_resolved
 
                     _pending_row = _sup_conn3.execute(
-                        "SELECT send_count, last_action FROM hitl_suppression"
-                        " WHERE card_key = ?",
+                        "SELECT send_count, last_action, resolved_at"
+                        " FROM hitl_suppression WHERE card_key = ?",
                         (suppression_key,),
                     ).fetchone()
                     _is_pending = (
                         _pending_row is not None
                         and _pending_row[0] > 0
                         and _pending_row[1] is None
+                        and _pending_row[2] is None
                     )
                     if not _is_pending:
                         _update_gone.pop(suppression_key, None)
