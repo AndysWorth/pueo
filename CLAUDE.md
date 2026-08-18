@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Pueo** is a local, privacy-first agentic AI system that monitors and self-heals a Home Assistant (HA) instance. It runs on macOS Apple Silicon. The LLM inference engine is configurable (`LLM_PROVIDER`): local Ollama only (default, no WAN for inference), Anthropic Claude API, or both (Ollama for autonomous cycles + Claude available for approved escalation). All HA communication goes over SSH/SFTP.
+**Pueo** is a local, privacy-first agentic AI system that monitors and self-heals a Home Assistant (HA) instance. It runs on macOS Apple Silicon. The LLM inference engine is configurable (`LLM_PROVIDER`): local Ollama only (default, no WAN for inference), Anthropic Claude API, or both (Ollama for autonomous cycles + Claude available for approved escalation). All HA communication goes over SSH/SFTP. Transparency is a first-class design goal: users should be able to see what Pueo has done (event timeline, repair episodes) and what it is currently thinking (live tool-call trace in Chat).
 
 Source code lives in `pueo/`.
 

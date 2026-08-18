@@ -9,6 +9,17 @@ A vigilant, self-healing agentic AI system designed to monitor, maintain, and re
 
 ---
 
+## Goals
+
+Pueo is built around four design principles:
+
+- **Safety first** — no write touches your live HA configuration without a confirmed backup snapshot. Every repair is sandbox-tested before it goes to production.
+- **Privacy by default** — all inference runs locally via Ollama. Zero cloud API calls during active monitoring or repair cycles unless you explicitly opt in to cloud escalation.
+- **Autonomous healing** — Pueo monitors, diagnoses, and repairs HA incidents without requiring your attention for routine issues.
+- **Transparent operation** — you can always see what Pueo has done and what it is currently thinking. The event timeline is a complete audit log; the Chat tab shows Pueo's reasoning step-by-step so you can follow along, spot mistakes, and give additional guidance before Pueo acts.
+
+---
+
 ## 🚀 Core Features
 
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.

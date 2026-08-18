@@ -134,6 +134,55 @@
     padding: 0.2rem 0.4rem;
   }
   .tool-trace summary { cursor: pointer; color: #6366f1; font-style: normal; }
+
+  /* Inline tool-call trace cards (live + history) */
+  .tool-trace-card {
+    font-size: 0.78rem;
+    border: 1px solid #e8e8f8;
+    border-radius: 6px;
+    padding: 0.3rem 0.6rem;
+    margin: 0.1rem 0;
+    background: #f8f8ff;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    max-width: 90%;
+    align-self: flex-start;
+  }
+  .tc-header { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+  .tc-spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6366f1;
+    animation: pulse 1s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  .tc-badge { font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
+  .tc-badge.ok { color: #22c55e; }
+  .tc-badge.err { color: #ef4444; }
+  .tc-name { color: #6366f1; font-weight: 600; }
+  .tc-args { color: #aaa; font-style: italic; font-size: 0.72rem; }
+  .tool-trace-card details summary {
+    cursor: pointer;
+    color: #888;
+    font-size: 0.72rem;
+    margin-top: 0.1rem;
+  }
+  .tool-trace-card details pre {
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #555;
+    margin: 0.2rem 0 0;
+    max-height: 8rem;
+    overflow-y: auto;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
   .thread-empty {
     color: #bbb;
     text-align: center;
@@ -263,7 +312,7 @@
   let _currentSessionId = {% if sessions %}{{ sessions[0].id }}{% else %}null{% endif %};
   let _eventSource = null;
   let _thinkingEl = null;
-  let _pendingToolCalls = [];
+  let _pendingSteps = []; // live trace cards awaiting resolution
 
   // ── Session list ────────────────────────────────────────────────────────────
 
@@ -314,7 +363,7 @@
     ph.id = 'thread-placeholder';
     thread.appendChild(ph);
     _thinkingEl = null;
-    _pendingToolCalls = [];
+    _pendingSteps = [];
   }
 
   async function fetchMessages(sid) {
@@ -395,6 +444,73 @@
     thread.scrollTop = thread.scrollHeight;
   }
 
+  // ── Trace cards ──────────────────────────────────────────────────────────────
+
+  function createTraceCard(tool, argsPreview) {
+    removeThinking(); // replace global spinner with a trace card
+    const thread = document.getElementById('message-thread');
+
+    const card = document.createElement('div');
+    card.className = 'tool-trace-card';
+    card.dataset.tool = tool;
+    card.dataset.resolved = 'false';
+
+    const header = document.createElement('div');
+    header.className = 'tc-header';
+
+    const spinner = document.createElement('span');
+    spinner.className = 'tc-spinner';
+
+    const name = document.createElement('span');
+    name.className = 'tc-name';
+    name.textContent = tool;
+
+    header.appendChild(spinner);
+    header.appendChild(name);
+
+    if (argsPreview) {
+      const args = document.createElement('span');
+      args.className = 'tc-args';
+      args.textContent = argsPreview;
+      header.appendChild(args);
+    }
+
+    card.appendChild(header);
+    thread.appendChild(card);
+    _pendingSteps.push(card);
+    scrollThread();
+  }
+
+  function resolveTraceCard(tool, outputSummary, success) {
+    const card = _pendingSteps.find(
+      c => c.dataset.tool === tool && c.dataset.resolved === 'false'
+    ) || _pendingSteps.find(c => c.dataset.resolved === 'false');
+    if (!card) return;
+
+    card.dataset.resolved = 'true';
+    const header = card.querySelector('.tc-header');
+    const spinner = header.querySelector('.tc-spinner');
+    if (spinner) {
+      const badge = document.createElement('span');
+      badge.className = 'tc-badge ' + (success ? 'ok' : 'err');
+      badge.textContent = success ? '✓' : '✗';
+      header.replaceChild(badge, spinner);
+    }
+
+    if (outputSummary) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = 'Output';
+      const pre = document.createElement('pre');
+      pre.textContent = outputSummary;
+      det.appendChild(sum);
+      det.appendChild(pre);
+      card.appendChild(det);
+    }
+
+    scrollThread();
+  }
+
   // ── SSE ──────────────────────────────────────────────────────────────────────
 
   function connectSSE() {
@@ -404,21 +520,25 @@
       let data;
       try { data = JSON.parse(ev.data); } catch { return; }
       if (data.session_id !== _currentSessionId) return;
-      if (data.event_type === 'chat_thinking') {
-        showThinking(data.tool || '');
-        if (data.tool) _pendingToolCalls.push(data.tool);
+      if (data.event_type === 'chat_pre_step') {
+        createTraceCard(data.tool || '', data.args_preview || '');
+      } else if (data.event_type === 'chat_step_result') {
+        resolveTraceCard(data.tool || '', data.output_summary || '', !!data.success);
+      } else if (data.event_type === 'chat_thinking') {
+        // Fallback: show generic spinner only when no trace cards are pending
+        if (_pendingSteps.length === 0) showThinking(data.tool || '');
       } else if (data.event_type === 'chat_done') {
         removeThinking();
-        appendMessage('assistant', data.content, data.ts || (Date.now() / 1000),
-                      _pendingToolCalls.length ? JSON.stringify(_pendingToolCalls) : null);
-        _pendingToolCalls = [];
+        // Trace cards already rendered inline; final message has no tool list
+        appendMessage('assistant', data.content, data.ts || (Date.now() / 1000), null);
+        _pendingSteps = [];
         scrollThread();
         setSending(false);
         addSessionToSidebar(data.session_id, data.session_title || '');
       } else if (data.event_type === 'chat_error') {
         removeThinking();
         appendMessage('assistant', '⚠ ' + (data.error || 'Unknown error'), Date.now() / 1000, null);
-        _pendingToolCalls = [];
+        _pendingSteps = [];
         scrollThread();
         setSending(false);
       }

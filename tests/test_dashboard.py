@@ -5663,3 +5663,40 @@ class TestEpisodePrepareAndSubmit:
         html = client.get("/episodes").text
         assert "submitted" in html.lower()
         assert "https://github.com/x/y/pull/3" in html
+
+
+# ---------------------------------------------------------------------------
+# TestSanitizeArgsPreview — transparency Chunk 1 (issue #264)
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeArgsPreview:
+    """_sanitize_args_preview redacts sensitive keys and truncates long values."""
+
+    def _fn(self, args):
+        from web.dashboard import _sanitize_args_preview
+
+        return _sanitize_args_preview(args)
+
+    def test_normal_args_rendered(self):
+        out = self._fn({"command": "df -h", "host": "ha.local"})
+        assert "command=df -h" in out
+        assert "host=ha.local" in out
+
+    def test_sensitive_key_redacted(self):
+        out = self._fn({"api_key": "s3cr3t", "token": "abc"})
+        assert "s3cr3t" not in out
+        assert "abc" not in out
+        assert "***" in out
+
+    def test_long_value_truncated_to_40(self):
+        out = self._fn({"q": "x" * 60})
+        assert len(out) <= 130  # 40 chars value + key + prefix + some slack
+
+    def test_output_truncated_to_120(self):
+        args = {f"k{i}": f"val{i}" for i in range(30)}
+        out = self._fn(args)
+        assert len(out) <= 120
+
+    def test_empty_args(self):
+        assert self._fn({}) == ""

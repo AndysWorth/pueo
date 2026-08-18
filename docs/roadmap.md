@@ -24,6 +24,7 @@ Strategic capabilities in delivery order.
 | 8. Repair episode recording                   | ✅ Complete (2026-08-10) | `utils/repair_episode.py`, `utils/anonymizer.py` |
 | 9. Federated case library                     | ✅ Complete (2026-08-11) | `utils/case_submitter.py`, `utils/case_ingester.py` |
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
+| 11. Transparent operation                     | ⏳ In progress           | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html` |
 
 ### Implementation Phases
 
@@ -298,6 +299,34 @@ Full spec: [plan/federated-cases.md](plan/federated-cases.md)
 **Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; approval opens a real PR; safety-critical block list tested; security review complete.
 
 Full spec: [plan/code-proposals.md](plan/code-proposals.md)
+
+---
+
+### Milestone 11 — Transparent Operation
+
+**Objective:** Make Pueo's reasoning visible in real time. Users can see what Pueo has done (event timeline, repair episodes) and what it is currently thinking (live tool-call trace in the Chat tab). Transparency becomes a first-class design goal alongside safety, privacy, and autonomy.
+
+**Why here:** Pueo makes autonomous decisions that affect a live smart home. Users need confidence that they can audit everything that happened and observe reasoning before acting. The Chat tab today shows a collapsed "N tool calls" list after the fact — users cannot follow along or intervene. The event timeline records completion but not per-step progress during autonomous repairs.
+
+**Key design choices:**
+- `AgentLoop` gains `pre_step_callback` (fires before each tool execution) alongside the existing `step_callback` (fires after). The pre-call event carries tool name + sanitized arguments preview; the post-call event carries output summary + success flag.
+- Chat trace renders as inline expandable cards (spinner → ✓/✗ badge), replacing the collapsed `<details>` element.
+- Autonomous repair loops emit `agent_step` SSE events to the general bus so the overview page can show a live "Active repair" widget.
+- Chat guidance injection (Chunk 4) allows typing context into Chat while a repair is running; the running loop picks it up on the next LLM call.
+
+**Tasks (four independent chunks):**
+- **Chunk 1:** `pre_step_callback` hook in `AgentLoop` + chat pre/post call trace in dashboard + inline trace cards in `chat.html`
+- **Chunk 2:** Durable tool context in `chat_messages` history; "Show tool calls" toggle in `chat.html`
+- **Chunk 3:** `timeline_callback` in `AgentLoop`; `agent_step` SSE on autonomous repairs; "Active repair" widget on overview; `result_summary` field in repair episode tool sequence
+- **Chunk 4 (stretch):** `inject_context()` on running `AgentLoop`; `POST /repair/inject` endpoint; guidance banner in `chat.html`
+
+**Validation gate:**
+- Chat: asking "What is the HA disk usage?" shows a spinner card before `run_ha_command` returns, then a ✓ badge with output summary, then the final answer
+- History: reloading a session and toggling "Show tool calls" renders tool trace for past turns
+- Autonomous repairs: overview shows live step widget; timeline records per-step rows
+- CI gate passes on each chunk's PR
+
+Full spec: [plan/transparency.md](plan/transparency.md)
 
 ---
 
