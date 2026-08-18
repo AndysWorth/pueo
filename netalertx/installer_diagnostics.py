@@ -14,7 +14,7 @@ import config as _config
 from utils.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger
-from utils.llm_factory import make_llm_client
+from utils.llm_factory import _default_model_for_provider, make_llm_client
 from utils.prompts import load_prompt
 
 if TYPE_CHECKING:
@@ -138,9 +138,10 @@ async def diagnose_installer_failure(
     )
 
     client = llm_client or make_llm_client()
+    model = _default_model_for_provider()
     try:
         response = await client.chat(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -157,7 +158,7 @@ async def diagnose_installer_failure(
             can_auto_fix=result.can_auto_fix,
         )
         trace = LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -166,7 +167,7 @@ async def diagnose_installer_failure(
     except Exception as exc:
         log.error("installer_diagnosis_failed", error=str(exc))
         sentinel = LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",

@@ -2796,6 +2796,20 @@ class TestLogMonitorTriage:
             and getattr(e, "errno", None) in _TRANSIENT_SSH_ERRNOS
         )
 
+    def test_analyze_log_line_uses_model_factory(self, llm_actionable, monkeypatch):
+        import ha_log_monitor
+        from ha_log_monitor import analyze_log_line_with_ai
+
+        calls = []
+        monkeypatch.setattr(
+            ha_log_monitor,
+            "_default_model_for_provider",
+            lambda: calls.append(True) or "sentinel-model",
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR Traceback"], llm_actionable))
+        assert calls, "_default_model_for_provider was not called"
+        assert llm_actionable.calls[0]["model"] == "sentinel-model"
+
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
 
@@ -7691,6 +7705,26 @@ class TestAnalyzeNotification:
             )
         )
         assert result.requires_hitl is False
+
+    def test_analyze_notification_uses_model_factory(self, monkeypatch):
+        from ha_notification_manager import analyze_notification
+        import ha_notification_manager
+        import utils.llm_factory
+
+        calls = []
+        monkeypatch.setattr(
+            utils.llm_factory,
+            "_default_model_for_provider",
+            lambda: calls.append(True) or "sentinel-model",
+        )
+        asyncio.run(
+            analyze_notification(
+                "other", None, "msg", {}, "", llm_client=self._make_llm_client()
+            )
+        )
+        assert (
+            calls
+        ), "_default_model_for_provider was not called in analyze_notification"
 
 
 # ── ha_notification_manager — enrich_and_analyze_notification ────────────────────
