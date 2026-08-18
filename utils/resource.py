@@ -201,11 +201,19 @@ class ResourcePoller:
                     from utils.disk_recovery import run_safe_disk_recovery
 
                     if _cfg.DISK_RECOVERY_AUTO_ENABLED:
+                        _inv_ctx = (
+                            f"Disk free: {status.disk_free_gb:.2f} GB"
+                            f" (total: {status.disk_total_gb:.2f} GB)."
+                            f" Critical threshold: {self._disk_critical_gb} GB."
+                        )
                         auto_summary = await run_safe_disk_recovery(
                             ssh_client=self._ssh,
                             rest_client=self._rest_client,
                             recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
                             journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
+                            llm_client=self._llm_client,
+                            knowledge_store=self._knowledge_store,
+                            initial_context=_inv_ctx,
                         )
                         # Offload pending backups and enforce retention with force_critical
                         try:
@@ -411,42 +419,15 @@ class ResourcePoller:
                 except Exception as _e:  # nosec B110 — analysis is best-effort
                     log.warning("disk_analysis_failed", error=str(_e))
 
-                # Run LLM investigation on top of the heuristic to get root-cause analysis.
-                # 60-second timeout; falls back to heuristic result so the card always sends.
-                if self._llm_client is not None:
-                    try:
-                        from utils.investigation_loop import investigate_with_fallback
-
-                        inv_report, inv_fallback = await investigate_with_fallback(
-                            topic="HA disk CRITICAL",
-                            goal=(
-                                "Determine the root cause of the disk CRITICAL condition. "
-                                "Identify which recovery options will actually resolve it. "
-                                "If the offered approval options are insufficient, name the "
-                                "structural change required (specific add-on to remove, "
-                                "storage expansion, etc.)."
-                            ),
-                            context=_build_disk_investigation_context(
-                                status,
-                                disk_free_after_gb,
-                                auto_summary,
-                                self._disk_critical_gb,
-                                disk_analysis,
-                            ),
-                            llm_client=self._llm_client,
-                            ssh_client=self._ssh,
-                            notifier=self._notifier,
-                            knowledge_store=self._knowledge_store,
-                            timeout=60.0,
-                        )
-                        disk_analysis = _serialize_analysis(
-                            inv_report, disk_analysis, inv_fallback
-                        )
-                    except (
-                        Exception
-                    ) as _inv_e:  # nosec B110 — investigation is best-effort
-                        log.warning("disk_investigation_failed", error=str(_inv_e))
-                        disk_analysis = {**disk_analysis, "source": "heuristic"}
+                # Use the investigation report embedded in auto_summary (if the LLM-guided
+                # path ran inside run_safe_disk_recovery). Falls back to heuristic text.
+                if (
+                    auto_summary is not None
+                    and auto_summary.investigation_report is not None
+                ):
+                    disk_analysis = _serialize_analysis(
+                        auto_summary.investigation_report, disk_analysis, False
+                    )
                 else:
                     disk_analysis = {**disk_analysis, "source": "heuristic"}
 

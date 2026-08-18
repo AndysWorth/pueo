@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import config
 from interfaces import HARestClientProtocol, SSHClientProtocol
@@ -29,6 +29,12 @@ from utils.archiver import (
 from utils.logging import get_logger
 
 log = get_logger("disk_recovery")
+
+# Action keys the dispatch table in run_safe_disk_recovery recognizes.
+# The LLM investigation prompt lists these so the model uses matching keys.
+DISK_AUTO_ACTION_KEYS: frozenset[str] = frozenset(
+    {"truncate_ha_log", "vacuum_journal", "purge_recorder"}
+)
 
 
 @dataclass
@@ -42,6 +48,9 @@ class RecoveryAction:
 @dataclass
 class RecoverySummary:
     actions: list[RecoveryAction] = field(default_factory=list)
+    # Set when run_safe_disk_recovery ran an LLM investigation before recovery.
+    investigation_report: Optional[Any] = None  # InvestigationReport | None
+    used_investigation: bool = False
 
     @property
     def total_freed_mb(self) -> float:
@@ -439,8 +448,16 @@ async def run_safe_disk_recovery(
     rest_client: Optional[HARestClientProtocol],
     recorder_keep_days: int = 30,
     journal_max_mb: int = 200,
+    llm_client: Optional[Any] = None,
+    knowledge_store: Optional[Any] = None,
+    initial_context: str = "",
 ) -> RecoverySummary:
-    """Run all auto-safe disk recovery steps in sequence.
+    """Run disk recovery, optionally guided by an LLM investigation.
+
+    When llm_client is provided, the function runs investigate_with_fallback before
+    any SSH commands. If the investigation returns recognized auto_action keys, only
+    those steps are executed (in the LLM-recommended order). If the investigation
+    fails or returns no recognized keys, the fixed 3-step heuristic runs instead.
 
     Steps (all non-destructive of user data):
       1. Truncate HA log file
@@ -448,10 +465,79 @@ async def run_safe_disk_recovery(
       3. Purge recorder history (keep last N days, no repack)
 
     rest_client may be None if HA_API_TOKEN is not configured; recorder purge is skipped.
-    Returns a RecoverySummary with per-step outcomes for the approval card.
+    Returns a RecoverySummary with per-step outcomes and the investigation report (if run).
     """
-    summary = RecoverySummary()
 
+    async def _dispatch(action_key: str) -> Optional[RecoveryAction]:
+        if action_key == "truncate_ha_log":
+            return await truncate_ha_log(ssh_client)
+        if action_key == "vacuum_journal":
+            return await vacuum_journal(ssh_client, max_mb=journal_max_mb)
+        if action_key == "purge_recorder" and rest_client is not None:
+            return await purge_recorder(
+                rest_client, keep_days=recorder_keep_days, repack=False
+            )
+        return None
+
+    # --- LLM-guided path ---
+    if llm_client is not None:
+        from utils.investigation_loop import investigate_with_fallback
+
+        keys_doc = ", ".join(sorted(DISK_AUTO_ACTION_KEYS))
+        inv_context = (
+            f"{initial_context}\n\n"
+            f"Available auto_action keys (use exactly): {keys_doc}."
+        ).strip()
+
+        report, is_fallback = await investigate_with_fallback(
+            topic="HA disk space critically low",
+            goal=(
+                "Identify the root cause of the disk shortage. "
+                "Recommend which auto-safe recovery steps to execute immediately, "
+                "ranked by expected impact. Use only the provided action_key values."
+            ),
+            context=inv_context,
+            llm_client=llm_client,
+            ssh_client=ssh_client,
+            knowledge_store=knowledge_store,
+            timeout=60.0,
+        )
+
+        if not is_fallback and report is not None:
+            summary = RecoverySummary(
+                investigation_report=report,
+                used_investigation=True,
+            )
+            executed: set[str] = set()
+            for action in report.auto_actions:
+                key = action.action_key
+                if key in DISK_AUTO_ACTION_KEYS and key not in executed:
+                    result = await _dispatch(key)
+                    if result is not None:
+                        summary.actions.append(result)
+                        executed.add(key)
+
+            if executed:
+                log.info(
+                    "disk_recovery_investigation_guided",
+                    steps=list(executed),
+                    confidence=report.confidence,
+                )
+                return summary
+
+            # Investigation succeeded but returned no recognized keys — fall through.
+            log.info(
+                "disk_recovery_investigation_no_recognized_keys",
+                auto_actions=[a.action_key for a in report.auto_actions],
+            )
+            # Keep the investigation report even when falling back to heuristic steps.
+            summary.used_investigation = False
+        else:
+            summary = RecoverySummary()
+    else:
+        summary = RecoverySummary()
+
+    # --- Heuristic fallback ---
     log_action = await truncate_ha_log(ssh_client)
     summary.actions.append(log_action)
 
