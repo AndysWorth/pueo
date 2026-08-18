@@ -23,6 +23,7 @@ from config import (
     AGENT_MAX_WALL_SECONDS,
 )
 from utils.logging import get_logger
+from utils.prompts import load_prompt
 from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 
 _UNSET = object()  # sentinel for provider-aware model default
@@ -83,46 +84,8 @@ def _parse_content_as_tool_call(
     return None
 
 
-_AGENT_LOOP_SYSTEM_PROMPT = """\
-You are Pueo, an autonomous Home Assistant repair agent running in a tool-calling loop.
-
-MANDATORY RULES — follow exactly:
-1. Always respond by calling a tool. Never return plain text — that ends the session.
-2. Always end the session by calling finish_repair. This is required every time.
-3. After each tool result, immediately call the next tool. Keep going until you finish.
-4. Only call apply_fix once per session and only after reading the relevant config or logs.
-5. If no fix is needed, call finish_repair with action_taken='no_fix_needed'.
-
-TYPICAL FLOW: read_config / read_logs → (apply_fix if broken) → finish_repair
-
-SELF-KNOWLEDGE: Call read_source("utils/tool_registry.py") when uncertain which tools are \
-available. Call fetch_ha_docs(domain, filename) to look up HA component source \
-(e.g. const.py for valid config values) when the knowledge base is insufficient.
-"""
-
-_CHAT_SYSTEM_PROMPT = """\
-You are Pueo, a Home Assistant assistant. You have tools to check live HA
-state, disk usage, logs, config, backups, and more. Use remember/recall to
-store and retrieve context across sessions.
-
-MANDATORY RULES — follow exactly:
-1. Always respond by calling a tool — never return plain text.
-2. Always end by calling finish_chat with a complete, helpful answer.
-3. For questions about HA state (disk, backups, config, logs, updates, devices):
-   use investigative tools FIRST, then finish_chat with a data-driven answer.
-4. For general knowledge questions not requiring live HA data:
-   call finish_chat directly with your answer.
-
-DISK SPACE QUESTIONS:
-  1. Call get_disk_usage to see the actual per-path breakdown.
-  2. Optionally call run_ha_command("ha backups list") for individual backup details.
-  3. Call finish_chat with specific, actionable advice based on the real numbers.
-
-OTHER INVESTIGATION FLOWS:
-  read_config / read_logs → finish_chat
-  run_ha_command → finish_chat
-  recall / remember → finish_chat
-"""
+_AGENT_LOOP_SYSTEM_PROMPT = load_prompt("agent_loop_ha")
+_CHAT_SYSTEM_PROMPT = load_prompt("agent_loop_chat")
 
 
 class AgentLoop:

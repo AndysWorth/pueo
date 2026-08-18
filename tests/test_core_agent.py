@@ -2164,6 +2164,38 @@ class TestLoadPrompt:
         with pytest.raises(FileNotFoundError):
             load_prompt("nonexistent_prompt_xyz")
 
+    def test_loads_agent_loop_ha_prompt(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("agent_loop_ha")
+        assert "hypothesis" in text.lower()
+        assert "finish_repair" in text
+
+    def test_loads_agent_loop_chat_prompt(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("agent_loop_chat")
+        assert "finish_chat" in text
+        assert "recall" in text.lower()
+
+    def test_loads_analyze_notification_prompt(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("analyze_notification")
+        assert "Home Assistant" in text
+
+    def test_loads_analyze_breaking_changes_prompt(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("analyze_breaking_changes")
+        assert "breaking" in text.lower()
+
+    def test_loads_selfcheck_command_risk_prompt(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("selfcheck_command_risk")
+        assert "command" in text.lower()
+
 
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────
 

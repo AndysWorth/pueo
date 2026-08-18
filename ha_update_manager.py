@@ -36,6 +36,7 @@ from utils.autonomy import RiskLevel
 from utils.context import truncate_to_budget
 from utils.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.logging import get_logger
+from utils.prompts import load_prompt
 
 if TYPE_CHECKING:
     from utils.autonomy import AutonomyGate, FakeAutonomyGate
@@ -183,13 +184,7 @@ async def analyze_breaking_changes(
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are analyzing a Home Assistant update for potential breaking changes. "
-                "Your analysis is ADVISORY ONLY — the user makes the final decision. "
-                "Review the release notes against the current configuration and Pueo "
-                "SSH command catalog. Identify breaking changes, deprecated settings, "
-                "and renamed or removed CLI commands that may affect this installation."
-            ),
+            "content": load_prompt("analyze_breaking_changes"),
         },
         {
             "role": "user",
@@ -648,12 +643,7 @@ async def _self_check_llm_cross_reference(
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are verifying which SSH commands in Pueo's command catalog "
-                "may have been renamed, removed, or changed in a Home Assistant "
-                "Core update. Only flag commands that explicitly appear in the "
-                "breaking changes or migration notes."
-            ),
+            "content": load_prompt("selfcheck_command_risk"),
         },
         {
             "role": "user",
