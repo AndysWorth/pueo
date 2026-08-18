@@ -29,6 +29,7 @@ from interfaces import (
 )
 from utils.context import truncate_to_budget
 from utils.logging import get_logger
+from utils.prompts import load_prompt
 
 if TYPE_CHECKING:
     from utils.notify import NotifierProtocol
@@ -281,11 +282,7 @@ async def analyze_notification(
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are a Home Assistant assistant explaining system notifications "
-                "in plain English. Provide a clear human-readable explanation of what "
-                "happened and what the user should do about it."
-            ),
+            "content": load_prompt("analyze_notification"),
         },
         {
             "role": "user",
