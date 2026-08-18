@@ -13223,3 +13223,14 @@ class TestReconcileStaleApprovedCards:
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 0
+
+
+class TestCodeProposalPromptFile:
+    """Confirms prompts/code_proposal.md loads without error."""
+
+    def test_prompt_loads_without_error(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt("code_proposal")
+        assert "capability-gap" in text
+        assert "finish_repair" in text

@@ -405,3 +405,20 @@ class TestResourcePollerInvestigationIntegration:
         assert len(notifier.sent) == 1
         da = notifier.sent[0]["payload"]["disk_analysis"]
         assert da.get("source") == "heuristic"
+
+
+class TestInvestigationPromptFile:
+    """Confirms prompts/investigation.md loads and formats correctly."""
+
+    def test_prompt_loads_without_error(self):
+        from utils.prompts import load_prompt
+
+        text = load_prompt(
+            "investigation",
+            topic="disk full",
+            investigation_goal="find cause",
+            context="2 GB free",
+        )
+        assert "disk full" in text
+        assert "find cause" in text
+        assert "2 GB free" in text
