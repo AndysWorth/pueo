@@ -62,7 +62,7 @@ from utils.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
-from utils.ha_rest_client import HARestClient, get_update_status
+from utils.ha_rest_client import HARepairIssue, HARestClient, get_update_status
 from utils.resource import ResourcePoller
 from utils.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
@@ -96,6 +96,18 @@ class LogEvaluation(BaseModel):
     )
     confidence_score: float = Field(
         description="Value between 0.0 and 1.0 evaluating certainty."
+    )
+
+
+class RepairIssueAnalysis(BaseModel):
+    human_explanation: str = Field(
+        description="Plain-English explanation of what the repair issue means and why it matters."
+    )
+    recommended_action_rationale: str = Field(
+        description="Why the recommended action (restart/reboot/dismiss) is appropriate for this issue."
+    )
+    requires_hitl: bool = Field(
+        description="True if the user must take immediate action to keep Home Assistant running correctly."
     )
 
 
@@ -145,6 +157,55 @@ async def analyze_log_line_with_ai(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",
+        )
+
+
+async def analyze_repair_issue(
+    issue: HARepairIssue,
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> RepairIssueAnalysis:
+    """LLM plain-English analysis of an HA repair issue."""
+    from utils.llm_factory import make_llm_client
+    from utils.prompts import load_prompt
+
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
+
+    issue_text = (
+        f"Domain: {issue.domain}\n"
+        f"Issue ID: {issue.issue_id}\n"
+        f"Severity: {issue.severity}\n"
+        f"Translation key: {issue.translation_key or '(none)'}\n"
+    )
+    if issue.breaks_in_ha_version:
+        issue_text += f"Breaks in HA version: {issue.breaks_in_ha_version}\n"
+
+    messages = [
+        {"role": "system", "content": load_prompt("triage_repair_issue")},
+        {
+            "role": "user",
+            "content": (
+                issue_text
+                + "\nExplain this repair issue and whether the user must take immediate action."
+            ),
+        },
+    ]
+
+    try:
+        response = await client.chat(
+            model=_config.OLLAMA_MODEL,
+            messages=messages,
+            options={"temperature": 0.0},
+            format=RepairIssueAnalysis.model_json_schema(),
+        )
+        raw = response["message"]["content"]
+        return RepairIssueAnalysis.model_validate_json(raw)
+    except Exception:
+        return RepairIssueAnalysis(
+            human_explanation=(
+                f"HA repair issue in {issue.domain}: {issue.translation_key or issue.issue_id}"
+            ),
+            recommended_action_rationale="",
+            requires_hitl=issue.severity in ("critical", "error"),
         )
 
 
@@ -692,6 +753,7 @@ async def poll_for_repairs(
     ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     db_path: str = DB_PATH,
+    llm_client: Optional[LLMClientProtocol] = None,
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from ha_agent_advanced import (
@@ -756,14 +818,21 @@ async def poll_for_repairs(
                     if is_reboot or issue.severity == "critical"
                     else "restart" if is_restart else "dismiss"
                 )
+                analysis = await analyze_repair_issue(issue, llm_client)
                 title = f"HA repair: {issue.domain}/{issue.issue_id}"
                 body_parts = [
                     f"Domain: {issue.domain}",
                     f"Issue: {issue.issue_id}",
                     f"Severity: {issue.severity}",
                 ]
-                if issue.translation_key:
+                if analysis.human_explanation:
+                    body_parts.append(f"What this means: {analysis.human_explanation}")
+                elif issue.translation_key:
                     body_parts.append(f"Type: {issue.translation_key}")
+                if analysis.recommended_action_rationale:
+                    body_parts.append(
+                        f"Recommended action: {analysis.recommended_action_rationale}"
+                    )
                 if issue.breaks_in_ha_version:
                     body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
                 # Use translation_key as the stable suppression key when available so the
