@@ -28,6 +28,18 @@ _chat_subscribers: list[asyncio.Queue] = []
 # Running supervisor instance (set by main.py supervisor_main; None in standalone dashboard mode)
 _supervisor_instance: "LoopSupervisor | None" = None
 
+# Active repair AgentLoop (set when a repair loop starts; cleared when it ends)
+_active_repair_loop: Any = None
+
+
+def set_active_repair_loop(loop: Any) -> None:
+    global _active_repair_loop
+    _active_repair_loop = loop
+
+
+def get_active_repair_loop() -> Any:
+    return _active_repair_loop
+
 
 def publish_event(event: dict) -> None:
     """Publish an event to the shared bus and all SSE subscriber queues."""

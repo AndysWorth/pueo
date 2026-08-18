@@ -1430,6 +1430,30 @@ async def _execute_queued_fix(
         (watch_dir / f"{nid}.rejected").touch()
 
 
+class RepairInjectRequest(BaseModel):
+    message: str
+
+
+@app.post("/repair/inject")
+async def repair_inject(body: RepairInjectRequest) -> JSONResponse:
+    """Inject a user guidance message into the currently running repair loop.
+
+    Returns 409 when no repair loop is active.
+    """
+    from utils.supervisor import get_active_repair_loop
+
+    loop = get_active_repair_loop()
+    if loop is None:
+        raise HTTPException(
+            status_code=409, detail="No repair loop is currently running"
+        )
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="message must not be empty")
+    loop.inject_context(message)
+    return JSONResponse({"status": "injected"})
+
+
 @app.post("/reject/{nid}")
 async def reject(nid: str) -> RedirectResponse:
     from config import REJECTION_COOLDOWN_HOURS

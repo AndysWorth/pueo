@@ -65,7 +65,21 @@ async def run_cloud_escalation(
             "and apply a fix if needed."
         )
 
-    result = await loop.run(initial_context)
+    try:
+        from utils.supervisor import set_active_repair_loop
+
+        set_active_repair_loop(loop)
+    except Exception:  # nosec B110 — best-effort registration
+        pass
+    try:
+        result = await loop.run(initial_context)
+    finally:
+        try:
+            from utils.supervisor import set_active_repair_loop
+
+            set_active_repair_loop(None)
+        except Exception:  # nosec B110
+            pass
     log.info(
         "cloud_escalation_complete",
         outcome=result.outcome,

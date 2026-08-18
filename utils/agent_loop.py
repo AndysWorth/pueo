@@ -179,6 +179,18 @@ class AgentLoop:
         self._db_path = db_path
         self._escalated = escalated
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
+        self._messages: Optional[list] = None  # set during run(), cleared after
+
+    def inject_context(self, message: str) -> None:
+        """Append a user message to the live conversation during a running loop.
+
+        Safe to call from any coroutine in the same asyncio event loop while
+        run() is executing.  The loop picks it up on the next LLM call.
+        Has no effect if no loop is currently running.
+        """
+        if self._messages is not None:
+            self._messages.append({"role": "user", "content": message})
+            log.info("agent_loop_context_injected", length=len(message))
 
     def _build_episode(
         self,
@@ -335,6 +347,7 @@ class AgentLoop:
         if initial_messages:
             messages.extend(initial_messages)
         messages.append({"role": "user", "content": initial_context})
+        self._messages = messages  # expose for inject_context()
         tools = self._registry.get_ollama_tools()
         steps: list[AgentStep] = []
         tool_call_count = 0
@@ -412,6 +425,7 @@ class AgentLoop:
             except Exception as exc:  # nosec B110
                 log.error("repair_episode_record_failed", error=str(exc))
 
+        self._messages = None  # loop finished; disable inject_context
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
