@@ -74,7 +74,7 @@ def _parse_content_as_tool_call(
     if not stripped.startswith("{"):
         return None
     try:
-        parsed = json.loads(stripped)
+        parsed, _ = json.JSONDecoder().raw_decode(stripped)
     except (json.JSONDecodeError, ValueError):
         return None
     name = parsed.get("name", "")
@@ -530,10 +530,20 @@ class AgentLoop:
                             f'"summary" field.'
                         )
                     else:
-                        nudge = (
-                            f"Call {self._terminal_tool_name} NOW with your answer "
-                            f'in the "summary" field. Do not return plain text.'
-                        )
+                        calls_remaining = self._max_tool_calls - tool_call_count
+                        if calls_remaining <= 2:
+                            nudge = (
+                                f"Budget nearly exhausted. Call "
+                                f"{self._terminal_tool_name} NOW with your findings "
+                                f'in the "summary" field.'
+                            )
+                        else:
+                            nudge = (
+                                "Your response was not a valid tool call. Call the "
+                                "next appropriate tool now. If investigation is "
+                                f"complete, call {self._terminal_tool_name} with "
+                                f'your findings in the "summary" field.'
+                            )
                     messages.append({"role": "user", "content": nudge})
                     continue
 

@@ -9687,9 +9687,10 @@ class TestAgentLoop:
         # Must demand any tool call and mention investigative tools.
         assert "investigative tool" in nudge_text
 
-    def test_nudge_after_prior_tools_directs_to_terminal_tool(self):
-        # When the model has already called at least one tool and then returns
-        # plain text, the nudge should direct it to call the terminal tool.
+    def test_nudge_mid_investigation_encourages_next_tool(self):
+        # When the model has called tools but has plenty of budget left, the
+        # nudge should encourage the next tool call rather than mandating
+        # immediate terminal exit.
         from utils.agent_loop import AgentLoop
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
@@ -9753,8 +9754,10 @@ class TestAgentLoop:
         asyncio.run(loop.run("Check config"))
 
         # Third call receives the nudge (injected after read_config result + plain text).
+        # max_tool_calls=5, tool_call_count=1 → calls_remaining=4 > 2 (mid-investigation).
         nudge_text = snapshots[2][-1]["content"]
-        assert "finish_repair NOW" in nudge_text
+        assert "finish_repair NOW" not in nudge_text
+        assert "next appropriate tool" in nudge_text
 
     def test_budget_exhaustion(self):
         # 6 read_config calls but max_tool_calls=5 → exhausted after 5
@@ -9877,6 +9880,94 @@ class TestAgentLoop:
         assert _parse_content_as_tool_call("Config looks fine.", known) is None
         assert _parse_content_as_tool_call("", known) is None
         assert _parse_content_as_tool_call("{bad json}", known) is None
+
+    def test_content_fallback_strips_trailing_garbage(self):
+        """raw_decode ignores trailing bytes after a valid JSON object.
+
+        qwen2.5-coder:7b appends <|im_start|> sentinel tokens after the JSON.
+        json.loads() would reject this; raw_decode() stops at the first complete
+        value and treats the trailing bytes as unconsumed, so the parse succeeds.
+        """
+        from utils.agent_loop import _parse_content_as_tool_call
+
+        known = {"read_logs", "finish_repair"}
+        content = (
+            '{"name": "read_logs", "arguments": {"lines": 100}}'
+            "\n<|im_start|><|im_start|>"
+        )
+        result = _parse_content_as_tool_call(content, known)
+        assert result is not None
+        assert result[0]["function"]["name"] == "read_logs"
+        assert result[0]["function"]["arguments"] == {"lines": 100}
+
+    def test_nudge_near_budget_pushes_to_terminal(self):
+        # When calls_remaining <= 2, the nudge mandates calling the terminal tool.
+        from utils.agent_loop import AgentLoop
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+        from utils.tool_registry import ToolRegistry, ToolDefinition
+
+        # With max_tool_calls=3, after 1 prior call calls_remaining=2 <=2 → "NOW".
+        responses = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}],
+            },
+            {"role": "assistant", "content": "Looks fine."},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {
+                                "summary": "done",
+                                "action_taken": "no_fix_needed",
+                            },
+                        }
+                    }
+                ],
+            },
+        ]
+        snapshots: list[list[dict]] = []
+
+        class _CapturingClient:
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                snapshots.append(list(messages))
+                return (
+                    responses.pop(0)
+                    if responses
+                    else {"role": "assistant", "content": ""}
+                )
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_CapturingClient(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=3,
+            max_wall_seconds=30.0,
+        )
+        asyncio.run(loop.run("Check config"))
+
+        nudge_text = snapshots[2][-1]["content"]
+        assert "Budget nearly exhausted" in nudge_text
+        assert "finish_repair NOW" in nudge_text
 
     def test_content_fallback_dispatches_tool_call(self):
         """Loop executes a tool call embedded in message content (qwen quirk)."""
