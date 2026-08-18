@@ -57,7 +57,7 @@ from interfaces import (
 from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging, set_correlation_id
-from utils.llm_factory import make_llm_client
+from utils.llm_factory import _default_model_for_provider, make_llm_client
 from utils.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
@@ -128,9 +128,10 @@ async def analyze_log_line_with_ai(
     log_context = "\n".join(windowed)
     user_prompt = f"Evaluate these log lines:\n```\n{log_context}\n```"
 
+    model = _default_model_for_provider()
     try:
         response = await client.chat(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -140,7 +141,7 @@ async def analyze_log_line_with_ai(
         )
         raw_output = response["message"]["content"]
         trace = LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -153,7 +154,7 @@ async def analyze_log_line_with_ai(
             root_cause_summary="Inference crash",
             confidence_score=0.0,
         ), LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",
@@ -165,7 +166,7 @@ async def analyze_repair_issue(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> RepairIssueAnalysis:
     """LLM plain-English analysis of an HA repair issue."""
-    from utils.llm_factory import make_llm_client
+    from utils.llm_factory import _default_model_for_provider, make_llm_client
     from utils.prompts import load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
@@ -192,7 +193,7 @@ async def analyze_repair_issue(
 
     try:
         response = await client.chat(
-            model=_config.OLLAMA_MODEL,
+            model=_default_model_for_provider(),
             messages=messages,
             options={"temperature": 0.0},
             format=RepairIssueAnalysis.model_json_schema(),
@@ -234,7 +235,7 @@ async def tail_remote_log_stream(
 
             if CRITICAL_LOG_PATTERN.search(clean_line):
                 log.warning("log_line_intercepted", line=clean_line)
-                log.info("triage_start", model=_config.OLLAMA_MODEL)
+                log.info("triage_start", model=_default_model_for_provider())
                 evaluation, llm_trace = await analyze_log_line_with_ai(
                     list(_log_buffer), llm_client=llm_client
                 )

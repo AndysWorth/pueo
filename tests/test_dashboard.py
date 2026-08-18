@@ -700,6 +700,35 @@ class TestInstallerDiagnostics:
         assert result.can_auto_fix is True
         assert "ha apps info netalertx_fa" in ssh.commands_run
 
+    def test_diagnose_installer_failure_uses_model_factory(self, monkeypatch):
+        import asyncio
+        import netalertx.installer_diagnostics as inst_diag_mod
+        from utils.ssh_client import FakeSSHClient
+        from utils.ollama_client import FakeLLMClient
+        from netalertx.installer_diagnostics import (
+            InstallerDiagnostic,
+            diagnose_installer_failure,
+        )
+
+        diag = InstallerDiagnostic(
+            primary_hypothesis="Port in use",
+            confidence=0.9,
+            supporting_evidence=[],
+            alternative_hypotheses=[],
+            recommended_action="Stop broker",
+            can_auto_fix=False,
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        calls = []
+        monkeypatch.setattr(
+            inst_diag_mod,
+            "_default_model_for_provider",
+            lambda: calls.append(True) or "sentinel-model",
+        )
+        asyncio.run(diagnose_installer_failure("mosquitto_start", FakeSSHClient(), llm))
+        assert calls, "_default_model_for_provider was not called"
+        assert llm.calls[0]["model"] == "sentinel-model"
+
     # ── HITL formatter tests ──────────────────────────────────────────────────
 
     def test_format_diagnostic_for_hitl_renders_all_fields(self):

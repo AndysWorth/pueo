@@ -32,7 +32,7 @@ from utils.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.logging import get_logger, setup_logging
 from utils.notify import NotifierProtocol, get_notifier
-from utils.llm_factory import make_llm_client
+from utils.llm_factory import _default_model_for_provider, make_llm_client
 from utils.prompts import load_prompt
 from utils.rate_limiter import Debouncer, RateLimitExceeded, RateLimiter
 from utils.retry import async_retry
@@ -79,9 +79,10 @@ async def analyze_log_line_with_ai(
     log_context = "\n".join(windowed)
     user_prompt = f"Evaluate these NetAlertX log lines:\n```\n{log_context}\n```"
 
+    model = _default_model_for_provider()
     try:
         response = await client.chat(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -91,7 +92,7 @@ async def analyze_log_line_with_ai(
         )
         raw_output = response["message"]["content"]
         trace = LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response=raw_output,
@@ -104,7 +105,7 @@ async def analyze_log_line_with_ai(
             root_cause_summary="Inference crash",
             confidence_score=0.0,
         ), LLMTrace(
-            model=_config.OLLAMA_MODEL,
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             raw_response="",
