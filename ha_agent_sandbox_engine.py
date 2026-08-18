@@ -648,6 +648,38 @@ async def _run_code_proposal_loop(
 
 
 # ==========================================
+# EPISODIC CONTEXT RETRIEVAL
+# ==========================================
+def _retrieve_similar_episodes(
+    initial_context: str,
+    knowledge_store: Optional[KnowledgeStoreClientProtocol],
+    top_k: int = 2,
+) -> str:
+    """Query community_cases for past repair episodes similar to the current context.
+
+    Returns a formatted block (up to top_k episodes) or an empty string when none
+    are found or when the store is unavailable.  Text is capped at 1,000 tokens.
+    """
+    if knowledge_store is None:
+        return ""
+    try:
+        chunks = knowledge_store.query(
+            query_text=initial_context,
+            top_k=top_k,
+            collections=["community_cases"],
+        )
+    except Exception:
+        return ""
+    if not chunks:
+        return ""
+    parts = ["Similar past repairs (for reference — apply only if relevant):"]
+    for i, chunk in enumerate(chunks, 1):
+        parts.append(f"\n[Case {i}]\n{chunk.text}")
+    raw = "\n".join(parts)
+    return truncate_to_budget(raw, 1000)
+
+
+# ==========================================
 # ORCHESTRATION PIPELINE
 # ==========================================
 async def main(
@@ -722,6 +754,9 @@ async def main(
         "If the config looks correct, call finish_repair with action_taken='no_fix_needed'.\n\n"
         f"Current configuration.yaml:\n```yaml\n{yaml_content}\n```"
     )
+    similar = _retrieve_similar_episodes(initial_context, _knowledge_store)
+    if similar:
+        initial_context = similar + "\n\n" + initial_context
     try:
         from utils.supervisor import set_active_repair_loop
 

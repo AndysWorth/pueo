@@ -92,6 +92,70 @@ class TestSandboxEngine:
         assert e.SANDBOX_REMOTE_FILE == "/custom/path/.agent_sandbox/config.yaml"
 
 
+# ── Episodic context injection ────────────────────────────────────────────────────
+
+
+class TestRetrieveSimilarEpisodes:
+    def test_episodes_found_returns_formatted_block(self):
+        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "community_cases",
+            ids=["c1"],
+            documents=["ZHA error: fix by restarting the integration"],
+            metadatas=[{"source": "case1"}],
+        )
+        # FakeKnowledgeStore uses substring match: query must appear in doc
+        result = _retrieve_similar_episodes("ZHA error", store, top_k=2)
+        assert "Similar past repairs" in result
+        assert "ZHA error: fix by restarting" in result
+
+    def test_empty_collection_returns_empty_string(self):
+        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        result = _retrieve_similar_episodes("any context", store, top_k=2)
+        assert result == ""
+
+    def test_store_raises_returns_empty_string(self):
+        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+
+        class BrokenStore:
+            def query(self, *a, **k):
+                raise RuntimeError("ChromaDB unavailable")
+
+        result = _retrieve_similar_episodes("any context", BrokenStore(), top_k=2)
+        assert result == ""
+
+    def test_none_store_returns_empty_string(self):
+        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+
+        result = _retrieve_similar_episodes("any context", None, top_k=2)
+        assert result == ""
+
+    def test_episodes_prepended_to_initial_context(self):
+        """Integration: _retrieve_similar_episodes output is prepended in main()."""
+        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        # FakeKnowledgeStore checks query_text in doc — doc must contain the query
+        store.upsert(
+            "community_cases",
+            ids=["c1"],
+            documents=["ZHA error: Known fix is to restart HA core"],
+            metadatas=[{"source": "case1"}],
+        )
+        context = "ZHA error"
+        similar = _retrieve_similar_episodes(context, store, top_k=1)
+        combined = similar + "\n\n" + context
+        assert "Known fix is to restart" in combined
+        assert "ZHA error" in combined
+
+
 # ── Log monitor ──────────────────────────────────────────────────────────────────
 
 
