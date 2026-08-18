@@ -4457,6 +4457,26 @@ class TestNetAlertXLogMonitor:
 
         assert call_count[0] == 2
 
+    def test_analyze_log_line_uses_model_factory(self, monkeypatch):
+        import asyncio
+        import netalertx.log_monitor as log_mod
+        from utils.ollama_client import FakeLLMClient
+        from netalertx.log_monitor import LogEvaluation, analyze_log_line_with_ai
+
+        r = LogEvaluation(
+            is_actionable=False, root_cause_summary="ok", confidence_score=0.1
+        )
+        llm = FakeLLMClient(r.model_dump_json())
+        calls = []
+        monkeypatch.setattr(
+            log_mod,
+            "_default_model_for_provider",
+            lambda: calls.append(True) or "sentinel-model",
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR scan failed"], llm))
+        assert calls, "_default_model_for_provider was not called"
+        assert llm.calls[0]["model"] == "sentinel-model"
+
 
 # ── netalertx/health.py and netalertx/mqtt_subscriber.py ─────────────────────
 
@@ -5195,6 +5215,30 @@ class TestNetAlertXDiagnostic:
         assert len(llm.calls) == 1
         user_msg = llm.calls[0]["messages"][1]["content"]
         assert "No devices discovered" in user_msg
+
+    def test_diagnose_health_report_uses_model_factory(self, monkeypatch):
+        import asyncio
+        import netalertx.diagnosis as diag_mod
+        from utils.ollama_client import FakeLLMClient
+        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
+
+        diag = NetAlertXDiagnostic(
+            issue="test",
+            severity="LOW",
+            category="networking",
+            recommended_fix="none",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeLLMClient(diag.model_dump_json())
+        calls = []
+        monkeypatch.setattr(
+            diag_mod,
+            "_default_model_for_provider",
+            lambda: calls.append(True) or "sentinel-model",
+        )
+        asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
+        assert calls, "_default_model_for_provider was not called"
+        assert llm.calls[0]["model"] == "sentinel-model"
 
 
 # ===========================================================================

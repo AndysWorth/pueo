@@ -243,7 +243,7 @@ async def analyze_notification(
     severity: str = "MEDIUM",
 ) -> NotificationAnalysis:
     """LLM plain-English analysis of a notification. Returns a full NotificationAnalysis."""
-    from utils.llm_factory import make_llm_client
+    from utils.llm_factory import _default_model_for_provider, make_llm_client
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
@@ -299,7 +299,7 @@ async def analyze_notification(
     ]
 
     response = await client.chat(
-        model=_config.OLLAMA_MODEL,
+        model=_default_model_for_provider(),
         messages=messages,
         options={"temperature": 0.0},
         format=_NotificationLLMOutput.model_json_schema(),
