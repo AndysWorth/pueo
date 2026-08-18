@@ -1633,3 +1633,139 @@ class TestPreStepCallback:
         loop = self._make_loop(llm, None, None, db_path)
         result = asyncio.run(loop.run("Hello"))
         assert result.outcome == "success"
+
+
+# ---------------------------------------------------------------------------
+# TestDurableToolHistory
+# ---------------------------------------------------------------------------
+
+
+class TestDurableToolHistory:
+    """After _run_chat_loop completes, intermediate tool-call and tool-result
+    rows must be written to chat_messages alongside the final summary row."""
+
+    @pytest.fixture
+    def ctx(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+
+        path = str(tmp_path / "test_agent.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path, dashboard
+
+    def _insert_session(self, path: str, title: str = "Test") -> int:
+        with sqlite3.connect(path) as conn:
+            cur = conn.execute(
+                "INSERT INTO chat_sessions (title, created_at) VALUES (?, ?)",
+                (title, 0.0),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def _patch_loop(self, monkeypatch, result):
+        from utils.agent_loop import AgentLoop
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            return result
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+    def test_intermediate_rows_written_to_db(self, ctx, monkeypatch):
+        """After the loop, DB contains assistant+tool rows for intermediate steps."""
+        import json as _json
+        import time as _time
+
+        from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+
+        path, dashboard = ctx
+        now = _time.time()
+        step = AgentStep(
+            step_number=1,
+            tool_call=ToolCall(name="recall", arguments={"query": "NAS"}),
+            tool_result=ToolResult(
+                tool_name="recall", success=True, output="NAS is at 192.168.1.100"
+            ),
+            timestamp=now - 0.5,
+        )
+        result = AgentLoopResult(
+            outcome="success",
+            steps=[step],
+            episode_stub={"summary": "I found the NAS address."},
+        )
+        self._patch_loop(monkeypatch, result)
+        session_id = self._insert_session(path)
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "What is the NAS IP?", []))
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT role, content, tool_calls_json FROM chat_messages"
+                " WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            ).fetchall()
+
+        roles = [r[0] for r in rows]
+        assert "tool" in roles, "tool-result row must be written"
+        tool_call_rows = [r for r in rows if r[0] == "assistant" and r[2] is not None]
+        assert len(tool_call_rows) >= 1, "assistant tool-call row must be written"
+        calls = _json.loads(tool_call_rows[0][2])
+        assert calls[0]["name"] == "recall"
+
+    def test_finish_chat_step_not_persisted(self, ctx, monkeypatch):
+        """finish_chat steps are NOT written as intermediate rows."""
+        import time as _time
+
+        from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+
+        path, dashboard = ctx
+        now = _time.time()
+        finish_step = AgentStep(
+            step_number=1,
+            tool_call=ToolCall(name="finish_chat", arguments={"summary": "Done"}),
+            tool_result=ToolResult(tool_name="finish_chat", success=True, output=""),
+            timestamp=now - 0.1,
+        )
+        result = AgentLoopResult(
+            outcome="success",
+            steps=[finish_step],
+            episode_stub={"summary": "Done"},
+        )
+        self._patch_loop(monkeypatch, result)
+        session_id = self._insert_session(path, "Test 2")
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "Hello", []))
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT role, tool_calls_json FROM chat_messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+
+        tool_call_rows = [r for r in rows if r[0] == "assistant" and r[1] is not None]
+        assert len(tool_call_rows) == 0, "finish_chat must not produce a tool-call row"
+
+    def test_final_summary_always_written(self, ctx, monkeypatch):
+        """The final assistant summary row is always written regardless of steps."""
+        from utils.tool_registry import AgentLoopResult
+
+        path, dashboard = ctx
+        result = AgentLoopResult(
+            outcome="success",
+            steps=[],
+            episode_stub={"summary": "Nothing to do."},
+        )
+        self._patch_loop(monkeypatch, result)
+        session_id = self._insert_session(path, "Test 3")
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "Hi", []))
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM chat_messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+
+        summary_rows = [
+            r for r in rows if r[0] == "assistant" and r[1] == "Nothing to do."
+        ]
+        assert len(summary_rows) == 1
