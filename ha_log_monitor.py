@@ -378,6 +378,12 @@ async def poll_for_updates(
         {}
     )  # suppression_key → time.monotonic() of first absence
 
+    from ha_update_manager import reconcile_stale_approved_cards
+
+    _reconciled = reconcile_stale_approved_cards()
+    if _reconciled:
+        log.info("poll_for_updates_reconciled", count=_reconciled)
+
     while True:
         try:
             updates = await get_update_status(_client)

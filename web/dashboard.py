@@ -1307,6 +1307,12 @@ async def approve(nid: str) -> RedirectResponse:
                     nid, yaml_content, description, data, json_path, watch_dir
                 )
             )
+            suppression_key = payload.get("suppression_key", "")
+            if suppression_key:
+                from utils.hitl_tracker import mark_card_approved as _mark_approved
+
+                with sqlite3.connect(DB_PATH) as conn:
+                    _mark_approved(conn, suppression_key)
             return RedirectResponse(url="/queue", status_code=303)
 
         # Update ordering guard: block approving a lower-priority update if a
@@ -1328,6 +1334,13 @@ async def approve(nid: str) -> RedirectResponse:
             asyncio.create_task(handler(nid, data, json_path, watch_dir))
         else:
             (watch_dir / f"{nid}.approved").touch()
+
+        suppression_key = payload.get("suppression_key", "")
+        if suppression_key:
+            from utils.hitl_tracker import mark_card_approved as _mark_approved
+
+            with sqlite3.connect(DB_PATH) as conn:
+                _mark_approved(conn, suppression_key)
     return RedirectResponse(url="/queue", status_code=303)
 
 

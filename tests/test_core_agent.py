@@ -12614,3 +12614,178 @@ class TestDiskExhaustionWarningInCard:
         assert "2–3 GB" in body
         assert "Supervisor" in body
         assert "Free space before approving" in body
+
+
+class TestReconcileStaleApprovedCards:
+    """Tests for reconcile_stale_approved_cards() in ha_update_manager."""
+
+    _DDL = """
+    CREATE TABLE IF NOT EXISTS hitl_suppression (
+        card_key          TEXT PRIMARY KEY,
+        card_type         TEXT NOT NULL DEFAULT '',
+        description       TEXT NOT NULL DEFAULT '',
+        first_sent_at     REAL NOT NULL DEFAULT 0,
+        last_sent_at      REAL NOT NULL DEFAULT 0,
+        send_count        INTEGER NOT NULL DEFAULT 1,
+        last_action       TEXT,
+        last_action_at    REAL,
+        rejection_count   INTEGER NOT NULL DEFAULT 0,
+        next_allowed_at   REAL,
+        known_issue       INTEGER NOT NULL DEFAULT 0,
+        known_issue_note  TEXT,
+        resolved_at       REAL
+    )
+    """
+
+    def _db(self):
+        import sqlite3
+
+        c = sqlite3.connect(":memory:")
+        c.execute(self._DDL)
+        return c
+
+    def _insert_pending(self, conn, card_key):
+        conn.execute(
+            "INSERT INTO hitl_suppression (card_key, card_type, description, "
+            "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+            "VALUES (?, 'update', 'desc', 0, 0, 1, NULL, NULL)",
+            (card_key,),
+        )
+        conn.commit()
+
+    def test_phantom_card_no_file_not_resolved(self, tmp_path, monkeypatch):
+        """Row pending in DB with no .json and no .approved → NOT resolved.
+
+        Phantom cards (crash between mark_card_sent and notifier.send) are left
+        for _resolve_externally_applied_update to handle when the entity disappears.
+        reconcile_stale_approved_cards only handles the case where the .approved
+        sentinel exists but the DB was not updated.
+        """
+        import sqlite3
+
+        from ha_update_manager import reconcile_stale_approved_cards
+
+        card_key = "update:update.home_assistant_core_update"
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as real_conn:
+            real_conn.execute(self._DDL)
+            real_conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description, "
+                "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+                "VALUES (?, 'update', 'desc', 0, 0, 1, NULL, NULL)",
+                (card_key,),
+            )
+
+        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        count = reconcile_stale_approved_cards(watch_dir=tmp_path)
+
+        assert count == 0
+
+    def test_approved_sentinel_with_json_is_resolved(self, tmp_path, monkeypatch):
+        """Row pending in DB, .json + .approved on disk → resolved."""
+        import sqlite3
+
+        from ha_update_manager import reconcile_stale_approved_cards
+        from utils.hitl_tracker import stable_nid
+
+        card_key = "update:update.noaa_it_all_update"
+        nid = stable_nid(card_key)
+        (tmp_path / f"{nid}.json").write_text("{}")
+        (tmp_path / f"{nid}.approved").touch()
+
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as real_conn:
+            real_conn.execute(self._DDL)
+            real_conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description, "
+                "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+                "VALUES (?, 'update', 'desc', 0, 0, 1, NULL, NULL)",
+                (card_key,),
+            )
+
+        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        count = reconcile_stale_approved_cards(watch_dir=tmp_path)
+
+        assert count == 1
+        with sqlite3.connect(db_path) as c:
+            row = c.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (card_key,),
+            ).fetchone()
+        assert row[0] is not None
+
+    def test_real_pending_card_json_only_not_touched(self, tmp_path, monkeypatch):
+        """Row pending, .json exists but NO .approved sentinel → not resolved."""
+        import sqlite3
+
+        from ha_update_manager import reconcile_stale_approved_cards
+        from utils.hitl_tracker import stable_nid
+
+        card_key = "update:update.home_assistant_os_update"
+        nid = stable_nid(card_key)
+        (tmp_path / f"{nid}.json").write_text("{}")
+
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as real_conn:
+            real_conn.execute(self._DDL)
+            real_conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description, "
+                "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+                "VALUES (?, 'update', 'desc', 0, 0, 1, NULL, NULL)",
+                (card_key,),
+            )
+
+        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        count = reconcile_stale_approved_cards(watch_dir=tmp_path)
+
+        assert count == 0
+        with sqlite3.connect(db_path) as c:
+            row = c.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (card_key,),
+            ).fetchone()
+        assert row[0] is None
+
+    def test_already_actioned_row_not_touched(self, tmp_path, monkeypatch):
+        """Row with last_action='rejected' is not reconciled."""
+        import sqlite3
+
+        from ha_update_manager import reconcile_stale_approved_cards
+
+        card_key = "update:update.netalertx_full_access_update"
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as real_conn:
+            real_conn.execute(self._DDL)
+            real_conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description, "
+                "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+                "VALUES (?, 'update', 'desc', 0, 0, 1, 'rejected', NULL)",
+                (card_key,),
+            )
+
+        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        count = reconcile_stale_approved_cards(watch_dir=tmp_path)
+
+        assert count == 0
+
+    def test_non_update_key_ignored(self, tmp_path, monkeypatch):
+        """Rows with card_key not starting with 'update:' are skipped."""
+        import sqlite3
+
+        from ha_update_manager import reconcile_stale_approved_cards
+
+        card_key = "repair:some_repair"
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as real_conn:
+            real_conn.execute(self._DDL)
+            real_conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, description, "
+                "first_sent_at, last_sent_at, send_count, last_action, resolved_at) "
+                "VALUES (?, 'ha_repair', 'desc', 0, 0, 1, NULL, NULL)",
+                (card_key,),
+            )
+
+        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        count = reconcile_stale_approved_cards(watch_dir=tmp_path)
+
+        assert count == 0
