@@ -1032,6 +1032,24 @@ async def _execute_cloud_escalation(
 
     payload = data.get("payload", {})
     initial_context = payload.get("initial_context", "")
+    card_id = nid
+
+    async def _on_timeline(tool_name: str, status_line: str) -> None:
+        try:
+            from utils.timeline import write_timeline_event
+            from utils.supervisor import publish_event
+
+            write_timeline_event("INFO", "agent_loop", status_line)
+            publish_event(
+                {
+                    "event_type": "agent_step",
+                    "tool": tool_name,
+                    "status": status_line,
+                    "card_id": card_id,
+                }
+            )
+        except Exception:  # nosec B110 — best-effort SSE
+            pass
 
     try:
         ssh = AsyncSSHClient()
@@ -1046,6 +1064,7 @@ async def _execute_cloud_escalation(
             ha_ssh_client=ssh,
             notifier=notifier,
             incident_id=nid,
+            timeline_callback=_on_timeline,
         )
 
         data["cloud_outcome"] = result.outcome
@@ -1054,8 +1073,26 @@ async def _execute_cloud_escalation(
 
         if result.outcome == "success":
             (watch_dir / f"{nid}.approved").touch()
+            from utils.supervisor import publish_event as _pe
+
+            _pe(
+                {
+                    "event_type": "repair_done",
+                    "outcome": result.outcome,
+                    "card_id": card_id,
+                }
+            )
         else:
             (watch_dir / f"{nid}.rejected").touch()
+            from utils.supervisor import publish_event as _pe
+
+            _pe(
+                {
+                    "event_type": "repair_failed",
+                    "outcome": result.outcome,
+                    "card_id": card_id,
+                }
+            )
 
     except BillingCapError as exc:
         data["error"] = f"Billing cap exceeded: {exc}"

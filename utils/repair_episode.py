@@ -24,6 +24,7 @@ class RepairEpisode(BaseModel):
     trigger: EpisodeTrigger
     symptoms: list[str]
     tool_sequence: list[ToolCall]
+    tool_result_summaries: list[str] = Field(default_factory=list)
     hypothesis_chain: list[str]
     fix_applied: Optional[str] = None
     verification_result: bool
@@ -48,7 +49,16 @@ def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
                 episode.timestamp,
                 episode.trigger,
                 json.dumps(episode.symptoms),
-                json.dumps([tc.model_dump() for tc in episode.tool_sequence]),
+                json.dumps(
+                    [
+                        {**tc.model_dump(), "result_summary": summary}
+                        for tc, summary in zip(
+                            episode.tool_sequence,
+                            episode.tool_result_summaries
+                            or [""] * len(episode.tool_sequence),
+                        )
+                    ]
+                ),
                 json.dumps(episode.hypothesis_chain),
                 episode.fix_applied,
                 int(episode.verification_result),
@@ -62,12 +72,21 @@ def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
 
 def _row_to_episode(row: sqlite3.Row) -> RepairEpisode:
     keys = row.keys()
+    raw_seq = json.loads(row["tool_sequence"])
+    tool_sequence = []
+    tool_result_summaries = []
+    for tc in raw_seq:
+        tc = dict(tc)
+        summary = tc.pop("result_summary", "")
+        tool_sequence.append(ToolCall(**tc))
+        tool_result_summaries.append(summary)
     return RepairEpisode(
         id=row["id"],
         timestamp=row["timestamp"],
         trigger=row["trigger"],
         symptoms=json.loads(row["symptoms"]),
-        tool_sequence=[ToolCall(**tc) for tc in json.loads(row["tool_sequence"])],
+        tool_sequence=tool_sequence,
+        tool_result_summaries=tool_result_summaries,
         hypothesis_chain=json.loads(row["hypothesis_chain"]),
         fix_applied=row["fix_applied"],
         verification_result=bool(row["verification_result"]),
@@ -119,9 +138,10 @@ def export_single_episode_yaml(episode: RepairEpisode, description: str = "") ->
     from utils.anonymizer import Anonymizer
 
     anon = Anonymizer()
+    summaries = episode.tool_result_summaries or [""] * len(episode.tool_sequence)
     tool_seq = [
-        {"name": tc.name, "arguments": anon.args(tc.arguments)}
-        for tc in episode.tool_sequence
+        {"name": tc.name, "arguments": anon.args(tc.arguments), "result_summary": s}
+        for tc, s in zip(episode.tool_sequence, summaries)
     ]
     record: dict = {
         "id": episode.id,
@@ -196,9 +216,10 @@ def export_episodes_yaml(
     records: list[dict[str, Any]] = []
     for ep in episodes:
         anon = Anonymizer()
+        summaries = ep.tool_result_summaries or [""] * len(ep.tool_sequence)
         tool_seq = [
-            {"name": tc.name, "arguments": anon.args(tc.arguments)}
-            for tc in ep.tool_sequence
+            {"name": tc.name, "arguments": anon.args(tc.arguments), "result_summary": s}
+            for tc, s in zip(ep.tool_sequence, summaries)
         ]
         records.append(
             {

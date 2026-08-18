@@ -694,12 +694,26 @@ async def main(
         llm_client=_llm,
     )
     registry = build_ha_tool_registry()
+
+    async def _on_repair_timeline(tool_name: str, status_line: str) -> None:
+        try:
+            from utils.timeline import write_timeline_event
+            from utils.supervisor import publish_event
+
+            write_timeline_event("INFO", "agent_loop", status_line)
+            publish_event(
+                {"event_type": "agent_step", "tool": tool_name, "status": status_line}
+            )
+        except Exception:  # nosec B110 — best-effort SSE
+            pass
+
     loop = AgentLoop(
         llm_client=_llm,
         tool_executor=executor,
         tool_registry=registry,
         trigger="ha_log",
         db_path=DB_PATH,
+        timeline_callback=_on_repair_timeline,
     )
 
     initial_context = (
@@ -813,6 +827,13 @@ async def main(
         issues,
         action,
     )
+    try:
+        from utils.supervisor import publish_event
+
+        ev_type = "repair_done" if result.outcome == "success" else "repair_failed"
+        publish_event({"event_type": ev_type, "outcome": result.outcome})
+    except Exception:  # nosec B110 — best-effort SSE
+        pass
 
 
 if __name__ == "__main__":
