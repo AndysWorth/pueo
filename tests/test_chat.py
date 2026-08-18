@@ -1488,3 +1488,148 @@ class TestResolveRepoPathSecurity:
         )
         assert not result.success
         assert result.error is not None
+
+
+# ---------------------------------------------------------------------------
+# TestPreStepCallback — Chunk 1 of transparency feature (issue #264)
+# ---------------------------------------------------------------------------
+
+
+class TestPreStepCallback:
+    """pre_step_callback fires before each tool execution, before step_callback."""
+
+    def _make_loop(self, llm, pre_cb, post_cb, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            pre_step_callback=pre_cb,
+            step_callback=post_cb,
+        )
+
+    def test_pre_step_callback_fires_once_per_tool(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        pre_calls: list[str] = []
+
+        async def on_pre(tool_call: ToolCall) -> None:
+            pre_calls.append(tool_call.name)
+
+        loop = self._make_loop(llm, on_pre, None, db_path)
+        asyncio.run(loop.run("Hello"))
+        assert pre_calls == ["finish_chat"]
+
+    def test_pre_step_fires_before_step_callback(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        events: list[str] = []
+
+        async def on_pre(tool_call: ToolCall) -> None:
+            events.append(f"pre:{tool_call.name}")
+
+        from utils.tool_registry import AgentStep
+
+        def on_post(step: AgentStep) -> None:
+            events.append(f"post:{step.tool_call.name}")
+
+        loop = self._make_loop(llm, on_pre, on_post, db_path)
+        asyncio.run(loop.run("Hello"))
+        assert events == ["pre:finish_chat", "post:finish_chat"]
+
+    def test_pre_step_callback_fires_for_each_tool_in_sequence(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "recall",
+                                "arguments": {"query": "NAS"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        pre_calls: list[str] = []
+
+        async def on_pre(tool_call: ToolCall) -> None:
+            pre_calls.append(tool_call.name)
+
+        loop = self._make_loop(llm, on_pre, None, db_path)
+        asyncio.run(loop.run("What do you know about NAS?"))
+        assert pre_calls == ["recall", "finish_chat"]
+
+    def test_none_pre_step_callback_is_safe(self, db_path):
+        """Loop works normally when pre_step_callback is None (default behavior)."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        loop = self._make_loop(llm, None, None, db_path)
+        result = asyncio.run(loop.run("Hello"))
+        assert result.outcome == "success"

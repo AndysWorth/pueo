@@ -2400,6 +2400,20 @@ async def post_chat_message(req: ChatMessageRequest) -> JSONResponse:
     return JSONResponse({"session_id": session_id}, status_code=202)
 
 
+_REDACTED_ARG_KEYS = frozenset({"key", "token", "password", "secret", "credential"})
+
+
+def _sanitize_args_preview(args: dict) -> str:
+    parts = []
+    for k, v in args.items():
+        if any(r in k.lower() for r in _REDACTED_ARG_KEYS):
+            parts.append(f"{k}=***")
+        else:
+            parts.append(f"{k}={str(v)[:40]}")
+    preview = ", ".join(parts)
+    return preview[:120] if len(preview) > 120 else preview
+
+
 async def _run_chat_loop(
     session_id: int,
     message: str,
@@ -2421,7 +2435,7 @@ async def _run_chat_loop(
     from utils.llm_factory import make_llm_client
     from utils.supervisor import get_supervisor_instance, publish_chat_event
     from utils.tool_executor import ToolExecutor
-    from utils.tool_registry import AgentStep, build_chat_tool_registry
+    from utils.tool_registry import AgentStep, ToolCall, build_chat_tool_registry
 
     sv = get_supervisor_instance()
     executor: ToolExecutor
@@ -2447,6 +2461,16 @@ async def _run_chat_loop(
         notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
         executor = ToolExecutor(ha_ssh_client=ssh, gate=gate, notifier=notifier)
 
+    async def on_pre_step(tool_call: ToolCall) -> None:
+        publish_chat_event(
+            {
+                "event_type": "chat_pre_step",
+                "session_id": session_id,
+                "tool": tool_call.name,
+                "args_preview": _sanitize_args_preview(tool_call.arguments),
+            }
+        )
+
     def on_step(step: AgentStep) -> None:
         publish_chat_event(
             {
@@ -2454,6 +2478,17 @@ async def _run_chat_loop(
                 "session_id": session_id,
                 "tool": step.tool_call.name,
                 "step": step.step_number,
+            }
+        )
+        output_summary = (step.tool_result.output or step.tool_result.error or "")[:300]
+        publish_chat_event(
+            {
+                "event_type": "chat_step_result",
+                "session_id": session_id,
+                "tool": step.tool_call.name,
+                "step": step.step_number,
+                "output_summary": output_summary,
+                "success": step.tool_result.success,
             }
         )
 
@@ -2475,6 +2510,7 @@ async def _run_chat_loop(
             max_tool_calls=10,
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
             step_callback=on_step,
+            pre_step_callback=on_pre_step,
         )
         result = await agent_loop.run(message, initial_messages=prior_messages or None)
 

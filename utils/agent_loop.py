@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field
@@ -154,6 +154,7 @@ class AgentLoop:
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
         terminal_tool_name: str = "finish_repair",
         step_callback: Optional[Callable[["AgentStep"], None]] = None,
+        pre_step_callback: Optional[Callable[["ToolCall"], Awaitable[None]]] = None,
         trigger: str = "manual",
         db_path: Optional[str] = None,
         escalated: bool = False,
@@ -171,6 +172,7 @@ class AgentLoop:
         self._max_wall_seconds = max_wall_seconds
         self._terminal_tool_name = terminal_tool_name
         self._step_callback = step_callback
+        self._pre_step_callback = pre_step_callback
         self._trigger = trigger
         self._db_path = db_path
         self._escalated = escalated
@@ -576,6 +578,8 @@ class AgentLoop:
                     arguments=fn.get("arguments", {}),
                 )
                 ts = time.monotonic() - start_time
+                if self._pre_step_callback is not None:
+                    await self._pre_step_callback(tool_call)
                 tool_result: ToolResult = await self._executor.execute(tool_call)
                 tool_call_count += 1
 
