@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from utils.disk_recovery import (
+    DISK_AUTO_ACTION_KEYS,
     RecoveryAction,
     RecoverySummary,
     TmpAuditItem,
@@ -610,3 +611,148 @@ class TestFetchAddonPersistentSizes:
         result = asyncio.run(fetch_addon_persistent_sizes(ssh, {}))
         assert result[0]["slug"] == "large"
         assert result[1]["slug"] == "small"
+
+
+# ---------------------------------------------------------------------------
+# run_safe_disk_recovery — LLM-guided path (Chunk F)
+# ---------------------------------------------------------------------------
+
+
+class TestRunSafeDiskRecoveryLLMGuided:
+    """Verify the investigation-guided path and its fallback behaviour."""
+
+    def _make_ssh(self):
+        ssh = MagicMock()
+        ssh.run = AsyncMock(
+            side_effect=[
+                # truncate_ha_log: stat, truncate
+                (0, str(5 * 1024 * 1024), ""),
+                (0, "", ""),
+                # vacuum_journal: which, disk-usage, rotate, vacuum
+                (0, "/usr/bin/journalctl", ""),
+                (0, "800M", ""),
+                (0, "", ""),
+                (0, "Freed 200M", ""),
+            ]
+        )
+        return ssh
+
+    def _make_investigation_report(self, auto_keys):
+        """Return a minimal InvestigationReport-like object with the given auto action_keys."""
+        from utils.investigation_loop import InvestigationAction, InvestigationReport
+
+        return InvestigationReport(
+            topic="HA disk space critically low",
+            summary="Journal and log are the largest consumers.",
+            root_causes=["oversized journal"],
+            auto_actions=[
+                InvestigationAction(
+                    name=k,
+                    description=f"Run {k}",
+                    estimated_impact="~200 MB",
+                    reversible=True,
+                    risk_level="LOW",
+                    action_key=k,
+                )
+                for k in auto_keys
+            ],
+            hitl_actions=[],
+            confidence=0.85,
+        )
+
+    def test_uses_investigation_auto_actions_when_available(self):
+        """Investigation succeeds: only the recommended actions run (not all 3 heuristic steps)."""
+        report = self._make_investigation_report(["truncate_ha_log", "vacuum_journal"])
+        ssh = self._make_ssh()
+        rest = MagicMock()
+        rest.call_service = AsyncMock(return_value=None)
+
+        llm = MagicMock()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.investigation_loop.investigate_with_fallback",
+                new=AsyncMock(return_value=(report, False)),
+            ),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))
+
+        assert summary.used_investigation is True
+        assert summary.investigation_report is report
+        names = [a.name for a in summary.actions]
+        # Only the two LLM-recommended steps ran; purge_recorder was NOT called
+        assert "truncate_ha_log" in names
+        assert "vacuum_journal" in names
+        assert "purge_recorder" not in names
+        rest.call_service.assert_not_called()
+
+    def test_falls_back_to_heuristic_when_investigation_raises(self):
+        """investigate_with_fallback raising causes the heuristic 3-step path to run."""
+        ssh = self._make_ssh()
+        rest = MagicMock()
+        rest.call_service = AsyncMock(return_value=None)
+        llm = MagicMock()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.investigation_loop.investigate_with_fallback",
+                new=AsyncMock(return_value=(None, True)),  # is_fallback=True
+            ),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))
+
+        assert summary.used_investigation is False
+        names = [a.name for a in summary.actions]
+        assert "truncate_ha_log" in names
+        assert "vacuum_journal" in names
+        assert "purge_recorder" in names
+
+    def test_falls_back_to_heuristic_when_no_recognized_keys(self):
+        """LLM returns unrecognized action_keys → heuristic runs, report stored."""
+        report = self._make_investigation_report(["unknown_key", "another_unknown"])
+        ssh = self._make_ssh()
+        rest = MagicMock()
+        rest.call_service = AsyncMock(return_value=None)
+        llm = MagicMock()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.investigation_loop.investigate_with_fallback",
+                new=AsyncMock(return_value=(report, False)),
+            ),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))
+
+        assert summary.used_investigation is False
+        # Report is kept so callers can use it for disk_analysis narrative
+        assert summary.investigation_report is report
+        names = [a.name for a in summary.actions]
+        assert set(names) >= {"truncate_ha_log", "vacuum_journal"}
+
+    def test_action_key_dispatch_recognizes_expected_keys(self):
+        """DISK_AUTO_ACTION_KEYS contains the three dispatch-table entries."""
+        assert "truncate_ha_log" in DISK_AUTO_ACTION_KEYS
+        assert "vacuum_journal" in DISK_AUTO_ACTION_KEYS
+        assert "purge_recorder" in DISK_AUTO_ACTION_KEYS
+
+    def test_no_investigation_without_llm_client(self):
+        """Without llm_client, investigation is never called and heuristic always runs."""
+        ssh = self._make_ssh()
+        rest = MagicMock()
+        rest.call_service = AsyncMock(return_value=None)
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+        ):
+            summary = asyncio.run(run_safe_disk_recovery(ssh, rest))
+
+        assert summary.investigation_report is None
+        assert summary.used_investigation is False
+        assert len(summary.actions) == 3

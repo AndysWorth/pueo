@@ -826,7 +826,6 @@ async def _execute_disk_recovery(
     from utils.disk_recovery import (
         audit_supervisor_tmp,
         purge_recorder,
-        run_safe_disk_recovery,
     )
     from utils.resource import get_resource_status
     from utils.ssh_client import AsyncSSHClient
