@@ -213,3 +213,11 @@ Rationale for key architectural choices is in `docs/decisions/`:
 @docs/decisions/010-agent-self-awareness.md
 
 @docs/decisions/011-ha-live-lookup.md
+
+@docs/decisions/012-hypothesis-driven-repair.md
+
+@docs/decisions/013-prompt-externalization.md
+
+@docs/decisions/014-episodic-context-injection.md
+
+@docs/decisions/015-llm-guided-disk-recovery.md
