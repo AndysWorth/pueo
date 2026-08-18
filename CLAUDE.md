@@ -52,7 +52,7 @@ bandit -r . -x ./tests,./.venv
 Four layered scripts, each building on the previous:
 
 ### Layer 1 — Sensing: `ha_agent_core.py`
-Read-only. Fetches `/config/configuration.yaml` from HA over SSH/SFTP, runs it through local Ollama (`qwen2.5-coder:7b`) with structured JSON output enforced by the `DiagnosticsReport` Pydantic schema, then optionally cross-verifies by running `ha core check` on the remote host.
+Read-only. Fetches `/config/configuration.yaml` from HA over SSH/SFTP, runs it through local Ollama (model selected by `OLLAMA_MODEL` / `recommend_model()`; qwen3 family preferred for tool-call compliance) with structured JSON output enforced by the `DiagnosticsReport` Pydantic schema, then optionally cross-verifies by running `ha core check` on the remote host.
 
 ### Layer 2 — Memory: `ha_agent_advanced.py`
 Extends core with a local SQLite database (`ha_agent_state.db`) persisting `state_history` and `backup_registry` tables. Before any remediation action, a native HA backup snapshot is triggered via `ha backup new` over SSH and its slug is recorded — hard safety gate, aborts on failure.

@@ -279,6 +279,48 @@ class TestRecommendModel:
         result = recommend_model(profile, available)
         assert result == "qwen2.5-coder:32b-q4_K_M"
 
+    def test_qwen3_32b_preferred_over_qwen25_32b(self):
+        # qwen3 has better tool compliance — prefer it when both are installed
+        profile = _profile(ram_gb=64.0)
+        available = [
+            _model("qwen3:32b", size_gb=20.0),
+            _model("qwen2.5-coder:32b", size_gb=19.0),
+        ]
+        result = recommend_model(profile, available)
+        assert result == "qwen3:32b"
+
+    def test_qwen3_30b_moe_preferred_over_qwen25_32b(self):
+        # qwen3:30b-a3b MoE fits in smaller memory; should win at tier 7
+        profile = _profile(ram_gb=64.0)
+        available = [
+            _model("qwen3:30b-a3b", size_gb=17.0),
+            _model("qwen2.5-coder:32b", size_gb=19.0),
+        ]
+        result = recommend_model(profile, available)
+        assert result == "qwen3:30b-a3b"
+
+    def test_qwen3_14b_preferred_over_qwen25_32b(self):
+        # qwen3 family beats qwen2.5-coder at any size: better tool-call compliance
+        # matters more than parameter count for Pueo's tool-calling workload.
+        # Users can override via SWITCH_MODEL or the settings UI.
+        profile = _profile(ram_gb=64.0)
+        available = [
+            _model("qwen2.5-coder:32b", size_gb=19.0),
+            _model("qwen3:14b", size_gb=9.0),
+        ]
+        result = recommend_model(profile, available)
+        assert result == "qwen3:14b"
+
+    def test_qwen3_8b_preferred_over_qwen25_7b(self):
+        # qwen3:8b (tier 4) beats qwen2.5-coder:7b (tier 3)
+        profile = _profile(ram_gb=16.0)
+        available = [
+            _model("qwen3:8b", size_gb=5.2),
+            _model("qwen2.5-coder:7b", size_gb=4.7),
+        ]
+        result = recommend_model(profile, available)
+        assert result == "qwen3:8b"
+
 
 # ---------------------------------------------------------------------------
 # select_best_model
