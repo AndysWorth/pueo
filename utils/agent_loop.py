@@ -450,6 +450,7 @@ class AgentLoop:
     ) -> tuple[str, Optional[dict]]:
         episode_stub: Optional[dict] = None
         no_tool_streak = 0  # consecutive plain-text responses with no tool calls
+        no_tool_extension_count = 0  # times budget was extended due to no_tool_streak
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
 
         while True:
@@ -496,17 +497,22 @@ class AgentLoop:
                         )
                         if last_plain_text and episode_stub is None:
                             episode_stub = {"summary": last_plain_text}
-                        extended, episode_stub = await self._maybe_extend_budget(
-                            messages,
-                            steps,
-                            tool_call_count,
-                            start_time,
-                            "no_tool_streak",
-                            episode_stub,
-                        )
-                        if extended:
-                            no_tool_streak = 0
-                            continue
+                        # Cap extensions for no_tool_streak: if the model can't
+                        # make tool calls, more budget won't help — give up after
+                        # 2 extension attempts to prevent an infinite loop.
+                        if no_tool_extension_count < 2:
+                            extended, episode_stub = await self._maybe_extend_budget(
+                                messages,
+                                steps,
+                                tool_call_count,
+                                start_time,
+                                "no_tool_streak",
+                                episode_stub,
+                            )
+                            if extended:
+                                no_tool_extension_count += 1
+                                no_tool_streak = 0
+                                continue
                         return "exhausted", episode_stub
                     # Single plain-text response — inject a recovery nudge and
                     # retry rather than giving up immediately.

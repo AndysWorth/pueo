@@ -9571,6 +9571,29 @@ class TestAgentLoop:
         result = asyncio.run(loop.run("Check config"))
         assert result.outcome == "exhausted"
 
+    def test_no_tool_calls_terminates_even_when_review_says_extend(self):
+        # Regression: when the LLM review always says can_resolve_with_more=True
+        # the no_tool_streak extension cap (2) must still terminate the loop.
+        # Previously this caused an infinite loop because tool_call_count never
+        # incremented and _max_tool_calls kept being reset to tool_call_count + grant.
+        import json
+
+        review_json = json.dumps(
+            {
+                "reason_limit_hit": "no tool calls made",
+                "can_resolve_with_more": True,
+                "additional_calls_requested": 5,
+                "summary_if_giving_up": "",
+            }
+        )
+        loop, _ = self._make_review_loop(
+            call_sequence=[{"content": "read_logs lines 100"}] * 20,
+            review_response_json=review_json,
+            budget=5,
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "exhausted"
+
     def test_no_tool_calls_captures_last_plain_text_as_summary(self):
         # When the loop exhausts due to plain-text responses, the last
         # plain-text content is captured in episode_stub["summary"] so the
