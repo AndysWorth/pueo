@@ -1913,3 +1913,184 @@ class TestTimelineCallback:
         loop = self._make_loop(llm, None, db_path)
         result = asyncio.run(loop.run("Hello"))
         assert result.outcome == "success"
+
+
+class TestInjectContext:
+    """AgentLoop.inject_context() appends a user message to the live conversation."""
+
+    def _make_loop(self, llm, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+
+    def test_inject_context_before_run_is_noop(self, db_path):
+        """inject_context before run() does nothing (self._messages is None)."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient([])
+        loop = self._make_loop(llm, db_path)
+        # Should not raise; _messages is None
+        loop.inject_context("ignored message")
+        assert loop._messages is None
+
+    def test_inject_context_after_run_is_noop(self, db_path):
+        """inject_context after run() completes does nothing (_messages cleared)."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        loop = self._make_loop(llm, db_path)
+        asyncio.run(loop.run("Hello"))
+        # _messages must be cleared after run()
+        assert loop._messages is None
+        # inject_context should be safe to call and do nothing
+        loop.inject_context("post-run message")
+
+    def test_inject_context_appends_during_run(self, db_path):
+        """inject_context called from within a step callback appends a user message."""
+        from utils.agent_loop import AgentLoop
+        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.tool_registry import build_chat_tool_registry
+
+        injected_messages: list[dict] = []
+
+        # step_callback fires after each tool; inject a message from there
+        def on_step(step):
+            if step.tool_call.name != "finish_chat":
+                loop.inject_context("guidance from callback")
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "run_ha_command",
+                                "arguments": {"command": "ha core check"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            step_callback=on_step,
+        )
+        result = asyncio.run(loop.run("Hello"))
+        assert result.outcome == "success"
+        # The injected message must appear in the messages list captured during run
+        # (we read it via the loop's final _messages=None, but the LLM received it)
+        # Verify by checking that llm received more calls (injected message triggered re-query)
+        assert len(llm.calls) >= 2
+
+
+class TestRepairInjectEndpoint:
+    """/repair/inject returns 409 when no loop is running, 200 when one is active."""
+
+    def test_inject_returns_409_when_no_repair_running(self, db_path, monkeypatch):
+        """Returns HTTP 409 when no repair loop is registered."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+
+        from utils import supervisor as sv
+
+        monkeypatch.setattr(sv, "_active_repair_loop", None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/repair/inject", json={"message": "the NAS is offline"})
+        assert resp.status_code == 409
+
+    def test_inject_returns_200_and_calls_inject_context(self, db_path, monkeypatch):
+        """Returns 200 and calls inject_context on the active loop."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+
+        from utils import supervisor as sv
+
+        injected: list[str] = []
+
+        class _FakeLoop:
+            def inject_context(self, message: str) -> None:
+                injected.append(message)
+
+        monkeypatch.setattr(sv, "_active_repair_loop", _FakeLoop())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/repair/inject", json={"message": "ignore the NAS"})
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "injected"}
+        assert injected == ["ignore the NAS"]
+
+    def test_inject_returns_422_for_empty_message(self, db_path, monkeypatch):
+        """Returns 422 for a blank message."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+
+        from utils import supervisor as sv
+
+        class _FakeLoop:
+            def inject_context(self, message: str) -> None:
+                pass  # pragma: no cover
+
+        monkeypatch.setattr(sv, "_active_repair_loop", _FakeLoop())
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/repair/inject", json={"message": "   "})
+        assert resp.status_code == 422

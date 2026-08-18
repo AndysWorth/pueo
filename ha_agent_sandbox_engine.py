@@ -722,7 +722,21 @@ async def main(
         "If the config looks correct, call finish_repair with action_taken='no_fix_needed'.\n\n"
         f"Current configuration.yaml:\n```yaml\n{yaml_content}\n```"
     )
-    result = await loop.run(initial_context)
+    try:
+        from utils.supervisor import set_active_repair_loop
+
+        set_active_repair_loop(loop)
+    except Exception:  # nosec B110 — best-effort registration
+        pass
+    try:
+        result = await loop.run(initial_context)
+    finally:
+        try:
+            from utils.supervisor import set_active_repair_loop
+
+            set_active_repair_loop(None)
+        except Exception:  # nosec B110
+            pass
 
     # Autonomous gap detection (item 84): when the agent signalled a capability gap,
     # automatically start a code-proposal loop that drafts a patch, validates it in
