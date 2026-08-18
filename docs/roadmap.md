@@ -24,7 +24,7 @@ Strategic capabilities in delivery order.
 | 8. Repair episode recording                   | ✅ Complete (2026-08-10) | `utils/repair_episode.py`, `utils/anonymizer.py` |
 | 9. Federated case library                     | ✅ Complete (2026-08-11) | `utils/case_submitter.py`, `utils/case_ingester.py` |
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
-| 11. Transparent operation                     | ⏳ In progress (Chunks 1–3 done) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
+| 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
 
 ### Implementation Phases
 
