@@ -144,6 +144,25 @@ def mark_card_deferred(
     conn.commit()
 
 
+def mark_card_approved(conn: sqlite3.Connection, card_key: str) -> None:
+    """Mark card as approved; treats this occurrence as resolved so future polls can re-fire."""
+    now = time.time()
+    conn.execute(
+        """
+        INSERT INTO hitl_suppression
+            (card_key, card_type, description, first_sent_at, last_sent_at,
+             last_action, last_action_at, resolved_at)
+        VALUES (?, '', '', ?, ?, 'approved', ?, ?)
+        ON CONFLICT(card_key) DO UPDATE SET
+            last_action = 'approved',
+            last_action_at = excluded.last_action_at,
+            resolved_at = excluded.resolved_at
+        """,
+        (card_key, now, now, now, now),
+    )
+    conn.commit()
+
+
 def mark_card_resolved(conn: sqlite3.Connection, card_key: str) -> None:
     """Mark condition as resolved; next occurrence starts fresh."""
     now = time.time()

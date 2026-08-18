@@ -4,6 +4,7 @@
 import asyncio
 import json
 import re
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 import config as _config
 from config import (
     AUTONOMY_LEVEL,
+    DB_PATH,
     HA_API_PORT,
     HA_API_TOKEN,
     HA_DISK_CRITICAL_GB,
@@ -1457,3 +1459,40 @@ async def reconcile_in_progress_updates(
             )
 
         marker.unlink(missing_ok=True)
+
+
+def reconcile_stale_approved_cards(
+    watch_dir: Optional[Path] = None,
+) -> int:
+    """Resolve suppression rows whose card file has an .approved sentinel but DB was not updated.
+
+    Before mark_card_approved() was added to approve(), the /approve endpoint wrote the
+    .approved sentinel file but never updated hitl_suppression. This left last_action=NULL,
+    resolved_at=NULL, permanently blocking future cards for the same entity.
+    Setting resolved_at lets the next poll treat the entity as a fresh occurrence.
+    Returns the number of rows resolved.
+    """
+    from utils.hitl_tracker import mark_card_resolved, stable_nid
+
+    _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
+    resolved = 0
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT card_key FROM hitl_suppression
+               WHERE card_key LIKE 'update:%'
+                 AND send_count >= 1
+                 AND last_action IS NULL
+                 AND resolved_at IS NULL""",
+        ).fetchall()
+        for (card_key,) in rows:
+            nid = stable_nid(card_key)
+            approved_path = _watch_dir / f"{nid}.approved"
+            if approved_path.exists():
+                mark_card_resolved(conn, card_key)
+                log.warning(
+                    "reconcile_stale_approved_card",
+                    card_key=card_key,
+                    reason="approved_sentinel",
+                )
+                resolved += 1
+    return resolved

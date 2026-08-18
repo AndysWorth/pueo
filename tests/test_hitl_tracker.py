@@ -10,6 +10,7 @@ from utils.hitl_tracker import (
     get_known_issues,
     get_rejection_count,
     mark_card_acknowledged,
+    mark_card_approved,
     mark_card_deferred,
     mark_card_rejected,
     mark_card_resolved,
@@ -323,3 +324,44 @@ def test_stable_nid_length():
 def test_stable_nid_is_hex():
     nid = stable_nid("log_triage:abc123")
     assert all(c in "0123456789abcdef" for c in nid)
+
+
+# ---------------------------------------------------------------------------
+# mark_card_approved
+# ---------------------------------------------------------------------------
+
+
+def test_mark_card_approved_sets_resolved_at(conn):
+    mark_card_sent(conn, "update:foo", "update", "desc")
+    mark_card_approved(conn, "update:foo")
+    row = conn.execute(
+        "SELECT last_action, resolved_at FROM hitl_suppression WHERE card_key = 'update:foo'"
+    ).fetchone()
+    assert row[0] == "approved"
+    assert row[1] is not None
+
+
+def test_mark_card_approved_allows_next_send(conn):
+    mark_card_sent(conn, "update:foo", "update", "desc")
+    mark_card_approved(conn, "update:foo")
+    # resolved_at set → should_send_card must return True so a fresh card can fire
+    assert should_send_card(conn, "update:foo") is True
+
+
+def test_mark_card_approved_does_not_set_known_issue(conn):
+    mark_card_sent(conn, "update:bar", "update", "desc")
+    mark_card_approved(conn, "update:bar")
+    row = conn.execute(
+        "SELECT known_issue FROM hitl_suppression WHERE card_key = 'update:bar'"
+    ).fetchone()
+    assert row[0] == 0
+
+
+def test_mark_card_approved_on_new_key_inserts_row(conn):
+    mark_card_approved(conn, "update:new")
+    row = conn.execute(
+        "SELECT last_action, resolved_at FROM hitl_suppression WHERE card_key = 'update:new'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "approved"
+    assert row[1] is not None
