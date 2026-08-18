@@ -11290,11 +11290,18 @@ class TestRepairCardClassification:
     def _run_one_poll(self, raw_issues, monkeypatch, db_path):
         """Run exactly one poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_repairs
+        from ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
         from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
 
         notifier = FakeNotifier()
         iteration = [0]
+        _default_analysis = RepairIssueAnalysis(
+            human_explanation="Test repair issue.",
+            recommended_action_rationale="",
+            requires_hitl=True,
+        )
+        fake_llm = FakeLLMClient(_default_analysis.model_dump_json())
 
         async def one_shot_sleep(_seconds):
             iteration[0] += 1
@@ -11315,6 +11322,7 @@ class TestRepairCardClassification:
                     ha_ws_client=FakeRepairWS(),
                     notifier=notifier,
                     db_path=db_path,
+                    llm_client=fake_llm,
                 )
             )
         return notifier
@@ -11470,6 +11478,115 @@ class TestRepairCardClassification:
             db_path,
         )
         assert len(notifier.sent) == 0
+
+
+# ── RepairIssueAnalysis ───────────────────────────────────────────────────────────
+
+
+class TestRepairIssueAnalysis:
+    """Tests for RepairIssueAnalysis schema and analyze_repair_issue()."""
+
+    def _make_issue(self, translation_key="config_entry_reauth", severity="warning"):
+        from utils.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="pycync",
+            issue_id="abc-001",
+            severity=severity,
+            issue_key="pycync/abc-001",
+            breaks_in_ha_version=None,
+            translation_key=translation_key,
+        )
+
+    def test_analyze_repair_issue_returns_schema(self):
+        """Valid LLM JSON → RepairIssueAnalysis fields populated correctly."""
+        from ha_log_monitor import RepairIssueAnalysis, analyze_repair_issue
+        from utils.ollama_client import FakeLLMClient
+
+        expected = RepairIssueAnalysis(
+            human_explanation="Your Cync integration needs to log in again.",
+            recommended_action_rationale="Dismissing will prompt re-authentication on next load.",
+            requires_hitl=False,
+        )
+        fake = FakeLLMClient(expected.model_dump_json())
+        result = asyncio.run(analyze_repair_issue(self._make_issue(), llm_client=fake))
+        assert result.human_explanation == expected.human_explanation
+        assert (
+            result.recommended_action_rationale == expected.recommended_action_rationale
+        )
+        assert result.requires_hitl is False
+
+    def test_analyze_repair_issue_invalid_json(self):
+        """Garbage LLM response → safe default returned, no exception raised."""
+        from ha_log_monitor import analyze_repair_issue
+        from utils.ollama_client import FakeLLMClient
+
+        fake = FakeLLMClient("not valid json {{{{")
+        issue = self._make_issue(severity="critical")
+        result = asyncio.run(analyze_repair_issue(issue, llm_client=fake))
+        assert isinstance(result.human_explanation, str)
+        assert len(result.human_explanation) > 0
+        assert (
+            result.requires_hitl is True
+        )  # critical severity → requires HITL in safe default
+
+    def test_poll_for_repairs_uses_llm_explanation(self, tmp_path, monkeypatch):
+        """poll_for_repairs enriches the card body with the LLM explanation."""
+        import asyncio as asyncio_mod
+        import ha_agent_advanced
+        from ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
+        ha_agent_advanced.init_local_database()
+
+        explanation = "Your Cync integration needs to re-authenticate."
+        rationale = "Dismiss to trigger the re-auth flow."
+        analysis = RepairIssueAnalysis(
+            human_explanation=explanation,
+            recommended_action_rationale=rationale,
+            requires_hitl=False,
+        )
+        fake_llm = FakeLLMClient(analysis.model_dump_json())
+        notifier = FakeNotifier()
+        iteration = [0]
+
+        async def one_shot_sleep(_):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        class FakeRepairWS:
+            async def get_repair_issues(self):
+                return [
+                    {
+                        "domain": "pycync",
+                        "issue_id": "abc-002",
+                        "severity": "warning",
+                        "translation_key": "config_entry_reauth",
+                    }
+                ]
+
+            async def get_device_registry(self):
+                return []
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeRepairWS(),
+                    notifier=notifier,
+                    db_path=db_path,
+                    llm_client=fake_llm,
+                )
+            )
+
+        assert len(notifier.sent) == 1
+        body = notifier.sent[0]["body"]
+        assert explanation in body
+        assert rationale in body
 
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────
