@@ -40,6 +40,7 @@
   .level-warn     { background: #fef3c7; color: #92400e; }
   .level-error    { background: #fee2e2; color: #991b1b; }
   .level-critical { background: #dc3545; color: #fff; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
 </style>
 
 <div class="overview-grid">
@@ -159,6 +160,15 @@
     {% else %}
     <p class="no-loops">No loops running — start Pueo in supervisor mode (<code>python main.py</code>).</p>
     {% endif %}
+  </div>
+
+  <!-- Active Repair Widget -->
+  <div class="card full-width" id="active-repair-widget" style="display:none;border-left:3px solid #6366f1;">
+    <div class="section-title" style="display:flex;align-items:center;gap:0.5rem;">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6366f1;animation:pulse 1.2s infinite;flex-shrink:0;"></span>
+      Active Repair
+    </div>
+    <p id="active-repair-status" style="font-size:0.88rem;color:#333;margin:0;font-family:monospace;"></p>
   </div>
 
   <!-- Recent Events -->
@@ -316,6 +326,24 @@
     while (body.rows.length > 10) body.deleteRow(body.rows.length - 1);
   }
 
+  var _repairHideTimer = null;
+
+  function showRepairWidget(statusLine) {
+    var widget = document.getElementById('active-repair-widget');
+    var status = document.getElementById('active-repair-status');
+    if (widget) widget.style.display = '';
+    if (status) status.textContent = statusLine;
+    if (_repairHideTimer) { clearTimeout(_repairHideTimer); _repairHideTimer = null; }
+  }
+
+  function scheduleHideRepairWidget() {
+    if (_repairHideTimer) clearTimeout(_repairHideTimer);
+    _repairHideTimer = setTimeout(function () {
+      var widget = document.getElementById('active-repair-widget');
+      if (widget) widget.style.display = 'none';
+    }, 3000);
+  }
+
   var es = new EventSource('/events');
   es.onmessage = function (e) {
     try {
@@ -323,6 +351,8 @@
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
       else if (evt.event_type === 'resource') updateGauges(evt);
       else if (evt.event_type === 'timeline') prependTimelineRow(evt);
+      else if (evt.event_type === 'agent_step') showRepairWidget(evt.status || '');
+      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideRepairWidget();
     } catch (_) {}
   };
   es.onerror = function () {

@@ -1563,6 +1563,102 @@ class TestMain:
         assert "Invalid" in capsys.readouterr().err
 
 
+class TestRepairEpisodeResultSummary:
+    """result_summary is stored per step in tool_sequence and round-trips through SQLite."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_serialize_stores_result_summary(self, db_path):
+        from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
+        from utils.tool_registry import ToolCall
+
+        ep = RepairEpisode(
+            id="test-ep-1",
+            trigger="ha_log",
+            symptoms=[],
+            tool_sequence=[
+                ToolCall(name="read_config", arguments={}),
+                ToolCall(name="finish_repair", arguments={}),
+            ],
+            tool_result_summaries=["config content here", "repair done"],
+            hypothesis_chain=[],
+            verification_result=True,
+            model_used="qwen2.5-coder:7b",
+            escalated=False,
+            duration_seconds=1.5,
+        )
+        serialize_episode(db_path, ep)
+        loaded = load_episode(db_path, "test-ep-1")
+        assert loaded is not None
+        assert loaded.tool_result_summaries == ["config content here", "repair done"]
+
+    def test_result_summary_survives_round_trip(self, db_path):
+        from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
+        from utils.tool_registry import ToolCall
+
+        long_output = "x" * 1000  # should be stored as-is (serializer doesn't truncate)
+        ep = RepairEpisode(
+            id="test-ep-2",
+            trigger="ha_log",
+            symptoms=[],
+            tool_sequence=[
+                ToolCall(name="run_ha_command", arguments={"command": "ha info"})
+            ],
+            tool_result_summaries=[long_output],
+            hypothesis_chain=[],
+            verification_result=True,
+            model_used="qwen2.5-coder:7b",
+            escalated=False,
+            duration_seconds=0.5,
+        )
+        serialize_episode(db_path, ep)
+        loaded = load_episode(db_path, "test-ep-2")
+        assert loaded is not None
+        assert loaded.tool_result_summaries[0] == long_output
+
+    def test_legacy_episode_without_result_summary_loads_cleanly(self, db_path):
+        """Episodes written before Chunk 3 (no result_summary key) load with empty summaries."""
+        import json
+        import sqlite3 as _sqlite3
+
+        from utils.repair_episode import load_episode
+        from utils.tool_registry import ToolCall
+
+        tc = ToolCall(name="read_config", arguments={})
+        with _sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO repair_episodes "
+                "(id, timestamp, trigger, symptoms, tool_sequence, hypothesis_chain,"
+                " fix_applied, verification_result, model_used, escalated, duration_seconds)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-ep",
+                    1000.0,
+                    "ha_log",
+                    json.dumps([]),
+                    json.dumps([tc.model_dump()]),
+                    json.dumps([]),
+                    None,
+                    1,
+                    "qwen2.5-coder:7b",
+                    0,
+                    1.0,
+                ),
+            )
+            conn.commit()
+
+        loaded = load_episode(db_path, "legacy-ep")
+        assert loaded is not None
+        assert loaded.tool_result_summaries == [""]
+
+
 class TestSupervisorMain:
     """Tests for supervisor_main() — verifies loop selection based on config."""
 

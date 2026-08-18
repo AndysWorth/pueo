@@ -6,7 +6,8 @@ web/dashboard._execute_cloud_escalation (approval path at levels 2–3).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from utils.logging import get_logger
 
@@ -23,6 +24,7 @@ async def run_cloud_escalation(
     ha_ssh_client: Any,
     notifier: Any,
     incident_id: str,
+    timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> "AgentLoopResult":
     """Run AgentLoop with ClaudeAPIClient. Raises BillingCapError if caps exceeded."""
     from utils.agent_loop import AgentLoop
@@ -54,6 +56,7 @@ async def run_cloud_escalation(
         trigger="escalated",
         db_path=DB_PATH,
         escalated=True,
+        timeline_callback=timeline_callback,
     )
 
     if not initial_context:

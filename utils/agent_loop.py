@@ -155,6 +155,7 @@ class AgentLoop:
         terminal_tool_name: str = "finish_repair",
         step_callback: Optional[Callable[["AgentStep"], None]] = None,
         pre_step_callback: Optional[Callable[["ToolCall"], Awaitable[None]]] = None,
+        timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
         trigger: str = "manual",
         db_path: Optional[str] = None,
         escalated: bool = False,
@@ -173,6 +174,7 @@ class AgentLoop:
         self._terminal_tool_name = terminal_tool_name
         self._step_callback = step_callback
         self._pre_step_callback = pre_step_callback
+        self._timeline_callback = timeline_callback
         self._trigger = trigger
         self._db_path = db_path
         self._escalated = escalated
@@ -227,6 +229,10 @@ class AgentLoop:
             trigger=self._trigger,
             symptoms=data["symptoms"],
             tool_sequence=[step.tool_call for step in steps],
+            tool_result_summaries=[
+                (step.tool_result.output or step.tool_result.error or "")[:500]
+                for step in steps
+            ],
             hypothesis_chain=data["hypothesis_chain"],
             fix_applied=data["fix_applied"],
             verification_result=data["verification_result"],
@@ -592,6 +598,10 @@ class AgentLoop:
                 steps.append(step)
                 if self._step_callback is not None:
                     self._step_callback(step)
+                if self._timeline_callback is not None:
+                    status = "OK" if tool_result.success else "ERR"
+                    status_line = f"step {tool_call_count} — {tool_call.name}: {status}"
+                    await self._timeline_callback(tool_call.name, status_line)
 
                 # Feed tool result back to the conversation.
                 result_text = (

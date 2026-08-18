@@ -1769,3 +1769,147 @@ class TestDurableToolHistory:
             r for r in rows if r[0] == "assistant" and r[1] == "Nothing to do."
         ]
         assert len(summary_rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# TestTimelineCallback
+# ---------------------------------------------------------------------------
+
+
+class TestTimelineCallback:
+    """timeline_callback fires after each tool execution with correct tool name and status."""
+
+    def _make_loop(self, llm, timeline_cb, db_path):
+        from utils.agent_loop import AgentLoop
+        from utils.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            timeline_callback=timeline_cb,
+        )
+
+    def test_timeline_callback_fires_once_per_tool(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        calls: list[tuple[str, str]] = []
+
+        async def on_timeline(tool_name: str, status_line: str) -> None:
+            calls.append((tool_name, status_line))
+
+        loop = self._make_loop(llm, on_timeline, db_path)
+        asyncio.run(loop.run("Hello"))
+        assert len(calls) == 1
+        assert calls[0][0] == "finish_chat"
+
+    def test_timeline_callback_receives_correct_tool_name(self, db_path):
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "recall",
+                                "arguments": {"query": "NAS"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        names: list[str] = []
+
+        async def on_timeline(tool_name: str, status_line: str) -> None:
+            names.append(tool_name)
+
+        loop = self._make_loop(llm, on_timeline, db_path)
+        asyncio.run(loop.run("What do you know about NAS?"))
+        assert names == ["recall", "finish_chat"]
+
+    def test_timeline_callback_status_line_format(self, db_path):
+        """status_line matches 'step N — tool_name: OK/ERR' format."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        status_lines: list[str] = []
+
+        async def on_timeline(tool_name: str, status_line: str) -> None:
+            status_lines.append(status_line)
+
+        loop = self._make_loop(llm, on_timeline, db_path)
+        asyncio.run(loop.run("Hello"))
+        assert len(status_lines) == 1
+        assert "finish_chat" in status_lines[0]
+        assert "step 1" in status_lines[0]
+        assert "OK" in status_lines[0] or "ERR" in status_lines[0]
+
+    def test_none_timeline_callback_is_safe(self, db_path):
+        """Loop works normally when timeline_callback is None (default behavior)."""
+        from utils.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        loop = self._make_loop(llm, None, db_path)
+        result = asyncio.run(loop.run("Hello"))
+        assert result.outcome == "success"
