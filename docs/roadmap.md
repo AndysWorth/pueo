@@ -25,7 +25,7 @@ Strategic capabilities in delivery order.
 | 9. Federated case library                     | ✅ Complete (2026-08-11) | `utils/case_submitter.py`, `utils/case_ingester.py` |
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
-| 12. Agent self-knowledge + HA live lookup     | 🔲 Planned               | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
+| 12. Agent self-knowledge + HA live lookup     | ✅ Complete (2026-08-18)  | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
 
 ### Implementation Phases
 

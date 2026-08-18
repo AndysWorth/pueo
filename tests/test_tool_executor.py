@@ -148,3 +148,80 @@ class TestApplyFixPayload:
 
         body = notifier.sent[0]["body"]
         assert "Proposed fix:" in body
+
+
+class TestFetchHaDocs:
+    """Tests for ToolExecutor._fetch_ha_docs."""
+
+    def _run(
+        self,
+        domain: str,
+        filename: str,
+        *,
+        provider: str = "local",
+        cache: dict | None = None,
+        tmp_path=None
+    ):
+        """Run _fetch_ha_docs with a temp cache dir and optional pre-seeded files."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            cache_dir = Path(td) / "ha_source"
+            if cache:
+                for rel, content in cache.items():
+                    dest = cache_dir / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(content)
+
+            with patch(
+                "utils.tool_executor._config_mod.HA_SOURCE_CACHE_DIR", str(cache_dir)
+            ), patch("utils.tool_executor._config_mod.LLM_PROVIDER", provider):
+                executor = _make_executor()
+                return asyncio.run(executor._fetch_ha_docs(domain, filename))
+
+    def test_cache_hit_returns_content_no_http(self):
+        result = self._run(
+            "zha",
+            "manifest.json",
+            cache={"zha/manifest.json": '{"domain": "zha"}'},
+        )
+        assert result.success is True
+        assert '"domain": "zha"' in result.output
+
+    def test_local_mode_cache_miss_raises_tool_error(self):
+        result = self._run("zha", "manifest.json", provider="local")
+        assert result.success is False
+        assert "LLM_PROVIDER=local" in result.error
+
+    def test_cloud_mode_live_fetch(self):
+        fake_content = b'{"domain": "zha", "name": "Zigbee Home Automation"}'
+
+        class _FakeResp:
+            status = 200
+
+            def read(self):
+                return fake_content
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+            result = self._run("zha", "manifest.json", provider="cloud")
+        assert result.success is True
+        assert "Zigbee" in result.output
+
+    def test_disallowed_filename_rejected(self):
+        result = self._run("zha", "secrets.yaml")
+        assert result.success is False
+        assert "not allowed" in result.error
+
+    def test_path_traversal_rejected(self):
+        result = self._run("../../../etc", "passwd")
+        assert result.success is False
+        assert (
+            "traversal" in result.error.lower() or "not allowed" in result.error.lower()
+        )
