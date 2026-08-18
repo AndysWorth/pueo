@@ -880,6 +880,21 @@ class TestHAUpdateManagerConfig:
 
         assert config.RAG_HA_DOCS_CACHE_DIR == "/data/ha_docs"
 
+    def test_ha_source_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_SOURCE_CACHE_DIR == ".cache/ha_source/"
+
+    def test_ha_source_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_source_cache_dir": "/data/ha_source"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_SOURCE_CACHE_DIR == "/data/ha_source"
+
     def test_chat_memory_top_k_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

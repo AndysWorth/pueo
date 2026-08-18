@@ -3,7 +3,12 @@
 import pytest
 from pydantic import ValidationError
 
-from utils.tool_registry import FixEnrichment
+from utils.tool_registry import (
+    FixEnrichment,
+    build_chat_tool_registry,
+    build_ha_tool_registry,
+    build_netalertx_tool_registry,
+)
 
 
 class TestFixEnrichment:
@@ -50,3 +55,21 @@ class TestFixEnrichment:
         serialised = e.model_dump_json()
         restored = FixEnrichment.model_validate_json(serialised)
         assert restored == e
+
+
+class TestRegistryMembership:
+    def test_ha_registry_includes_read_source(self):
+        reg = build_ha_tool_registry()
+        assert "read_source" in reg
+
+    def test_ha_registry_includes_fetch_ha_docs(self):
+        reg = build_ha_tool_registry()
+        assert "fetch_ha_docs" in reg
+
+    def test_netalertx_registry_includes_read_source(self):
+        reg = build_netalertx_tool_registry()
+        assert "read_source" in reg
+
+    def test_chat_registry_includes_fetch_ha_docs(self):
+        reg = build_chat_tool_registry()
+        assert "fetch_ha_docs" in reg

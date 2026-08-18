@@ -171,6 +171,51 @@ def fetch_integration_doc(  # pragma: no cover
     return -1
 
 
+_HA_SOURCE_RAW_URL = (
+    "https://raw.githubusercontent.com/home-assistant/core/dev"
+    "/homeassistant/components/{domain}/{filename}"
+)
+_SOURCE_PREFETCH_FILENAMES = ("__init__.py", "manifest.json", "const.py")
+
+
+def prefetch_installed_integration_sources(  # pragma: no cover
+    domains: list[str],
+    cache_dir: str,
+) -> int:
+    """Fetch source files for installed integrations and cache them locally.
+
+    Called at the end of the RAG refresh cycle so that local mode has source
+    coverage for the user's actual integrations without any WAN calls at
+    inference time. Only fetches files not already in the cache.
+
+    Returns count of files newly fetched.
+    """
+    import urllib.request
+
+    fetched = 0
+    base = Path(cache_dir)
+    for domain in domains:
+        for filename in _SOURCE_PREFETCH_FILENAMES:
+            dest = base / domain / filename
+            if dest.exists():
+                continue
+            url = _HA_SOURCE_RAW_URL.format(domain=domain, filename=filename)
+            try:
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "pueo-rag-refresh/1.0"}
+                )
+                with urllib.request.urlopen(  # nosec B310 — hardcoded GitHub raw URL
+                    req, timeout=15
+                ) as resp:
+                    if resp.status == 200:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(resp.read())
+                        fetched += 1
+            except Exception:  # nosec B110 — 404s and timeouts are expected
+                pass
+    return fetched
+
+
 def embed_cached_integration_docs(
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",

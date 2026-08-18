@@ -57,6 +57,14 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
 
 _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
+_HA_SOURCE_RAW_URL = (
+    "https://raw.githubusercontent.com/home-assistant/core/dev"
+    "/homeassistant/components/{domain}/{filename}"
+)
+_HA_DOCS_ALLOWED_FILENAMES: frozenset[str] = frozenset(
+    {"__init__.py", "manifest.json", "config_flow.py", "const.py", "strings.json"}
+)
+
 # Files the agent may never patch autonomously — manual edit + security review required.
 _SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
     {
@@ -185,6 +193,10 @@ class ToolExecutor:
                 return await self._get_ha_profile()
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
+            if name == "fetch_ha_docs":
+                return await self._fetch_ha_docs(
+                    args.get("domain", ""), args.get("filename", "")
+                )
             if name == "read_source":
                 return await self._read_source(args.get("path", ""))
             if name == "propose_patch":
@@ -475,6 +487,94 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="read_source", success=False, output="", error=str(exc)
             )
+
+    async def _fetch_ha_docs(self, domain: str, filename: str) -> ToolResult:
+        """Return HA component source from cache; fetch live only in cloud/both mode."""
+        import re
+
+        # Validate filename — allowlist of known names + *.md
+        if filename not in _HA_DOCS_ALLOWED_FILENAMES and not re.fullmatch(
+            r"[A-Za-z0-9_\-]+\.md", filename
+        ):
+            return ToolResult(
+                tool_name="fetch_ha_docs",
+                success=False,
+                output="",
+                error=(
+                    f"Filename {filename!r} is not allowed. "
+                    "Allowed: __init__.py, manifest.json, config_flow.py, "
+                    "const.py, strings.json, or *.md"
+                ),
+            )
+
+        # Path-traversal guard on domain and filename
+        if "/" in domain or ".." in domain or "/" in filename or ".." in filename:
+            return ToolResult(
+                tool_name="fetch_ha_docs",
+                success=False,
+                output="",
+                error="Path traversal rejected",
+            )
+
+        cache_dir = Path(
+            getattr(_config_mod, "HA_SOURCE_CACHE_DIR", ".cache/ha_source/")
+        )
+        cache_path = cache_dir / domain / filename
+
+        if cache_path.exists():
+            try:
+                content = cache_path.read_text(encoding="utf-8")
+                return ToolResult(
+                    tool_name="fetch_ha_docs", success=True, output=content
+                )
+            except OSError as exc:
+                return ToolResult(
+                    tool_name="fetch_ha_docs",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+
+        provider = getattr(_config_mod, "LLM_PROVIDER", "local")
+        if provider == "local":
+            return ToolResult(
+                tool_name="fetch_ha_docs",
+                success=False,
+                output="",
+                error=(
+                    f"Cache miss for {domain}/{filename} and LLM_PROVIDER=local "
+                    "(no WAN allowed). Run rag-refresh to pre-populate, "
+                    "or use query_knowledge for available docs."
+                ),
+            )
+
+        # cloud or both — fetch live
+        import urllib.request
+
+        url = _HA_SOURCE_RAW_URL.format(domain=domain, filename=filename)
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "pueo-ha-lookup/1.0"}
+            )
+            with urllib.request.urlopen(  # nosec B310 — hardcoded GitHub raw URL
+                req, timeout=15
+            ) as resp:
+                raw = resp.read()
+        except Exception as exc:
+            return ToolResult(
+                tool_name="fetch_ha_docs",
+                success=False,
+                output="",
+                error=f"Fetch failed for {domain}/{filename}: {exc}",
+            )
+
+        text = raw.decode("utf-8", errors="replace")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cache_path.write_text(text, encoding="utf-8")
+        except OSError:
+            pass  # cache write failure is non-fatal
+        return ToolResult(tool_name="fetch_ha_docs", success=True, output=text)
 
     async def _propose_patch(self, path: str, content: str) -> ToolResult:
         result = self._resolve_repo_path(path)

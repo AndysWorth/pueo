@@ -116,6 +116,7 @@ RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
 RAG_HA_VERSIONS_TO_FETCH: int = int(_agent.get("rag_ha_versions_to_fetch", 12))
 RAG_HACS_CACHE_DIR: str = _agent.get("rag_hacs_cache_dir", ".cache/hacs_changelogs/")
 RAG_HA_DOCS_CACHE_DIR: str = _agent.get("rag_ha_docs_cache_dir", ".cache/ha_docs/")
+HA_SOURCE_CACHE_DIR: str = _agent.get("ha_source_cache_dir", ".cache/ha_source/")
 
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 30))

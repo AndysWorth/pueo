@@ -525,6 +525,35 @@ OPEN_PR = ToolDefinition(
     },
 )
 
+FETCH_HA_DOCS = ToolDefinition(
+    name="fetch_ha_docs",
+    description=(
+        "Fetch a Home Assistant component source file from the local cache "
+        "(or live from GitHub in cloud/both mode). "
+        "Allowed filenames: __init__.py, manifest.json, config_flow.py, const.py, "
+        "strings.json, and any *.md file. "
+        "Use this to look up a component's actual implementation when the knowledge "
+        "base doesn't have enough detail (e.g. valid config key values in const.py)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "HA integration domain (e.g. 'zha', 'mqtt', 'hue')",
+            },
+            "filename": {
+                "type": "string",
+                "description": (
+                    "File to fetch: __init__.py, manifest.json, config_flow.py, "
+                    "const.py, strings.json, or a *.md filename"
+                ),
+            },
+        },
+        "required": ["domain", "filename"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
@@ -570,6 +599,8 @@ def build_ha_tool_registry() -> ToolRegistry:
         VERIFY_FIX,
         FINISH_REPAIR,
         QUERY_KNOWLEDGE,
+        READ_SOURCE,
+        FETCH_HA_DOCS,
     ):
         reg.register(tool)
     return reg
@@ -604,6 +635,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
         FINISH_REPAIR,
+        READ_SOURCE,
     ):
         reg.register(tool)
     return reg
@@ -629,6 +661,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_HA_PROFILE,
         GET_DISK_USAGE,
         READ_SOURCE,
+        FETCH_HA_DOCS,
         PROPOSE_PATCH,
         SANDBOX_CODE,
         ADD_TOOL,

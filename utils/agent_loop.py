@@ -94,6 +94,10 @@ MANDATORY RULES — follow exactly:
 5. If no fix is needed, call finish_repair with action_taken='no_fix_needed'.
 
 TYPICAL FLOW: read_config / read_logs → (apply_fix if broken) → finish_repair
+
+SELF-KNOWLEDGE: Call read_source("utils/tool_registry.py") when uncertain which tools are \
+available. Call fetch_ha_docs(domain, filename) to look up HA component source \
+(e.g. const.py for valid config values) when the knowledge base is insufficient.
 """
 
 _CHAT_SYSTEM_PROMPT = """\
