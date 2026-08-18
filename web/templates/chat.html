@@ -183,6 +183,10 @@
     padding: 0;
   }
 
+  /* Tool-history rows: hidden by default; shown when thread has .show-tools */
+  .tool-history { display: none; }
+  #message-thread.show-tools .tool-history { display: flex; }
+
   .thread-empty {
     color: #bbb;
     text-align: center;
@@ -253,6 +257,19 @@
   }
   #btn-send:hover { background: #1557b0; }
   #btn-send:disabled { background: #9ab4d8; cursor: default; }
+  #btn-tools {
+    align-self: flex-end;
+    padding: 0.5rem 0.75rem;
+    background: none;
+    color: #666;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #btn-tools:hover { background: #f5f5f5; }
+  #btn-tools.active { color: #6366f1; border-color: #6366f1; }
 
   @media (max-width: 600px) {
     .chat-layout { flex-direction: column; height: auto; }
@@ -304,6 +321,7 @@
       <textarea id="chat-input" rows="1" placeholder="Ask Pueo anything…"
                 onkeydown="handleKey(event)"></textarea>
       <button id="btn-send" onclick="sendMessage()">Send</button>
+      <button id="btn-tools" onclick="toggleToolCalls()" title="Show or hide tool calls in session history">Tool calls</button>
     </div>
   </div>
 </div>
@@ -313,6 +331,8 @@
   let _eventSource = null;
   let _thinkingEl = null;
   let _pendingSteps = []; // live trace cards awaiting resolution
+  let _lastHistoryTraceCard = null; // history pairing: assistant call → tool result
+  let _showToolCalls = false;
 
   // ── Session list ────────────────────────────────────────────────────────────
 
@@ -364,6 +384,7 @@
     thread.appendChild(ph);
     _thinkingEl = null;
     _pendingSteps = [];
+    _lastHistoryTraceCard = null;
   }
 
   async function fetchMessages(sid) {
@@ -381,30 +402,32 @@
   }
 
   function appendMessage(role, content, ts, toolCallsJson) {
-    if (role === 'tool') return; // raw tool results not shown in UI
+    // Intermediate tool-call rows (assistant, no content, object-format tool_calls_json)
+    if (role === 'assistant' && toolCallsJson && !content) {
+      let calls;
+      try { calls = JSON.parse(toolCallsJson); } catch { calls = null; }
+      if (calls && calls.length && calls[0] && typeof calls[0] === 'object') {
+        calls.forEach(c => {
+          _lastHistoryTraceCard = _createHistoryTraceCard(
+            c.name || '', _jsArgsPreview(c.arguments || {})
+          );
+        });
+        return;
+      }
+    }
+
+    // Tool-result rows — pair output into the preceding history trace card
+    if (role === 'tool') {
+      if (_lastHistoryTraceCard) _appendOutputToHistoryCard(_lastHistoryTraceCard, content);
+      _lastHistoryTraceCard = null;
+      return;
+    }
+
+    // Normal user / final assistant message
+    _lastHistoryTraceCard = null;
     const thread = document.getElementById('message-thread');
     const row = document.createElement('div');
     row.className = 'msg-row ' + (role === 'user' ? 'user' : 'assistant');
-
-    // Tool trace (collapsible) for assistant messages that called tools
-    if (role === 'assistant' && toolCallsJson) {
-      let calls;
-      try { calls = JSON.parse(toolCallsJson); } catch { calls = null; }
-      if (calls && calls.length) {
-        const det = document.createElement('details');
-        det.className = 'tool-trace';
-        const sum = document.createElement('summary');
-        sum.textContent = calls.length + ' tool call' + (calls.length > 1 ? 's' : '');
-        det.appendChild(sum);
-        calls.forEach(c => {
-          const p = document.createElement('div');
-          p.style.cssText = 'padding:0.15rem 0.4rem;';
-          p.textContent = '→ ' + c;
-          det.appendChild(p);
-        });
-        row.appendChild(det);
-      }
-    }
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
@@ -509,6 +532,72 @@
     }
 
     scrollThread();
+  }
+
+  // ── History trace helpers ────────────────────────────────────────────────────
+
+  const _REDACTED_KEYS = ['key', 'token', 'password', 'secret', 'credential'];
+
+  function _jsArgsPreview(args) {
+    if (!args || typeof args !== 'object') return '';
+    const parts = Object.entries(args).map(([k, v]) => {
+      if (_REDACTED_KEYS.some(r => k.toLowerCase().includes(r))) return k + '=***';
+      return k + '=' + String(v).slice(0, 40);
+    });
+    const preview = parts.join(', ');
+    return preview.length > 120 ? preview.slice(0, 120) : preview;
+  }
+
+  function _createHistoryTraceCard(tool, argsPreview) {
+    const thread = document.getElementById('message-thread');
+    const card = document.createElement('div');
+    card.className = 'tool-trace-card tool-history';
+
+    const header = document.createElement('div');
+    header.className = 'tc-header';
+
+    const badge = document.createElement('span');
+    badge.className = 'tc-badge ok';
+    badge.textContent = '✓';
+
+    const name = document.createElement('span');
+    name.className = 'tc-name';
+    name.textContent = tool;
+
+    header.appendChild(badge);
+    header.appendChild(name);
+
+    if (argsPreview) {
+      const args = document.createElement('span');
+      args.className = 'tc-args';
+      args.textContent = argsPreview;
+      header.appendChild(args);
+    }
+
+    card.appendChild(header);
+    thread.appendChild(card);
+    return card;
+  }
+
+  function _appendOutputToHistoryCard(card, output) {
+    if (!output) return;
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = 'Output';
+    const pre = document.createElement('pre');
+    pre.textContent = output;
+    det.appendChild(sum);
+    det.appendChild(pre);
+    card.appendChild(det);
+  }
+
+  function toggleToolCalls() {
+    _showToolCalls = !_showToolCalls;
+    const thread = document.getElementById('message-thread');
+    thread.classList.toggle('show-tools', _showToolCalls);
+    const btn = document.getElementById('btn-tools');
+    btn.classList.toggle('active', _showToolCalls);
+    btn.title = _showToolCalls ? 'Hide tool calls' : 'Show tool calls in session history';
   }
 
   // ── SSE ──────────────────────────────────────────────────────────────────────

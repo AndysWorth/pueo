@@ -2532,6 +2532,34 @@ async def _run_chat_loop(
                 summary = f"(Loop ended: {result.outcome})"
 
         with sqlite3.connect(DB_PATH) as conn:
+            for step in result.steps:
+                if step.tool_call.name == "finish_chat":
+                    continue
+                conn.execute(
+                    "INSERT INTO chat_messages"
+                    " (session_id, role, content, tool_calls_json, ts)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        session_id,
+                        "assistant",
+                        "",
+                        json.dumps(
+                            [
+                                {
+                                    "name": step.tool_call.name,
+                                    "arguments": step.tool_call.arguments,
+                                }
+                            ]
+                        ),
+                        step.timestamp,
+                    ),
+                )
+                output = (step.tool_result.output or step.tool_result.error or "")[:500]
+                conn.execute(
+                    "INSERT INTO chat_messages (session_id, role, content, ts)"
+                    " VALUES (?, ?, ?, ?)",
+                    (session_id, "tool", output, step.timestamp + 0.0005),
+                )
             conn.execute(
                 "INSERT INTO chat_messages (session_id, role, content, ts)"
                 " VALUES (?, ?, ?, ?)",
