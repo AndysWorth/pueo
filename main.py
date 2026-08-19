@@ -425,7 +425,9 @@ async def supervisor_main(config_path: Path) -> None:
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
 
         async def _profile_refresh_loop() -> None:
-            assert _profile_ws is not None  # guaranteed by enclosing if cfg.HA_API_TOKEN
+            assert (
+                _profile_ws is not None
+            )  # guaranteed by enclosing if cfg.HA_API_TOKEN
             while True:
                 try:
                     _p = await build_environment_profile(
