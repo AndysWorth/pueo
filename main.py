@@ -568,7 +568,8 @@ async def supervisor_main(config_path: Path) -> None:
         import netalertx.installer as _nax_installer
         from utils.autonomy import AutonomyGate
 
-        if _nax_installer.get_install_state(cfg.DB_PATH) != "FULLY_OPERATIONAL":
+        _NETALERTX_DONE_STATES = {"FULLY_OPERATIONAL", "DOCKER_MACOS_UNSUPPORTED"}
+        if _nax_installer.get_install_state(cfg.DB_PATH) not in _NETALERTX_DONE_STATES:
             _nax_gate = AutonomyGate(cfg.AUTONOMY_LEVEL)
             if cfg.NETALERTX_DEPLOY_TARGET == "docker":
                 import netalertx.docker_installer as _nax_docker_installer

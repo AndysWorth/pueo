@@ -213,6 +213,7 @@ async def _step1_verify_docker_ssh(
             risk=RiskLevel.CRITICAL,
         )
         log.error("step1_macos_host_unsupported", host=docker_host, correlation_id=cid)
+        _write_install_state(db_path, "DOCKER_MACOS_UNSUPPORTED", details, cid)
         return False
 
     _write_install_state(db_path, "DOCKER_SSH_VERIFIED", details, cid)
@@ -643,6 +644,14 @@ async def run_docker_installer(
     state, details = _read_install_state(db_path)
     log.info("docker_installer_resume", state=state, correlation_id=cid)
 
+    if state == "DOCKER_MACOS_UNSUPPORTED":
+        log.warning(
+            "docker_installer_skip_macos_terminal",
+            hint="Run netalertx-docker-uninstall to reset, then point NETALERTX_DOCKER_HOST at a Linux host.",
+            correlation_id=cid,
+        )
+        return state
+
     rank = _STATE_RANK.get(state, 0)
 
     if rank < _STATE_RANK["DOCKER_SSH_VERIFIED"]:
@@ -650,7 +659,7 @@ async def run_docker_installer(
             docker_ssh, gate, notifier, details, cid, db_path, docker_host
         )
         if not ok:
-            return state
+            return _read_install_state(db_path)[0]
         state = "DOCKER_SSH_VERIFIED"
 
     if rank < _STATE_RANK["DOCKER_DISK_CHECKED"]:
