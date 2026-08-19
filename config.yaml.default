@@ -125,6 +125,7 @@ agent:
   # rag_hacs_cache_dir: ".cache/hacs_changelogs/"  # Local cache for fetched HACS integration changelogs
   # rag_ha_docs_cache_dir: ".cache/ha_docs/"       # Local cache for fetched HA integration documentation
   # ha_source_cache_dir: ".cache/ha_source/"       # Local cache for HA component source files (fetch_ha_docs tool)
+  # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
   # federated_cases_repo: ""  # GitHub repo for community case library (e.g. "owner/pueo-cases"); enables episode submission and ingest
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
   # diagnostic_wan_timeout_seconds: 60  # Timeout for fetch_url calls (seconds)

@@ -96,6 +96,9 @@ class FakeKnowledgeStore:
         self._docs[collection] = [d for d in self._docs[collection] if d[0] in keep_ids]
         return before - len(self._docs[collection])
 
+    def total_count(self) -> int:
+        return sum(len(docs) for docs in self._docs.values())
+
 
 class ChromaKnowledgeStore:  # pragma: no cover
     """Production ChromaDB-backed knowledge store with Ollama embeddings."""
@@ -166,6 +169,9 @@ class ChromaKnowledgeStore:  # pragma: no cover
         if stale:
             col.delete(ids=stale)
         return len(stale)
+
+    def total_count(self) -> int:
+        return sum(col.count() for col in self._cols.values())
 
 
 async def embed_local_episode(

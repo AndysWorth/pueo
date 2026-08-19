@@ -1602,6 +1602,27 @@ class TestFakeKnowledgeStorePrune:
         assert removed == 0
 
 
+class TestFakeKnowledgeStoreTotalCount:
+    def test_empty_store_returns_zero(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert store.total_count() == 0
+
+    def test_counts_across_collections(self):
+        from utils.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert("ha_release_notes", ["a"], ["doc a"], [{"source": "a"}])
+        store.upsert(
+            "hacs_changelogs",
+            ["b", "c"],
+            ["doc b", "doc c"],
+            [{"source": "b"}, {"source": "c"}],
+        )
+        assert store.total_count() == 3
+
+
 # ── HA release notes scraper (item 50) ────────────────────────────────────────────
 
 

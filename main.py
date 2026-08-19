@@ -195,6 +195,36 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
         await asyncio.sleep(600)
 
 
+async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
+    """Periodically scrape and embed RAG content (release notes, HACS, HA docs).
+
+    Runs immediately on startup when any collection is empty so a fresh install
+    populates ChromaDB without requiring a manual --mode rag-refresh invocation.
+    Subsequent runs fire every interval_hours (default 168 = weekly).
+    """
+    from utils.logging import get_logger as _gl
+
+    _log = _gl("main")
+
+    # Run immediately if any primary collection is empty.
+    if knowledge_store.total_count() == 0:
+        _log.info("rag_refresh_start", reason="collections_empty")
+        try:
+            await asyncio.to_thread(run_rag_refresh, knowledge_store)
+            _log.info("rag_refresh_done")
+        except Exception as exc:  # pragma: no cover  # nosec B110
+            _log.warning("rag_refresh_failed", error=str(exc))
+
+    while True:
+        await asyncio.sleep(interval_hours * 3600)
+        _log.info("rag_refresh_start", reason="scheduled")
+        try:
+            await asyncio.to_thread(run_rag_refresh, knowledge_store)
+            _log.info("rag_refresh_done")
+        except Exception as exc:  # pragma: no cover  # nosec B110
+            _log.warning("rag_refresh_failed", error=str(exc))
+
+
 async def _known_issues_poll_loop(
     db_path: str, reminder_days: int, notifier: Any
 ) -> None:
@@ -461,6 +491,10 @@ async def supervisor_main(config_path: Path) -> None:
         supervisor.start(
             "embed_episodes",
             lambda: _embed_episodes_loop(cfg.DB_PATH, knowledge_store),
+        )
+        supervisor.start(
+            "rag_refresh",
+            lambda: _rag_refresh_loop(knowledge_store, cfg.RAG_REFRESH_INTERVAL_HOURS),
         )
 
     # Per-path disk usage polling loop
