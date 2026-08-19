@@ -13,6 +13,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -2389,6 +2390,91 @@ async def delete_chat_session(session_id: int) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return JSONResponse({}, status_code=204)
+
+
+@app.get("/chat/sessions/{session_id}/debug-log")
+async def chat_debug_log(session_id: int) -> Response:
+    """Download a plain-text reconstruction of a chat session for debugging."""
+    from utils.prompts import load_prompt
+
+    try:
+        system_prompt = load_prompt("agent_loop_chat")
+    except Exception:
+        system_prompt = "(could not load system prompt)"
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            session = conn.execute(
+                "SELECT id, title, created_at FROM chat_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            messages = conn.execute(
+                "SELECT role, content, tool_calls_json, ts"
+                " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            ).fetchall()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    lines: list[str] = []
+    lines.append("=== PUEO CHAT DEBUG LOG ===")
+    lines.append(f"Session: {session_id}")
+    lines.append(f"Title: {session['title'] or '(untitled)'}")
+    created = session["created_at"]
+    if created:
+        lines.append(
+            f"Created: {datetime.fromtimestamp(created).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+    lines.append("=== SYSTEM PROMPT ===")
+    lines.append(system_prompt)
+
+    lines.append("")
+    lines.append("=== CONVERSATION ===")
+
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"] or ""
+        tool_calls_json = msg["tool_calls_json"]
+        ts = msg["ts"]
+        timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
+        lines.append("")
+
+        if role == "user":
+            lines.append(f"[User] {timestamp}")
+            lines.append(content)
+        elif role == "assistant" and tool_calls_json and not content:
+            try:
+                calls = json.loads(tool_calls_json)
+                for call in calls:
+                    name = call.get("name", "?")
+                    args = call.get("arguments", {})
+                    lines.append(f"[Tool call] {name}  {timestamp}")
+                    lines.append(
+                        json.dumps(args, indent=2) if args else "(no arguments)"
+                    )
+            except Exception:
+                lines.append(f"[Tool call – parse error] {tool_calls_json}")
+        elif role == "tool":
+            lines.append("[Tool result]")
+            lines.append(content)
+        elif role == "assistant" and content:
+            lines.append(f"[Assistant] {timestamp}")
+            lines.append(content)
+
+    text = "\n".join(lines) + "\n"
+    filename = f"pueo-chat-{session_id}-debug.txt"
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/chat/events")
