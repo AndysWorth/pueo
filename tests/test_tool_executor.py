@@ -444,3 +444,30 @@ class TestInvestigateDevice:
 
         reg = build_ha_tool_registry()
         assert "investigate_device" not in reg
+
+    def test_netalertx_api_client_forwarded_to_enrich(self):
+        """netalertx_api_client passed at construction must reach enrich_http_login."""
+        from unittest.mock import MagicMock
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+
+        nax_api = MagicMock()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            netalertx_api_client=nax_api,
+        )
+
+        with patch(
+            "ha_notification_manager.enrich_http_login",
+            new=AsyncMock(return_value=self._ENRICHED),
+        ) as mock_enrich:
+            asyncio.run(executor._investigate_device("192.168.1.42"))
+
+        _, kwargs = mock_enrich.call_args
+        assert kwargs["netalertx_client"] is nax_api
