@@ -649,6 +649,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         READ_SOURCE,
         FETCH_HA_DOCS,
         FETCH_URL,
+        INVESTIGATE_DEVICE,
     ):
         reg.register(tool)
     return reg
@@ -683,8 +684,10 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
         FINISH_REPAIR,
+        QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_URL,
+        INVESTIGATE_DEVICE,
     ):
         reg.register(tool)
     return reg

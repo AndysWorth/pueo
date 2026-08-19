@@ -439,11 +439,11 @@ class TestInvestigateDevice:
         reg = build_chat_tool_registry()
         assert "investigate_device" in reg
 
-    def test_investigate_device_not_in_ha_repair_registry(self):
+    def test_investigate_device_in_ha_repair_registry(self):
         from utils.tool_registry import build_ha_tool_registry
 
         reg = build_ha_tool_registry()
-        assert "investigate_device" not in reg
+        assert "investigate_device" in reg
 
     def test_netalertx_api_client_forwarded_to_enrich(self):
         """netalertx_api_client passed at construction must reach enrich_http_login."""
