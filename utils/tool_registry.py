@@ -628,7 +628,13 @@ REWRITE_NETALERTX_CONF = ToolDefinition(
 
 
 def build_ha_tool_registry() -> ToolRegistry:
-    """Standard HA repair registry: all tools except NetAlertX-specific ones."""
+    """HA repair registry.
+
+    QUERY_NETALERTX is intentionally excluded: the sandbox engine executor
+    is not constructed with a NetAlertX API client, so the tool would always
+    return an error. The chat and NetAlertX registries include it where the
+    client is guaranteed to be present.
+    """
     reg = ToolRegistry()
     for tool in (
         READ_CONFIG,
@@ -636,7 +642,6 @@ def build_ha_tool_registry() -> ToolRegistry:
         RUN_HA_COMMAND,
         READ_FILE,
         TRIGGER_BACKUP,
-        QUERY_NETALERTX,
         APPLY_FIX,
         VERIFY_FIX,
         FINISH_REPAIR,
