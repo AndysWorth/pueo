@@ -721,6 +721,8 @@ def build_chat_tool_registry() -> ToolRegistry:
         SWITCH_MODEL,
         FETCH_URL,
         INVESTIGATE_DEVICE,
+        RESTART_NETALERTX,
+        REWRITE_NETALERTX_CONF,
         FINISH_CHAT,
     ):
         reg.register(tool)
