@@ -7859,7 +7859,7 @@ class TestDockerInstallerStateMachine:
                 docker_host="192.168.1.50",
             )
         )
-        assert state == "NOT_INSTALLED"
+        assert state == "DOCKER_MACOS_UNSUPPORTED"
         approval_calls = gate.require_approval_calls  # type: ignore[attr-defined]
         assert any("macOS" in c.get("subject", "") for c in approval_calls)
         assert any(
@@ -7867,6 +7867,32 @@ class TestDockerInstallerStateMachine:
             for c in approval_calls
             if "macOS" in c.get("subject", "")
         )
+
+    def test_step1_macos_terminal_state_prevents_rerun(self, tmp_path, monkeypatch):
+        """Second call skips SSH entirely when state is DOCKER_MACOS_UNSUPPORTED."""
+        from utils.ssh_client import FakeSSHClient
+        from netalertx.docker_installer import run_docker_installer
+
+        monkeypatch.setattr(
+            "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
+        )
+        db = _make_docker_installer_db(
+            tmp_path, monkeypatch, state="DOCKER_MACOS_UNSUPPORTED"
+        )
+        # SSH client that would fail if actually called
+        ssh = FakeSSHClient(command_results={})
+        state = asyncio.run(
+            run_docker_installer(
+                docker_ssh=ssh,
+                ha_ssh=FakeSSHClient(),
+                gate=self._make_gate(approve=True),
+                notifier=self._notifier(approve=True),
+                db_path=db,
+                docker_host="192.168.1.50",
+            )
+        )
+        assert state == "DOCKER_MACOS_UNSUPPORTED"
+        assert ssh.commands_run == []
 
     def test_step1_fails_when_docker_unavailable(self, tmp_path, monkeypatch):
         """Abort when 'docker info' returns non-zero."""
