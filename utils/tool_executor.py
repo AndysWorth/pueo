@@ -62,6 +62,32 @@ _HA_SOURCE_RAW_URL = (
     "/homeassistant/components/{domain}/{filename}"
 )
 _MAX_HA_DOC_FETCH_CHARS: int = 16_000
+_MAX_FETCH_URL_CHARS: int = 8_000
+_PRIVATE_IP_BLOCKS: tuple[str, ...] = (
+    "10.",
+    "172.16.",
+    "172.17.",
+    "172.18.",
+    "172.19.",
+    "172.20.",
+    "172.21.",
+    "172.22.",
+    "172.23.",
+    "172.24.",
+    "172.25.",
+    "172.26.",
+    "172.27.",
+    "172.28.",
+    "172.29.",
+    "172.30.",
+    "172.31.",
+    "192.168.",
+    "127.",
+    "169.254.",
+    "::1",
+    "fc",
+    "fd",
+)
 
 # Files the agent may never patch autonomously — manual edit + security review required.
 _SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
@@ -195,6 +221,8 @@ class ToolExecutor:
                 return await self._fetch_ha_docs(
                     args.get("domain", ""), args.get("filename", "")
                 )
+            if name == "fetch_url":
+                return await self._fetch_url(args.get("url", ""))
             if name == "read_source":
                 return await self._read_source(args.get("path", ""))
             if name == "propose_patch":
@@ -554,6 +582,63 @@ class ToolExecutor:
         except OSError:
             pass  # cache write failure is non-fatal
         return ToolResult(tool_name="fetch_ha_docs", success=True, output=text)
+
+    async def _fetch_url(self, url: str) -> ToolResult:
+        """GET an external URL for diagnostic verification (read-only, private IPs blocked)."""
+        import urllib.parse
+        import urllib.request
+
+        allow_wan = getattr(_config_mod, "ALLOW_DIAGNOSTIC_WAN", True)
+        if not allow_wan:
+            return ToolResult(
+                tool_name="fetch_url",
+                success=False,
+                output="",
+                error="ALLOW_DIAGNOSTIC_WAN is disabled in config.",
+            )
+
+        if not url.startswith(("http://", "https://")):
+            return ToolResult(
+                tool_name="fetch_url",
+                success=False,
+                output="",
+                error="Only http:// and https:// URLs are allowed.",
+            )
+
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname or ""
+        if any(
+            hostname.startswith(block) for block in _PRIVATE_IP_BLOCKS
+        ) or hostname in (
+            "localhost",
+            "homeassistant.local",
+        ):
+            return ToolResult(
+                tool_name="fetch_url",
+                success=False,
+                output="",
+                error=f"Blocked: {hostname!r} resolves to a private/loopback address.",
+            )
+
+        timeout = int(getattr(_config_mod, "DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 60))
+        req = urllib.request.Request(url, headers={"User-Agent": "pueo-diagnostic/1.0"})
+        try:
+            raw = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(
+                    req, timeout=timeout
+                ).read(),  # nosec B310
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="fetch_url",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+        text = raw.decode("utf-8", errors="replace")[:_MAX_FETCH_URL_CHARS]
+        return ToolResult(tool_name="fetch_url", success=True, output=text)
 
     async def _propose_patch(self, path: str, content: str) -> ToolResult:
         result = self._resolve_repo_path(path)

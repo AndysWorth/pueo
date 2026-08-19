@@ -99,6 +99,8 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **HA live lookup**: `fetch_ha_docs(domain, filename)` fetches HA component source or docs from GitHub raw (`homeassistant/core/dev/homeassistant/components/{domain}/{filename}`). In `local` mode it serves from cache only — a cache miss raises `ToolError` and makes no network call. In `cloud`/`both` mode it fetches live and writes to cache. Cache lives at `HA_SOURCE_CACHE_DIR` (default `.cache/ha_source/`). The RAG refresh cycle pre-populates cache for all installed integrations. Allowed filenames: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file. See ADR 011.
 
+**Diagnostic WAN verification**: `fetch_url(url)` in `utils/tool_executor.py` is a read-only HTTP GET tool for verifying external service availability (e.g., confirming an API outage has resolved). Governed by `ALLOW_DIAGNOSTIC_WAN` (default true). Block list covers RFC-1918, loopback, and link-local ranges. Registered in all three agent registries. Never use it to POST data or call HA's own API — use `run_ha_command` or `HARestClientProtocol` for that. See ADR 016.
+
 ## Configuration
 
 `config.py` loads `config.yaml` at import time and exposes all settings as typed module-level constants with fallback defaults. Agent scripts are run-able directly without a `config.yaml` (defaults kick in); `main.py` is needed to point at a non-default config path.

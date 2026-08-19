@@ -167,6 +167,10 @@ CHAT_ALLOW_TOOL_REGISTRATION: bool = bool(
 HA_NOTIFICATION_ENRICH_AUTH_FAILURES: bool = bool(
     _agent.get("notification_enrich_auth_failures", True)
 )
+ALLOW_DIAGNOSTIC_WAN: bool = bool(_agent.get("allow_diagnostic_wan", True))
+DIAGNOSTIC_WAN_TIMEOUT_SECONDS: int = int(
+    _agent.get("diagnostic_wan_timeout_seconds", 60)
+)
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})

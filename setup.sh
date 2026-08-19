@@ -321,6 +321,11 @@ if $WRITE_CONFIG; then
     echo "  explicit approval before it is loaded, but the agent can still generate"
     echo "  arbitrary code. Leave disabled unless you understand the risk."
     ask "Allow chat agent to register new tools? (true/false)"  "false"  CHAT_ALLOW_TOOL_REGISTRATION
+    echo ""
+    echo "  Diagnostic WAN access lets Pueo verify external API availability during"
+    echo "  investigations (e.g., confirming a service outage has resolved)."
+    echo "  Uses HTTP GET only; private/loopback addresses are always blocked."
+    ask "Allow diagnostic WAN fetch (fetch_url tool)? (true/false)"  "true"  ALLOW_DIAGNOSTIC_WAN
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
@@ -524,6 +529,7 @@ agent:
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
+  allow_diagnostic_wan: ${ALLOW_DIAGNOSTIC_WAN}
   ha_profile_refresh_hours: 24        # How often to rebuild the HA environment profile (integrations, versions)
   notifier: "${NOTIFIER_TYPE}"
   notify_url: "${NOTIFY_URL}"
