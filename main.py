@@ -380,14 +380,8 @@ async def supervisor_main(config_path: Path) -> None:
     except Exception as exc:  # pragma: no cover
         _get_logger("main").warning("knowledge_store_init_failed", error=str(exc))
 
-    # Create WS and NetAlertX clients before executor construction so all clients
-    # are wired at __init__ time — no two-step injection (fixes ADR 017 parity gaps).
-    _profile_ws = None
-    if cfg.HA_API_TOKEN:
-        from utils.ha_ws_client import HAWebSocketClient
-
-        _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
-
+    # Wire NAX clients at construction time so chat tools (INVESTIGATE_DEVICE,
+    # RESTART_NETALERTX, etc.) receive the same clients as the automated pipeline.
     _nax_api = None
     _nax_ssh = None
     if cfg.NETALERTX_HOST:
@@ -407,7 +401,6 @@ async def supervisor_main(config_path: Path) -> None:
         notifier=notifier,
         db_path=cfg.DB_PATH,
         knowledge_store=knowledge_store,
-        ha_ws_client=_profile_ws,
         netalertx_api_client=_nax_api,
         nax_ssh_client=_nax_ssh,
         netalertx_container_name=cfg.NETALERTX_LOG_CONTAINER_NAME,
@@ -421,13 +414,13 @@ async def supervisor_main(config_path: Path) -> None:
             build_environment_profile,
             save_environment_profile,
         )
+        from utils.ha_ws_client import HAWebSocketClient
 
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
+        _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
+        _shared_executor.set_ws_client(_profile_ws)
 
         async def _profile_refresh_loop() -> None:
-            assert (
-                _profile_ws is not None
-            )  # guaranteed by enclosing if cfg.HA_API_TOKEN
             while True:
                 try:
                     _p = await build_environment_profile(
