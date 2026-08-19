@@ -8404,13 +8404,14 @@ class TestToolRegistrySchemas:
             "read_logs",
             "run_ha_command",
             "read_file",
-            "query_netalertx",
             "apply_fix",
             "verify_fix",
             "finish_repair",
             "query_knowledge",
         ):
             assert name in reg, f"Missing tool: {name}"
+        # QUERY_NETALERTX is intentionally absent — sandbox engine has no NAX client.
+        assert "query_netalertx" not in reg
 
     def test_build_netalertx_tool_registry_has_netalertx_tools(self):
         from utils.tool_registry import build_netalertx_tool_registry

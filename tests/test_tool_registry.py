@@ -73,3 +73,8 @@ class TestRegistryMembership:
     def test_chat_registry_includes_fetch_ha_docs(self):
         reg = build_chat_tool_registry()
         assert "fetch_ha_docs" in reg
+
+    def test_ha_registry_excludes_query_netalertx(self):
+        # Sandbox engine executor has no NAX client; the tool would always error.
+        reg = build_ha_tool_registry()
+        assert "query_netalertx" not in reg
