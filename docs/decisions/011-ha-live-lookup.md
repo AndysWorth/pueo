@@ -22,7 +22,7 @@ Add a `fetch_ha_docs(domain, filename)` tool that gives the agent on-demand acce
 
 ### Tool contract
 - **Input**: `domain` (e.g. `"zha"`, `"mqtt"`) and `filename` (e.g. `"__init__.py"`, `"manifest.json"`, `"const.py"`)
-- **Allowed filenames**: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file — no path traversal, no arbitrary filenames
+- **Allowed filenames**: any filename that does not contain `/` or `..`; responses are truncated to 16,000 characters. The URL structure itself (public GitHub raw endpoint for `home-assistant/core`) is the security boundary; path-traversal guards on domain and filename enforce it. An explicit filename allowlist provided no additional security but blocked the most useful files (`sensor.py`, `switch.py`, etc.) and was removed.
 - **Source URL pattern**: `https://raw.githubusercontent.com/home-assistant/core/dev/homeassistant/components/{domain}/{filename}`
 - **Cache path**: `{HA_SOURCE_CACHE_DIR}/{domain}/{filename}` (default `.cache/ha_source/`)
 - **WAN gate**: In `LLM_PROVIDER=local` mode, only serve from cache. On a cache miss, return a `ToolError` directing the agent to use `query_knowledge` instead. Never make a network call. In `cloud` or `both` mode, fetch live on a cache miss, write the result to cache, and return the content.
@@ -46,7 +46,7 @@ Fetching from `raw.githubusercontent.com` (not a live HA API) means the tool has
 
 ## Consequences
 - New tool `fetch_ha_docs` in `utils/tool_executor.py` (`_fetch_ha_docs` method) and `ToolDefinition FETCH_HA_DOCS` in `utils/tool_registry.py`
-- `ha_docs_scraper.py` extended to pre-fetch `__init__.py`, `manifest.json`, `const.py` for installed integrations
+- `ha_docs_scraper.py` extended to pre-fetch `__init__.py`, `manifest.json`, `const.py`, `sensor.py`, `binary_sensor.py`, `switch.py`, `light.py`, `cover.py`, `climate.py`, `media_player.py`, `number.py`, `select.py` for installed integrations (404s silently skipped)
 - `config.py`, `config.yaml.default`, `setup.sh` gain `HA_SOURCE_CACHE_DIR`
 - Three registry factory functions each gain one line
 - `_AGENT_LOOP_SYSTEM_PROMPT` gains a 2-line note about `fetch_ha_docs`

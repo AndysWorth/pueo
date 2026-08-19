@@ -175,7 +175,20 @@ _HA_SOURCE_RAW_URL = (
     "https://raw.githubusercontent.com/home-assistant/core/dev"
     "/homeassistant/components/{domain}/{filename}"
 )
-_SOURCE_PREFETCH_FILENAMES = ("__init__.py", "manifest.json", "const.py")
+_SOURCE_PREFETCH_FILENAMES = (
+    "__init__.py",
+    "manifest.json",
+    "const.py",
+    "sensor.py",
+    "binary_sensor.py",
+    "switch.py",
+    "light.py",
+    "cover.py",
+    "climate.py",
+    "media_player.py",
+    "number.py",
+    "select.py",
+)
 
 
 def prefetch_installed_integration_sources(  # pragma: no cover
