@@ -13,6 +13,22 @@ _VALID_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 _PROPOSED_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
 
 
+class _FakeSyncResp:
+    """Minimal urllib response mock for urlopen patches."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
 class _CapturingFakeLLMClient:
     """Returns caller-supplied JSON; records all calls."""
 
@@ -160,7 +176,7 @@ class TestFetchHaDocs:
         *,
         provider: str = "local",
         cache: dict | None = None,
-        tmp_path=None
+        tmp_path=None,
     ):
         """Run _fetch_ha_docs with a temp cache dir and optional pre-seeded files."""
         import tempfile
@@ -225,3 +241,50 @@ class TestFetchHaDocs:
         assert (
             "traversal" in result.error.lower() or "not allowed" in result.error.lower()
         )
+
+
+class TestFetchUrl:
+    """Tests for ToolExecutor._fetch_url."""
+
+    def _run(self, url: str, *, allow_wan: bool = True):
+        with patch(
+            "utils.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
+        ), patch("utils.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 10):
+            executor = _make_executor()
+            return asyncio.run(executor._fetch_url(url))
+
+    def test_disallowed_when_config_false(self):
+        result = self._run("https://example.com", allow_wan=False)
+        assert result.success is False
+        assert "ALLOW_DIAGNOSTIC_WAN" in result.error
+
+    def test_private_ip_blocked(self):
+        result = self._run("http://192.168.1.1/test")
+        assert result.success is False
+        assert "Blocked" in result.error
+
+    def test_loopback_blocked(self):
+        result = self._run("http://127.0.0.1/test")
+        assert result.success is False
+        assert "Blocked" in result.error
+
+    def test_non_http_scheme_blocked(self):
+        result = self._run("ftp://example.com/file")
+        assert result.success is False
+        assert "Only http" in result.error
+
+    def test_successful_get(self):
+        fake_body = b"OK response body"
+        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(fake_body)):
+            result = self._run("https://example.com/api")
+        assert result.success is True
+        assert "OK response body" in result.output
+
+    def test_truncation(self):
+        big_body = ("x" * 10_000).encode()
+        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(big_body)):
+            result = self._run("https://example.com/api")
+        assert result.success is True
+        from utils.tool_executor import _MAX_FETCH_URL_CHARS
+
+        assert len(result.output) <= _MAX_FETCH_URL_CHARS

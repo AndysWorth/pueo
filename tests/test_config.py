@@ -1210,3 +1210,33 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.CASE_INGEST_CACHE_DIR == "/tmp/my_ingest/"
+
+    def test_allow_diagnostic_wan_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ALLOW_DIAGNOSTIC_WAN is True
+
+    def test_allow_diagnostic_wan_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"allow_diagnostic_wan": False}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ALLOW_DIAGNOSTIC_WAN is False
+
+    def test_diagnostic_wan_timeout_seconds_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DIAGNOSTIC_WAN_TIMEOUT_SECONDS == 60
+
+    def test_diagnostic_wan_timeout_seconds_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"diagnostic_wan_timeout_seconds": 30}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DIAGNOSTIC_WAN_TIMEOUT_SECONDS == 30

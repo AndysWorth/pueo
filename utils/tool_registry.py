@@ -554,6 +554,26 @@ FETCH_HA_DOCS = ToolDefinition(
     },
 )
 
+FETCH_URL = ToolDefinition(
+    name="fetch_url",
+    description=(
+        "Perform an HTTP GET to an external URL to verify a diagnosis or confirm that "
+        "an external service has recovered. GET only. Blocked for private/loopback "
+        "addresses. Response truncated at 8,000 characters. Requires "
+        "ALLOW_DIAGNOSTIC_WAN=true (default)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The URL to fetch (https:// or http://)",
+            },
+        },
+        "required": ["url"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
@@ -601,6 +621,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_HA_DOCS,
+        FETCH_URL,
     ):
         reg.register(tool)
     return reg
@@ -636,6 +657,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         REWRITE_NETALERTX_CONF,
         FINISH_REPAIR,
         READ_SOURCE,
+        FETCH_URL,
     ):
         reg.register(tool)
     return reg
@@ -667,6 +689,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         ADD_TOOL,
         OPEN_PR,
         SWITCH_MODEL,
+        FETCH_URL,
         FINISH_CHAT,
     ):
         reg.register(tool)
