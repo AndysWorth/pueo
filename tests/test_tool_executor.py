@@ -13,6 +13,22 @@ _VALID_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 _PROPOSED_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
 
 
+class _FakeSyncResp:
+    """Minimal urllib response mock for urlopen patches."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
 class _CapturingFakeLLMClient:
     """Returns caller-supplied JSON; records all calls."""
 
@@ -160,7 +176,7 @@ class TestFetchHaDocs:
         *,
         provider: str = "local",
         cache: dict | None = None,
-        tmp_path=None
+        tmp_path=None,
     ):
         """Run _fetch_ha_docs with a temp cache dir and optional pre-seeded files."""
         import tempfile
@@ -197,31 +213,31 @@ class TestFetchHaDocs:
     def test_cloud_mode_live_fetch(self):
         fake_content = b'{"domain": "zha", "name": "Zigbee Home Automation"}'
 
-        class _FakeResp:
-            status = 200
-
-            def read(self):
-                return fake_content
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                pass
-
-        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(fake_content)):
             result = self._run("zha", "manifest.json", provider="cloud")
         assert result.success is True
         assert "Zigbee" in result.output
 
-    def test_disallowed_filename_rejected(self):
-        result = self._run("zha", "secrets.yaml")
-        assert result.success is False
-        assert "not allowed" in result.error
+    def test_sensor_py_accessible(self):
+        # Previously blocked by allowlist — sensor.py should now be served from cache.
+        result = self._run(
+            "noaa_tides",
+            "sensor.py",
+            cache={"noaa_tides/sensor.py": "class NOAATidesSensor: pass"},
+        )
+        assert result.success is True
+        assert "NOAATidesSensor" in result.output
 
     def test_path_traversal_rejected(self):
         result = self._run("../../../etc", "passwd")
         assert result.success is False
-        assert (
-            "traversal" in result.error.lower() or "not allowed" in result.error.lower()
-        )
+        assert "traversal" in result.error.lower()
+
+    def test_large_response_truncated(self):
+        big_content = ("x" * 20_000).encode()
+        with patch("urllib.request.urlopen", return_value=_FakeSyncResp(big_content)):
+            result = self._run("zha", "sensor.py", provider="cloud")
+        assert result.success is True
+        from utils.tool_executor import _MAX_HA_DOC_FETCH_CHARS
+
+        assert len(result.output) <= _MAX_HA_DOC_FETCH_CHARS
