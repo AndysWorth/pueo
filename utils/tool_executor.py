@@ -26,6 +26,7 @@ from utils.tool_registry import ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from interfaces import (
+        HAWebSocketClientProtocol,
         KnowledgeStoreClientProtocol,
         LLMClientProtocol,
         SSHClientProtocol,
@@ -122,6 +123,7 @@ class ToolExecutor:
         nax_ssh_client: Optional["SSHClientProtocol"] = None,
         netalertx_api_client: Optional["NetAlertXAPIClient"] = None,
         netalertx_container_name: str = "netalertx",
+        ha_ws_client: Optional["HAWebSocketClientProtocol"] = None,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
         db_path: str = DB_PATH,
         llm_client: Optional["LLMClientProtocol"] = None,
@@ -132,6 +134,7 @@ class ToolExecutor:
         self._notifier = notifier
         self._api = netalertx_api_client
         self._container = netalertx_container_name
+        self._ws_client = ha_ws_client
         self._knowledge_store = knowledge_store
         self._db_path = db_path
         self._llm_client = llm_client
@@ -157,6 +160,12 @@ class ToolExecutor:
     def set_ha_profile(self, profile: "HAEnvironmentProfile") -> None:
         """Cache the HA environment profile so get_ha_profile tool can return it."""
         self._ha_profile = profile
+
+    def set_ws_client(self, client: "HAWebSocketClientProtocol") -> None:
+        """Inject the HA WebSocket client after construction (HA_API_TOKEN may not be
+        available at executor creation time). Called from main.py once the client exists.
+        """
+        self._ws_client = client
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -1161,7 +1170,7 @@ class ToolExecutor:
             context = await enrich_http_login(
                 ip,
                 netalertx_client=self._api,
-                ws_client=None,
+                ws_client=self._ws_client,
             )
             return ToolResult(
                 tool_name="investigate_device",

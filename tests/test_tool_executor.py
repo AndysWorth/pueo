@@ -360,6 +360,79 @@ class TestInvestigateDevice:
         assert result.success is False
         assert "ARP failed" in result.error
 
+    def test_ws_client_passed_to_enrich_enables_ha_device_registry(self):
+        """ToolExecutor must forward its ws_client so the HA device registry step fires."""
+        import asyncio
+        import json
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+
+        ws = FakeHAWebSocketClient(
+            devices=[
+                {
+                    "id": "device_abc",
+                    "name": "My Phone",
+                    "name_by_user": "My Phone",
+                    "connections": [["ip", "192.168.1.42"]],
+                }
+            ]
+        )
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            ha_ws_client=ws,
+        )
+
+        enriched = dict(self._ENRICHED)
+        enriched["ha_device_name"] = "My Phone"
+        with patch(
+            "ha_notification_manager.enrich_http_login",
+            new=AsyncMock(return_value=enriched),
+        ) as mock_enrich:
+            result = asyncio.run(executor._investigate_device("192.168.1.42"))
+
+        assert result.success is True
+        data = json.loads(result.output)
+        assert data["ha_device_name"] == "My Phone"
+        _, kwargs = mock_enrich.call_args
+        assert kwargs["ws_client"] is ws
+
+    def test_set_ws_client_injects_after_construction(self):
+        """set_ws_client() deferred injection works the same as constructor injection."""
+        import asyncio
+
+        from utils.autonomy import FakeAutonomyGate
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.notify import FakeNotifier
+        from utils.ssh_client import FakeSSHClient
+        from utils.tool_executor import ToolExecutor
+
+        ws = FakeHAWebSocketClient()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        assert executor._ws_client is None
+        executor.set_ws_client(ws)
+        assert executor._ws_client is ws
+
+        with patch(
+            "ha_notification_manager.enrich_http_login",
+            new=AsyncMock(return_value=self._ENRICHED),
+        ) as mock_enrich:
+            asyncio.run(executor._investigate_device("192.168.1.1"))
+
+        _, kwargs = mock_enrich.call_args
+        assert kwargs["ws_client"] is ws
+
     def test_investigate_device_in_chat_registry(self):
         from utils.tool_registry import build_chat_tool_registry
 
