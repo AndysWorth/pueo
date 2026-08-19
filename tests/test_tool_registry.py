@@ -70,6 +70,15 @@ class TestRegistryMembership:
         reg = build_netalertx_tool_registry()
         assert "read_source" in reg
 
+    def test_ha_registry_includes_investigate_device(self):
+        reg = build_ha_tool_registry()
+        assert "investigate_device" in reg
+
+    def test_netalertx_registry_includes_investigate_device_and_query_knowledge(self):
+        reg = build_netalertx_tool_registry()
+        assert "investigate_device" in reg
+        assert "query_knowledge" in reg
+
     def test_chat_registry_includes_fetch_ha_docs(self):
         reg = build_chat_tool_registry()
         assert "fetch_ha_docs" in reg
