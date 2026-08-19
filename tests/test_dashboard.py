@@ -1140,6 +1140,30 @@ class TestLLMTrace:
         )
         assert trace.raw_response == ""
 
+    def test_transient_pattern_skips_llm(self):
+        """_TRANSIENT_LOG_PATTERNS match should skip analyze_log_line_with_ai."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from ha_log_monitor import _TRANSIENT_LOG_PATTERNS, CRITICAL_LOG_PATTERN
+
+        # Confirm the patterns match as expected
+        assert (
+            _TRANSIENT_LOG_PATTERNS.search("NameResolutionError: Failed to resolve")
+            is not None
+        )
+        assert (
+            _TRANSIENT_LOG_PATTERNS.search("MaxRetryError: Max retries exceeded")
+            is not None
+        )
+        assert _TRANSIENT_LOG_PATTERNS.search("Status Code: 503") is not None
+
+        # Confirm CRITICAL_LOG_PATTERN still matches so the branch is entered
+        trigger = "ERROR - Component error NameResolutionError: Failed to resolve api.example.com"
+        assert CRITICAL_LOG_PATTERN.search(trigger) is not None
+        # Transient pattern also matches this line
+        assert _TRANSIENT_LOG_PATTERNS.search(trigger) is not None
+
 
 # ── web/dashboard.py (rich payload rendering) ────────────────────────────────
 

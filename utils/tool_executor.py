@@ -61,9 +61,7 @@ _HA_SOURCE_RAW_URL = (
     "https://raw.githubusercontent.com/home-assistant/core/dev"
     "/homeassistant/components/{domain}/{filename}"
 )
-_HA_DOCS_ALLOWED_FILENAMES: frozenset[str] = frozenset(
-    {"__init__.py", "manifest.json", "config_flow.py", "const.py", "strings.json"}
-)
+_MAX_HA_DOC_FETCH_CHARS: int = 16_000
 _MAX_FETCH_URL_CHARS: int = 8_000
 _PRIVATE_IP_BLOCKS: tuple[str, ...] = (
     "10.",
@@ -518,23 +516,6 @@ class ToolExecutor:
 
     async def _fetch_ha_docs(self, domain: str, filename: str) -> ToolResult:
         """Return HA component source from cache; fetch live only in cloud/both mode."""
-        import re
-
-        # Validate filename — allowlist of known names + *.md
-        if filename not in _HA_DOCS_ALLOWED_FILENAMES and not re.fullmatch(
-            r"[A-Za-z0-9_\-]+\.md", filename
-        ):
-            return ToolResult(
-                tool_name="fetch_ha_docs",
-                success=False,
-                output="",
-                error=(
-                    f"Filename {filename!r} is not allowed. "
-                    "Allowed: __init__.py, manifest.json, config_flow.py, "
-                    "const.py, strings.json, or *.md"
-                ),
-            )
-
         # Path-traversal guard on domain and filename
         if "/" in domain or ".." in domain or "/" in filename or ".." in filename:
             return ToolResult(
@@ -580,14 +561,12 @@ class ToolExecutor:
         import urllib.request
 
         url = _HA_SOURCE_RAW_URL.format(domain=domain, filename=filename)
+        req = urllib.request.Request(url, headers={"User-Agent": "pueo-ha-lookup/1.0"})
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "pueo-ha-lookup/1.0"}
+            raw = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(req, timeout=60).read(),  # nosec B310
             )
-            with urllib.request.urlopen(  # nosec B310 — hardcoded GitHub raw URL
-                req, timeout=15
-            ) as resp:
-                raw = resp.read()
         except Exception as exc:
             return ToolResult(
                 tool_name="fetch_ha_docs",
@@ -596,7 +575,7 @@ class ToolExecutor:
                 error=f"Fetch failed for {domain}/{filename}: {exc}",
             )
 
-        text = raw.decode("utf-8", errors="replace")
+        text = raw.decode("utf-8", errors="replace")[:_MAX_HA_DOC_FETCH_CHARS]
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             cache_path.write_text(text, encoding="utf-8")
