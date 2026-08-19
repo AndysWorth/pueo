@@ -953,6 +953,21 @@ class TestHAUpdateManagerConfig:
 
         assert config.HA_REPAIR_POLL_INTERVAL_MINUTES == 10.0
 
+    def test_ha_lovelace_check_interval_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_LOVELACE_CHECK_INTERVAL_MINUTES == 30
+
+    def test_ha_lovelace_check_interval_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"lovelace_check_interval_minutes": 60}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_LOVELACE_CHECK_INTERVAL_MINUTES == 60
+
     def test_ha_profile_refresh_hours_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

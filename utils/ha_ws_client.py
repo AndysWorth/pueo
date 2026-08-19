@@ -85,6 +85,18 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def get_entity_registry(self) -> list[dict]:
+        """Fetch all entities via HA WebSocket config/entity_registry/list."""
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"Entity registry request failed: {msg}")
+            return msg.get("result", [])
+        finally:
+            await ws.close()
+
 
 class FakeHAWebSocketClient:
     """Test double for HAWebSocketClientProtocol."""
@@ -95,11 +107,13 @@ class FakeHAWebSocketClient:
         notifications: list[dict] | None = None,
         repair_issues: list[dict] | None = None,
         config_entries: list[dict] | None = None,
+        entity_registry: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
         self._repair_issues: list[dict] = repair_issues or []
         self._config_entries: list[dict] = config_entries or []
+        self._entity_registry: list[dict] = entity_registry or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -117,3 +131,7 @@ class FakeHAWebSocketClient:
     async def get_config_entries(self) -> list[dict]:
         self.calls.append("get_config_entries")
         return [e for e in self._config_entries if e.get("state") == "loaded"]
+
+    async def get_entity_registry(self) -> list[dict]:
+        self.calls.append("get_entity_registry")
+        return list(self._entity_registry)

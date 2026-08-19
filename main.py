@@ -543,6 +543,15 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: poll_for_repairs(notifier=notifier),
         )
 
+    # Lovelace dashboard entity health check (only if interval > 0 and token is configured)
+    if cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
+        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+
+        supervisor.start(
+            "lovelace_poll",
+            lambda: poll_for_dashboard_entity_issues(notifier=notifier),
+        )
+
     # Known Issues reminder loop — checks hourly for suppressed issues older than
     # KNOWN_ISSUE_REMINDER_DAYS and sends a one-shot reminder card for each.
     supervisor.start(
