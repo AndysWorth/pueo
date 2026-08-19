@@ -895,6 +895,21 @@ class TestHAUpdateManagerConfig:
 
         assert config.HA_SOURCE_CACHE_DIR == "/data/ha_source"
 
+    def test_rag_refresh_interval_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_REFRESH_INTERVAL_HOURS == 168
+
+    def test_rag_refresh_interval_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"rag_refresh_interval_hours": 24}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_REFRESH_INTERVAL_HOURS == 24
+
     def test_chat_memory_top_k_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
