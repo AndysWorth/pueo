@@ -380,12 +380,30 @@ async def supervisor_main(config_path: Path) -> None:
     except Exception as exc:  # pragma: no cover
         _get_logger("main").warning("knowledge_store_init_failed", error=str(exc))
 
+    # Wire NAX clients at construction time so chat tools (INVESTIGATE_DEVICE,
+    # RESTART_NETALERTX, etc.) receive the same clients as the automated pipeline.
+    _nax_api = None
+    _nax_ssh = None
+    if cfg.NETALERTX_HOST:
+        from netalertx.api_client import NetAlertXAPIClient
+
+        _nax_api = NetAlertXAPIClient(
+            f"http://{cfg.NETALERTX_HOST}:{cfg.NETALERTX_API_PORT}",
+            cfg.NETALERTX_API_TOKEN,
+        )
+        _nax_ssh = AsyncSSHClient(
+            cfg.NETALERTX_SSH_HOST, cfg.NETALERTX_SSH_USER, cfg.NETALERTX_SSH_KEY_PATH
+        )
+
     _shared_executor = ToolExecutor(
         ha_ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
         gate=AutonomyGate(cfg.AUTONOMY_LEVEL),
         notifier=notifier,
         db_path=cfg.DB_PATH,
         knowledge_store=knowledge_store,
+        netalertx_api_client=_nax_api,
+        nax_ssh_client=_nax_ssh,
+        netalertx_container_name=cfg.NETALERTX_LOG_CONTAINER_NAME,
     )
     supervisor._tool_executor = _shared_executor
     _load_registered_tools(_shared_executor, cfg.DB_PATH)
@@ -396,7 +414,6 @@ async def supervisor_main(config_path: Path) -> None:
             build_environment_profile,
             save_environment_profile,
         )
-        from utils.ha_rest_client import HARestClient
         from utils.ha_ws_client import HAWebSocketClient
 
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
