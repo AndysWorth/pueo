@@ -460,7 +460,7 @@ async def fetch_remote_config(
 def _extract_backup_slug(output: str) -> str:
     for line in output.split("\n"):
         if "slug:" in line.lower():
-            return line.split(":")[-1].strip()
+            return line.split(":")[-1].strip().strip('"')
     return "unknown_slug"
 
 
