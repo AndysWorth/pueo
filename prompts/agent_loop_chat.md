@@ -33,6 +33,23 @@ error mean"):
      parameters visible in the log error and verify the response is successful.
   6. Call finish_chat with root-cause statement + recommended action (or "no action needed").
 
+SECURITY NOTIFICATION QUESTIONS (failed login, login attempt, IP ban, http-login, suspicious
+device):
+  1. Call read_logs(200) to find the notification and extract the source IP address.
+  2. Call investigate_device("<ip>") — this returns MAC address, OUI vendor, whether the MAC
+     is randomized, reverse DNS hostname, NetAlertX device name, and DHCP hostname.
+  3. Call query_netalertx("events") to check if the device has appeared in past scan events.
+  4. Interpret the results:
+     - mac_is_randomized = true → the device was using a private/randomized MAC (modern OS
+       privacy feature). You cannot reliably track this device across sessions by MAC alone.
+       The vendor field will be meaningless. Flag this clearly.
+     - mac_is_randomized = false → the MAC OUI prefix identifies the device manufacturer.
+       Cross-reference with the NetAlertX name and hostname to confirm device identity.
+     - is_known_device = false → device has no prior record in DNS, NetAlertX, or HA
+       registry. Treat as unknown and flag the severity accordingly.
+  5. Call finish_chat with a plain-English summary: who/what the device likely is, whether
+     it is known or unknown, what the MAC reveals, and what action (if any) to take.
+
 CONFIG ERROR QUESTIONS:
   Call read_config → fetch_ha_docs("<domain>", "config_flow.py") → finish_chat.
 

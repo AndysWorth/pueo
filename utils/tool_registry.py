@@ -574,6 +574,28 @@ FETCH_URL = ToolDefinition(
     },
 )
 
+INVESTIGATE_DEVICE = ToolDefinition(
+    name="investigate_device",
+    description=(
+        "Enrich a source IP address with all available device context: "
+        "reverse DNS hostname, MAC address (from ARP table), OUI vendor name, "
+        "randomized-MAC flag, NetAlertX device name, HA device registry name, "
+        "and DHCP hostname from the gateway. "
+        "Use this when a user asks about a device that attempted to log in or "
+        "triggered a security notification."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ip": {
+                "type": "string",
+                "description": "IPv4 address to investigate (e.g. '192.168.1.42')",
+            },
+        },
+        "required": ["ip"],
+    },
+)
+
 # NetAlertX-specific tools used by the NetAlertX healer loop
 RESTART_NETALERTX = ToolDefinition(
     name="restart_netalertx",
@@ -690,6 +712,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         OPEN_PR,
         SWITCH_MODEL,
         FETCH_URL,
+        INVESTIGATE_DEVICE,
         FINISH_CHAT,
     ):
         reg.register(tool)

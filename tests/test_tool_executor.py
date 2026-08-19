@@ -288,3 +288,86 @@ class TestFetchUrl:
         from utils.tool_executor import _MAX_FETCH_URL_CHARS
 
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
+
+
+class TestInvestigateDevice:
+    """Tests for ToolExecutor._investigate_device."""
+
+    _ENRICHED = {
+        "source_ip": "192.168.1.42",
+        "hostname": "myphone.local",
+        "netalertx_name": "MyPhone",
+        "ha_device_name": None,
+        "is_known_device": True,
+        "mac_address": "aa:bb:cc:dd:ee:ff",
+        "mac_is_randomized": False,
+        "mac_vendor": "Apple, Inc.",
+        "dhcp_hostname": None,
+    }
+
+    def _run(self, ip: str, *, enriched: dict | None = None):
+        import asyncio
+
+        executor = _make_executor()
+        mock_result = enriched if enriched is not None else self._ENRICHED
+        with patch(
+            "ha_notification_manager.enrich_http_login",
+            new=AsyncMock(return_value=mock_result),
+        ):
+            return asyncio.run(executor._investigate_device(ip))
+
+    def test_valid_ip_returns_enriched_context(self):
+        result = self._run("192.168.1.42")
+        assert result.success is True
+        import json
+
+        data = json.loads(result.output)
+        assert data["mac_address"] == "aa:bb:cc:dd:ee:ff"
+        assert data["mac_vendor"] == "Apple, Inc."
+        assert data["is_known_device"] is True
+
+    def test_invalid_ip_returns_error(self):
+        result = self._run("not-an-ip")
+        assert result.success is False
+        assert "Invalid IP" in result.error
+
+    def test_empty_ip_returns_error(self):
+        result = self._run("")
+        assert result.success is False
+        assert "Invalid IP" in result.error
+
+    def test_randomized_mac_flag_propagated(self):
+        enriched = dict(self._ENRICHED)
+        enriched["mac_is_randomized"] = True
+        enriched["mac_vendor"] = None
+        result = self._run("192.168.1.42", enriched=enriched)
+        assert result.success is True
+        import json
+
+        data = json.loads(result.output)
+        assert data["mac_is_randomized"] is True
+        assert data["mac_vendor"] is None
+
+    def test_enrich_exception_returns_error(self):
+        import asyncio
+
+        executor = _make_executor()
+        with patch(
+            "ha_notification_manager.enrich_http_login",
+            new=AsyncMock(side_effect=RuntimeError("ARP failed")),
+        ):
+            result = asyncio.run(executor._investigate_device("192.168.1.1"))
+        assert result.success is False
+        assert "ARP failed" in result.error
+
+    def test_investigate_device_in_chat_registry(self):
+        from utils.tool_registry import build_chat_tool_registry
+
+        reg = build_chat_tool_registry()
+        assert "investigate_device" in reg
+
+    def test_investigate_device_not_in_ha_repair_registry(self):
+        from utils.tool_registry import build_ha_tool_registry
+
+        reg = build_ha_tool_registry()
+        assert "investigate_device" not in reg

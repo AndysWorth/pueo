@@ -244,6 +244,8 @@ class ToolExecutor:
                     args.get("reason", ""),
                     args.get("branch_name"),
                 )
+            if name == "investigate_device":
+                return await self._investigate_device(args.get("ip", ""))
             if name == "switch_model":
                 return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
@@ -1140,6 +1142,38 @@ class ToolExecutor:
         except Exception as exc:
             return ToolResult(
                 tool_name="query_netalertx", success=False, output="", error=str(exc)
+            )
+
+    async def _investigate_device(self, ip: str) -> ToolResult:
+        """Enrich an IP address with MAC, vendor, hostname, and NetAlertX context."""
+        import re
+
+        from ha_notification_manager import enrich_http_login
+
+        if not ip or not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+            return ToolResult(
+                tool_name="investigate_device",
+                success=False,
+                output="",
+                error=f"Invalid IP address: {ip!r}",
+            )
+        try:
+            context = await enrich_http_login(
+                ip,
+                netalertx_client=self._api,
+                ws_client=None,
+            )
+            return ToolResult(
+                tool_name="investigate_device",
+                success=True,
+                output=json.dumps(context, default=str),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="investigate_device",
+                success=False,
+                output="",
+                error=str(exc),
             )
 
     async def _switch_model(self, model_name: Optional[str]) -> ToolResult:
