@@ -371,6 +371,7 @@ async def supervisor_main(config_path: Path) -> None:
 
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
         _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
+        _shared_executor.set_ws_client(_profile_ws)
 
         async def _profile_refresh_loop() -> None:
             while True:

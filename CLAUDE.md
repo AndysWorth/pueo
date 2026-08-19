@@ -101,6 +101,8 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **Diagnostic WAN verification**: `fetch_url(url)` in `utils/tool_executor.py` is a read-only HTTP GET tool for verifying external service availability (e.g., confirming an API outage has resolved). Governed by `ALLOW_DIAGNOSTIC_WAN` (default true). Block list covers RFC-1918, loopback, and link-local ranges. Registered in all three agent registries. Never use it to POST data or call HA's own API — use `run_ha_command` or `HARestClientProtocol` for that. See ADR 016.
 
+**Chat tool parity**: Any enrichment or analysis function callable by an automated pipeline must be callable from chat with the same set of clients. `ToolExecutor` is the authority on which clients chat tools can access; adding a new client type means adding a parameter to `__init__` (and a `set_*` deferred-injection method if the value is only available after construction). When a shared function is imported inside a `ToolExecutor` method, it must receive the same arguments as the automated caller — never `ws_client=None` or similar stubs. Example: `enrich_http_login()` is called identically from the automated notification pipeline and from `_investigate_device` via `self._ws_client`. See ADR 017.
+
 ## Configuration
 
 `config.py` loads `config.yaml` at import time and exposes all settings as typed module-level constants with fallback defaults. Agent scripts are run-able directly without a `config.yaml` (defaults kick in); `main.py` is needed to point at a non-default config path.
@@ -223,3 +225,5 @@ Rationale for key architectural choices is in `docs/decisions/`:
 @docs/decisions/014-episodic-context-injection.md
 
 @docs/decisions/015-llm-guided-disk-recovery.md
+
+@docs/decisions/017-chat-tool-parity.md
