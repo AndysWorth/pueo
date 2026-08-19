@@ -83,6 +83,18 @@ CRITICAL_LOG_PATTERN = re.compile(
 # These are expected during long-running log streams and warrant WARNING, not ERROR.
 _TRANSIENT_SSH_ERRNOS: frozenset[int] = frozenset({32, 54, 104})  # EPIPE, ECONNRESET
 
+# Log content patterns that indicate a transient external condition (network outage,
+# upstream API unavailable) rather than a fixable config error. When the log buffer
+# contains any of these, skip the LLM triage call and emit a WARNING timeline event.
+_TRANSIENT_LOG_PATTERNS = re.compile(
+    r"(NameResolutionError|Failed to resolve"
+    r"|MaxRetryError|Max retries exceeded"
+    r"|ConnectionError|ConnectionRefusedError"
+    r"|Status Code: 50[2-4]|Gateway Timeout"
+    r"|urllib3\.exceptions)",
+    re.IGNORECASE,
+)
+
 
 # ==========================================
 # DATA SHAPE DEFINITIONS
@@ -235,6 +247,27 @@ async def tail_remote_log_stream(
 
             if CRITICAL_LOG_PATTERN.search(clean_line):
                 log.warning("log_line_intercepted", line=clean_line)
+
+                context_snapshot = "\n".join(_log_buffer)
+                if _TRANSIENT_LOG_PATTERNS.search(context_snapshot):
+                    log.info(
+                        "triage_transient_skip",
+                        line=clean_line,
+                        reason="known-transient network error pattern",
+                    )
+                    try:  # pragma: no cover
+                        from utils.timeline import write_timeline_event
+
+                        write_timeline_event(
+                            "WARNING",
+                            "ha_log_monitor",
+                            f"Transient external error (auto-resolved): {clean_line[:120]}",
+                            {"transient": True, "log_line": clean_line},
+                        )
+                    except Exception:  # nosec B110
+                        pass
+                    continue
+
                 log.info("triage_start", model=_default_model_for_provider())
                 evaluation, llm_trace = await analyze_log_line_with_ai(
                     list(_log_buffer), llm_client=llm_client
