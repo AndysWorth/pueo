@@ -131,6 +131,7 @@ def setup_logging(console_text: bool = False) -> None:
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(_TextFormatter() if console_text else json_formatter)
     logger.addHandler(console_handler)
 

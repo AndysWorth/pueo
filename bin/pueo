@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 LOG="$PROJECT_DIR/pueo.log"
+ERRLOG="$PROJECT_DIR/pueo-stderr.log"
 PID_FILE="$PROJECT_DIR/pueo.pid"
 
 CMD="${1:-start}"
@@ -38,9 +39,9 @@ case "$CMD" in
             fi
         fi
         cd "$PROJECT_DIR"
-        "$PYTHON" main.py "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>&1 &
+        "$PYTHON" main.py "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>> "$ERRLOG" &
         echo $! > "$PID_FILE"
-        echo "Pueo started (PID $!). Log: $LOG"
+        echo "Pueo started (PID $!). Log: $LOG  Stderr: $ERRLOG"
         ;;
     stop)
         if ! _running; then
