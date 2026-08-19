@@ -1467,6 +1467,10 @@ class TestBackupSlugExtraction:
         mod = importlib.import_module(module_name)
         assert mod._extract_backup_slug("No slug info here") == "unknown_slug"
 
+    def test_extract_strips_surrounding_quotes(self, module_name):
+        mod = importlib.import_module(module_name)
+        assert mod._extract_backup_slug('slug: "14702116"') == "14702116"
+
 
 # ── main.py CLI ───────────────────────────────────────────────────────────────────
 # Tests call main.main() directly (not via subprocess) so coverage is tracked.
