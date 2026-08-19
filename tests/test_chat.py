@@ -2094,3 +2094,120 @@ class TestRepairInjectEndpoint:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post("/repair/inject", json={"message": "   "})
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# TestChatDebugLog
+# ---------------------------------------------------------------------------
+
+
+class TestChatDebugLog:
+    """Tests for GET /chat/sessions/{session_id}/debug-log."""
+
+    def _seed_session(self, db_path: str) -> int:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO chat_sessions (created_at, title) VALUES (?, ?)",
+                (1_700_000_000.0, "test session"),
+            )
+            session_id = cur.lastrowid or 1
+            rows = [
+                ("user", "What is the disk usage?", None, 1_700_000_001.0),
+                (
+                    "assistant",
+                    "",
+                    '[{"name": "get_disk_usage", "arguments": {}}]',
+                    1_700_000_002.0,
+                ),
+                ("tool", "/config: 10 GB used of 14 GB", None, 1_700_000_002.5),
+                ("assistant", "Your disk is at 71% capacity.", None, 1_700_000_003.0),
+            ]
+            for role, content, tcj, ts in rows:
+                conn.execute(
+                    "INSERT INTO chat_messages (session_id, role, content, tool_calls_json, ts)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (session_id, role, content, tcj, ts),
+                )
+        return session_id
+
+    def test_returns_200_and_text_plain(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get(f"/chat/sessions/{sid}/debug-log")
+        assert resp.status_code == 200
+        assert "text/plain" in resp.headers["content-type"]
+
+    def test_contains_session_metadata(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        body = client.get(f"/chat/sessions/{sid}/debug-log").text
+        assert "PUEO CHAT DEBUG LOG" in body
+        assert f"Session: {sid}" in body
+        assert "test session" in body
+
+    def test_contains_system_prompt(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        body = client.get(f"/chat/sessions/{sid}/debug-log").text
+        assert "SYSTEM PROMPT" in body
+
+    def test_contains_all_turn_types(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        body = client.get(f"/chat/sessions/{sid}/debug-log").text
+        assert "[User]" in body
+        assert "What is the disk usage?" in body
+        assert "[Tool call] get_disk_usage" in body
+        assert "[Tool result]" in body
+        assert "/config: 10 GB used of 14 GB" in body
+        assert "[Assistant]" in body
+        assert "Your disk is at 71% capacity." in body
+
+    def test_attachment_header(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get(f"/chat/sessions/{sid}/debug-log")
+        cd = resp.headers.get("content-disposition", "")
+        assert "attachment" in cd
+        assert f"pueo-chat-{sid}-debug.txt" in cd
+
+    def test_returns_404_for_missing_session(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("PUEO_CONFIG", db_path)
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.get("/chat/sessions/99999/debug-log")
+        assert resp.status_code == 404
