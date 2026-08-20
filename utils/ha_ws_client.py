@@ -97,6 +97,33 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def get_lovelace_dashboards(self) -> list[dict]:
+        """List all named dashboards via lovelace/dashboards/list."""
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "lovelace/dashboards/list"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                return []
+            return msg.get("result", [])
+        finally:
+            await ws.close()
+
+    async def get_lovelace_config(self, url_path: str | None = None) -> dict:
+        """Fetch a Lovelace dashboard config. url_path=None fetches the default dashboard."""
+        ws = await self._connect_and_auth()
+        try:
+            payload: dict = {"id": 1, "type": "lovelace/config"}
+            if url_path is not None:
+                payload["url_path"] = url_path
+            await ws.send(json.dumps(payload))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"lovelace/config request failed: {msg}")
+            return msg.get("result", {})
+        finally:
+            await ws.close()
+
 
 class FakeHAWebSocketClient:
     """Test double for HAWebSocketClientProtocol."""
@@ -108,12 +135,17 @@ class FakeHAWebSocketClient:
         repair_issues: list[dict] | None = None,
         config_entries: list[dict] | None = None,
         entity_registry: list[dict] | None = None,
+        lovelace_dashboards: list[dict] | None = None,
+        lovelace_configs: dict | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
         self._repair_issues: list[dict] = repair_issues or []
         self._config_entries: list[dict] = config_entries or []
         self._entity_registry: list[dict] = entity_registry or []
+        self._lovelace_dashboards: list[dict] = lovelace_dashboards or []
+        # Keys are url_path strings or None for the default dashboard.
+        self._lovelace_configs: dict = lovelace_configs or {}
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -135,3 +167,13 @@ class FakeHAWebSocketClient:
     async def get_entity_registry(self) -> list[dict]:
         self.calls.append("get_entity_registry")
         return list(self._entity_registry)
+
+    async def get_lovelace_dashboards(self) -> list[dict]:
+        self.calls.append("get_lovelace_dashboards")
+        return list(self._lovelace_dashboards)
+
+    async def get_lovelace_config(self, url_path: str | None = None) -> dict:
+        self.calls.append(f"get_lovelace_config:{url_path}")
+        if url_path not in self._lovelace_configs:
+            raise RuntimeError(f"No lovelace config for url_path={url_path!r}")
+        return dict(self._lovelace_configs[url_path])

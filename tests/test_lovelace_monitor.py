@@ -36,6 +36,65 @@ class TestExtractEntityRefs:
         assert refs[0].view_title == "Home"
         assert refs[0].card_index == 0
 
+    def test_sections_layout(self):
+        from ha_lovelace_monitor import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Main",
+                    "type": "sections",
+                    "sections": [
+                        {
+                            "type": "grid",
+                            "cards": [
+                                {"type": "tile", "entity": "sensor.in_section"},
+                                {"type": "tile", "entity": "light.also_in_section"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(cfg)
+        entity_ids = {r.entity_id for r in refs}
+        assert entity_ids == {"sensor.in_section", "light.also_in_section"}
+
+    def test_entity_id_key(self):
+        from ha_lovelace_monitor import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "picture-entity", "entity_id": "camera.front"}],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(cfg)
+        assert len(refs) == 1
+        assert refs[0].entity_id == "camera.front"
+
+    def test_entity_id_in_entities_list(self):
+        from ha_lovelace_monitor import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [
+                        {
+                            "type": "entities",
+                            "entities": [{"entity_id": "sensor.custom_card"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(cfg)
+        assert len(refs) == 1
+        assert refs[0].entity_id == "sensor.custom_card"
+
     def test_entities_list_mixed(self):
         from ha_lovelace_monitor import _extract_entity_refs
 
@@ -202,7 +261,7 @@ class TestDashboardEntityAnalysis:
 
 
 # ---------------------------------------------------------------------------
-# FakeHAWebSocketClient — get_entity_registry
+# FakeHAWebSocketClient — lovelace + entity_registry methods
 # ---------------------------------------------------------------------------
 
 
@@ -222,6 +281,41 @@ class TestFakeWsGetEntityRegistry:
         ws = FakeHAWebSocketClient()
         result = asyncio.run(ws.get_entity_registry())
         assert result == []
+
+
+class TestFakeWsLovelace:
+    def test_get_lovelace_dashboards(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        dashboards = [{"url_path": "dashboard-dashy", "title": "Dashy"}]
+        ws = FakeHAWebSocketClient(lovelace_dashboards=dashboards)
+        result = asyncio.run(ws.get_lovelace_dashboards())
+        assert result == dashboards
+        assert "get_lovelace_dashboards" in ws.calls
+
+    def test_get_lovelace_config_default(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        cfg = {"views": [{"title": "Main", "cards": []}]}
+        ws = FakeHAWebSocketClient(lovelace_configs={None: cfg})
+        result = asyncio.run(ws.get_lovelace_config(None))
+        assert result == cfg
+        assert "get_lovelace_config:None" in ws.calls
+
+    def test_get_lovelace_config_named(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        cfg = {"views": [{"title": "Dashy", "cards": []}]}
+        ws = FakeHAWebSocketClient(lovelace_configs={"dashboard-dashy": cfg})
+        result = asyncio.run(ws.get_lovelace_config("dashboard-dashy"))
+        assert result == cfg
+
+    def test_get_lovelace_config_missing_raises(self):
+        from utils.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        with pytest.raises(RuntimeError):
+            asyncio.run(ws.get_lovelace_config(None))
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +364,19 @@ def _make_hitl_db(tmp_path: Path) -> str:
     return db_path
 
 
+def _make_ws(lovelace_cfg: dict, entity_registry: list[dict]):  # type: ignore[return]
+    """Helper: fake WS client with a single default dashboard config."""
+    from utils.ha_ws_client import FakeHAWebSocketClient
+
+    return FakeHAWebSocketClient(
+        entity_registry=entity_registry,
+        lovelace_configs={None: lovelace_cfg},
+    )
+
+
 class TestPollMissingEntity:
     def test_missing_entity_sends_card(self, tmp_path):
         from ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha_rest_client import FakeHARestClient
-        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -288,8 +390,7 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        rest = FakeHARestClient(raw_responses={"/api/lovelace/config": lovelace})
-        ws = FakeHAWebSocketClient(entity_registry=[{"entity_id": "sensor.present"}])
+        ws = _make_ws(lovelace, [{"entity_id": "sensor.present"}])
         notifier = FakeNotifier()
 
         analysis_json = json.dumps(
@@ -304,7 +405,6 @@ class TestPollMissingEntity:
 
         async def _run():
             coro = poll_for_dashboard_entity_issues(
-                rest_client=rest,
                 ws_client=ws,
                 notifier=notifier,
                 db_path=db_path,
@@ -312,7 +412,6 @@ class TestPollMissingEntity:
                 llm_client=llm,
             )
             task = asyncio.create_task(coro)
-            # Allow the loop to run through one iteration (sleep(0) then body).
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -327,8 +426,6 @@ class TestPollMissingEntity:
 
     def test_present_entity_no_card(self, tmp_path):
         from ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha_rest_client import FakeHARestClient
-        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -341,15 +438,13 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        rest = FakeHARestClient(raw_responses={"/api/lovelace/config": lovelace})
-        ws = FakeHAWebSocketClient(entity_registry=[{"entity_id": "sensor.present"}])
+        ws = _make_ws(lovelace, [{"entity_id": "sensor.present"}])
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
 
         async def _run():
             task = asyncio.create_task(
                 poll_for_dashboard_entity_issues(
-                    rest_client=rest,
                     ws_client=ws,
                     notifier=notifier,
                     db_path=db_path,
@@ -369,8 +464,6 @@ class TestPollMissingEntity:
 
     def test_duplicate_suppression(self, tmp_path):
         from ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha_rest_client import FakeHARestClient
-        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -392,15 +485,13 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        rest = FakeHARestClient(raw_responses={"/api/lovelace/config": lovelace})
-        ws = FakeHAWebSocketClient(entity_registry=[])
+        ws = _make_ws(lovelace, [])
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
 
         async def _run():
             task = asyncio.create_task(
                 poll_for_dashboard_entity_issues(
-                    rest_client=rest,
                     ws_client=ws,
                     notifier=notifier,
                     db_path=db_path,
@@ -416,13 +507,10 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        # No new card since one is already pending.
         assert len(notifier.sent) == 0
 
     def test_reconcile_resolved(self, tmp_path):
         from ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha_rest_client import FakeHARestClient
-        from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -448,15 +536,13 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        rest = FakeHARestClient(raw_responses={"/api/lovelace/config": lovelace})
-        ws = FakeHAWebSocketClient(entity_registry=[{"entity_id": "sensor.recovered"}])
+        ws = _make_ws(lovelace, [{"entity_id": "sensor.recovered"}])
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
 
         async def _run():
             task = asyncio.create_task(
                 poll_for_dashboard_entity_issues(
-                    rest_client=rest,
                     ws_client=ws,
                     notifier=notifier,
                     db_path=db_path,
@@ -479,6 +565,113 @@ class TestPollMissingEntity:
                 " WHERE card_key = 'dashboard_entity:sensor.recovered'",
             ).fetchone()
         assert row is not None and row[0] is not None  # resolved_at set
+
+    def test_named_dashboard_fetched(self, tmp_path):
+        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+
+        dashy_cfg = {
+            "views": [
+                {
+                    "title": "Dashy Main",
+                    "cards": [{"type": "tile", "entity": "sensor.in_named_dash"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_dashboards=[{"url_path": "dashboard-dashy", "title": "Dashy"}],
+            lovelace_configs={"dashboard-dashy": dashy_cfg},
+        )
+        analysis_json = json.dumps(
+            {
+                "explanation": "Gone.",
+                "likely_cause": "deleted",
+                "action": "remove",
+                "proposed_entity_id": None,
+            }
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient(analysis_json)
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
+
+    def test_sections_layout_missing_entity(self, tmp_path):
+        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.notify import FakeNotifier
+        from utils.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+
+        sections_cfg = {
+            "views": [
+                {
+                    "title": "Main",
+                    "type": "sections",
+                    "sections": [
+                        {
+                            "type": "grid",
+                            "cards": [{"type": "tile", "entity": "sensor.in_section"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        ws = _make_ws(sections_cfg, [])
+        analysis_json = json.dumps(
+            {
+                "explanation": "Deleted.",
+                "likely_cause": "deleted",
+                "action": "remove",
+                "proposed_entity_id": None,
+            }
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient(analysis_json)
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_section"
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from interfaces import (
-    HARestClientProtocol,
     HAWebSocketClientProtocol,
     LLMClientProtocol,
 )
@@ -84,7 +83,13 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
         if isinstance(val, str):
             _add(val, view_title, card_index, path)
         elif isinstance(val, dict):
-            _add(val.get("entity", ""), view_title, card_index, path)
+            # Handle both "entity" and "entity_id" keys used by different card types.
+            _add(
+                val.get("entity") or val.get("entity_id") or "",
+                view_title,
+                card_index,
+                path,
+            )
 
     def _walk_card(
         card: dict, view_title: str, card_index: int, depth: int = 0
@@ -95,7 +100,8 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
         if depth > 0:
             prefix += f".nested[{depth}]"
 
-        entity = card.get("entity", "")
+        # Handle both "entity" and "entity_id" keys used by different card types.
+        entity = card.get("entity") or card.get("entity_id") or ""
         if entity:
             _add(entity, view_title, card_index, prefix + ".entity")
 
@@ -115,8 +121,16 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
         for badge in view.get("badges", []):
             _walk_entity(badge, view_title, -1, "badges")
 
+        # Traditional cards layout.
         for idx, card in enumerate(view.get("cards", [])):
             _walk_card(card, view_title, idx)
+
+        # Sections layout (HA 2024+ dashboard type: sections).
+        for sec_idx, section in enumerate(view.get("sections", [])):
+            if not isinstance(section, dict):
+                continue
+            for card_idx, card in enumerate(section.get("cards", [])):
+                _walk_card(card, view_title, card_idx)
 
     return list(refs.values())
 
@@ -199,17 +213,15 @@ async def _analyze_missing_entity(
 
 
 async def poll_for_dashboard_entity_issues(
-    rest_client: Optional[HARestClientProtocol] = None,
     ws_client: Optional[HAWebSocketClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     db_path: Optional[str] = None,
     interval_minutes: Optional[int] = None,
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> None:
-    """Polling loop — checks Lovelace dashboards for missing entity references."""
+    """Polling loop — checks all Lovelace dashboards for missing entity references."""
     import config as _cfg
     from utils.card_types import CARD_TYPE_DASHBOARD_ENTITY
-    from utils.ha_rest_client import HARestClient
     from utils.ha_ws_client import HAWebSocketClient
     from utils.hitl_tracker import (
         mark_card_resolved,
@@ -225,9 +237,6 @@ async def poll_for_dashboard_entity_issues(
         if interval_minutes is not None
         else _cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES
     )
-    _rest: HARestClientProtocol = rest_client or HARestClient(  # pragma: no cover
-        _cfg.HA_HOST, _cfg.HA_API_PORT, _cfg.HA_API_TOKEN
-    )
     _ws: HAWebSocketClientProtocol = ws_client or HAWebSocketClient(  # pragma: no cover
         _cfg.HA_HOST, _cfg.HA_API_PORT, _cfg.HA_API_TOKEN
     )
@@ -236,13 +245,34 @@ async def poll_for_dashboard_entity_issues(
     )
 
     while True:
-        await asyncio.sleep(_interval * 60)
         try:
-            lovelace_cfg = await _rest.get_raw("/api/lovelace/config")
-            entity_refs = _extract_entity_refs(lovelace_cfg)
+            # Enumerate all named dashboards; the default (url_path=None) is always tried.
+            try:
+                named = await _ws.get_lovelace_dashboards()
+            except Exception:
+                named = []
+
+            url_paths: list[Optional[str]] = [None] + [  # type: ignore[assignment]
+                d.get("url_path") for d in named if d.get("url_path")
+            ]
+
+            # Merge entity refs across all dashboards, deduplicating by entity_id.
+            merged_refs: dict[str, EntityRef] = {}
+            for url_path in url_paths:
+                try:
+                    cfg = await _ws.get_lovelace_config(url_path)
+                    for ref in _extract_entity_refs(cfg):
+                        if ref.entity_id not in merged_refs:
+                            merged_refs[ref.entity_id] = ref
+                except Exception:
+                    pass  # dashboard may not exist (e.g. no default dashboard)
+
+            entity_refs = list(merged_refs.values())
             registry = await _ws.get_entity_registry()
+
         except Exception as exc:
             log.warning("lovelace_poll_failed", error=str(exc))
+            await asyncio.sleep(_interval * 60)
             continue
 
         registry_ids = {e.get("entity_id", "") for e in registry if e.get("entity_id")}
@@ -319,3 +349,5 @@ async def poll_for_dashboard_entity_issues(
                 with sqlite3.connect(_db_path) as conn:
                     mark_card_resolved(conn, pending_key)
                 log.info("lovelace_entity_resolved", entity_id=pending_entity_id)
+
+        await asyncio.sleep(_interval * 60)
