@@ -59,7 +59,7 @@ from utils.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt
-from utils.autonomy import AutonomyGate, RiskLevel
+from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
 from utils.ha.ha_rest_client import HARepairIssue, HARestClient, get_update_status

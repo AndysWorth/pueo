@@ -38,7 +38,7 @@ from utils.core.logging import get_logger
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
     from netalertx.api_client import NetAlertXAPIClient
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.ha_name_sync")
@@ -238,7 +238,7 @@ class HaNameSync:
 
     async def _resolve_conflicts(self, report: SyncReport) -> None:
         """Issue a single MEDIUM-risk approval card for all collected conflicts; write+lock on approval."""
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         conflict_table = "\n".join(
             f"  {e.mac} | {e.ha_name} | {e.netalertx_name}" for e in report.conflicted
@@ -270,7 +270,7 @@ class HaNameSync:
 
     async def _notify_unnamed(self, report: SyncReport) -> None:
         """Issue a single LOW-risk approval card listing all still-unnamed devices."""
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         unnamed_table = "\n".join(
             f"  {e.mac} | {e.vendor} | {e.last_ip}" for e in report.unnamed
@@ -291,7 +291,7 @@ class HaNameSync:
 
     async def sync_names(self) -> SyncReport:
         """Sync HA names into NetAlertX — all four Cases."""
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         ha_names = await self.read_ha_names()
 

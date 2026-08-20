@@ -779,7 +779,7 @@ class TestInstallerDiagnostics:
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
 
@@ -815,7 +815,7 @@ class TestInstallerDiagnostics:
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
@@ -856,7 +856,7 @@ class TestInstallerDiagnostics:
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
 
@@ -1045,7 +1045,7 @@ class TestLLMTrace:
 
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
 
@@ -1090,7 +1090,7 @@ class TestLLMTrace:
 
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
 
@@ -2536,7 +2536,7 @@ class TestExecuteQueuedUpdate:
         import web.dashboard as dashboard
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
-        import utils.autonomy as autonomy_mod
+        import utils.agent.autonomy as autonomy_mod
         import utils.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -2568,7 +2568,7 @@ class TestExecuteQueuedUpdate:
         import web.dashboard as dashboard
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
-        import utils.autonomy as autonomy_mod
+        import utils.agent.autonomy as autonomy_mod
         import utils.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -2604,7 +2604,7 @@ class TestExecuteQueuedUpdate:
         import web.dashboard as dashboard
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
-        import utils.autonomy as autonomy_mod
+        import utils.agent.autonomy as autonomy_mod
         import utils.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -2640,7 +2640,7 @@ class TestExecuteQueuedUpdate:
         import web.dashboard as dashboard
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
-        import utils.autonomy as autonomy_mod
+        import utils.agent.autonomy as autonomy_mod
         import utils.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -2762,7 +2762,7 @@ class TestExecuteNetalertxHeal:
         import netalertx.healer as healer_mod
         import netalertx.api_client as api_mod
         import utils.ha.ssh_client as ssh_mod
-        import utils.autonomy as autonomy_mod
+        import utils.agent.autonomy as autonomy_mod
         import utils.notify as notify_mod
 
         class FakeHealer:
@@ -3507,7 +3507,7 @@ class TestOverviewRoute:
 
     def test_overview_no_supervisor_shows_no_loops_message(self, tmp_path, monkeypatch):
         """When no supervisor is running, overview shows the no-loops placeholder."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3520,7 +3520,7 @@ class TestOverviewRoute:
 
     def test_overview_with_supervisor_shows_loop_rows(self, tmp_path, monkeypatch):
         """When a supervisor with loops is registered, loop rows appear in the table."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3550,7 +3550,7 @@ class TestLoopControlEndpoints:
 
     def _make_fake_sv(self, loop_names=("ha_log_monitor",)):
         """Return a minimal fake supervisor that records control calls."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
 
         calls: list[tuple] = []
 
@@ -3578,7 +3578,7 @@ class TestLoopControlEndpoints:
 
     def test_pause_loop_returns_ok(self, tmp_path, monkeypatch):
         """POST /loops/{name}/pause returns 200 and calls sv.pause()."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3594,7 +3594,7 @@ class TestLoopControlEndpoints:
 
     def test_resume_loop_returns_ok(self, tmp_path, monkeypatch):
         """POST /loops/{name}/resume returns 200 and calls sv.resume()."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3610,7 +3610,7 @@ class TestLoopControlEndpoints:
 
     def test_run_now_loop_returns_ok(self, tmp_path, monkeypatch):
         """POST /loops/{name}/run-now returns 200 and calls sv.run_now()."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3626,7 +3626,7 @@ class TestLoopControlEndpoints:
 
     def test_unknown_loop_returns_404(self, tmp_path, monkeypatch):
         """Unknown loop name returns 404 for all three control actions."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3641,7 +3641,7 @@ class TestLoopControlEndpoints:
 
     def test_no_supervisor_returns_503(self, tmp_path, monkeypatch):
         """When no supervisor is registered, all loop control endpoints return 503."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3655,7 +3655,7 @@ class TestLoopControlEndpoints:
 
     def test_overview_shows_controls_column(self, tmp_path, monkeypatch):
         """Overview page renders the Controls column with Pause/Run now buttons."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3671,7 +3671,7 @@ class TestLoopControlEndpoints:
 
     def test_paused_loop_shows_resume_button(self, tmp_path, monkeypatch):
         """A paused loop renders a Resume button instead of Pause."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -3703,7 +3703,7 @@ class TestSSEEventBus:
     def test_publish_event_reaches_subscriber(self):
         """An event published to the bus is delivered to a subscribed queue."""
         import asyncio
-        from utils.supervisor import publish_event, subscribe, unsubscribe
+        from utils.agent.supervisor import publish_event, subscribe, unsubscribe
 
         async def run():
             q = subscribe()
@@ -3720,7 +3720,7 @@ class TestSSEEventBus:
     def test_publish_event_reaches_multiple_subscribers(self):
         """All subscribed queues receive a copy of each published event."""
         import asyncio
-        from utils.supervisor import publish_event, subscribe, unsubscribe
+        from utils.agent.supervisor import publish_event, subscribe, unsubscribe
 
         async def run():
             q1, q2 = subscribe(), subscribe()
@@ -3739,7 +3739,7 @@ class TestSSEEventBus:
     def test_unsubscribe_stops_delivery(self):
         """After unsubscribe(), the queue receives no further events."""
         import asyncio
-        from utils.supervisor import publish_event, subscribe, unsubscribe
+        from utils.agent.supervisor import publish_event, subscribe, unsubscribe
 
         async def run():
             q = subscribe()
@@ -3752,8 +3752,8 @@ class TestSSEEventBus:
     def test_loop_supervisor_emits_to_subscribers(self):
         """LoopSupervisor._emit() publishes to SSE subscribers via publish_event."""
         import asyncio
-        import utils.supervisor as sup_mod
-        from utils.supervisor import LoopSupervisor, subscribe, unsubscribe
+        import utils.agent.supervisor as sup_mod
+        from utils.agent.supervisor import LoopSupervisor, subscribe, unsubscribe
 
         async def run():
             q = subscribe()
@@ -5277,7 +5277,7 @@ class TestPostRebootRepairScan:
         import web.dashboard as dashboard
 
         mock_sv = MagicMock()
-        import utils.supervisor as _sup
+        import utils.agent.supervisor as _sup
 
         monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: mock_sv)
 
@@ -5290,7 +5290,7 @@ class TestPostRebootRepairScan:
         import asyncio
 
         import web.dashboard as dashboard
-        import utils.supervisor as _sup
+        import utils.agent.supervisor as _sup
 
         monkeypatch.setattr(_sup, "get_supervisor_instance", lambda: None)
 

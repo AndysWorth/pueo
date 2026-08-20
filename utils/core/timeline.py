@@ -24,7 +24,7 @@ def write_timeline_event(
         )
         event_id: int = cur.lastrowid or 0
     try:
-        from utils.supervisor import publish_event
+        from utils.agent.supervisor import publish_event
 
         publish_event(
             {

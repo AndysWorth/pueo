@@ -1645,7 +1645,7 @@ class TestRepairEpisodeResultSummary:
 
     def test_serialize_stores_result_summary(self, db_path):
         from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ep = RepairEpisode(
             id="test-ep-1",
@@ -1669,7 +1669,7 @@ class TestRepairEpisodeResultSummary:
 
     def test_result_summary_survives_round_trip(self, db_path):
         from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         long_output = "x" * 1000  # should be stored as-is (serializer doesn't truncate)
         ep = RepairEpisode(
@@ -1697,7 +1697,7 @@ class TestRepairEpisodeResultSummary:
         import sqlite3 as _sqlite3
 
         from utils.repair_episode import load_episode
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         tc = ToolCall(name="read_config", arguments={})
         with _sqlite3.connect(db_path) as conn:
@@ -1805,7 +1805,7 @@ class TestSupervisorMain:
 
         # Track which loop names were started
         started: list = []
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         orig_start = LoopSupervisor.start
 
@@ -2066,7 +2066,7 @@ class TestSupervisorMain:
         import config as cfg_mod
         import main as m
         import utils.knowledge_store as ks_mod
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(cfg_mod, "CHROMADB_PATH", str(chroma_dir))
 
@@ -2099,7 +2099,7 @@ class TestSupervisorMain:
 
         import config as cfg_mod
         import main as m
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(cfg_mod, "CHROMADB_PATH", str(tmp_path / "nonexistent"))
 
@@ -2532,7 +2532,7 @@ class TestSandboxPipeline:
 
     @pytest.fixture
     def gate_auto(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
@@ -3289,7 +3289,7 @@ class TestFormatUpdateTable:
 class TestRunUpdateCheck:
     def test_returns_updates_with_fake_client(self):
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -3346,7 +3346,7 @@ class TestRunUpdateCheck:
     def test_ssh_read_file_error_is_skipped(self, tmp_path, capsys):
         """SSH config fetch failure logs a warning but does not abort analysis."""
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -3384,7 +3384,7 @@ class TestRunUpdateCheck:
         """analyze_breaking_changes failure prints a warning and returns all updates."""
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -3436,7 +3436,7 @@ class TestRunUpdateCheck:
         dashboard was not running to respond to the approval request.
         """
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -3779,7 +3779,7 @@ class TestRunUpdateCheckWithAnalysis:
 
     def test_analysis_runs_for_core_update(self, tmp_path, capsys):
         from agents.ha_update_manager import UpdateReadinessReport, run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -3827,7 +3827,7 @@ class TestRunUpdateCheckWithAnalysis:
 
     def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from unittest.mock import AsyncMock, patch
@@ -3855,7 +3855,7 @@ class TestRunUpdateCheckWithAnalysis:
     def test_hitl_card_sent_for_core_update(self, tmp_path):
         """A HITL approval card is dispatched when a Core update is detected."""
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -3882,7 +3882,7 @@ class TestRunUpdateCheckWithAnalysis:
         """
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -3908,7 +3908,7 @@ class TestRunUpdateCheckWithAnalysis:
         """When the HITL card is rejected, execute_update is not called."""
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -3948,7 +3948,7 @@ class TestRequestUpdateApproval:
 
     def test_core_update_uses_critical_risk(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -3964,7 +3964,7 @@ class TestRequestUpdateApproval:
 
     def test_os_update_uses_critical_risk(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -3977,7 +3977,7 @@ class TestRequestUpdateApproval:
 
     def test_supervisor_update_uses_high_risk(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -3989,7 +3989,7 @@ class TestRequestUpdateApproval:
 
     def test_addon_update_uses_medium_risk(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -4001,7 +4001,7 @@ class TestRequestUpdateApproval:
 
     def test_payload_includes_version_info(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -4018,7 +4018,7 @@ class TestRequestUpdateApproval:
             UpdateReadinessReport,
             request_update_approval,
         )
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         report = UpdateReadinessReport(
@@ -4044,7 +4044,7 @@ class TestRequestUpdateApproval:
 
     def test_payload_empty_lists_when_no_report(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -4058,7 +4058,7 @@ class TestRequestUpdateApproval:
 
     def test_disk_info_included_in_payload(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -4080,7 +4080,7 @@ class TestRequestUpdateApproval:
 
     def test_custom_notification_id_used(self):
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -4099,7 +4099,7 @@ class TestRequestUpdateApproval:
     def test_autonomous_level4_auto_executes_addon(self):
         """Level-4 autonomy auto-executes MEDIUM-risk add-on updates."""
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import AutonomyGate
+        from utils.agent.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
@@ -4113,7 +4113,7 @@ class TestRequestUpdateApproval:
     def test_autonomous_level4_still_asks_for_core(self):
         """Level-4 autonomy must still ask for CRITICAL-risk core updates."""
         from agents.ha_update_manager import request_update_approval
-        from utils.autonomy import AutonomyGate
+        from utils.agent.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
@@ -4129,25 +4129,25 @@ class TestRequestUpdateApproval:
 class TestComponentRiskLevel:
     def test_core_is_critical(self):
         from agents.ha_update_manager import _component_risk_level
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert _component_risk_level("core") == RiskLevel.CRITICAL
 
     def test_os_is_critical(self):
         from agents.ha_update_manager import _component_risk_level
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert _component_risk_level("os") == RiskLevel.CRITICAL
 
     def test_supervisor_is_high(self):
         from agents.ha_update_manager import _component_risk_level
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert _component_risk_level("supervisor") == RiskLevel.HIGH
 
     def test_addon_is_medium(self):
         from agents.ha_update_manager import _component_risk_level
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert _component_risk_level("my_addon") == RiskLevel.MEDIUM
 
@@ -4862,7 +4862,7 @@ class TestExecuteCoreUpdate:
         )
 
     def _make_gate_notifier(self, approve: bool = True):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         return FakeAutonomyGate(approval_result=approve), FakeNotifier(approve=approve)
@@ -5151,7 +5151,7 @@ class TestExecuteOsUpdate:
 
     def test_calls_backup_and_issues_os_update(self):
         from agents.ha_update_manager import execute_os_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5175,7 +5175,7 @@ class TestExecuteOsUpdate:
 
     def test_returns_false_on_timeout(self):
         from agents.ha_update_manager import execute_os_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5242,7 +5242,7 @@ class TestExecuteAddonUpdate:
 
     def test_calls_backup_and_calls_rest_service(self):
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5275,7 +5275,7 @@ class TestExecuteAddonUpdate:
 
     def test_returns_false_on_timeout(self):
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5305,7 +5305,7 @@ class TestExecuteAddonUpdate:
 
     def test_rest_service_uses_entity_id(self):
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5341,7 +5341,7 @@ class TestExecuteAddonUpdate:
         import httpx
 
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5386,7 +5386,7 @@ class TestExecuteAddonUpdate:
         import httpx
 
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5425,7 +5425,7 @@ class TestExecuteAddonUpdate:
     def test_non_timeout_exception_sends_failure_card(self):
         """Non-timeout exceptions abort immediately without calling the poll."""
         from agents.ha_update_manager import execute_addon_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -5478,7 +5478,7 @@ class TestExecuteUpdate:
 
     def test_dispatches_core_to_execute_core_update(self):
         from agents.ha_update_manager import execute_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch, AsyncMock
@@ -5501,7 +5501,7 @@ class TestExecuteUpdate:
 
     def test_dispatches_os_to_execute_os_update(self):
         from agents.ha_update_manager import execute_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch
@@ -5524,7 +5524,7 @@ class TestExecuteUpdate:
 
     def test_dispatches_addon_to_execute_addon_update(self):
         from agents.ha_update_manager import execute_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch
@@ -6022,7 +6022,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from unittest.mock import patch, AsyncMock
         from agents.ha_update_manager import execute_core_update, PueoSelfCheckResult
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
@@ -6059,7 +6059,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from unittest.mock import patch
         from agents.ha_update_manager import execute_core_update
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         ssh = FakeSSHClient()
@@ -6089,7 +6089,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from unittest.mock import patch
         from agents.ha_update_manager import execute_core_update
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
@@ -8236,7 +8236,7 @@ class TestRunNotifications:
 
 class TestToolRegistrySchemas:
     def test_tool_call_valid(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         tc = ToolCall(
             name="read_config", arguments={"path": "/config/configuration.yaml"}
@@ -8245,20 +8245,20 @@ class TestToolRegistrySchemas:
         assert tc.arguments["path"] == "/config/configuration.yaml"
 
     def test_tool_call_empty_arguments(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         tc = ToolCall(name="verify_fix")
         assert tc.arguments == {}
 
     def test_tool_call_missing_name_raises(self):
         from pydantic import ValidationError
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         with pytest.raises(ValidationError):
             ToolCall()  # type: ignore[call-arg]
 
     def test_tool_call_json_round_trip(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         orig = ToolCall(
             name="apply_fix",
@@ -8268,14 +8268,14 @@ class TestToolRegistrySchemas:
         assert restored == orig
 
     def test_tool_result_valid(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         r = ToolResult(tool_name="read_config", success=True, output="yaml: content")
         assert r.success
         assert r.error is None
 
     def test_tool_result_failure(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         r = ToolResult(
             tool_name="read_config", success=False, output="", error="SSH timeout"
@@ -8284,7 +8284,7 @@ class TestToolRegistrySchemas:
         assert r.error == "SSH timeout"
 
     def test_tool_result_json_round_trip(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         orig = ToolResult(
             tool_name="apply_fix", success=True, output="done", error=None
@@ -8293,13 +8293,13 @@ class TestToolRegistrySchemas:
         assert restored == orig
 
     def test_tool_result_awaiting_approval_defaults_false(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         r = ToolResult(tool_name="apply_fix", success=False, output="queued")
         assert r.awaiting_approval is False
 
     def test_tool_result_awaiting_approval_set(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         r = ToolResult(
             tool_name="apply_fix",
@@ -8310,7 +8310,7 @@ class TestToolRegistrySchemas:
         assert r.awaiting_approval is True
 
     def test_tool_result_awaiting_approval_round_trip(self):
-        from utils.tool_registry import ToolResult
+        from utils.agent.tool_registry import ToolResult
 
         orig = ToolResult(
             tool_name="apply_fix",
@@ -8322,13 +8322,13 @@ class TestToolRegistrySchemas:
         assert restored.awaiting_approval is True
 
     def test_agent_loop_outcome_includes_awaiting_approval(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         r = AgentLoopResult(outcome="awaiting_approval", steps=[])
         assert r.outcome == "awaiting_approval"
 
     def test_agent_step_valid(self):
-        from utils.tool_registry import AgentStep, ToolCall, ToolResult
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
 
         step = AgentStep(
             step_number=1,
@@ -8342,7 +8342,7 @@ class TestToolRegistrySchemas:
         assert step.tool_call.name == "read_config"
 
     def test_agent_step_json_round_trip(self):
-        from utils.tool_registry import AgentStep, ToolCall, ToolResult
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
 
         orig = AgentStep(
             step_number=2,
@@ -8356,20 +8356,20 @@ class TestToolRegistrySchemas:
         assert restored == orig
 
     def test_agent_loop_result_valid(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         r = AgentLoopResult(outcome="success", steps=[], episode_stub={"summary": "ok"})
         assert r.outcome == "success"
 
     def test_agent_loop_result_json_round_trip(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         orig = AgentLoopResult(outcome="exhausted", steps=[], episode_stub=None)
         restored = AgentLoopResult.model_validate_json(orig.model_dump_json())
         assert restored == orig
 
     def test_tool_definition_valid(self):
-        from utils.tool_registry import ToolDefinition
+        from utils.agent.tool_registry import ToolDefinition
 
         td = ToolDefinition(
             name="my_tool",
@@ -8379,7 +8379,7 @@ class TestToolRegistrySchemas:
         assert td.name == "my_tool"
 
     def test_tool_registry_register_and_names(self):
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         reg.register(ToolDefinition(name="t1", description="d1", parameters={}))
@@ -8387,7 +8387,7 @@ class TestToolRegistrySchemas:
         assert set(reg.names()) == {"t1", "t2"}
 
     def test_tool_registry_get_ollama_tools(self):
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         reg.register(
@@ -8403,7 +8403,7 @@ class TestToolRegistrySchemas:
         assert tools[0]["function"]["name"] == "read_config"
 
     def test_tool_registry_contains(self):
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         reg.register(
@@ -8413,7 +8413,7 @@ class TestToolRegistrySchemas:
         assert "unknown_tool" not in reg
 
     def test_build_ha_tool_registry_has_all_standard_tools(self):
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         reg = build_ha_tool_registry()
         for name in (
@@ -8431,7 +8431,7 @@ class TestToolRegistrySchemas:
         assert "query_netalertx" not in reg
 
     def test_build_netalertx_tool_registry_has_netalertx_tools(self):
-        from utils.tool_registry import build_netalertx_tool_registry
+        from utils.agent.tool_registry import build_netalertx_tool_registry
 
         reg = build_netalertx_tool_registry()
         assert "restart_netalertx" in reg
@@ -8444,10 +8444,10 @@ class TestToolRegistrySchemas:
 
 class TestToolExecutor:
     def _make_executor(self, ssh=None, gate=None, notifier=None):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         return ToolExecutor(
             ha_ssh_client=ssh or FakeSSHClient(),
@@ -8457,7 +8457,7 @@ class TestToolExecutor:
         )
 
     def test_unknown_tool_returns_error(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         result = asyncio.run(executor.execute(ToolCall(name="does_not_exist")))
@@ -8466,7 +8466,7 @@ class TestToolExecutor:
 
     def test_read_config_success(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             file_contents={
@@ -8486,7 +8486,7 @@ class TestToolExecutor:
 
     def test_read_config_ssh_failure(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         # FakeSSHClient with no file_contents raises FileNotFoundError for any path
         ssh = FakeSSHClient()
@@ -8503,7 +8503,7 @@ class TestToolExecutor:
 
     def test_run_ha_command_allowed(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient()
         executor = self._make_executor(ssh=ssh)
@@ -8515,7 +8515,7 @@ class TestToolExecutor:
         assert result.tool_name == "run_ha_command"
 
     def test_run_ha_command_rejected_not_in_allowlist(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         result = asyncio.run(
@@ -8528,7 +8528,7 @@ class TestToolExecutor:
 
     def test_read_file_allowed_path(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(file_contents={"/config/secrets.yaml": "token: abc"})
         executor = self._make_executor(ssh=ssh)
@@ -8541,7 +8541,7 @@ class TestToolExecutor:
         assert result.success
 
     def test_read_file_rejected_disallowed_path(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         result = asyncio.run(
@@ -8553,7 +8553,7 @@ class TestToolExecutor:
         assert "not in allowed directories" in result.error
 
     def test_finish_repair_success(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         result = asyncio.run(
@@ -8568,7 +8568,7 @@ class TestToolExecutor:
         assert result.tool_name == "finish_repair"
 
     def test_query_knowledge_no_store_returns_error(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()  # no knowledge_store injected
         result = asyncio.run(
@@ -8583,7 +8583,7 @@ class TestToolExecutor:
 
     def test_apply_fix_once_per_loop_cap(self):
         """apply_fix rejected on second call within the same loop run."""
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         executor._apply_fix_used = True  # simulate first call already happened
@@ -8599,9 +8599,9 @@ class TestToolExecutor:
         assert "only be called once" in result.error
 
     def test_reset_clears_apply_fix_flag(self):
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         executor = ToolExecutor(
@@ -8614,7 +8614,7 @@ class TestToolExecutor:
         assert not executor._apply_fix_used
 
     def test_query_netalertx_no_api_client(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()  # no netalertx_api_client
         result = asyncio.run(
@@ -8629,7 +8629,7 @@ class TestToolExecutor:
 
     def test_read_logs_success(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             command_results={"ha core logs": (0, "log line 1\nlog line 2", "")}
@@ -8643,7 +8643,7 @@ class TestToolExecutor:
 
     def test_read_logs_ssh_failure(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingSSH(FakeSSHClient):
             async def run(self, command, check=False):
@@ -8656,7 +8656,7 @@ class TestToolExecutor:
 
     def test_read_logs_default_lines(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(command_results={"ha core logs": (0, "output", "")})
         executor = self._make_executor(ssh=ssh)
@@ -8667,7 +8667,7 @@ class TestToolExecutor:
 
     def test_run_ha_command_ssh_exception(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingSSH(FakeSSHClient):
             async def run(self, command, check=False):
@@ -8686,7 +8686,7 @@ class TestToolExecutor:
 
     def test_read_file_ssh_exception(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingSSH(FakeSSHClient):
             async def read_file(self, path):
@@ -8705,7 +8705,7 @@ class TestToolExecutor:
 
     def test_verify_fix_success(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             command_results={"ha core check": (0, "Configuration is valid!", "")}
@@ -8717,7 +8717,7 @@ class TestToolExecutor:
 
     def test_verify_fix_failure(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             command_results={"ha core check": (1, "", "Invalid YAML on line 5")}
@@ -8729,7 +8729,7 @@ class TestToolExecutor:
 
     def test_verify_fix_ssh_exception(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingSSH(FakeSSHClient):
             async def run(self, command, check=False):
@@ -8743,11 +8743,11 @@ class TestToolExecutor:
     # -- query_netalertx with api client -----------------------------------------
 
     def test_query_netalertx_health_with_client(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FakeNAXApi:
             async def get_about(self):
@@ -8777,11 +8777,11 @@ class TestToolExecutor:
         assert "ok" in result.output
 
     def test_query_netalertx_devices(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FakeNAXApi:
             async def get_about(self):
@@ -8811,11 +8811,11 @@ class TestToolExecutor:
         assert "my-device" in result.output
 
     def test_query_netalertx_events(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FakeNAXApi:
             async def get_about(self):
@@ -8844,11 +8844,11 @@ class TestToolExecutor:
         assert result.success
 
     def test_query_netalertx_unknown_type(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FakeNAXApi:
             async def get_about(self):
@@ -8878,11 +8878,11 @@ class TestToolExecutor:
         assert "Unknown query_type" in result.error
 
     def test_query_netalertx_api_exception(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _ErrorNAXApi:
             async def get_about(self):
@@ -8914,11 +8914,11 @@ class TestToolExecutor:
     # -- restart_netalertx -------------------------------------------------------
 
     def test_restart_netalertx_success(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(command_results={"docker restart": (0, "netalertx\n", "")})
         executor = ToolExecutor(
@@ -8930,11 +8930,11 @@ class TestToolExecutor:
         assert result.success
 
     def test_restart_netalertx_with_api_scan_trigger(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FakeNAXApi:
             scan_triggered = False
@@ -8965,7 +8965,7 @@ class TestToolExecutor:
 
     def test_restart_netalertx_ssh_exception(self):
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingSSH(FakeSSHClient):
             async def run(self, command, check=False):
@@ -8979,11 +8979,11 @@ class TestToolExecutor:
     # -- rewrite_netalertx_conf --------------------------------------------------
 
     def test_rewrite_netalertx_conf_success(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         # All required keys present so validator passes
         initial_conf = (
@@ -9014,11 +9014,11 @@ class TestToolExecutor:
         assert "updated" in result.output
 
     def test_rewrite_netalertx_conf_validation_blocks_bad_overrides(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         # Missing TIMEZONE and LOADED_PLUGINS — validator will block
         initial_conf = "SCAN_SUBNETS=[]\nMQTT_ACTIVE=0\n"
@@ -9042,7 +9042,7 @@ class TestToolExecutor:
     # -- unknown tool and top-level exception ------------------------------------
 
     def test_unknown_tool_name(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         executor = self._make_executor()
         result = asyncio.run(executor.execute(ToolCall(name="does_not_exist_at_all")))
@@ -9050,7 +9050,7 @@ class TestToolExecutor:
         assert "Unknown tool" in result.error
 
     def test_execute_catches_unexpected_exception(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         class _BrokenSSH:
             async def read_file(self, path):
@@ -9068,9 +9068,9 @@ class TestToolExecutor:
             def stream_lines(self, command):
                 return iter([])
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         executor = ToolExecutor(
             ha_ssh_client=_BrokenSSH(),
@@ -9092,7 +9092,7 @@ class TestToolExecutor:
         """apply_fix returns error when execute_remote_backup raises."""
         from agents import ha_agent_advanced
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             file_contents={
@@ -9130,11 +9130,11 @@ class TestToolExecutor:
     # -- restart_netalertx scan trigger exception (best-effort) -----------------
 
     def test_restart_netalertx_scan_trigger_exception_is_swallowed(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FailingScanApi:
             async def get_about(self):
@@ -9164,11 +9164,11 @@ class TestToolExecutor:
 
     def test_rewrite_netalertx_conf_missing_file_starts_fresh(self):
         """If app.conf doesn't exist, _rewrite_netalertx_conf starts from empty."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         # FakeSSHClient with no file_contents raises FileNotFoundError
         ssh = FakeSSHClient()
@@ -9190,11 +9190,11 @@ class TestToolExecutor:
         assert isinstance(result.success, bool)
 
     def test_rewrite_netalertx_conf_write_failure(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _FailWrite(FakeSSHClient):
             async def write_file(self, path, content):
@@ -9230,12 +9230,12 @@ class TestToolExecutor:
 
     def test_execute_outer_exception_handler(self):
         """An exception escaping a tool method is caught by execute()'s outer handler."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         class _RaisingStore(FakeKnowledgeStore):
             def query(self, query_text, top_k, collections=None):
@@ -9257,7 +9257,7 @@ class TestToolExecutor:
     # -- apply_fix with read failure on original config --------------------------
 
     def test_apply_fix_original_config_read_failure(self):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         # FakeSSHClient with no file_contents raises FileNotFoundError for any path
         executor = self._make_executor()
@@ -9275,12 +9275,12 @@ class TestToolExecutor:
     # -- query_knowledge ---------------------------------------------------------
 
     def test_query_knowledge_with_store_returns_results(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -9304,12 +9304,12 @@ class TestToolExecutor:
         assert "Template syntax" in result.output
 
     def test_query_knowledge_integration_filter(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -9340,12 +9340,12 @@ class TestToolExecutor:
         assert "mqtt" not in result.output
 
     def test_get_ha_profile_tool_returns_profile(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_environment import HAEnvironmentProfile
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         profile = HAEnvironmentProfile(
             ha_version="2026.6.0",
@@ -9367,11 +9367,11 @@ class TestToolExecutor:
         assert "2026.6.0" in result.output
 
     def test_get_ha_profile_tool_when_no_profile(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         executor = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -9388,11 +9388,11 @@ class TestToolExecutor:
 
     def test_apply_fix_hitl_queuing_returns_awaiting_approval(self):
         """When gate.queue_for_approval returns False, apply_fix returns awaiting_approval."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             file_contents={
@@ -9424,11 +9424,11 @@ class TestToolExecutor:
 
     def test_apply_fix_hitl_queuing_sets_apply_fix_used_flag(self):
         """Queuing for HITL sets _apply_fix_used so double-queuing is blocked."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         ssh = FakeSSHClient(
             file_contents={
@@ -9455,7 +9455,7 @@ class TestToolExecutor:
 
     def test_fake_autonomy_gate_queue_for_approval_auto_execute(self):
         """FakeAutonomyGate.queue_for_approval returns True when auto_execute_result=True."""
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -9474,7 +9474,7 @@ class TestToolExecutor:
 
     def test_fake_autonomy_gate_queue_for_approval_sends_notification(self):
         """FakeAutonomyGate.queue_for_approval sends notification and returns False when not auto."""
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False)
@@ -9492,12 +9492,12 @@ class TestToolExecutor:
         assert len(notifier.sent) == 1
 
     def test_query_knowledge_with_store_no_results(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
 
         store = FakeKnowledgeStore()
         executor = ToolExecutor(
@@ -9522,13 +9522,13 @@ class TestToolExecutor:
 
 class TestAgentLoop:
     def _make_loop(self, call_sequence, ssh=None, gate=None, notifier=None):
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolRegistry, ToolDefinition
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
 
         reg = ToolRegistry()
         for name in ("read_config", "finish_repair", "apply_fix"):
@@ -9663,12 +9663,12 @@ class TestAgentLoop:
         #
         # FakeToolCallingLLMClient stores a reference to the mutating messages
         # list, so we use a custom client that snapshots messages at call time.
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolRegistry, ToolDefinition
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
 
         responses = [
             {"role": "assistant", "content": "Here is some advice."},
@@ -9732,12 +9732,12 @@ class TestAgentLoop:
         # When the model has called tools but has plenty of budget left, the
         # nudge should encourage the next tool call rather than mandating
         # immediate terminal exit.
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolRegistry, ToolDefinition
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
 
         responses = [
             {
@@ -9894,7 +9894,7 @@ class TestAgentLoop:
 
     def test_parse_content_as_tool_call_valid(self):
         """JSON content matching a known tool name is parsed into tool_calls."""
-        from utils.agent_loop import _parse_content_as_tool_call
+        from utils.agent.agent_loop import _parse_content_as_tool_call
 
         known = {"read_config", "finish_repair"}
         content = '{"name": "read_config", "arguments": {"path": "/config/configuration.yaml"}}'
@@ -9907,7 +9907,7 @@ class TestAgentLoop:
 
     def test_parse_content_as_tool_call_unknown_tool_returns_none(self):
         """Tool name not in known set is ignored (avoids false positives)."""
-        from utils.agent_loop import _parse_content_as_tool_call
+        from utils.agent.agent_loop import _parse_content_as_tool_call
 
         known = {"read_config"}
         content = '{"name": "rm_rf", "arguments": {}}'
@@ -9915,7 +9915,7 @@ class TestAgentLoop:
 
     def test_parse_content_as_tool_call_plain_text_returns_none(self):
         """Ordinary text content is not mis-parsed as a tool call."""
-        from utils.agent_loop import _parse_content_as_tool_call
+        from utils.agent.agent_loop import _parse_content_as_tool_call
 
         known = {"read_config", "finish_repair"}
         assert _parse_content_as_tool_call("Config looks fine.", known) is None
@@ -9929,7 +9929,7 @@ class TestAgentLoop:
         json.loads() would reject this; raw_decode() stops at the first complete
         value and treats the trailing bytes as unconsumed, so the parse succeeds.
         """
-        from utils.agent_loop import _parse_content_as_tool_call
+        from utils.agent.agent_loop import _parse_content_as_tool_call
 
         known = {"read_logs", "finish_repair"}
         content = (
@@ -9943,12 +9943,12 @@ class TestAgentLoop:
 
     def test_nudge_near_budget_pushes_to_terminal(self):
         # When calls_remaining <= 2, the nudge mandates calling the terminal tool.
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolRegistry, ToolDefinition
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
 
         # With max_tool_calls=3, after 1 prior call calls_remaining=2 <=2 → "NOW".
         responses = [
@@ -10041,13 +10041,13 @@ class TestAgentLoop:
 
     def test_executor_reset_called_on_run(self):
         """AgentLoop.run() must reset the executor so apply_fix cap resets."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         reg.register(
@@ -10092,13 +10092,13 @@ class TestAgentLoop:
 
     def test_awaiting_approval_result_exits_loop(self):
         """AgentLoop exits with 'awaiting_approval' when a tool returns awaiting_approval=True."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import (
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import (
             ToolCall,
             ToolDefinition,
             ToolRegistry,
@@ -10144,13 +10144,13 @@ class TestAgentLoop:
 
     def test_continuation_nudge_injected_after_tool_result(self):
         """A 'Continue' user message is injected into history after each tool result."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         for name in ("read_config", "finish_repair"):
@@ -10213,13 +10213,13 @@ class TestAgentLoop:
 
     def test_content_fallback_clears_content_field(self):
         """When content fallback fires, the assistant message stored in history has content=''."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         for name in ("read_config", "finish_repair"):
@@ -10280,7 +10280,7 @@ class TestAgentLoop:
 
     def test_system_prompt_requires_finish_repair(self):
         """Default system prompt explicitly mandates finish_repair and prohibits plain text."""
-        from utils.agent_loop import _AGENT_LOOP_SYSTEM_PROMPT
+        from utils.agent.agent_loop import _AGENT_LOOP_SYSTEM_PROMPT
 
         prompt_lower = _AGENT_LOOP_SYSTEM_PROMPT.lower()
         assert "finish_repair" in _AGENT_LOOP_SYSTEM_PROMPT
@@ -10292,12 +10292,12 @@ class TestAgentLoop:
         and to chat() (the limit-review call) with review_response_json."""
         import json
 
-        from utils.agent_loop import AgentLoop, LimitReviewDecision
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop, LimitReviewDecision
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         class _ReviewLLMClient:
             def __init__(self, seq, review_json):
@@ -10344,7 +10344,7 @@ class TestAgentLoop:
     def test_limit_review_called_on_budget_exhaustion_and_extends(self):
         """When budget fires and LLM says it can resolve with more, the loop extends."""
         import json
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         extend_decision = LimitReviewDecision(
             reason_limit_hit="needed more reads",
@@ -10377,7 +10377,7 @@ class TestAgentLoop:
     def test_limit_review_called_on_budget_exhaustion_gives_up(self):
         """When budget fires and LLM says it cannot proceed, loop returns exhausted."""
         import json
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         give_up = LimitReviewDecision(
             reason_limit_hit="cannot make progress",
@@ -10400,12 +10400,12 @@ class TestAgentLoop:
 
     def test_absolute_max_prevents_runaway_extension(self):
         """AGENT_MAX_TOTAL_CALLS caps the total even when LLM keeps requesting more."""
-        from utils.agent_loop import AgentLoop, LimitReviewDecision
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop, LimitReviewDecision
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         always_extend = LimitReviewDecision(
             reason_limit_hit="need more",
@@ -10460,7 +10460,7 @@ class TestAgentLoop:
 
     def test_no_tool_streak_triggers_limit_review(self):
         """Two consecutive plain-text responses call _review_limit before exhausting."""
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         give_up = LimitReviewDecision(
             reason_limit_hit="no tools available",
@@ -10480,7 +10480,7 @@ class TestAgentLoop:
         assert client.review_calls >= 1
 
     def test_limit_review_decision_schema_valid(self):
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         d = LimitReviewDecision(
             reason_limit_hit="budget hit",
@@ -10492,7 +10492,7 @@ class TestAgentLoop:
         assert d.additional_calls_requested == 3
 
     def test_limit_review_decision_schema_defaults(self):
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         d = LimitReviewDecision(
             reason_limit_hit="x",
@@ -10502,7 +10502,7 @@ class TestAgentLoop:
         assert d.summary_if_giving_up == ""
 
     def test_limit_review_decision_json_round_trip(self):
-        from utils.agent_loop import LimitReviewDecision
+        from utils.agent.agent_loop import LimitReviewDecision
 
         orig = LimitReviewDecision(
             reason_limit_hit="timeout",
@@ -10514,13 +10514,13 @@ class TestAgentLoop:
         assert restored.summary_if_giving_up == "gave up"
 
     def test_format_step_trace_empty(self):
-        from utils.agent_loop import _format_step_trace
+        from utils.agent.agent_loop import _format_step_trace
 
         assert _format_step_trace([]) == "  (no tool calls)"
 
     def test_format_step_trace_single_step(self):
-        from utils.agent_loop import _format_step_trace
-        from utils.tool_registry import AgentStep, ToolCall, ToolResult
+        from utils.agent.agent_loop import _format_step_trace
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
 
         step = AgentStep(
             step_number=1,
@@ -10643,7 +10643,7 @@ class TestLoopCrashTimeline:
     def test_crash_writes_loop_crash_timeline_event(self, tmp_path):
         import sqlite3 as _sq
         import utils.core.timeline
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         # The _patch_timeline_db autouse fixture already redirected utils.core.timeline.DB_PATH
         # to a per-test temp DB with the timeline_events table.
@@ -11297,7 +11297,7 @@ class TestExecuteUpdatePreflight:
 
     def test_blocked_when_reboot_required_active(self):
         from agents.ha_update_manager import execute_update
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
-    from utils.tool_registry import AgentLoopResult, ToolRegistry
+    from utils.agent.tool_registry import AgentLoopResult, ToolRegistry
 
 log = get_logger("cloud_escalation")
 
@@ -27,10 +27,10 @@ async def run_cloud_escalation(
     timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> "AgentLoopResult":
     """Run AgentLoop with ClaudeAPIClient. Raises BillingCapError if caps exceeded."""
-    from utils.agent_loop import AgentLoop
+    from utils.agent.agent_loop import AgentLoop
     from utils.billing import check_billing_caps
     from utils.llm.cloud_client import ClaudeAPIClient
-    from utils.tool_executor import ToolExecutor
+    from utils.agent.tool_executor import ToolExecutor
     from config import (
         AGENT_MAX_TOOL_CALLS,
         AGENT_MAX_WALL_SECONDS,
@@ -66,7 +66,7 @@ async def run_cloud_escalation(
         )
 
     try:
-        from utils.supervisor import set_active_repair_loop
+        from utils.agent.supervisor import set_active_repair_loop
 
         set_active_repair_loop(loop)
     except Exception:  # nosec B110 — best-effort registration
@@ -75,7 +75,7 @@ async def run_cloud_escalation(
         result = await loop.run(initial_context)
     finally:
         try:
-            from utils.supervisor import set_active_repair_loop
+            from utils.agent.supervisor import set_active_repair_loop
 
             set_active_repair_loop(None)
         except Exception:  # nosec B110

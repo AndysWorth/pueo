@@ -27,7 +27,7 @@ from config import (
     SSH_RETRY_BASE_DELAY,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
-from utils.autonomy import AutonomyGate, RiskLevel
+from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.core.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging

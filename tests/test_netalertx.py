@@ -521,13 +521,13 @@ class TestNetAlertXInstallerSteps1to4:
         return FakeNotifier(approve=approve)
 
     def _gate_auto(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _gate_ask(self):
         """Gate that always requests HITL approval (outcome determined by notifier)."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=False)
 
@@ -1491,12 +1491,12 @@ class TestNetAlertXInstallerSteps5to8:
         return FakeNotifier(approve=approve)
 
     def _gate_auto(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _gate_ask(self, approval: bool = True):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=False, approval_result=approval)
 
@@ -2999,7 +2999,7 @@ class TestNetAlertXInstallerSteps5to8:
 
 class TestRunInstaller:
     def _gate_auto(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
@@ -3087,7 +3087,7 @@ class TestRunInstaller:
 
         from netalertx.installer import run_installer
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         from agents import ha_agent_advanced
         import netalertx.installer as inst
@@ -3292,7 +3292,7 @@ def _make_syncer(
     notifier=None,
 ):
     from netalertx.ha_name_sync import HaNameSync
-    from utils.autonomy import FakeAutonomyGate
+    from utils.agent.autonomy import FakeAutonomyGate
     from utils.notify import FakeNotifier
 
     return HaNameSync(
@@ -3628,7 +3628,7 @@ class TestHaNameSyncCases1And2:
     def test_case3_conflict_collected_no_write_on_rejection(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -3667,7 +3667,7 @@ class TestHaNameSyncCases1And2:
     def test_case4_no_ha_name_and_auto_devname_collected_as_unnamed(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:07"
@@ -3701,7 +3701,7 @@ class TestHaNameSyncCases1And2:
     def test_zero_ha_names_triggers_low_hitl(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -3715,7 +3715,7 @@ class TestHaNameSyncCases1And2:
         asyncio.run(syncer.sync_names())
 
         assert len(gate.require_approval_calls) == 1
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.LOW
 
@@ -3795,7 +3795,7 @@ class TestHaNameSyncCases1And2:
         nax = _FakeNAXClient(devices)
         ha_http = _ha_states_transport(states)
         # Use rejection gate so Case 3 conflict is not auto-resolved
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         syncer = _make_syncer(
@@ -3871,7 +3871,7 @@ class TestHaNameSyncCases3And4:
     def test_case3_approval_writes_and_locks_all(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -3903,14 +3903,14 @@ class TestHaNameSyncCases3And4:
         assert ("AA:BB:CC:DD:EE:10", "devName", True) in nax.locks
         assert len(report.conflicted) == 1  # still recorded
         assert len(gate.require_approval_calls) == 1
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.MEDIUM
 
     def test_case3_rejection_skips_all(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -3945,7 +3945,7 @@ class TestHaNameSyncCases3And4:
     def test_case3_multiple_conflicts_single_hitl_call(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         macs = ["AA:BB:CC:DD:EE:12", "AA:BB:CC:DD:EE:13"]
@@ -4038,7 +4038,7 @@ class TestHaNameSyncCases3And4:
     def test_case4_step_b_in_addr_arpa_hostname_skipped(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:22"
@@ -4067,7 +4067,7 @@ class TestHaNameSyncCases3And4:
     def test_case4_step_b_no_dns_response_falls_to_step_c(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:23"
@@ -4098,7 +4098,7 @@ class TestHaNameSyncCases3And4:
     def test_case4_step_c_unnamed_hitl_fires_with_low_risk(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:24"
@@ -4152,7 +4152,7 @@ class TestHaNameSyncCases3And4:
     def test_sync_device_conflict_triggers_medium_hitl(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -4373,7 +4373,7 @@ class TestNetAlertXLogMonitor:
     def test_level_1_sends_notifier_no_healer(self, monkeypatch):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
@@ -4414,7 +4414,7 @@ class TestNetAlertXLogMonitor:
     def test_stream_reconnects_on_ose_error(self, monkeypatch):
         import asyncio as asyncio_mod
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -5335,7 +5335,7 @@ class TestNetAlertXHealer:
     def test_level_1_notifier_event_no_writes(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5359,7 +5359,7 @@ class TestNetAlertXHealer:
     def test_level_2_rejection_no_writes(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5376,7 +5376,7 @@ class TestNetAlertXHealer:
     def test_level_2_approval_executes_mqtt_fix(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5409,7 +5409,7 @@ class TestNetAlertXHealer:
     def test_level_3_app_conf_auto_proceeds(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5441,7 +5441,7 @@ class TestNetAlertXHealer:
     def test_level_3_ha_config_requires_approval(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5476,7 +5476,7 @@ class TestNetAlertXHealer:
     def test_level_4_networking_restart_rescan(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -5495,7 +5495,7 @@ class TestNetAlertXHealer:
     def test_level_4_no_hitl_for_high_risk(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -5515,7 +5515,7 @@ class TestNetAlertXHealer:
         import asyncio
         import sqlite3
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -5550,7 +5550,7 @@ class TestNetAlertXHealer:
     def test_no_version_bump_returns_true_immediately(self, tmp_path):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         db_path = str(tmp_path / "test.db")
@@ -5567,7 +5567,7 @@ class TestNetAlertXHealer:
         import asyncio
         import sqlite3
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5601,7 +5601,7 @@ class TestNetAlertXHealer:
     def test_ha_integration_requires_approval(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5719,7 +5719,7 @@ class TestNetAlertXHealer:
         """require_approval returning True at level 2 should execute restart + rescan."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -5736,7 +5736,7 @@ class TestNetAlertXHealer:
         import asyncio
         import sqlite3
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5767,7 +5767,7 @@ class TestNetAlertXHealer:
         """When approved, _fix_ha_automation_fields writes fixed content."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5795,7 +5795,7 @@ class TestNetAlertXHealer:
         """If automation already uses camelCase, no write happens."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5815,7 +5815,7 @@ class TestNetAlertXHealer:
         """app.conf write proceeds even when file doesn't exist yet."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -5839,7 +5839,7 @@ class TestNetAlertXHealer:
         """database/version categories send notification and don't write files."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5856,7 +5856,7 @@ class TestNetAlertXHealer:
         """When HA configuration.yaml has no mqtt: key, _remove_ha_mqtt_key does nothing."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -5885,7 +5885,7 @@ class TestNetAlertXHealer:
     ):
         """run_heal('fix_webhook_fields') calls _fix_ha_automation_fields."""
         from agents import ha_agent_sandbox_engine
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         db = str(tmp_path / "healer_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
@@ -5916,7 +5916,7 @@ class TestNetAlertXHealer:
     def test_run_heal_unknown_action_raises(self, tmp_path):
         """run_heal with an unknown action raises ValueError."""
         import pytest as _pytest
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from netalertx.healer import NetAlertXHealer
         from utils.ha.ssh_client import FakeSSHClient
         from utils.notify import FakeNotifier
@@ -6207,7 +6207,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_webhook_snake_case_level_4_auto_fixes(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -6231,7 +6231,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_webhook_snake_case_level_3_requires_approval(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6253,7 +6253,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_webhook_snake_case_level_3_approval_writes(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6278,7 +6278,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_mqtt_divergence_sends_notifier_event_no_writes(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6301,7 +6301,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_mqtt_divergence_no_hitl_gate_called(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -6317,7 +6317,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_db_issue_level_4_triggers_dbclnp(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         api = _FakeAPIClient()
@@ -6333,7 +6333,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_db_issue_level_3_no_dbclnp(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         # should_auto_execute returns False → no DBCLNP at level < 4
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -6347,7 +6347,7 @@ class TestNetAlertXMaintenanceHealer:
     def test_no_issues_is_noop(self):
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6583,7 +6583,7 @@ class TestNetAlertXOneShotDiagnose:
             {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
         # Gate must allow auto-execution so heal() is called without blocking on HITL
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         gate = FakeAutonomyGate(auto_execute_result=True)
 
@@ -6888,7 +6888,7 @@ class TestNetAlertXOneShotDiagnose:
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         diag = NetAlertXDiagnostic(
             issue="Scan is stale",
@@ -6931,7 +6931,7 @@ class TestNetAlertXOneShotDiagnose:
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         diag = NetAlertXDiagnostic(
             issue="Scan is stale",
@@ -7096,7 +7096,7 @@ class TestNetAlertXOneShotDiagnose:
         """When HITL is required, one-shot mode delegates to healer.heal() — not fire-and-forget."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -7206,7 +7206,7 @@ class TestStep8SlugWriteback:
     """Step 8 writes the resolved addon slug to config.yaml on FULLY_OPERATIONAL."""
 
     def _gate_auto(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True, approval_result=True)
 
@@ -7566,12 +7566,12 @@ class TestNetAlertXUninstallerStateMachine:
         return FakeNotifier(approve=approve)
 
     def _gate_approve(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _gate_reject(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=False)
 
@@ -7825,7 +7825,7 @@ class TestDockerInstallerStateMachine:
             return self._approve
 
     def _make_gate(self, approve=True):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=approve)
 
@@ -7836,7 +7836,7 @@ class TestDockerInstallerStateMachine:
         """Abort with CRITICAL card when Docker host reports macOS (darwin)."""
         from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         monkeypatch.setattr(
             "netalertx.docker_installer.NETALERTX_DOCKER_HOST", "192.168.1.50"
@@ -8669,7 +8669,7 @@ class TestNetAlertXEventRouter:
     def _make_router(self, auto_execute: bool = False):
         from unittest.mock import AsyncMock
         from unittest.mock import MagicMock
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from netalertx.event_router import NetAlertXEventRouter
 
         gate = FakeAutonomyGate(auto_execute_result=auto_execute)
@@ -8992,12 +8992,12 @@ def _make_docker_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL"
 
 class TestDockerUninstallerStateMachine:
     def _gate_approve(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _gate_reject(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=False)
 
@@ -9260,12 +9260,12 @@ def _make_switch_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="
 
 class TestNetAlertXSwitchFlow:
     def _gate_approve(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _gate_reject(self):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
 
         return FakeAutonomyGate(auto_execute_result=False)
 
@@ -9330,7 +9330,7 @@ class TestNetAlertXSwitchFlow:
 
     def test_mismatch_rejected_leaves_state_unchanged(self, tmp_path, monkeypatch):
         """Rejecting the switch HITL card leaves state at FULLY_OPERATIONAL."""
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch

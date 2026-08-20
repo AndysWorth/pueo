@@ -47,7 +47,7 @@ from utils.core.prompts import load_prompt
 from .ha_agent_core import DiagnosticsReport
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
-from utils.autonomy import AutonomyGate, RiskLevel
+from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix
 from .ha_agent_advanced import (
@@ -596,9 +596,9 @@ async def _run_code_proposal_loop(
     The loop reads relevant source, proposes a patch, validates it in the sandbox,
     and queues an open_pr approval card — all without human input until the final approval.
     """
-    from utils.agent_loop import AgentLoop
-    from utils.tool_executor import ToolExecutor
-    from utils.tool_registry import build_code_proposal_registry
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_code_proposal_registry
 
     executor = ToolExecutor(
         ha_ssh_client=ssh_client,
@@ -686,9 +686,9 @@ async def main(
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=_ssh)
 
-    from utils.agent_loop import AgentLoop
-    from utils.tool_executor import ToolExecutor
-    from utils.tool_registry import build_ha_tool_registry
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_ha_tool_registry
 
     _knowledge_store: Optional[KnowledgeStoreClientProtocol]
     if knowledge_store is not None:
@@ -713,7 +713,7 @@ async def main(
     async def _on_repair_timeline(tool_name: str, status_line: str) -> None:
         try:
             from utils.core.timeline import write_timeline_event
-            from utils.supervisor import publish_event
+            from utils.agent.supervisor import publish_event
 
             write_timeline_event("INFO", "agent_loop", status_line)
             publish_event(
@@ -741,7 +741,7 @@ async def main(
     if similar:
         initial_context = similar + "\n\n" + initial_context
     try:
-        from utils.supervisor import set_active_repair_loop
+        from utils.agent.supervisor import set_active_repair_loop
 
         set_active_repair_loop(loop)
     except Exception:  # nosec B110 — best-effort registration
@@ -750,7 +750,7 @@ async def main(
         result = await loop.run(initial_context)
     finally:
         try:
-            from utils.supervisor import set_active_repair_loop
+            from utils.agent.supervisor import set_active_repair_loop
 
             set_active_repair_loop(None)
         except Exception:  # nosec B110
@@ -778,7 +778,7 @@ async def main(
     # - Level 2–3: sends a cloud_escalation approval card and polls for approval.
     # - Level 1 (REPORT_ONLY): require_approval returns False, skip silently.
     if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
-        from utils.agent_loop import _format_step_trace
+        from utils.agent.agent_loop import _format_step_trace
         from utils.billing import BillingCapError, estimate_cost, get_daily_spend
         from utils.card_types import CARD_TYPE_CLOUD_ESCALATION
 
@@ -860,7 +860,7 @@ async def main(
         action,
     )
     try:
-        from utils.supervisor import publish_event
+        from utils.agent.supervisor import publish_event
 
         ev_type = "repair_done" if result.outcome == "success" else "repair_failed"
         publish_event({"event_type": ev_type, "outcome": result.outcome})

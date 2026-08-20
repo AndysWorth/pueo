@@ -13,7 +13,7 @@ from utils.repair_episode import (
     get_unembedded_successful_episodes,
     mark_episode_embedded,
 )
-from utils.tool_registry import ToolCall
+from utils.agent.tool_registry import ToolCall
 
 
 def _make_episode(**kwargs: Any) -> RepairEpisode:

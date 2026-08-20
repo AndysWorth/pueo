@@ -27,13 +27,13 @@ from config import (
     NETALERTX_SSH_USER,
     SSH_KEY_PATH,
 )
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from utils.card_types import CARD_TYPE_NETALERTX_UNINSTALL
 from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.docker_uninstaller")
@@ -288,7 +288,7 @@ async def main(
 ) -> None:
     """Entry point for `--mode netalertx-docker-uninstall`."""
     from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 

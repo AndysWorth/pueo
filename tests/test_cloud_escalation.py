@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 class TestRunCloudEscalation:
     def _make_registry(self):
-        from utils.tool_registry import ToolDefinition, ToolRegistry
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
 
         reg = ToolRegistry()
         for name in ("read_config", "finish_repair"):
@@ -23,7 +23,7 @@ class TestRunCloudEscalation:
         """run_cloud_escalation raises BillingCapError if spending caps are exceeded."""
         from utils.billing import BillingCapError
         from utils.cloud_escalation import run_cloud_escalation
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         import pytest
@@ -47,9 +47,9 @@ class TestRunCloudEscalation:
 
     def test_cloud_loop_runs_on_success(self):
         """run_cloud_escalation runs an AgentLoop with ClaudeAPIClient and returns result."""
-        from utils.agent_loop import AgentLoopResult
+        from utils.agent.agent_loop import AgentLoopResult
         from utils.cloud_escalation import run_cloud_escalation
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -58,8 +58,8 @@ class TestRunCloudEscalation:
         with (
             patch("utils.billing.check_billing_caps"),
             patch("utils.llm.cloud_client.ClaudeAPIClient") as MockClient,
-            patch("utils.agent_loop.AgentLoop") as MockLoop,
-            patch("utils.tool_executor.ToolExecutor"),
+            patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            patch("utils.agent.tool_executor.ToolExecutor"),
         ):
             mock_loop_instance = MagicMock()
             mock_loop_instance.run = AsyncMock(return_value=fake_result)
@@ -80,9 +80,9 @@ class TestRunCloudEscalation:
 
     def test_default_context_inserted_when_empty(self):
         """When initial_context is empty a fallback prompt is used."""
-        from utils.agent_loop import AgentLoopResult
+        from utils.agent.agent_loop import AgentLoopResult
         from utils.cloud_escalation import run_cloud_escalation
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -92,8 +92,8 @@ class TestRunCloudEscalation:
         with (
             patch("utils.billing.check_billing_caps"),
             patch("utils.llm.cloud_client.ClaudeAPIClient"),
-            patch("utils.tool_executor.ToolExecutor"),
-            patch("utils.agent_loop.AgentLoop") as MockLoop,
+            patch("utils.agent.tool_executor.ToolExecutor"),
+            patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
         ):
             mock_loop_instance = MagicMock()
 
@@ -122,7 +122,7 @@ class TestRunCloudEscalation:
         """BillingCapError raised during loop execution propagates to the caller."""
         from utils.billing import BillingCapError
         from utils.cloud_escalation import run_cloud_escalation
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         import pytest
@@ -130,8 +130,8 @@ class TestRunCloudEscalation:
         with (
             patch("utils.billing.check_billing_caps"),
             patch("utils.llm.cloud_client.ClaudeAPIClient"),
-            patch("utils.tool_executor.ToolExecutor"),
-            patch("utils.agent_loop.AgentLoop") as MockLoop,
+            patch("utils.agent.tool_executor.ToolExecutor"),
+            patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
         ):
             mock_loop_instance = MagicMock()
             mock_loop_instance.run = AsyncMock(

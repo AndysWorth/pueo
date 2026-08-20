@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 from pydantic import BaseModel
 
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 from utils.core.logging import get_logger
 

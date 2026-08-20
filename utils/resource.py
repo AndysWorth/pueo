@@ -142,7 +142,7 @@ class ResourcePoller:
                 )
                 update_resource_status(status)
                 try:
-                    from utils.supervisor import publish_event
+                    from utils.agent.supervisor import publish_event
 
                     publish_event(
                         {

@@ -24,14 +24,14 @@ from config import (
 )
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
-from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 
 _UNSET = object()  # sentinel for provider-aware model default
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol
-    from utils.tool_executor import ToolExecutor
-    from utils.tool_registry import ToolRegistry
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import ToolRegistry
 
 log = get_logger("agent_loop")
 

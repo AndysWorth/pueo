@@ -59,7 +59,7 @@ class TestLogMonitorActionablePath:
     ):
         """CRITICAL log line → triage → gate blocks → notifier receives a HITL card."""
         from agents import ha_log_monitor
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -89,7 +89,7 @@ class TestLogMonitorActionablePath:
     def test_info_line_does_not_trigger_notifier(self, monkeypatch, ssh_with_info_line):
         """INFO log line below CRITICAL_LOG_PATTERN does not reach the notifier."""
         from agents import ha_log_monitor
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -118,7 +118,7 @@ class TestLogMonitorActionablePath:
     ):
         """CRITICAL line with confidence below threshold does not send a card."""
         from agents import ha_log_monitor
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -147,7 +147,7 @@ class TestLogMonitorActionablePath:
     ):
         """When SELF_HEALING_ENABLED is False, no HITL card is sent."""
         from agents import ha_log_monitor
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.core.rate_limiter import Debouncer, RateLimiter
@@ -180,7 +180,7 @@ class TestLogMonitorActionablePath:
     ):
         """When gate.should_auto_execute returns True, no HITL card is sent (repair is triggered)."""
         from agents import ha_log_monitor
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 

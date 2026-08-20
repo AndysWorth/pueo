@@ -94,7 +94,7 @@ class TestEvalScenario:
 
 class TestFakeToolExecutor:
     def _make_tc(self, name: str, arguments: dict | None = None):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         return ToolCall(name=name, arguments=arguments or {})
 
@@ -233,7 +233,12 @@ class TestFakeToolExecutor:
 
 class TestScoreResult:
     def _make_result(self, outcome: str, tool_names: list[str]):
-        from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+        from utils.agent.tool_registry import (
+            AgentLoopResult,
+            AgentStep,
+            ToolCall,
+            ToolResult,
+        )
 
         steps = [
             AgentStep(

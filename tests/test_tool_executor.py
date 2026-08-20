@@ -53,7 +53,7 @@ class _CapturingFakeLLMClient:
 
 
 def _make_enrichment_json() -> str:
-    from utils.tool_registry import FixEnrichment
+    from utils.agent.tool_registry import FixEnrichment
 
     return FixEnrichment(
         relevant_config_section="http:\n  server_port: 8123",
@@ -64,10 +64,10 @@ def _make_enrichment_json() -> str:
 
 
 def _make_executor(*, llm_client=None, notifier=None):
-    from utils.autonomy import FakeAutonomyGate
+    from utils.agent.autonomy import FakeAutonomyGate
     from utils.notify import FakeNotifier
     from utils.ha.ssh_client import FakeSSHClient
-    from utils.tool_executor import ToolExecutor
+    from utils.agent.tool_executor import ToolExecutor
 
     ssh = FakeSSHClient(
         file_contents={"/config/configuration.yaml": _VALID_YAML},
@@ -97,7 +97,7 @@ class TestEnrichFixContext:
         result = asyncio.run(
             executor._enrich_fix_context(_VALID_YAML, _PROPOSED_YAML, "Fix port")
         )
-        from utils.tool_registry import FixEnrichment
+        from utils.agent.tool_registry import FixEnrichment
 
         assert isinstance(result, FixEnrichment)
         assert result.confidence == "high"
@@ -191,8 +191,9 @@ class TestFetchHaDocs:
                     dest.write_text(content)
 
             with patch(
-                "utils.tool_executor._config_mod.HA_SOURCE_CACHE_DIR", str(cache_dir)
-            ), patch("utils.tool_executor._config_mod.LLM_PROVIDER", provider):
+                "utils.agent.tool_executor._config_mod.HA_SOURCE_CACHE_DIR",
+                str(cache_dir),
+            ), patch("utils.agent.tool_executor._config_mod.LLM_PROVIDER", provider):
                 executor = _make_executor()
                 return asyncio.run(executor._fetch_ha_docs(domain, filename))
 
@@ -238,7 +239,7 @@ class TestFetchHaDocs:
         with patch("urllib.request.urlopen", return_value=_FakeSyncResp(big_content)):
             result = self._run("zha", "sensor.py", provider="cloud")
         assert result.success is True
-        from utils.tool_executor import _MAX_HA_DOC_FETCH_CHARS
+        from utils.agent.tool_executor import _MAX_HA_DOC_FETCH_CHARS
 
         assert len(result.output) <= _MAX_HA_DOC_FETCH_CHARS
 
@@ -248,8 +249,10 @@ class TestFetchUrl:
 
     def _run(self, url: str, *, allow_wan: bool = True):
         with patch(
-            "utils.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
-        ), patch("utils.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 10):
+            "utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
+        ), patch(
+            "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 10
+        ):
             executor = _make_executor()
             return asyncio.run(executor._fetch_url(url))
 
@@ -285,7 +288,7 @@ class TestFetchUrl:
         with patch("urllib.request.urlopen", return_value=_FakeSyncResp(big_body)):
             result = self._run("https://example.com/api")
         assert result.success is True
-        from utils.tool_executor import _MAX_FETCH_URL_CHARS
+        from utils.agent.tool_executor import _MAX_FETCH_URL_CHARS
 
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
 
@@ -365,11 +368,11 @@ class TestInvestigateDevice:
         import asyncio
         import json
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         ws = FakeHAWebSocketClient(
             devices=[
@@ -407,11 +410,11 @@ class TestInvestigateDevice:
         """set_ws_client() deferred injection works the same as constructor injection."""
         import asyncio
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         ws = FakeHAWebSocketClient()
         ssh = FakeSSHClient(file_contents={}, command_results={})
@@ -434,13 +437,13 @@ class TestInvestigateDevice:
         assert kwargs["ws_client"] is ws
 
     def test_investigate_device_in_chat_registry(self):
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         reg = build_chat_tool_registry()
         assert "investigate_device" in reg
 
     def test_investigate_device_in_ha_repair_registry(self):
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         reg = build_ha_tool_registry()
         assert "investigate_device" in reg
@@ -449,10 +452,10 @@ class TestInvestigateDevice:
         """netalertx_api_client passed at construction must reach enrich_http_login."""
         from unittest.mock import MagicMock
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         nax_api = MagicMock()
         ssh = FakeSSHClient(file_contents={}, command_results={})

@@ -35,7 +35,7 @@ from config import (
     NETALERTX_MQTT_USER,
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from utils.core.logging import get_logger, set_correlation_id
 
 # Backward-compatible alias — existing tests import check_disk_space from here.
@@ -43,7 +43,7 @@ check_disk_space = check_target_disk_space
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.docker_installer")
@@ -793,7 +793,7 @@ async def main(
         NOTIFY_URL,
         NOTIFY_WATCH_DIR,
     )
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 

@@ -13,11 +13,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from agents import ha_agent_advanced
-from utils.autonomy import FakeAutonomyGate
+from utils.agent.autonomy import FakeAutonomyGate
 from utils.notify import FakeNotifier
 from utils.ha.ssh_client import FakeSSHClient
-from utils.tool_executor import ToolExecutor
-from utils.tool_registry import ToolCall
+from utils.agent.tool_executor import ToolExecutor
+from utils.agent.tool_registry import ToolCall
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ class TestRememberRecall:
         assert "Nothing found" in result.output
 
     def test_recall_respects_top_k(self, db_path, monkeypatch):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "CHAT_MEMORY_TOP_K", 3)
         ex = ToolExecutor(
@@ -234,7 +234,7 @@ class TestRememberRecall:
 class TestChatToolRegistry:
     @pytest.fixture(autouse=True)
     def registry(self):
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         self._registry = build_chat_tool_registry()
 
@@ -284,9 +284,9 @@ class TestAgentLoopTerminalTool:
     """AgentLoop terminates on finish_chat when terminal_tool_name='finish_chat'."""
 
     def _make_loop(self, llm, terminal_tool_name, db_path):
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeLLMClient
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         ex = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -326,9 +326,9 @@ class TestAgentLoopTerminalTool:
 
     def test_default_terminal_tool_is_finish_repair(self, db_path):
         """Default terminal_tool_name='finish_repair' still works unchanged."""
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
             [
@@ -365,9 +365,9 @@ class TestAgentLoopTerminalTool:
 
     def test_finish_chat_does_not_trigger_default_loop(self, db_path):
         """finish_chat call in a default (finish_repair) loop does NOT terminate it."""
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         # Call finish_chat (not finish_repair) — loop should continue and exhaust
         llm = FakeToolCallingLLMClient(
@@ -414,7 +414,7 @@ class TestAgentLoopTerminalTool:
 class TestReadSource:
     @pytest.fixture
     def fake_repo(self, monkeypatch, tmp_path):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
         return tmp_path
@@ -476,7 +476,7 @@ class TestSandboxCode:
 
     @pytest.fixture
     def patched_executor(self, db_path, monkeypatch, tmp_path):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         # Redirect _REPO_ROOT so propose_patch accepts a path that exists there
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
@@ -512,7 +512,7 @@ class TestSandboxCode:
         assert "propose_patch" in (result.error or "")
 
     def test_all_checks_pass_returns_success(self, patched_executor, monkeypatch):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         # Stage a patch first
         asyncio.run(
@@ -539,7 +539,7 @@ class TestSandboxCode:
         assert patched_executor._sandbox_passed is True
 
     def test_failing_check_returns_failure(self, patched_executor, monkeypatch):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         asyncio.run(
             patched_executor.execute(
@@ -565,7 +565,7 @@ class TestSandboxCode:
         assert patched_executor._sandbox_passed is False
 
     def test_sandbox_output_captured(self, patched_executor, monkeypatch):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         asyncio.run(
             patched_executor.execute(
@@ -601,7 +601,7 @@ class TestAddTool:
     @pytest.fixture
     def prepped_executor(self, db_path, monkeypatch, tmp_path):
         """Executor with sandbox already passed and a pending patch staged."""
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
         (tmp_path / "new_tool.py").write_text(self._VALID_CODE)
@@ -844,9 +844,9 @@ class TestAgentLoopInitialMessages:
     """AgentLoop.run() correctly incorporates prior conversation history."""
 
     def test_loop_runs_with_initial_messages(self, db_path):
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         llm = FakeToolCallingLLMClient(
             [
@@ -887,9 +887,9 @@ class TestAgentLoopInitialMessages:
 
     def test_loop_runs_without_initial_messages(self, db_path):
         """Backward-compat: None initial_messages behaves as before."""
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         llm = FakeToolCallingLLMClient(
             [
@@ -933,7 +933,7 @@ class TestOpenPrTool:
 
     @pytest.fixture
     def prepped_executor(self, db_path, monkeypatch, tmp_path):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
         (tmp_path / "utils").mkdir()
@@ -1089,14 +1089,14 @@ class TestGapDetection:
     # ------------------------------------------------------------------
 
     def test_agent_loop_result_capability_gap_default_false(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         r = AgentLoopResult(outcome="success", steps=[])
         assert r.capability_gap is False
         assert r.gap_description == ""
 
     def test_agent_loop_result_capability_gap_set(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         r = AgentLoopResult(
             outcome="success",
@@ -1108,7 +1108,7 @@ class TestGapDetection:
         assert r.gap_description == "Need a tool to check sensor state"
 
     def test_agent_loop_result_json_round_trip_with_gap(self):
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         orig = AgentLoopResult(
             outcome="success",
@@ -1125,21 +1125,21 @@ class TestGapDetection:
     # ------------------------------------------------------------------
 
     def test_finish_repair_accepts_capability_gap_parameter(self):
-        from utils.tool_registry import FINISH_REPAIR
+        from utils.agent.tool_registry import FINISH_REPAIR
 
         props = FINISH_REPAIR.parameters["properties"]
         assert "capability_gap" in props
         assert props["capability_gap"]["type"] == "boolean"
 
     def test_finish_repair_accepts_gap_description_parameter(self):
-        from utils.tool_registry import FINISH_REPAIR
+        from utils.agent.tool_registry import FINISH_REPAIR
 
         props = FINISH_REPAIR.parameters["properties"]
         assert "gap_description" in props
         assert props["gap_description"]["type"] == "string"
 
     def test_finish_repair_does_not_require_capability_gap(self):
-        from utils.tool_registry import FINISH_REPAIR
+        from utils.agent.tool_registry import FINISH_REPAIR
 
         required = FINISH_REPAIR.parameters["required"]
         assert "capability_gap" not in required
@@ -1150,7 +1150,7 @@ class TestGapDetection:
     # ------------------------------------------------------------------
 
     def test_code_proposal_registry_has_required_tools(self):
-        from utils.tool_registry import build_code_proposal_registry
+        from utils.agent.tool_registry import build_code_proposal_registry
 
         reg = build_code_proposal_registry()
         names = reg.names()
@@ -1164,7 +1164,7 @@ class TestGapDetection:
             assert tool in names, f"{tool!r} missing from code_proposal registry"
 
     def test_code_proposal_registry_excludes_apply_fix(self):
-        from utils.tool_registry import build_code_proposal_registry
+        from utils.agent.tool_registry import build_code_proposal_registry
 
         reg = build_code_proposal_registry()
         assert "apply_fix" not in reg.names()
@@ -1174,9 +1174,9 @@ class TestGapDetection:
     # ------------------------------------------------------------------
 
     def test_agent_loop_propagates_capability_gap_true(self, db_path):
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1216,9 +1216,9 @@ class TestGapDetection:
         assert result.gap_description == "Need a tool to query sensor history"
 
     def test_agent_loop_capability_gap_false_by_default(self, db_path):
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1262,7 +1262,7 @@ class TestGapDetection:
     def test_sandbox_engine_calls_proposal_loop_on_gap(self, db_path, monkeypatch):
         """When AgentLoop result has capability_gap=True, main() calls _run_code_proposal_loop."""
         from agents import ha_agent_sandbox_engine as engine
-        from utils.agent_loop import AgentLoopResult
+        from utils.agent.agent_loop import AgentLoopResult
 
         calls: list[dict] = []
 
@@ -1290,11 +1290,11 @@ class TestGapDetection:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
         ha_agent_advanced.init_local_database()
 
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
 
         monkeypatch.setattr(AgentLoop, "run", fake_run)
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
@@ -1314,7 +1314,7 @@ class TestGapDetection:
     def test_sandbox_engine_skips_proposal_loop_without_gap(self, db_path, monkeypatch):
         """When capability_gap=False, main() does not call _run_code_proposal_loop."""
         from agents import ha_agent_sandbox_engine as engine
-        from utils.agent_loop import AgentLoopResult
+        from utils.agent.agent_loop import AgentLoopResult
 
         calls: list[dict] = []
 
@@ -1336,11 +1336,11 @@ class TestGapDetection:
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
         ha_agent_advanced.init_local_database()
 
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
 
         monkeypatch.setattr(AgentLoop, "run", fake_run)
 
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
@@ -1368,7 +1368,7 @@ class TestProposePatchSafety:
 
     @pytest.fixture(autouse=True)
     def fake_repo(self, monkeypatch, tmp_path, db_path):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
         (tmp_path / "utils").mkdir()
@@ -1446,7 +1446,7 @@ class TestResolveRepoPathSecurity:
 
     @pytest.fixture
     def sibling_setup(self, monkeypatch, tmp_path, db_path):
-        import utils.tool_executor as te_mod
+        import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(te_mod, "_REPO_ROOT", tmp_path)
         # Create a sibling whose name is a prefix extension of tmp_path.name
@@ -1499,8 +1499,8 @@ class TestPreStepCallback:
     """pre_step_callback fires before each tool execution, before step_callback."""
 
     def _make_loop(self, llm, pre_cb, post_cb, db_path):
-        from utils.agent_loop import AgentLoop
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         ex = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -1567,7 +1567,7 @@ class TestPreStepCallback:
         async def on_pre(tool_call: ToolCall) -> None:
             events.append(f"pre:{tool_call.name}")
 
-        from utils.tool_registry import AgentStep
+        from utils.agent.tool_registry import AgentStep
 
         def on_post(step: AgentStep) -> None:
             events.append(f"post:{step.tool_call.name}")
@@ -1663,7 +1663,7 @@ class TestDurableToolHistory:
             return cur.lastrowid  # type: ignore[return-value]
 
     def _patch_loop(self, monkeypatch, result):
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
 
         async def _fake_run(self_, message, **kw):  # noqa: ARG001
             return result
@@ -1675,7 +1675,12 @@ class TestDurableToolHistory:
         import json as _json
         import time as _time
 
-        from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+        from utils.agent.tool_registry import (
+            AgentLoopResult,
+            AgentStep,
+            ToolCall,
+            ToolResult,
+        )
 
         path, dashboard = ctx
         now = _time.time()
@@ -1715,7 +1720,12 @@ class TestDurableToolHistory:
         """finish_chat steps are NOT written as intermediate rows."""
         import time as _time
 
-        from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+        from utils.agent.tool_registry import (
+            AgentLoopResult,
+            AgentStep,
+            ToolCall,
+            ToolResult,
+        )
 
         path, dashboard = ctx
         now = _time.time()
@@ -1746,7 +1756,7 @@ class TestDurableToolHistory:
 
     def test_final_summary_always_written(self, ctx, monkeypatch):
         """The final assistant summary row is always written regardless of steps."""
-        from utils.tool_registry import AgentLoopResult
+        from utils.agent.tool_registry import AgentLoopResult
 
         path, dashboard = ctx
         result = AgentLoopResult(
@@ -1780,8 +1790,8 @@ class TestTimelineCallback:
     """timeline_callback fires after each tool execution with correct tool name and status."""
 
     def _make_loop(self, llm, timeline_cb, db_path):
-        from utils.agent_loop import AgentLoop
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         ex = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -1919,8 +1929,8 @@ class TestInjectContext:
     """AgentLoop.inject_context() appends a user message to the live conversation."""
 
     def _make_loop(self, llm, db_path):
-        from utils.agent_loop import AgentLoop
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         ex = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -1974,9 +1984,9 @@ class TestInjectContext:
 
     def test_inject_context_appends_during_run(self, db_path):
         """inject_context called from within a step callback appends a user message."""
-        from utils.agent_loop import AgentLoop
+        from utils.agent.agent_loop import AgentLoop
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         injected_messages: list[dict] = []
 
@@ -2043,7 +2053,7 @@ class TestRepairInjectEndpoint:
         monkeypatch.setenv("PUEO_CONFIG", db_path)
         monkeypatch.setattr(dashboard, "DB_PATH", db_path)
 
-        from utils import supervisor as sv
+        from utils.agent import supervisor as sv
 
         monkeypatch.setattr(sv, "_active_repair_loop", None)
 
@@ -2059,7 +2069,7 @@ class TestRepairInjectEndpoint:
         monkeypatch.setenv("PUEO_CONFIG", db_path)
         monkeypatch.setattr(dashboard, "DB_PATH", db_path)
 
-        from utils import supervisor as sv
+        from utils.agent import supervisor as sv
 
         injected: list[str] = []
 
@@ -2083,7 +2093,7 @@ class TestRepairInjectEndpoint:
         monkeypatch.setenv("PUEO_CONFIG", db_path)
         monkeypatch.setattr(dashboard, "DB_PATH", db_path)
 
-        from utils import supervisor as sv
+        from utils.agent import supervisor as sv
 
         class _FakeLoop:
             def inject_context(self, message: str) -> None:

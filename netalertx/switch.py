@@ -20,7 +20,7 @@ from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.switch")
@@ -92,7 +92,7 @@ async def run_switch(
         print(f"NetAlertX is already on {current_platform!r}. Nothing to do.")
         return state
 
-    from utils.autonomy import RiskLevel
+    from utils.agent.autonomy import RiskLevel
 
     approved = await gate.require_approval(
         subject=(f"Switch NetAlertX from {current_platform!r} to {target_platform!r}"),
@@ -183,7 +183,7 @@ async def main(
         NOTIFY_WATCH_DIR,
         SSH_KEY_PATH,
     )
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 

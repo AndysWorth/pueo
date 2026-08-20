@@ -374,7 +374,7 @@ def _load_last_backup() -> dict:
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
     from utils.resource import get_resource_status
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
     from utils.core.timeline import load_timeline_events
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
@@ -440,7 +440,7 @@ async def ha_status_check() -> JSONResponse:  # pragma: no cover
 @app.get("/events")
 async def sse_events() -> StreamingResponse:
     """Server-Sent Events stream — pushes loop_status and resource events to the browser."""
-    from utils.supervisor import subscribe, unsubscribe
+    from utils.agent.supervisor import subscribe, unsubscribe
 
     async def event_stream():
         q = subscribe()
@@ -472,7 +472,7 @@ async def _execute_queued_update(
     """Run the update pipeline for an approved update card."""
     import config as _config
     from agents.ha_update_manager import execute_update
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.ha.ha_rest_client import HARestClient, UpdateStatus
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
@@ -557,7 +557,7 @@ async def _post_reboot_repair_scan(settle_seconds: int = 20) -> None:
     """After a reboot succeeds, wake the repair_poll loop early to catch new issues."""
     await asyncio.sleep(settle_seconds)
     try:
-        from utils.supervisor import get_supervisor_instance
+        from utils.agent.supervisor import get_supervisor_instance
 
         sv = get_supervisor_instance()
         if sv is not None:
@@ -658,7 +658,7 @@ async def _execute_netalertx_heal(
     import config as _config
     from netalertx.api_client import NetAlertXAPIClient
     from netalertx.healer import NetAlertXHealer
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
@@ -953,7 +953,7 @@ async def _execute_code_proposal(
     import importlib.util
     import sys
 
-    from utils.supervisor import get_supervisor_instance, publish_event
+    from utils.agent.supervisor import get_supervisor_instance, publish_event
 
     payload = data.get("payload", {})
     name = payload.get("tool_name", "")
@@ -1024,11 +1024,11 @@ async def _execute_cloud_escalation(
 ) -> None:
     """Re-run the HA repair agent loop with ClaudeAPIClient on approved escalation."""
     from utils.billing import BillingCapError
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.cloud_escalation import run_cloud_escalation
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
-    from utils.tool_registry import build_ha_tool_registry
+    from utils.agent.tool_registry import build_ha_tool_registry
     from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
 
     payload = data.get("payload", {})
@@ -1038,7 +1038,7 @@ async def _execute_cloud_escalation(
     async def _on_timeline(tool_name: str, status_line: str) -> None:
         try:
             from utils.core.timeline import write_timeline_event
-            from utils.supervisor import publish_event
+            from utils.agent.supervisor import publish_event
 
             write_timeline_event("INFO", "agent_loop", status_line)
             publish_event(
@@ -1074,7 +1074,7 @@ async def _execute_cloud_escalation(
 
         if result.outcome == "success":
             (watch_dir / f"{nid}.approved").touch()
-            from utils.supervisor import publish_event as _pe
+            from utils.agent.supervisor import publish_event as _pe
 
             _pe(
                 {
@@ -1085,7 +1085,7 @@ async def _execute_cloud_escalation(
             )
         else:
             (watch_dir / f"{nid}.rejected").touch()
-            from utils.supervisor import publish_event as _pe
+            from utils.agent.supervisor import publish_event as _pe
 
             _pe(
                 {
@@ -1114,7 +1114,7 @@ async def _execute_open_pr(
     """Apply the pending patch to the live tree, commit, push, and open a GitHub PR."""
     import subprocess  # nosec B404 — commands are allowlisted git/gh calls
 
-    from utils.supervisor import publish_event
+    from utils.agent.supervisor import publish_event
 
     payload = data.get("payload", {})
     pr_title = payload.get("pr_title", "")
@@ -1232,13 +1232,13 @@ async def _execute_netalertx_migrate(
     also queues the docker installer to run after uninstall completes.
     """
     import config as _cfg
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
 
     try:
         sv = get_supervisor_instance()
         if sv is not None:
             import netalertx.uninstaller as _uninstaller
-            from utils.autonomy import AutonomyGate
+            from utils.agent.autonomy import AutonomyGate
             from utils.notify import get_notifier
 
             _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
@@ -1278,13 +1278,13 @@ async def _execute_netalertx_switch(
 ) -> None:
     """Handle an approved NetAlertX switch card (HA ↔ Docker)."""
     import config as _cfg
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
 
     try:
         sv = get_supervisor_instance()
         if sv is not None:
             import netalertx.switch as _switch
-            from utils.autonomy import AutonomyGate
+            from utils.agent.autonomy import AutonomyGate
             from utils.notify import get_notifier
 
             _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
@@ -1509,7 +1509,7 @@ async def repair_inject(body: RepairInjectRequest) -> JSONResponse:
 
     Returns 409 when no repair loop is active.
     """
-    from utils.supervisor import get_active_repair_loop
+    from utils.agent.supervisor import get_active_repair_loop
 
     loop = get_active_repair_loop()
     if loop is None:
@@ -2131,7 +2131,7 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
 
     # Emit SSE event so the browser can flash a confirmation
     try:
-        from utils.supervisor import publish_event
+        from utils.agent.supervisor import publish_event
 
         publish_event(
             {"event_type": "config_saved", "key": req.key, "new_value": value}
@@ -2258,7 +2258,7 @@ async def model_refresh_cache() -> JSONResponse:
 
 @app.post("/loops/{loop_name}/pause")
 async def loop_pause(loop_name: str) -> JSONResponse:
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
 
     sv = get_supervisor_instance()
     if sv is None:
@@ -2272,7 +2272,7 @@ async def loop_pause(loop_name: str) -> JSONResponse:
 
 @app.post("/loops/{loop_name}/resume")
 async def loop_resume(loop_name: str) -> JSONResponse:
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
 
     sv = get_supervisor_instance()
     if sv is None:
@@ -2286,7 +2286,7 @@ async def loop_resume(loop_name: str) -> JSONResponse:
 
 @app.post("/loops/{loop_name}/run-now")
 async def loop_run_now(loop_name: str) -> JSONResponse:
-    from utils.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance
 
     sv = get_supervisor_instance()
     if sv is None:
@@ -2549,7 +2549,7 @@ async def chat_debug_log(session_id: int) -> Response:
 @app.get("/chat/events")
 async def chat_sse_events() -> StreamingResponse:
     """SSE stream for chat progress: chat_thinking, chat_done, chat_error."""
-    from utils.supervisor import subscribe_chat, unsubscribe_chat
+    from utils.agent.supervisor import subscribe_chat, unsubscribe_chat
 
     async def event_stream():
         q = subscribe_chat()
@@ -2644,13 +2644,13 @@ async def _run_chat_loop(
         NOTIFY_WATCH_DIR,
         SSH_KEY_PATH,
     )
-    from utils.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
-    from utils.autonomy import AutonomyGate
+    from utils.agent.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.llm.llm_factory import make_llm_client
-    from utils.supervisor import get_supervisor_instance, publish_chat_event
-    from utils.tool_executor import ToolExecutor
-    from utils.tool_registry import AgentStep, ToolCall, build_chat_tool_registry
+    from utils.agent.supervisor import get_supervisor_instance, publish_chat_event
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import AgentStep, ToolCall, build_chat_tool_registry
 
     sv = get_supervisor_instance()
     executor: ToolExecutor
