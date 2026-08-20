@@ -264,7 +264,7 @@ async def poll_for_dashboard_entity_issues(
                     for ref in _extract_entity_refs(cfg):
                         if ref.entity_id not in merged_refs:
                             merged_refs[ref.entity_id] = ref
-                except Exception:
+                except Exception:  # nosec B110
                     pass  # dashboard may not exist (e.g. no default dashboard)
 
             entity_refs = list(merged_refs.values())
