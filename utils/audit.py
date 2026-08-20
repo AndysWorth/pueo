@@ -69,7 +69,7 @@ async def check_ha_disk(
     """Check HA host disk free vs. configured critical/warn thresholds."""
     import config
     from utils.resource import poll_host_resources
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     try:
         client: "SSHClientProtocol" = ssh_client or AsyncSSHClient(
@@ -120,7 +120,7 @@ async def check_backup_registry(
     """Compare backup_registry DB entries against actual HA backups via SSH."""
     import config
     from agents.ha_agent_advanced import list_ha_backups
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     try:
         with sqlite3.connect(config.DB_PATH) as conn:

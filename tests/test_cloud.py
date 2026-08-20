@@ -61,7 +61,7 @@ class FakeAnthropicClient:
 
 class TestAdaptToolSchema:
     def test_strips_function_envelope(self):
-        from utils.cloud_client import _adapt_tool_schema
+        from utils.llm.cloud_client import _adapt_tool_schema
 
         tool = {
             "type": "function",
@@ -84,7 +84,7 @@ class TestAdaptToolSchema:
         assert "function" not in result
 
     def test_renames_parameters_to_input_schema(self):
-        from utils.cloud_client import _adapt_tool_schema
+        from utils.llm.cloud_client import _adapt_tool_schema
 
         tool = {
             "type": "function",
@@ -103,7 +103,7 @@ class TestAdaptToolSchema:
         assert result["input_schema"]["required"] == ["yaml_content"]
 
     def test_flat_tool_without_envelope(self):
-        from utils.cloud_client import _adapt_tool_schema
+        from utils.llm.cloud_client import _adapt_tool_schema
 
         # Some callers may pass already-flat Anthropic-style dicts
         tool = {
@@ -121,7 +121,7 @@ class TestAdaptToolSchema:
 
 class TestTranslateHistory:
     def test_system_extracted(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [
             {"role": "system", "content": "You are Pueo"},
@@ -132,7 +132,7 @@ class TestTranslateHistory:
         assert result[0]["role"] == "user"
 
     def test_simple_user_message(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [{"role": "user", "content": "Fix it"}]
         system, result = _translate_history(messages)
@@ -140,7 +140,7 @@ class TestTranslateHistory:
         assert result == [{"role": "user", "content": "Fix it"}]
 
     def test_tool_call_cycle_translation(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -173,7 +173,7 @@ class TestTranslateHistory:
         assert "text" in types
 
     def test_stable_ids_across_multiple_tool_calls(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [
             {
@@ -204,7 +204,7 @@ class TestTranslateHistory:
         assert result_ids == ["toolu_0001", "toolu_0002"]
 
     def test_plain_text_assistant_message(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [
             {"role": "user", "content": "hello"},
@@ -217,7 +217,7 @@ class TestTranslateHistory:
         assert result[2]["role"] == "user"
 
     def test_sequential_ids_across_multiple_cycles(self):
-        from utils.cloud_client import _translate_history
+        from utils.llm.cloud_client import _translate_history
 
         messages = [
             {
@@ -260,7 +260,7 @@ class TestResponseNormalizer:
     """Tests for ClaudeAPIClient.chat_with_tools() response normalization."""
 
     def _make_client(self, response: MagicMock) -> Any:
-        from utils.cloud_client import ClaudeAPIClient
+        from utils.llm.cloud_client import ClaudeAPIClient
 
         client = ClaudeAPIClient.__new__(ClaudeAPIClient)
         client._client = FakeAnthropicClient(response)  # type: ignore[assignment]
@@ -329,7 +329,7 @@ class TestResponseNormalizer:
 
 class TestClaudeAPIClientChat:
     def _make_client(self, response: MagicMock) -> Any:
-        from utils.cloud_client import ClaudeAPIClient
+        from utils.llm.cloud_client import ClaudeAPIClient
 
         client = ClaudeAPIClient.__new__(ClaudeAPIClient)
         client._client = FakeAnthropicClient(response)  # type: ignore[assignment]
@@ -385,10 +385,10 @@ class TestMakeLLMClient:
     def test_local_returns_ollama_client(self, isolated_config):
         isolated_config.write_text(yaml.dump({"llm": {"provider": "local"}}))
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
         import config
-        from utils.llm_factory import make_llm_client
-        from utils.ollama_client import OllamaClient
+        from utils.llm.llm_factory import make_llm_client
+        from utils.llm.ollama_client import OllamaClient
 
         assert config.LLM_PROVIDER == "local"
         # We can't call make_llm_client() directly (would try to connect to Ollama),
@@ -399,7 +399,7 @@ class TestMakeLLMClient:
         isolated_config.write_text(yaml.dump({"llm": {"provider": "both"}}))
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
         import config
 
         assert config.LLM_PROVIDER == "both"
@@ -413,9 +413,9 @@ class TestMakeLLMClient:
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
         import config
-        from utils.llm_factory import make_llm_client
+        from utils.llm.llm_factory import make_llm_client
 
         assert config.LLM_PROVIDER == "cloud"
 
@@ -424,7 +424,7 @@ class TestMakeLLMClient:
             mock_anthropic.return_value = MagicMock()
             client = make_llm_client()
 
-        from utils.cloud_client import ClaudeAPIClient
+        from utils.llm.cloud_client import ClaudeAPIClient
 
         assert isinstance(client, ClaudeAPIClient)
 
@@ -446,8 +446,8 @@ class TestDefaultModelForProvider:
             )
         )
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
-        from utils.llm_factory import _default_model_for_provider
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
+        from utils.llm.llm_factory import _default_model_for_provider
 
         assert _default_model_for_provider() == "qwen2.5-coder:7b"
 
@@ -457,8 +457,8 @@ class TestDefaultModelForProvider:
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
-        from utils.llm_factory import _default_model_for_provider
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
+        from utils.llm.llm_factory import _default_model_for_provider
 
         assert _default_model_for_provider() == "llama3:8b"
 
@@ -473,8 +473,8 @@ class TestDefaultModelForProvider:
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         importlib.reload(sys.modules["config"])
-        importlib.reload(importlib.import_module("utils.llm_factory"))
-        from utils.llm_factory import _default_model_for_provider
+        importlib.reload(importlib.import_module("utils.llm.llm_factory"))
+        from utils.llm.llm_factory import _default_model_for_provider
 
         assert _default_model_for_provider() == "claude-opus-5"
 
@@ -728,7 +728,7 @@ class TestClaudeAPIClientBilling:
     """Billing is recorded and caps are checked when incident_id is set."""
 
     def _make_client(self, response: MagicMock, incident_id: str = "") -> Any:
-        from utils.cloud_client import ClaudeAPIClient
+        from utils.llm.cloud_client import ClaudeAPIClient
 
         client = ClaudeAPIClient.__new__(ClaudeAPIClient)
         client._client = FakeAnthropicClient(response)  # type: ignore[assignment]

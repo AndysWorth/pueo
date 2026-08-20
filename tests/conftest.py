@@ -26,7 +26,7 @@ _DEFAULT_COMMAND_RESULTS = {
 
 @pytest.fixture
 def fake_ssh_client():
-    from utils.ssh_client import FakeSSHClient
+    from utils.ha.ssh_client import FakeSSHClient
 
     return FakeSSHClient(
         file_contents={"/config/configuration.yaml": _DEFAULT_CONFIG_YAML},
@@ -36,7 +36,7 @@ def fake_ssh_client():
 
 @pytest.fixture
 def fake_llm_client():
-    from utils.ollama_client import FakeLLMClient
+    from utils.llm.ollama_client import FakeLLMClient
     from agents.ha_agent_core import DiagnosticsReport
 
     report = DiagnosticsReport(

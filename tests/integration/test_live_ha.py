@@ -26,7 +26,7 @@ class TestLiveHASmoke:
 
     def test_ssh_connection_succeeds(self):
         """Can open an SSH connection to HA_HOST without error."""
-        from utils.ssh_client import AsyncSSHClient
+        from utils.ha.ssh_client import AsyncSSHClient
 
         kw = self._ssh_kwargs()
         client = AsyncSSHClient(**kw)
@@ -41,7 +41,7 @@ class TestLiveHASmoke:
 
     def test_fetch_remote_config_returns_yaml(self):
         """fetch_remote_config() returns a non-empty string from the live HA instance."""
-        from utils.ssh_client import AsyncSSHClient
+        from utils.ha.ssh_client import AsyncSSHClient
 
         kw = self._ssh_kwargs()
         client = AsyncSSHClient(**kw)
@@ -53,7 +53,7 @@ class TestLiveHASmoke:
 
     def test_ha_core_check_exits_zero(self):
         """ha core check returns exit code 0 on a healthy HA instance."""
-        from utils.ssh_client import AsyncSSHClient
+        from utils.ha.ssh_client import AsyncSSHClient
 
         kw = self._ssh_kwargs()
         client = AsyncSSHClient(**kw)
@@ -65,7 +65,7 @@ class TestLiveHASmoke:
         """ha core logs yields at least one line within a short timeout."""
 
         async def _collect():
-            from utils.ssh_client import AsyncSSHClient
+            from utils.ha.ssh_client import AsyncSSHClient
 
             kw = {
                 "host": os.environ.get("HA_HOST", ""),

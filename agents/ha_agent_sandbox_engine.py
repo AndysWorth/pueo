@@ -42,11 +42,11 @@ from utils.core.logging import (
     setup_logging,
     set_correlation_id,
 )
-from utils.llm_factory import make_llm_client
+from utils.llm.llm_factory import make_llm_client
 from utils.core.prompts import load_prompt
 from .ha_agent_core import DiagnosticsReport
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
-from utils.ssh_client import AsyncSSHClient
+from utils.ha.ssh_client import AsyncSSHClient
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix

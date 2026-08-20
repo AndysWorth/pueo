@@ -473,9 +473,9 @@ async def _execute_queued_update(
     import config as _config
     from agents.ha_update_manager import execute_update
     from utils.autonomy import AutonomyGate
-    from utils.ha_rest_client import HARestClient, UpdateStatus
+    from utils.ha.ha_rest_client import HARestClient, UpdateStatus
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     try:
         payload = data.get("payload", {})
@@ -577,9 +577,9 @@ async def _execute_queued_ha_repair(
 ) -> None:
     """Handle an approved HA repair card — reboot or dismiss."""
     import config as _config
-    from utils.ha_rest_client import HARestClient, dismiss_ha_repair_issue
+    from utils.ha.ha_rest_client import HARestClient, dismiss_ha_repair_issue
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     try:
         payload = data.get("payload", {})
@@ -660,7 +660,7 @@ async def _execute_netalertx_heal(
     from netalertx.healer import NetAlertXHealer
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
     try:
@@ -738,7 +738,7 @@ async def _execute_resource_action(
         purge_local_backups,
     )
     from utils.resource import get_resource_status
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
     try:
@@ -830,7 +830,7 @@ async def _execute_disk_recovery(
         purge_recorder,
     )
     from utils.resource import get_resource_status
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
     actions_run: list[str] = []
@@ -838,7 +838,7 @@ async def _execute_disk_recovery(
         ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
         rest_client = None
         if _config.HA_API_TOKEN:
-            from utils.ha_rest_client import HARestClient
+            from utils.ha.ha_rest_client import HARestClient
 
             rest_client = HARestClient(
                 _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
@@ -1027,7 +1027,7 @@ async def _execute_cloud_escalation(
     from utils.autonomy import AutonomyGate
     from utils.cloud_escalation import run_cloud_escalation
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
     from utils.tool_registry import build_ha_tool_registry
     from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
 
@@ -1317,7 +1317,7 @@ async def _execute_dashboard_entity_fix(
     import config as _config
 
     try:
-        from utils.ha_rest_client import HARestClient
+        from utils.ha.ha_rest_client import HARestClient
 
         payload = data.get("payload", {})
         action = payload.get("action", "investigate")
@@ -1470,7 +1470,7 @@ async def _execute_queued_fix(
         execute_remote_backup,
         record_backup_slug,
     )
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient()
     try:
@@ -1600,7 +1600,7 @@ async def resolve_known_issue(card_key: str) -> RedirectResponse:
 async def dismiss_notification(card_id: str) -> RedirectResponse:
     from config import HA_API_PORT, HA_API_TOKEN, HA_HOST
     from agents.ha_notification_manager import mark_notification_dismissed
-    from utils.ha_rest_client import HARestClient
+    from utils.ha.ha_rest_client import HARestClient
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{card_id}.json"
@@ -1703,7 +1703,7 @@ async def trigger_backup_now() -> JSONResponse:
         reconcile_backup_inventory,
         record_backup_slug,
     )
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient()
     try:
@@ -1723,8 +1723,8 @@ async def trigger_backup_now() -> JSONResponse:
 async def run_backup_preflight() -> JSONResponse:
     """Run an on-demand update pre-flight: disk clearance and Supervisor status check."""
     from agents.ha_update_manager import run_update_preflight
-    from utils.ha_rest_client import HARestClient
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ha_rest_client import HARestClient
+    from utils.ha.ssh_client import AsyncSSHClient
     import config as _config
 
     ssh = AsyncSSHClient()
@@ -1754,7 +1754,7 @@ async def run_backup_preflight() -> JSONResponse:
 async def sync_backup_inventory() -> JSONResponse:
     """Reconcile the local backup registry against HA and return a change summary."""
     from agents.ha_agent_advanced import reconcile_backup_inventory
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient()
     try:
@@ -1809,7 +1809,7 @@ async def disk_queue_orphan_cleanup() -> JSONResponse:
     from utils.card_types import CARD_TYPE_DISK_RECOVERY
     from utils.disk_recovery import scan_orphaned_addon_dirs
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
     try:
@@ -1866,7 +1866,7 @@ async def disk_queue_orphan_cleanup() -> JSONResponse:
 @app.post("/disk/refresh")
 async def disk_refresh() -> JSONResponse:
     import utils.disk_usage as _du
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     import config as _config
 
@@ -2647,7 +2647,7 @@ async def _run_chat_loop(
     from utils.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.llm_factory import make_llm_client
+    from utils.llm.llm_factory import make_llm_client
     from utils.supervisor import get_supervisor_instance, publish_chat_event
     from utils.tool_executor import ToolExecutor
     from utils.tool_registry import AgentStep, ToolCall, build_chat_tool_registry
@@ -2665,11 +2665,11 @@ async def _run_chat_loop(
 
         ssh: SSHClientProtocol
         try:
-            from utils.ssh_client import AsyncSSHClient
+            from utils.ha.ssh_client import AsyncSSHClient
 
             ssh = AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
         except Exception:
-            from utils.ssh_client import FakeSSHClient
+            from utils.ha.ssh_client import FakeSSHClient
 
             ssh = FakeSSHClient()
         gate = AutonomyGate(AUTONOMY_LEVEL)

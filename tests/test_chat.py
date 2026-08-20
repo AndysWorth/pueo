@@ -15,7 +15,7 @@ import pytest
 from agents import ha_agent_advanced
 from utils.autonomy import FakeAutonomyGate
 from utils.notify import FakeNotifier
-from utils.ssh_client import FakeSSHClient
+from utils.ha.ssh_client import FakeSSHClient
 from utils.tool_executor import ToolExecutor
 from utils.tool_registry import ToolCall
 
@@ -285,7 +285,7 @@ class TestAgentLoopTerminalTool:
 
     def _make_loop(self, llm, terminal_tool_name, db_path):
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from utils.tool_registry import build_chat_tool_registry
 
         ex = ToolExecutor(
@@ -304,7 +304,7 @@ class TestAgentLoopTerminalTool:
         )
 
     def test_finish_chat_terminates_loop(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -327,7 +327,7 @@ class TestAgentLoopTerminalTool:
     def test_default_terminal_tool_is_finish_repair(self, db_path):
         """Default terminal_tool_name='finish_repair' still works unchanged."""
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
@@ -366,7 +366,7 @@ class TestAgentLoopTerminalTool:
     def test_finish_chat_does_not_trigger_default_loop(self, db_path):
         """finish_chat call in a default (finish_repair) loop does NOT terminate it."""
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_ha_tool_registry
 
         # Call finish_chat (not finish_repair) — loop should continue and exhaust
@@ -845,7 +845,7 @@ class TestAgentLoopInitialMessages:
 
     def test_loop_runs_with_initial_messages(self, db_path):
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_chat_tool_registry
 
         llm = FakeToolCallingLLMClient(
@@ -888,7 +888,7 @@ class TestAgentLoopInitialMessages:
     def test_loop_runs_without_initial_messages(self, db_path):
         """Backward-compat: None initial_messages behaves as before."""
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_chat_tool_registry
 
         llm = FakeToolCallingLLMClient(
@@ -1175,7 +1175,7 @@ class TestGapDetection:
 
     def test_agent_loop_propagates_capability_gap_true(self, db_path):
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
@@ -1217,7 +1217,7 @@ class TestGapDetection:
 
     def test_agent_loop_capability_gap_false_by_default(self, db_path):
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_ha_tool_registry
 
         llm = FakeToolCallingLLMClient(
@@ -1296,8 +1296,8 @@ class TestGapDetection:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         asyncio.run(
             engine.main(
@@ -1342,8 +1342,8 @@ class TestGapDetection:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         asyncio.run(
             engine.main(
@@ -1520,7 +1520,7 @@ class TestPreStepCallback:
         )
 
     def test_pre_step_callback_fires_once_per_tool(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1546,7 +1546,7 @@ class TestPreStepCallback:
         assert pre_calls == ["finish_chat"]
 
     def test_pre_step_fires_before_step_callback(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1577,7 +1577,7 @@ class TestPreStepCallback:
         assert events == ["pre:finish_chat", "post:finish_chat"]
 
     def test_pre_step_callback_fires_for_each_tool_in_sequence(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1614,7 +1614,7 @@ class TestPreStepCallback:
 
     def test_none_pre_step_callback_is_safe(self, db_path):
         """Loop works normally when pre_step_callback is None (default behavior)."""
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1800,7 +1800,7 @@ class TestTimelineCallback:
         )
 
     def test_timeline_callback_fires_once_per_tool(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1827,7 +1827,7 @@ class TestTimelineCallback:
         assert calls[0][0] == "finish_chat"
 
     def test_timeline_callback_receives_correct_tool_name(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1864,7 +1864,7 @@ class TestTimelineCallback:
 
     def test_timeline_callback_status_line_format(self, db_path):
         """status_line matches 'step N — tool_name: OK/ERR' format."""
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1894,7 +1894,7 @@ class TestTimelineCallback:
 
     def test_none_timeline_callback_is_safe(self, db_path):
         """Loop works normally when timeline_callback is None (default behavior)."""
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1939,7 +1939,7 @@ class TestInjectContext:
 
     def test_inject_context_before_run_is_noop(self, db_path):
         """inject_context before run() does nothing (self._messages is None)."""
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient([])
         loop = self._make_loop(llm, db_path)
@@ -1949,7 +1949,7 @@ class TestInjectContext:
 
     def test_inject_context_after_run_is_noop(self, db_path):
         """inject_context after run() completes does nothing (_messages cleared)."""
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         llm = FakeToolCallingLLMClient(
             [
@@ -1975,7 +1975,7 @@ class TestInjectContext:
     def test_inject_context_appends_during_run(self, db_path):
         """inject_context called from within a step callback appends a user message."""
         from utils.agent_loop import AgentLoop
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.tool_registry import build_chat_tool_registry
 
         injected_messages: list[dict] = []

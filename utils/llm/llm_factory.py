@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import config
-from utils.ollama_client import OllamaClient
+from utils.llm.ollama_client import OllamaClient
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol
@@ -29,7 +29,7 @@ def make_llm_client() -> "LLMClientProtocol":
     LLM_PROVIDER is "local" or "both".
     """
     if config.LLM_PROVIDER == "cloud":
-        from utils.cloud_client import ClaudeAPIClient
+        from utils.llm.cloud_client import ClaudeAPIClient
 
         return ClaudeAPIClient()
     return OllamaClient()

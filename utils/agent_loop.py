@@ -128,7 +128,7 @@ class AgentLoop:
         escalated: bool = False,
     ) -> None:
         if model is _UNSET:
-            from utils.llm_factory import _default_model_for_provider
+            from utils.llm.llm_factory import _default_model_for_provider
 
             model = _default_model_for_provider()
         self._llm = llm_client

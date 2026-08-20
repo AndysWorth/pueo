@@ -1453,7 +1453,7 @@ async def main(
     from config import NETALERTX_SSH_HOST, NETALERTX_SSH_KEY_PATH, NETALERTX_SSH_USER
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     _ssh = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH

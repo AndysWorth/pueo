@@ -22,7 +22,7 @@ class TestInvestigateWithFallback:
 
     def test_returns_report_and_false_on_success(self):
         from utils.investigation_loop import investigate_with_fallback
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         report = self._make_report()
 
@@ -47,7 +47,7 @@ class TestInvestigateWithFallback:
 
     def test_returns_none_and_true_on_timeout(self):
         from utils.investigation_loop import investigate_with_fallback
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def _slow():
             await asyncio.sleep(999)
@@ -72,7 +72,7 @@ class TestInvestigateWithFallback:
 
     def test_returns_none_and_true_on_exception(self):
         from utils.investigation_loop import investigate_with_fallback
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         with patch(
             "utils.investigation_loop.run_investigation",
@@ -321,7 +321,7 @@ class TestResourcePollerInvestigationIntegration:
     def test_disk_analysis_source_is_investigation_when_llm_available(self):
         from utils.notify import FakeNotifier
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()
         report = self._make_report()
@@ -354,7 +354,7 @@ class TestResourcePollerInvestigationIntegration:
     def test_disk_analysis_source_is_heuristic_on_fallback(self):
         from utils.notify import FakeNotifier
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()
         poller = ResourcePoller(
@@ -383,7 +383,7 @@ class TestResourcePollerInvestigationIntegration:
     def test_investigation_skipped_when_no_llm_client(self):
         from utils.notify import FakeNotifier
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()
         poller = ResourcePoller(

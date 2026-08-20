@@ -243,7 +243,7 @@ async def analyze_notification(
     severity: str = "MEDIUM",
 ) -> NotificationAnalysis:
     """LLM plain-English analysis of a notification. Returns a full NotificationAnalysis."""
-    from utils.llm_factory import _default_model_for_provider, make_llm_client
+    from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
@@ -533,8 +533,8 @@ async def run_notifications(
         NOTIFY_WATCH_DIR,
     )
     from netalertx.api_client import NetAlertXAPIClient
-    from utils.ha_rest_client import HARestClient
-    from utils.ha_ws_client import HAWebSocketClient
+    from utils.ha.ha_rest_client import HARestClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
     from utils.notify import FileNotifier
 
     rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover

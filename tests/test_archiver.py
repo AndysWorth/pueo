@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.ssh_client import FakeSSHClient
+from utils.ha.ssh_client import FakeSSHClient
 
 
 class TestArchiveHaLog:

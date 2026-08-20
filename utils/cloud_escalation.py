@@ -29,7 +29,7 @@ async def run_cloud_escalation(
     """Run AgentLoop with ClaudeAPIClient. Raises BillingCapError if caps exceeded."""
     from utils.agent_loop import AgentLoop
     from utils.billing import check_billing_caps
-    from utils.cloud_client import ClaudeAPIClient
+    from utils.llm.cloud_client import ClaudeAPIClient
     from utils.tool_executor import ToolExecutor
     from config import (
         AGENT_MAX_TOOL_CALLS,

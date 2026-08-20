@@ -267,7 +267,7 @@ class TestDashboardEntityAnalysis:
 
 class TestFakeWsGetEntityRegistry:
     def test_returns_entity_list(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         entities = [{"entity_id": "sensor.foo"}, {"entity_id": "light.bar"}]
         ws = FakeHAWebSocketClient(entity_registry=entities)
@@ -276,7 +276,7 @@ class TestFakeWsGetEntityRegistry:
         assert "get_entity_registry" in ws.calls
 
     def test_empty_by_default(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         ws = FakeHAWebSocketClient()
         result = asyncio.run(ws.get_entity_registry())
@@ -285,7 +285,7 @@ class TestFakeWsGetEntityRegistry:
 
 class TestFakeWsLovelace:
     def test_get_lovelace_dashboards(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         dashboards = [{"url_path": "dashboard-dashy", "title": "Dashy"}]
         ws = FakeHAWebSocketClient(lovelace_dashboards=dashboards)
@@ -294,7 +294,7 @@ class TestFakeWsLovelace:
         assert "get_lovelace_dashboards" in ws.calls
 
     def test_get_lovelace_config_default(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         cfg = {"views": [{"title": "Main", "cards": []}]}
         ws = FakeHAWebSocketClient(lovelace_configs={None: cfg})
@@ -303,7 +303,7 @@ class TestFakeWsLovelace:
         assert "get_lovelace_config:None" in ws.calls
 
     def test_get_lovelace_config_named(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         cfg = {"views": [{"title": "Dashy", "cards": []}]}
         ws = FakeHAWebSocketClient(lovelace_configs={"dashboard-dashy": cfg})
@@ -311,7 +311,7 @@ class TestFakeWsLovelace:
         assert result == cfg
 
     def test_get_lovelace_config_missing_raises(self):
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         ws = FakeHAWebSocketClient()
         with pytest.raises(RuntimeError):
@@ -325,7 +325,7 @@ class TestFakeWsLovelace:
 
 class TestFakeRestPost:
     def test_post_records_call(self):
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
 
         rest = FakeHARestClient()
         payload = {"views": []}
@@ -366,7 +366,7 @@ def _make_hitl_db(tmp_path: Path) -> str:
 
 def _make_ws(lovelace_cfg: dict, entity_registry: list[dict]):  # type: ignore[return]
     """Helper: fake WS client with a single default dashboard config."""
-    from utils.ha_ws_client import FakeHAWebSocketClient
+    from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
     return FakeHAWebSocketClient(
         entity_registry=entity_registry,
@@ -378,7 +378,7 @@ class TestPollMissingEntity:
     def test_missing_entity_sends_card(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
@@ -427,7 +427,7 @@ class TestPollMissingEntity:
     def test_present_entity_no_card(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
         lovelace = {
@@ -465,7 +465,7 @@ class TestPollMissingEntity:
     def test_duplicate_suppression(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
@@ -512,7 +512,7 @@ class TestPollMissingEntity:
     def test_reconcile_resolved(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
@@ -568,9 +568,9 @@ class TestPollMissingEntity:
 
     def test_named_dashboard_fetched(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
@@ -622,7 +622,7 @@ class TestPollMissingEntity:
     def test_sections_layout_missing_entity(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
@@ -682,7 +682,7 @@ class TestPollMissingEntity:
 class TestAnalyzeMissingEntity:
     def test_returns_replace_analysis(self):
         from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         raw = json.dumps(
             {
@@ -703,7 +703,7 @@ class TestAnalyzeMissingEntity:
 
     def test_returns_remove_analysis(self):
         from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         raw = json.dumps(
             {
@@ -723,7 +723,7 @@ class TestAnalyzeMissingEntity:
 
     def test_llm_failure_returns_safe_default(self):
         from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         llm = FakeLLMClient("NOT VALID JSON !!!")
         ref = EntityRef("sensor.bad", "Main", 0, "card[0].entity")

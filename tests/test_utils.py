@@ -766,34 +766,34 @@ class TestValidateProposedFix:
 
 class TestFakeSSHClient:
     def test_read_file_returns_configured_content(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient(file_contents={"/foo": "bar"})
         assert asyncio.run(c.read_file("/foo")) == "bar"
 
     def test_read_file_raises_for_unknown_path(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient()
         with pytest.raises(FileNotFoundError):
             asyncio.run(c.read_file("/missing"))
 
     def test_write_file_records_content(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient()
         asyncio.run(c.write_file("/out", "hello"))
         assert c.written_files["/out"] == "hello"
 
     def test_run_returns_default_success(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient()
         ec, stdout, stderr = asyncio.run(c.run("anything"))
         assert ec == 0
 
     def test_run_matches_command_pattern(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
         ec, stdout, _ = asyncio.run(c.run("ha core check"))
@@ -801,14 +801,14 @@ class TestFakeSSHClient:
         assert stdout == "ok"
 
     def test_run_raises_on_check_true_with_nonzero(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient(command_results={"fail_cmd": (1, "", "error")})
         with pytest.raises(RuntimeError):
             asyncio.run(c.run("fail_cmd", check=True))
 
     def test_run_records_commands(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient()
         asyncio.run(c.run("cmd_one"))
@@ -817,7 +817,7 @@ class TestFakeSSHClient:
         assert "cmd_two" in c.commands_run
 
     def test_stream_lines_yields_data(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient(stream_data=["line1", "line2", "line3"])
 
@@ -828,7 +828,7 @@ class TestFakeSSHClient:
         assert lines == ["line1", "line2", "line3"]
 
     def test_stream_lines_empty(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         c = FakeSSHClient()
 
@@ -843,14 +843,14 @@ class TestFakeSSHClient:
 
 class TestFakeLLMClient:
     def test_chat_returns_configured_json(self):
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         c = FakeLLMClient('{"key": "value"}')
         result = asyncio.run(c.chat("model", [], {"temperature": 0}, {}))
         assert result["message"]["content"] == '{"key": "value"}'
 
     def test_chat_records_calls(self):
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         c = FakeLLMClient("{}")
         asyncio.run(c.chat("mymodel", [{"role": "user", "content": "hi"}], {}, {}))
@@ -937,7 +937,7 @@ class TestResourceStatus:
 
 class TestPollHostResources:
     def _fake_ssh(self, disk_free: float = 4.5, mem_available_kb: int = 563200):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         host_info = (
             f"disk_free: {disk_free}\ndisk_total: 13.6\ndisk_used: {13.6 - disk_free:.1f}\n"
@@ -1105,7 +1105,7 @@ class TestResourcePollerAlerts:
 
     def _make_poller(self, notifier):
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return ResourcePoller(
             ssh_client=FakeSSHClient(),
@@ -1296,7 +1296,7 @@ class TestResourcePollerAlerts:
     def test_run_polls_and_updates_cache_then_cancels(self, monkeypatch):
         from utils.resource import ResourcePoller, ResourceStatus
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import utils.resource as resource_mod
 
         polled: list[int] = []
@@ -1329,7 +1329,7 @@ class TestResourcePollerAlerts:
     def test_run_catches_poll_error_and_sleeps(self, monkeypatch):
         from utils.resource import ResourcePoller
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import utils.resource as resource_mod
 
         async def failing_poll(*_args, **_kwargs):
@@ -1374,7 +1374,7 @@ class TestExecuteRemoteBackupDiskCheck:
         from utils.resource import ResourceStatus, DiskCriticalError
         import utils.resource as resource_mod
         from agents import ha_agent_advanced
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         critical_status = ResourceStatus(
             disk_free_gb=1.5,
@@ -1398,7 +1398,7 @@ class TestExecuteRemoteBackupDiskCheck:
         from utils.resource import ResourceStatus
         import utils.resource as resource_mod
         from agents import ha_agent_advanced
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ok_status = ResourceStatus(
             disk_free_gb=4.5,
@@ -1420,7 +1420,7 @@ class TestExecuteRemoteBackupDiskCheck:
     def test_proceeds_when_no_cached_status(self, monkeypatch, db_path):
         import utils.resource as resource_mod
         from agents import ha_agent_advanced
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(resource_mod, "_last_resource_status", None)
         ssh = FakeSSHClient(
@@ -3328,7 +3328,7 @@ class TestAuditCheckService:
 class TestAuditCheckHaDisk:
     def test_disk_ok(self):
         from utils.audit import check_ha_disk
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
             command_results={
@@ -3350,7 +3350,7 @@ class TestAuditCheckHaDisk:
         )
         importlib.reload(sys.modules["config"])
         from utils.audit import check_ha_disk
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
             command_results={
@@ -3372,7 +3372,7 @@ class TestAuditCheckHaDisk:
         )
         importlib.reload(sys.modules["config"])
         from utils.audit import check_ha_disk
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
             command_results={
@@ -3386,7 +3386,7 @@ class TestAuditCheckHaDisk:
 
     def test_ssh_failure(self):
         from utils.audit import check_ha_disk
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenSSHClient(FakeSSHClient):
             async def run(self, command: str, check: bool = False):
@@ -3415,7 +3415,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
             command_results={"ha backups list --raw-json": (0, _BACKUP_LIST_JSON, "")}
@@ -3441,7 +3441,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
             command_results={"ha backups list --raw-json": (0, _BACKUP_LIST_JSON, "")}
@@ -3458,7 +3458,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # HA has abc123 but DB has nothing
         client = FakeSSHClient(
@@ -3476,7 +3476,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenClient(FakeSSHClient):
             async def run(self, command: str, check: bool = False):
@@ -3493,7 +3493,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         result = asyncio.run(check_backup_registry(ssh_client=FakeSSHClient()))
         assert result.status == "WARN"
@@ -3517,7 +3517,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # HA returns no backups
         client = FakeSSHClient(
@@ -3551,7 +3551,7 @@ class TestAuditCheckBackupRegistry:
 
         monkeypatch.setattr(config, "DB_PATH", db)
         from utils.audit import check_backup_registry
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenClient(FakeSSHClient):
             async def run(self, command: str, check: bool = False):
@@ -4236,7 +4236,7 @@ def _make_disk_ssh(
     db_bytes: "bytes | None" = None,
     db_download_error: "Exception | None" = None,
 ):
-    from utils.ssh_client import FakeSSHClient
+    from utils.ha.ssh_client import FakeSSHClient
 
     download_contents = {}
     if db_bytes is not None:
@@ -4618,7 +4618,7 @@ class TestScanOrphanedAddonDirs:
 
     def _make_ssh(self, installed_json, addons_ls, configs_ls, du_display=""):
         """Return a FakeSSHClient wired with the needed command results."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             command_results={
@@ -4921,7 +4921,7 @@ class TestAgentLoopEpisodeRecording:
         from utils.agent_loop import AgentLoop
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
         from utils.tool_registry import build_ha_tool_registry
 
@@ -4957,7 +4957,7 @@ class TestAgentLoopEpisodeRecording:
         }
 
     def test_episode_written_on_success(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
@@ -4969,7 +4969,7 @@ class TestAgentLoopEpisodeRecording:
         assert len(episodes) == 1
 
     def test_episode_id_returned_in_result(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
@@ -4981,7 +4981,7 @@ class TestAgentLoopEpisodeRecording:
         assert result.episode_id == stored[0].id
 
     def test_no_episode_without_db_path(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
@@ -4993,7 +4993,7 @@ class TestAgentLoopEpisodeRecording:
         assert len(load_episodes(db_path)) == 0
 
     def test_trigger_stored(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
@@ -5003,7 +5003,7 @@ class TestAgentLoopEpisodeRecording:
         assert load_episodes(db_path)[0].trigger == "netalertx"
 
     def test_escalated_flag_stored(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
@@ -5013,7 +5013,7 @@ class TestAgentLoopEpisodeRecording:
         assert load_episodes(db_path)[0].escalated is True
 
     def test_hypothesis_chain_from_summary(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient(
@@ -5030,7 +5030,7 @@ class TestAgentLoopEpisodeRecording:
         from utils.agent_loop import AgentLoop
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
         from utils.tool_registry import (
             AgentStep,
@@ -5038,7 +5038,7 @@ class TestAgentLoopEpisodeRecording:
             ToolResult,
             build_ha_tool_registry,
         )
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         loop = AgentLoop(
             llm_client=FakeToolCallingLLMClient([]),
@@ -5086,7 +5086,7 @@ class TestAgentLoopEpisodeRecording:
         from utils.agent_loop import AgentLoop
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
         from utils.tool_registry import (
             AgentStep,
@@ -5094,7 +5094,7 @@ class TestAgentLoopEpisodeRecording:
             ToolResult,
             build_ha_tool_registry,
         )
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         import time
 
         loop = AgentLoop(
@@ -5123,7 +5123,7 @@ class TestAgentLoopEpisodeRecording:
         assert log_output[:200] in data["symptoms"]
 
     def test_no_episode_on_exhausted_outcome(self, db_path):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.repair_episode import load_episodes
 
         # Empty sequence → exhausted after 2 plain-text responses

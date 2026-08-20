@@ -169,7 +169,7 @@ async def _analyze_missing_entity(
     llm_client: Optional[LLMClientProtocol],
 ) -> DashboardEntityAnalysis:
     """Single-shot LLM call to explain a missing entity and recommend an action."""
-    from utils.llm_factory import _default_model_for_provider, make_llm_client
+    from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
     from utils.core.prompts import load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
@@ -222,7 +222,7 @@ async def poll_for_dashboard_entity_issues(
     """Polling loop — checks all Lovelace dashboards for missing entity references."""
     import config as _cfg
     from utils.card_types import CARD_TYPE_DASHBOARD_ENTITY
-    from utils.ha_ws_client import HAWebSocketClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
     from utils.hitl_tracker import (
         mark_card_resolved,
         mark_card_sent,

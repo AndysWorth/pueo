@@ -402,8 +402,8 @@ class TestDashboardRoutes:
         )
 
         import asyncio
-        import utils.ssh_client as ssh_mod
-        from utils.ssh_client import FakeSSHClient
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
 
@@ -457,8 +457,8 @@ class TestDashboardRoutes:
             "deploy_and_test_in_sandbox",
             _make_async_return(False),
         )
-        import utils.ssh_client as ssh_mod
-        from utils.ssh_client import FakeSSHClient
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
 
@@ -488,8 +488,8 @@ class TestDashboardRoutes:
             raise RuntimeError("backup exploded")
 
         monkeypatch.setattr(ha_agent_sandbox_engine, "execute_remote_backup", _fail)
-        import utils.ssh_client as ssh_mod
-        from utils.ssh_client import FakeSSHClient
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
 
@@ -583,7 +583,7 @@ class TestInstallerDiagnostics:
 
     def test_gather_mosquitto_evidence_returns_expected_keys(self):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer_diagnostics import gather_mosquitto_evidence
 
         ssh = FakeSSHClient(
@@ -610,7 +610,7 @@ class TestInstallerDiagnostics:
 
     def test_gather_addon_install_evidence_passes_slug(self):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer_diagnostics import gather_addon_install_evidence
 
         ssh = FakeSSHClient(
@@ -626,7 +626,7 @@ class TestInstallerDiagnostics:
 
     def test_gather_addon_start_evidence_passes_slug(self):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer_diagnostics import gather_addon_start_evidence
 
         ssh = FakeSSHClient(
@@ -648,8 +648,8 @@ class TestInstallerDiagnostics:
 
     def test_diagnose_installer_failure_mosquitto_start_calls_llm(self):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -675,8 +675,8 @@ class TestInstallerDiagnostics:
 
     def test_diagnose_installer_failure_addon_install_passes_slug(self):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -703,8 +703,8 @@ class TestInstallerDiagnostics:
     def test_diagnose_installer_failure_uses_model_factory(self, monkeypatch):
         import asyncio
         import netalertx.installer_diagnostics as inst_diag_mod
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -777,8 +777,8 @@ class TestInstallerDiagnostics:
         self, tmp_path, monkeypatch
     ):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
@@ -813,8 +813,8 @@ class TestInstallerDiagnostics:
 
     def test_step2_auto_fix_success_advances_state(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4, _read_install_state
@@ -854,8 +854,8 @@ class TestInstallerDiagnostics:
 
     def test_step2_auto_fix_nonzero_ec_returns_false(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
@@ -981,7 +981,7 @@ class TestLLMTrace:
     def test_analyze_config_returns_trace(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from agents.ha_agent_core import DiagnosticsReport, analyze_config_locally
 
         report = DiagnosticsReport(
@@ -1001,7 +1001,7 @@ class TestLLMTrace:
     def test_analyze_log_returns_trace(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from agents.ha_log_monitor import LogEvaluation, analyze_log_line_with_ai
 
         ev = LogEvaluation(
@@ -1017,8 +1017,8 @@ class TestLLMTrace:
     def test_diagnose_installer_returns_evidence_dict(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -1043,8 +1043,8 @@ class TestLLMTrace:
     def test_hitl_payload_contains_notification_id(self):
         import asyncio
 
-        from utils.ollama_client import FakeToolCallingLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
@@ -1088,8 +1088,8 @@ class TestLLMTrace:
     def test_hitl_payload_contains_description_and_severity(self):
         import asyncio
 
-        from utils.ollama_client import FakeToolCallingLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
@@ -1131,7 +1131,7 @@ class TestLLMTrace:
     def test_exception_branch_returns_sentinel_trace(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from agents.ha_log_monitor import analyze_log_line_with_ai
 
         broken_llm = FakeLLMClient("{not valid json}")
@@ -1622,14 +1622,14 @@ class TestDismissNotificationRoute:
         )
 
     def test_dismiss_creates_approved_file(self, tmp_path, monkeypatch):
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
         )
         self._write_notification_card(tmp_path, "notif_http_login", "http_login")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
@@ -1640,15 +1640,15 @@ class TestDismissNotificationRoute:
         assert (tmp_path / "notif_http_login.approved").exists()
 
     def test_dismiss_calls_ha_service(self, tmp_path, monkeypatch):
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         fake_rest = FakeHARestClient()
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
         )
         self._write_notification_card(tmp_path, "notif_http_login", "http_login")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
@@ -1676,7 +1676,7 @@ class TestDismissNotificationRoute:
     ):
         """If the HA service call raises, no .approved file is written and DB is not updated."""
         from agents import ha_notification_manager
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
 
@@ -1688,7 +1688,7 @@ class TestDismissNotificationRoute:
                 raise RuntimeError("HA unreachable")
 
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: _FailingRest()
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: _FailingRest()
         )
         dismissed_calls: list[str] = []
         monkeypatch.setattr(
@@ -1706,15 +1706,15 @@ class TestDismissNotificationRoute:
         assert dismissed_calls == []
 
     def test_dismiss_already_resolved_is_noop(self, tmp_path, monkeypatch):
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         fake_rest = FakeHARestClient()
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
         )
         self._write_notification_card(tmp_path, "notif_http_login", "http_login")
         (tmp_path / "notif_http_login.rejected").touch()
@@ -1727,16 +1727,16 @@ class TestDismissNotificationRoute:
         import asyncio as _asyncio
 
         from agents import ha_notification_manager
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FileNotifier
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         fake_rest = FakeHARestClient()
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: fake_rest
         )
         dismissed_calls: list[str] = []
         monkeypatch.setattr(
@@ -1837,14 +1837,14 @@ class TestDismissNotificationRoute:
 
     def test_dismiss_redirects_to_notifications(self, tmp_path, monkeypatch):
         """After dismissing, user is sent to /notifications, not /queue."""
-        import utils.ha_rest_client
+        import utils.ha.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
-            utils.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
+            utils.ha.ha_rest_client, "HARestClient", lambda *a, **kw: FakeHARestClient()
         )
         self._write_notification_card(tmp_path, "notif_http_login", "http_login")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
@@ -2535,10 +2535,10 @@ class TestExecuteQueuedUpdate:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-ok-1"
         json_path = self._write_update_card(tmp_path, nid)
@@ -2567,10 +2567,10 @@ class TestExecuteQueuedUpdate:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-fail-1"
         json_path = self._write_update_card(tmp_path, nid)
@@ -2603,10 +2603,10 @@ class TestExecuteQueuedUpdate:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-exc-1"
         json_path = self._write_update_card(tmp_path, nid)
@@ -2639,10 +2639,10 @@ class TestExecuteQueuedUpdate:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_update_manager
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-cleanup-1"
         json_path = self._write_update_card(tmp_path, nid)
@@ -2761,7 +2761,7 @@ class TestExecuteNetalertxHeal:
         """Patch all dependencies of _execute_netalertx_heal."""
         import netalertx.healer as healer_mod
         import netalertx.api_client as api_mod
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
 
@@ -2906,7 +2906,7 @@ class TestExecuteResourceAction:
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
 
         db_path = tmp_path / "test.db"
         self._make_db(db_path, ["slug-a", "slug-b"])
@@ -2951,7 +2951,7 @@ class TestExecuteResourceAction:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
 
@@ -2982,7 +2982,7 @@ class TestExecuteResourceAction:
         """Unknown action raises ValueError → .rejected, fix_error set."""
         import json as _json
         import web.dashboard as dashboard
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
 
@@ -3003,7 +3003,7 @@ class TestExecuteResourceAction:
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.core.timeline
 
         db_path = tmp_path / "test.db"
@@ -3054,7 +3054,7 @@ class TestExecuteResourceAction:
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
 
         db_path = tmp_path / "test.db"
         self._make_db(db_path, ["slug-x"])
@@ -3082,7 +3082,7 @@ class TestExecuteResourceAction:
         import json as _json
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
 
@@ -3128,7 +3128,7 @@ class TestExecuteDiskRecovery:
         import json as _json
         import web.dashboard as dashboard
         import utils.disk_recovery as dr
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
@@ -3167,7 +3167,7 @@ class TestExecuteDiskRecovery:
         import json as _json
         import web.dashboard as dashboard
         import utils.disk_recovery as dr
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(_config, "HA_API_TOKEN", "")
@@ -3199,7 +3199,7 @@ class TestExecuteDiskRecovery:
     def test_unknown_action_keys_succeed_silently(self, tmp_path, monkeypatch):
         import json as _json
         import web.dashboard as dashboard
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(_config, "HA_API_TOKEN", "")
@@ -3216,7 +3216,7 @@ class TestExecuteDiskRecovery:
     def test_exception_writes_rejected(self, tmp_path, monkeypatch):
         import json as _json
         import web.dashboard as dashboard
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(_config, "HA_API_TOKEN", "tok")
@@ -3241,7 +3241,7 @@ class TestExecuteDiskRecovery:
         """cleanup_orphaned_addon_dirs runs rm -rf on each listed path."""
         import json as _json
         import web.dashboard as dashboard
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(_config, "HA_API_TOKEN", "")
@@ -3299,7 +3299,7 @@ class TestExecuteDiskRecovery:
         """cleanup_orphaned_addon_dirs only removes paths explicitly listed in orphaned_slugs."""
         import json as _json
         import web.dashboard as dashboard
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import config as _config
 
         monkeypatch.setattr(_config, "HA_API_TOKEN", "")
@@ -3352,7 +3352,7 @@ class TestDiskQueueOrphanCleanup:
     def test_returns_ok_with_card_queued(self, monkeypatch, tmp_path):
         from fastapi.testclient import TestClient
         import utils.disk_recovery as dr_mod
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import utils.notify as notify_mod
         import web.dashboard as dashboard
         import config as _config
@@ -3397,7 +3397,7 @@ class TestDiskQueueOrphanCleanup:
     def test_returns_ok_no_card_when_no_orphans(self, monkeypatch, tmp_path):
         from fastapi.testclient import TestClient
         import utils.disk_recovery as dr_mod
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         import web.dashboard as dashboard
 
         async def _empty_scan(ssh):
@@ -5052,7 +5052,7 @@ class TestExecuteQueuedHARepair:
     ):
         import asyncio
         from agents import ha_agent_advanced
-        import utils.ha_rest_client as hrc
+        import utils.ha.ha_rest_client as hrc
         from unittest.mock import AsyncMock, MagicMock
 
         import web.dashboard as dashboard
@@ -5117,7 +5117,7 @@ class TestExecuteQueuedHARepair:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         import web.dashboard as dashboard
-        from utils.ssh_client import AsyncSSHClient
+        from utils.ha.ssh_client import AsyncSSHClient
         from utils.notify import get_notifier
 
         watch_dir = tmp_path / "hitl"
@@ -5195,7 +5195,7 @@ class TestExecuteQueuedHARepair:
         """action='restart' SSHes ha core restart, polls for HA API ready, writes .approved."""
         import asyncio
         from agents import ha_agent_advanced
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         from unittest.mock import AsyncMock, MagicMock, patch
 
         import web.dashboard as dashboard
@@ -5240,7 +5240,7 @@ class TestExecuteQueuedHARepair:
     def test_restart_action_failure_writes_rejected(self, tmp_path, monkeypatch):
         """If HA does not come back online after restart, .rejected is written."""
         import asyncio
-        import utils.ssh_client as ssh_mod
+        import utils.ha.ssh_client as ssh_mod
         from unittest.mock import AsyncMock, MagicMock, patch
 
         import web.dashboard as dashboard
@@ -5375,8 +5375,8 @@ class TestDiskRoutes:
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
 
         # Patch AsyncSSHClient to avoid real SSH
-        import utils.ssh_client as _sc
-        from utils.ssh_client import FakeSSHClient
+        import utils.ha.ssh_client as _sc
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
 
@@ -5396,8 +5396,8 @@ class TestDiskRoutes:
 
         monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _failing_fetch)
 
-        import utils.ssh_client as _sc
-        from utils.ssh_client import FakeSSHClient
+        import utils.ha.ssh_client as _sc
+        from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
 

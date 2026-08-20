@@ -33,13 +33,13 @@ class TestLogMonitorActionablePath:
 
     @pytest.fixture
     def ssh_with_critical_line(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(stream_data=[self._CRITICAL_LINE])
 
     @pytest.fixture
     def ssh_with_info_line(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(stream_data=["INFO Loaded component light"])
 
@@ -61,7 +61,7 @@ class TestLogMonitorActionablePath:
         from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
 
@@ -91,7 +91,7 @@ class TestLogMonitorActionablePath:
         from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
 
@@ -120,7 +120,7 @@ class TestLogMonitorActionablePath:
         from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
 
@@ -149,7 +149,7 @@ class TestLogMonitorActionablePath:
         from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from utils.core.rate_limiter import Debouncer, RateLimiter
 
         monkeypatch.setattr(ha_log_monitor, "SELF_HEALING_ENABLED", False)
@@ -182,7 +182,7 @@ class TestLogMonitorActionablePath:
         from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
 
@@ -253,10 +253,10 @@ class TestPollForNotificationsLoopBody:
         """One iteration: WS notification fetched → card JSON written → notification_history row inserted."""
         from agents import ha_agent_advanced
         from agents import ha_log_monitor
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from agents import ha_notification_manager
 
@@ -323,10 +323,10 @@ class TestPollForNotificationsLoopBody:
             mark_notification_hitl_sent,
             record_notification_seen,
         )
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         db_path = str(tmp_path / "test.db")
         watch_dir = tmp_path / "watch"
