@@ -29,7 +29,7 @@ from config import (
 )
 from utils.autonomy import RiskLevel
 from utils.card_types import CARD_TYPE_NETALERTX_UNINSTALL
-from utils.logging import get_logger, set_correlation_id
+from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol

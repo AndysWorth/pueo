@@ -27,9 +27,9 @@ from interfaces import (
     NetAlertXClientProtocol,
     SSHClientProtocol,
 )
-from utils.context import truncate_to_budget
-from utils.logging import get_logger
-from utils.prompts import load_prompt
+from utils.core.context import truncate_to_budget
+from utils.core.logging import get_logger
+from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from utils.notify import NotifierProtocol

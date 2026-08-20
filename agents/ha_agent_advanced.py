@@ -27,18 +27,18 @@ from config import (
     BACKUP_RETAIN_LOCAL_DAYS,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
-from utils.context import estimate_tokens, truncate_to_budget
-from utils.logging import (
+from utils.core.context import estimate_tokens, truncate_to_budget
+from utils.core.logging import (
     get_logger,
     get_correlation_id,
     setup_logging,
     set_correlation_id,
 )
 from utils.llm_factory import make_llm_client
-from utils.prompts import load_prompt
+from utils.core.prompts import load_prompt
 from .ha_agent_core import DiagnosticsReport
 from utils.resource import DiskCriticalError, check_disk_not_critical
-from utils.retry import async_retry, SSH_RETRY_KWARGS
+from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_agent_advanced")

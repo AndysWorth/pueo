@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from config import NETALERTX_MAX_SCAN_AGE_MINUTES
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient

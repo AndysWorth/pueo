@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Optional
 from pydantic import BaseModel, Field
 
 import config as _config
-from utils.context import estimate_tokens
+from utils.core.context import estimate_tokens
 from utils.llm_trace import LLMTrace
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 from utils.llm_factory import _default_model_for_provider, make_llm_client
-from utils.prompts import load_prompt
+from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol

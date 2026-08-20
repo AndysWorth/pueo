@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import config
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 log = get_logger("hardware")
 

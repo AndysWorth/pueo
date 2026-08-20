@@ -1,6 +1,6 @@
 from pathlib import Path
 
-_PROMPT_DIR = Path(__file__).parent.parent / "prompts"
+_PROMPT_DIR = Path(__file__).parent.parent.parent / "prompts"
 _cache: dict[str, str] = {}
 
 

@@ -76,7 +76,7 @@ def isolated_config(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _patch_timeline_db(monkeypatch, tmp_path):
     """Redirect write_timeline_event to a per-test temp DB so tests never pollute the real DB."""
-    import utils.timeline
+    import utils.core.timeline
 
     tmp_db = str(tmp_path / "test_timeline.db")
     with sqlite3.connect(tmp_db) as conn:
@@ -85,7 +85,7 @@ def _patch_timeline_db(monkeypatch, tmp_path):
             "(id INTEGER PRIMARY KEY, ts REAL, level TEXT, "
             "source TEXT, message TEXT, detail_json TEXT)"
         )
-    monkeypatch.setattr(utils.timeline, "DB_PATH", tmp_db)
+    monkeypatch.setattr(utils.core.timeline, "DB_PATH", tmp_db)
 
 
 def _reload_all_modules():

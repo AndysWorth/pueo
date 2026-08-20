@@ -30,8 +30,8 @@ from interfaces import (
     LLMClientProtocol,
     SSHClientProtocol,
 )
-from utils.logging import get_logger
-from utils.prompts import load_prompt
+from utils.core.logging import get_logger
+from utils.core.prompts import load_prompt
 from utils.tool_registry import (
     GET_DISK_USAGE,
     QUERY_KNOWLEDGE,

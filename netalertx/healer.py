@@ -28,7 +28,7 @@ from netalertx.config_validator import (
     validate_app_conf,
 )
 from utils.autonomy import RiskLevel
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient

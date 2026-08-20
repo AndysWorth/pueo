@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from utils.autonomy import RiskLevel
 from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from utils.notify import NotifierProtocol

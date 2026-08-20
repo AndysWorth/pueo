@@ -28,14 +28,14 @@ from config import (
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.autonomy import AutonomyGate, RiskLevel
-from utils.context import estimate_tokens, sliding_window_lines
+from utils.core.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
-from utils.logging import get_logger, setup_logging
+from utils.core.logging import get_logger, setup_logging
 from utils.notify import NotifierProtocol, get_notifier
 from utils.llm_factory import _default_model_for_provider, make_llm_client
-from utils.prompts import load_prompt
-from utils.rate_limiter import Debouncer, RateLimitExceeded, RateLimiter
-from utils.retry import async_retry
+from utils.core.prompts import load_prompt
+from utils.core.rate_limiter import Debouncer, RateLimitExceeded, RateLimiter
+from utils.core.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
 
 if TYPE_CHECKING:

@@ -3004,7 +3004,7 @@ class TestExecuteResourceAction:
         import web.dashboard as dashboard
         from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
-        import utils.timeline
+        import utils.core.timeline
 
         db_path = tmp_path / "test.db"
         self._make_db(db_path, ["slug-fail"])
@@ -3036,7 +3036,7 @@ class TestExecuteResourceAction:
 
         # A WARN event must be recorded in the (patched) timeline DB
         rows = (
-            _sqlite3.connect(utils.timeline.DB_PATH)
+            _sqlite3.connect(utils.core.timeline.DB_PATH)
             .execute(
                 "SELECT level, source, message, detail_json FROM timeline_events"
                 " WHERE source = 'resource_action' AND level = 'WARN'"
@@ -3833,7 +3833,7 @@ class TestTimelineRoutes:
     def tl_setup(self, tmp_path, monkeypatch):
         """Migrated DB + patched DB_PATH in dashboard and timeline modules."""
         from agents import ha_agent_advanced
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
         import web.dashboard as dashboard
 
         db = str(tmp_path / "tl_dash_test.db")
@@ -3856,7 +3856,7 @@ class TestTimelineRoutes:
     def test_timeline_shows_events(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event("ERROR", "ha_log_monitor", "pycync mesh error")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
@@ -3867,7 +3867,7 @@ class TestTimelineRoutes:
     def test_timeline_level_filter(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event("INFO", "update_check", "update found")
         write_timeline_event("ERROR", "resource", "disk critical")
@@ -3879,7 +3879,7 @@ class TestTimelineRoutes:
     def test_timeline_pagination_headers(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         for i in range(30):
             write_timeline_event("INFO", "src", f"event {i}")
@@ -3891,7 +3891,7 @@ class TestTimelineRoutes:
     def test_timeline_detail_returns_200(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         eid = write_timeline_event(
             "WARN", "resource", "disk warn", {"disk_free_gb": 1.8}
@@ -3905,7 +3905,7 @@ class TestTimelineRoutes:
     def test_timeline_detail_shows_detail_fields(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         eid = write_timeline_event(
             "INFO",
@@ -3937,7 +3937,7 @@ class TestTimelineRoutes:
     def test_overview_recent_events_section_present(self, tl_setup):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event("ERROR", "ha_log_monitor", "recent error event")
         client = TestClient(dashboard.app, raise_server_exceptions=True)
@@ -3948,7 +3948,7 @@ class TestTimelineRoutes:
         """disk_critical alert writes a CRITICAL timeline event."""
         import asyncio
         import sqlite3
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         db, _ = tl_setup
 

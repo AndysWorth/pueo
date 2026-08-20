@@ -11,7 +11,7 @@ from interfaces import (
     HAWebSocketClientProtocol,
     LLMClientProtocol,
 )
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 from utils.notify import NotifierProtocol
 
 log = get_logger("ha_lovelace_monitor")
@@ -170,7 +170,7 @@ async def _analyze_missing_entity(
 ) -> DashboardEntityAnalysis:
     """Single-shot LLM call to explain a missing entity and recommend an action."""
     from utils.llm_factory import _default_model_for_provider, make_llm_client
-    from utils.prompts import load_prompt
+    from utils.core.prompts import load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 

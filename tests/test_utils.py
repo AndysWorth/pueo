@@ -21,7 +21,7 @@ class TestAsyncRetry:
     """All tests drive the decorator via asyncio.run() — no external async framework needed."""
 
     def test_returns_value_on_first_success(self):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         @async_retry(exceptions=(OSError,))
         async def always_ok():
@@ -30,7 +30,7 @@ class TestAsyncRetry:
         assert asyncio.run(always_ok()) == 42
 
     def test_retries_on_matching_exception_then_succeeds(self):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         calls = []
 
@@ -46,7 +46,7 @@ class TestAsyncRetry:
         assert len(calls) == 2
 
     def test_non_retryable_exception_passes_through_immediately(self):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         calls = []
 
@@ -60,7 +60,7 @@ class TestAsyncRetry:
         assert len(calls) == 1
 
     def test_exhausts_max_attempts_and_raises(self):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         calls = []
 
@@ -74,7 +74,7 @@ class TestAsyncRetry:
         assert len(calls) == 3
 
     def test_zero_max_attempts_retries_past_default(self):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         calls = []
 
@@ -90,7 +90,7 @@ class TestAsyncRetry:
         assert len(calls) == 10
 
     def test_exponential_backoff_grows_between_attempts(self, monkeypatch):
-        from utils.retry import async_retry
+        from utils.core.retry import async_retry
 
         delays = []
 
@@ -115,7 +115,7 @@ class TestAsyncRetry:
         assert delays[2] > delays[1]
 
     def test_jitter_keeps_delay_within_25_percent(self, monkeypatch):
-        import utils.retry as retry_mod
+        import utils.core.retry as retry_mod
 
         # randbelow(51) returning 50 → 50/100 - 0.25 = +0.25 → delay * 1.25
         monkeypatch.setattr(retry_mod.secrets, "randbelow", lambda n: 50)
@@ -158,27 +158,27 @@ class TestAsyncRetry:
 
 class TestDebouncer:
     def test_first_call_triggers(self):
-        from utils.rate_limiter import Debouncer
+        from utils.core.rate_limiter import Debouncer
 
         d = Debouncer(window_seconds=30)
         assert d.record() is True
 
     def test_second_call_within_window_suppressed(self, monkeypatch):
-        from utils.rate_limiter import Debouncer
+        from utils.core.rate_limiter import Debouncer
         import time as time_mod
 
         now = time_mod.monotonic()
-        monkeypatch.setattr("utils.rate_limiter.time.monotonic", lambda: now)
+        monkeypatch.setattr("utils.core.rate_limiter.time.monotonic", lambda: now)
         d = Debouncer(window_seconds=30)
         d.record()
         assert d.record() is False
 
     def test_call_after_window_triggers_again(self, monkeypatch):
-        from utils.rate_limiter import Debouncer
+        from utils.core.rate_limiter import Debouncer
         import time as time_mod
 
         clock = [time_mod.monotonic()]
-        monkeypatch.setattr("utils.rate_limiter.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("utils.core.rate_limiter.time.monotonic", lambda: clock[0])
         d = Debouncer(window_seconds=30)
         d.record()
 
@@ -186,11 +186,11 @@ class TestDebouncer:
         assert d.record() is True
 
     def test_burst_of_50_produces_one_trigger(self, monkeypatch):
-        from utils.rate_limiter import Debouncer
+        from utils.core.rate_limiter import Debouncer
         import time as time_mod
 
         now = time_mod.monotonic()
-        monkeypatch.setattr("utils.rate_limiter.time.monotonic", lambda: now)
+        monkeypatch.setattr("utils.core.rate_limiter.time.monotonic", lambda: now)
         d = Debouncer(window_seconds=30)
         results = [d.record() for _ in range(50)]
         assert results.count(True) == 1
@@ -199,14 +199,14 @@ class TestDebouncer:
 
 class TestRateLimiter:
     def test_allows_calls_under_limit(self):
-        from utils.rate_limiter import RateLimiter
+        from utils.core.rate_limiter import RateLimiter
 
         rl = RateLimiter(max_calls=5, period_seconds=60)
         for _ in range(5):
             rl.check()
 
     def test_raises_at_limit(self):
-        from utils.rate_limiter import RateLimiter, RateLimitExceeded
+        from utils.core.rate_limiter import RateLimiter, RateLimitExceeded
 
         rl = RateLimiter(max_calls=3, period_seconds=60)
         for _ in range(3):
@@ -215,11 +215,11 @@ class TestRateLimiter:
             rl.check()
 
     def test_allows_again_after_period(self, monkeypatch):
-        from utils.rate_limiter import RateLimiter
+        from utils.core.rate_limiter import RateLimiter
         import time as time_mod
 
         clock = [time_mod.monotonic()]
-        monkeypatch.setattr("utils.rate_limiter.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("utils.core.rate_limiter.time.monotonic", lambda: clock[0])
         rl = RateLimiter(max_calls=2, period_seconds=60)
         rl.check()
         rl.check()
@@ -228,11 +228,11 @@ class TestRateLimiter:
         rl.check()
 
     def test_sliding_window_does_not_count_expired_calls(self, monkeypatch):
-        from utils.rate_limiter import RateLimiter
+        from utils.core.rate_limiter import RateLimiter
         import time as time_mod
 
         clock = [time_mod.monotonic()]
-        monkeypatch.setattr("utils.rate_limiter.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("utils.core.rate_limiter.time.monotonic", lambda: clock[0])
         rl = RateLimiter(max_calls=3, period_seconds=60)
         rl.check()
         rl.check()
@@ -243,7 +243,7 @@ class TestRateLimiter:
         rl.check()
 
     def test_rate_limit_exceeded_is_exception(self):
-        from utils.rate_limiter import RateLimitExceeded
+        from utils.core.rate_limiter import RateLimitExceeded
 
         assert issubclass(RateLimitExceeded, Exception)
 
@@ -267,7 +267,7 @@ class TestJsonFormatter:
 
     def test_produces_valid_json(self):
         import json
-        from utils.logging import _JsonFormatter
+        from utils.core.logging import _JsonFormatter
 
         formatter = _JsonFormatter()
         record = self._make_record("something_happened")
@@ -277,7 +277,7 @@ class TestJsonFormatter:
 
     def test_includes_required_fields(self):
         import json
-        from utils.logging import _JsonFormatter
+        from utils.core.logging import _JsonFormatter
 
         formatter = _JsonFormatter()
         record = self._make_record("config_fetched")
@@ -289,7 +289,7 @@ class TestJsonFormatter:
 
     def test_event_matches_message(self):
         import json
-        from utils.logging import _JsonFormatter
+        from utils.core.logging import _JsonFormatter
 
         formatter = _JsonFormatter()
         record = self._make_record("backup_created")
@@ -298,7 +298,7 @@ class TestJsonFormatter:
 
     def test_module_stripped_of_pueo_prefix(self):
         import json
-        from utils.logging import _JsonFormatter
+        from utils.core.logging import _JsonFormatter
 
         formatter = _JsonFormatter()
         record = self._make_record("x")
@@ -308,7 +308,7 @@ class TestJsonFormatter:
 
     def test_extra_fields_appear_in_output(self):
         import json
-        from utils.logging import _JsonFormatter
+        from utils.core.logging import _JsonFormatter
 
         formatter = _JsonFormatter()
         record = self._make_record("backup_created")
@@ -323,7 +323,7 @@ class TestStructuredLogger:
     def test_info_calls_underlying_logger(self):
         import logging as logging_mod
         from unittest.mock import MagicMock
-        from utils.logging import StructuredLogger
+        from utils.core.logging import StructuredLogger
 
         inner = MagicMock(spec=logging_mod.Logger)
         log = StructuredLogger(inner)
@@ -336,7 +336,7 @@ class TestStructuredLogger:
     def test_warning_uses_warning_level(self):
         import logging as logging_mod
         from unittest.mock import MagicMock
-        from utils.logging import StructuredLogger
+        from utils.core.logging import StructuredLogger
 
         inner = MagicMock(spec=logging_mod.Logger)
         log = StructuredLogger(inner)
@@ -346,7 +346,7 @@ class TestStructuredLogger:
     def test_error_uses_error_level(self):
         import logging as logging_mod
         from unittest.mock import MagicMock
-        from utils.logging import StructuredLogger
+        from utils.core.logging import StructuredLogger
 
         inner = MagicMock(spec=logging_mod.Logger)
         log = StructuredLogger(inner)
@@ -372,7 +372,7 @@ class TestTextFormatter:
         return record
 
     def test_basic_format(self):
-        from utils.logging import _TextFormatter
+        from utils.core.logging import _TextFormatter
 
         formatter = _TextFormatter()
         record = self._make_record("step1_complete")
@@ -380,7 +380,7 @@ class TestTextFormatter:
         assert output == "INFO     step1_complete"
 
     def test_extras_rendered_as_key_value_pairs(self):
-        from utils.logging import _TextFormatter
+        from utils.core.logging import _TextFormatter
 
         formatter = _TextFormatter()
         record = self._make_record("step1_complete")
@@ -391,7 +391,7 @@ class TestTextFormatter:
         assert "step='detect_deployment'" in output
 
     def test_correlation_id_excluded(self):
-        from utils.logging import _TextFormatter
+        from utils.core.logging import _TextFormatter
 
         formatter = _TextFormatter()
         record = self._make_record("install_state_updated")
@@ -403,8 +403,8 @@ class TestTextFormatter:
 
     def test_setup_logging_console_text_attaches_text_formatter(self, monkeypatch):
         import logging as logging_mod
-        import utils.logging as logging_utils
-        from utils.logging import _TextFormatter
+        import utils.core.logging as logging_utils
+        from utils.core.logging import _TextFormatter
 
         monkeypatch.setattr(logging_utils, "_configured", False)
         pueo_logger = logging_mod.getLogger("pueo")
@@ -426,8 +426,8 @@ class TestTextFormatter:
 
     def test_setup_logging_default_uses_json_formatter(self, monkeypatch):
         import logging as logging_mod
-        import utils.logging as logging_utils
-        from utils.logging import _JsonFormatter, _TextFormatter
+        import utils.core.logging as logging_utils
+        from utils.core.logging import _JsonFormatter, _TextFormatter
 
         monkeypatch.setattr(logging_utils, "_configured", False)
         pueo_logger = logging_mod.getLogger("pueo")
@@ -453,13 +453,13 @@ class TestTextFormatter:
 
 class TestCorrelationId:
     def test_default_is_empty_string(self):
-        from utils.logging import get_correlation_id, set_correlation_id
+        from utils.core.logging import get_correlation_id, set_correlation_id
 
         set_correlation_id("")
         assert get_correlation_id() == ""
 
     def test_set_and_get_roundtrip(self):
-        from utils.logging import get_correlation_id, set_correlation_id
+        from utils.core.logging import get_correlation_id, set_correlation_id
 
         set_correlation_id("abc-123")
         assert get_correlation_id() == "abc-123"
@@ -467,7 +467,7 @@ class TestCorrelationId:
     def test_correlation_id_included_in_log_extra(self):
         import logging as logging_mod
         from unittest.mock import MagicMock
-        from utils.logging import StructuredLogger, set_correlation_id
+        from utils.core.logging import StructuredLogger, set_correlation_id
 
         set_correlation_id("repair-uuid-xyz")
         inner = MagicMock(spec=logging_mod.Logger)
@@ -479,7 +479,7 @@ class TestCorrelationId:
     def test_explicit_correlation_id_not_overwritten(self):
         import logging as logging_mod
         from unittest.mock import MagicMock
-        from utils.logging import StructuredLogger, set_correlation_id
+        from utils.core.logging import StructuredLogger, set_correlation_id
 
         set_correlation_id("ctx-id")
         inner = MagicMock(spec=logging_mod.Logger)
@@ -494,22 +494,22 @@ class TestCorrelationId:
 
 class TestEstimateTokens:
     def test_empty_string_returns_one(self):
-        from utils.context import estimate_tokens
+        from utils.core.context import estimate_tokens
 
         assert estimate_tokens("") == 1
 
     def test_four_chars_is_one_token(self):
-        from utils.context import estimate_tokens
+        from utils.core.context import estimate_tokens
 
         assert estimate_tokens("abcd") == 1
 
     def test_hundred_chars_is_twenty_five_tokens(self):
-        from utils.context import estimate_tokens
+        from utils.core.context import estimate_tokens
 
         assert estimate_tokens("x" * 100) == 25
 
     def test_scales_with_length(self):
-        from utils.context import estimate_tokens
+        from utils.core.context import estimate_tokens
 
         assert estimate_tokens("a" * 400) == 100
         assert estimate_tokens("a" * 4000) == 1000
@@ -517,19 +517,19 @@ class TestEstimateTokens:
 
 class TestTruncateToBudget:
     def test_short_text_unchanged(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "hello world"
         assert truncate_to_budget(text, 100) == text
 
     def test_exactly_at_budget_unchanged(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "a" * 400  # 400 chars = 100 tokens exactly
         assert truncate_to_budget(text, 100) == text
 
     def test_tail_strategy_keeps_end(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "START" + "x" * 400 + "END"
         result = truncate_to_budget(text, 10, strategy="tail")
@@ -537,7 +537,7 @@ class TestTruncateToBudget:
         assert "START" not in result
 
     def test_head_strategy_keeps_start(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "START" + "x" * 400 + "END"
         result = truncate_to_budget(text, 10, strategy="head")
@@ -545,14 +545,14 @@ class TestTruncateToBudget:
         assert "END" not in result
 
     def test_smart_strategy_includes_separator(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "A" * 2000
         result = truncate_to_budget(text, 100, strategy="smart")
         assert "...[truncated]..." in result
 
     def test_smart_strategy_keeps_both_ends(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "HEADER" + "x" * 2000 + "FOOTER"
         result = truncate_to_budget(text, 100, strategy="smart")
@@ -560,7 +560,7 @@ class TestTruncateToBudget:
         assert "FOOTER" in result
 
     def test_default_strategy_is_tail(self):
-        from utils.context import truncate_to_budget
+        from utils.core.context import truncate_to_budget
 
         text = "START" + "z" * 800
         result = truncate_to_budget(text, 10)
@@ -570,38 +570,38 @@ class TestTruncateToBudget:
 
 class TestSlidingWindowLines:
     def test_empty_list_returns_empty(self):
-        from utils.context import sliding_window_lines
+        from utils.core.context import sliding_window_lines
 
         assert sliding_window_lines([], 100) == []
 
     def test_few_lines_all_fit(self):
-        from utils.context import sliding_window_lines
+        from utils.core.context import sliding_window_lines
 
         lines = ["line one", "line two", "line three"]
         assert sliding_window_lines(lines, 1000) == lines
 
     def test_too_many_lines_drops_oldest(self):
-        from utils.context import sliding_window_lines
+        from utils.core.context import sliding_window_lines
 
         lines = ["old " * 100 + str(i) for i in range(20)]
         result = sliding_window_lines(lines, 50)
         assert result == lines[len(lines) - len(result) :]
 
     def test_order_preserved(self):
-        from utils.context import sliding_window_lines
+        from utils.core.context import sliding_window_lines
 
         lines = ["alpha", "beta", "gamma"]
         result = sliding_window_lines(lines, 1000)
         assert result == ["alpha", "beta", "gamma"]
 
     def test_single_line_fits(self):
-        from utils.context import sliding_window_lines
+        from utils.core.context import sliding_window_lines
 
         lines = ["short line"]
         assert sliding_window_lines(lines, 100) == lines
 
     def test_result_fits_within_budget(self):
-        from utils.context import sliding_window_lines, estimate_tokens
+        from utils.core.context import sliding_window_lines, estimate_tokens
 
         lines = ["x" * 100 for _ in range(50)]
         max_tokens = 200
@@ -3044,7 +3044,7 @@ class TestTimelineUtils:
     def tl_db(self, tmp_path, monkeypatch):
         """Isolated SQLite DB with timeline_events table."""
         from agents import ha_agent_advanced
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         db = str(tmp_path / "tl_test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
@@ -3053,14 +3053,14 @@ class TestTimelineUtils:
         return db
 
     def test_write_returns_positive_id(self, tl_db):
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         eid = write_timeline_event("INFO", "test_src", "hello world")
         assert eid > 0
 
     def test_write_persists_to_db(self, tl_db):
         import sqlite3
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event("WARN", "resource", "disk low", {"disk_free_gb": 1.5})
         with sqlite3.connect(tl_db) as conn:
@@ -3074,7 +3074,7 @@ class TestTimelineUtils:
 
     def test_write_publishes_to_sse_bus(self, tl_db, monkeypatch):
         """write_timeline_event() calls publish_event with event_type='timeline'."""
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         published = []
         monkeypatch.setattr(tl_mod, "_publish_event_for_test", None, raising=False)
@@ -3084,14 +3084,14 @@ class TestTimelineUtils:
         captured = []
         monkeypatch.setattr(sup_mod, "publish_event", lambda e: captured.append(e))
 
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event("ERROR", "ha_log_monitor", "bad thing happened")
         assert any(e.get("event_type") == "timeline" for e in captured)
 
     def test_load_returns_newest_first(self, tl_db):
         import time as _time
-        from utils.timeline import load_timeline_events, write_timeline_event
+        from utils.core.timeline import load_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "a", "first")
         _time.sleep(0.01)
@@ -3101,7 +3101,7 @@ class TestTimelineUtils:
         assert events[1]["message"] == "first"
 
     def test_load_level_filter(self, tl_db):
-        from utils.timeline import load_timeline_events, write_timeline_event
+        from utils.core.timeline import load_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "src", "info event")
         write_timeline_event("ERROR", "src", "error event")
@@ -3110,7 +3110,7 @@ class TestTimelineUtils:
         assert events[0]["message"] == "error event"
 
     def test_load_source_filter(self, tl_db):
-        from utils.timeline import load_timeline_events, write_timeline_event
+        from utils.core.timeline import load_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "resource", "disk ok")
         write_timeline_event("INFO", "update_check", "no updates")
@@ -3119,21 +3119,21 @@ class TestTimelineUtils:
         assert events[0]["source"] == "resource"
 
     def test_load_parses_detail_json(self, tl_db):
-        from utils.timeline import load_timeline_events, write_timeline_event
+        from utils.core.timeline import load_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "src", "msg", {"key": "val"})
         events = load_timeline_events()
         assert events[0]["detail"] == {"key": "val"}
 
     def test_load_empty_detail_returns_dict(self, tl_db):
-        from utils.timeline import load_timeline_events, write_timeline_event
+        from utils.core.timeline import load_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "src", "msg")
         events = load_timeline_events()
         assert events[0]["detail"] == {}
 
     def test_get_returns_event_by_id(self, tl_db):
-        from utils.timeline import get_timeline_event, write_timeline_event
+        from utils.core.timeline import get_timeline_event, write_timeline_event
 
         eid = write_timeline_event("CRITICAL", "src", "critical thing", {"x": 1})
         ev = get_timeline_event(eid)
@@ -3142,19 +3142,19 @@ class TestTimelineUtils:
         assert ev["detail"] == {"x": 1}
 
     def test_get_returns_none_for_missing_id(self, tl_db):
-        from utils.timeline import get_timeline_event
+        from utils.core.timeline import get_timeline_event
 
         assert get_timeline_event(99999) is None
 
     def test_count_total(self, tl_db):
-        from utils.timeline import count_timeline_events, write_timeline_event
+        from utils.core.timeline import count_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "src", "a")
         write_timeline_event("WARN", "src", "b")
         assert count_timeline_events() == 2
 
     def test_count_with_level_filter(self, tl_db):
-        from utils.timeline import count_timeline_events, write_timeline_event
+        from utils.core.timeline import count_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "src", "a")
         write_timeline_event("WARN", "src", "b")
@@ -3162,11 +3162,11 @@ class TestTimelineUtils:
 
     def test_load_on_missing_table_returns_empty(self, tmp_path, monkeypatch):
         """Querying a DB with no timeline_events table returns []."""
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         db = str(tmp_path / "empty.db")
         monkeypatch.setattr(tl_mod, "DB_PATH", db)
-        from utils.timeline import load_timeline_events
+        from utils.core.timeline import load_timeline_events
 
         result = load_timeline_events()
         assert result == []
@@ -3181,23 +3181,23 @@ class TestTimelineUtils:
             lambda e: (_ for _ in ()).throw(RuntimeError("bus down")),
         )
 
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         eid = write_timeline_event("INFO", "src", "msg")
         assert eid > 0
 
     def test_get_on_missing_table_returns_none(self, tmp_path, monkeypatch):
         """get_timeline_event() returns None when the table doesn't exist."""
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         db = str(tmp_path / "empty.db")
         monkeypatch.setattr(tl_mod, "DB_PATH", db)
-        from utils.timeline import get_timeline_event
+        from utils.core.timeline import get_timeline_event
 
         assert get_timeline_event(1) is None
 
     def test_count_with_source_filter(self, tl_db):
-        from utils.timeline import count_timeline_events, write_timeline_event
+        from utils.core.timeline import count_timeline_events, write_timeline_event
 
         write_timeline_event("INFO", "resource", "disk ok")
         write_timeline_event("INFO", "update_check", "no updates")
@@ -3205,11 +3205,11 @@ class TestTimelineUtils:
 
     def test_count_on_missing_table_returns_zero(self, tmp_path, monkeypatch):
         """count_timeline_events() returns 0 when the table doesn't exist."""
-        import utils.timeline as tl_mod
+        import utils.core.timeline as tl_mod
 
         db = str(tmp_path / "empty.db")
         monkeypatch.setattr(tl_mod, "DB_PATH", db)
-        from utils.timeline import count_timeline_events
+        from utils.core.timeline import count_timeline_events
 
         assert count_timeline_events() == 0
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 log = get_logger("pueo_storage")
 

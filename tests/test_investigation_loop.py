@@ -411,7 +411,7 @@ class TestInvestigationPromptFile:
     """Confirms prompts/investigation.md loads and formats correctly."""
 
     def test_prompt_loads_without_error(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt(
             "investigation",

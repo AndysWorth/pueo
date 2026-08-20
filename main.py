@@ -149,7 +149,7 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
     import importlib.util
     import sqlite3
 
-    from utils.logging import get_logger
+    from utils.core.logging import get_logger
 
     log = get_logger("main")
     try:
@@ -202,7 +202,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     populates ChromaDB without requiring a manual --mode rag-refresh invocation.
     Subsequent runs fire every interval_hours (default 168 = weekly).
     """
-    from utils.logging import get_logger as _gl
+    from utils.core.logging import get_logger as _gl
 
     _log = _gl("main")
 
@@ -232,7 +232,7 @@ async def _known_issues_poll_loop(
     import sqlite3
 
     from utils.hitl_tracker import check_reminders_due, touch_reminder_sent
-    from utils.logging import get_logger as _gl
+    from utils.core.logging import get_logger as _gl
 
     _log = _gl("main")
     while True:
@@ -278,7 +278,7 @@ async def supervisor_main(config_path: Path) -> None:
         await ha_agent_advanced.reconcile_backup_inventory()
         await ha_agent_advanced.offload_pending_backups()
     except Exception as _e:  # nosec B110
-        from utils.logging import get_logger as _gl
+        from utils.core.logging import get_logger as _gl
 
         _gl("main").warning("backup_startup_failed", error=str(_e))
 
@@ -294,7 +294,7 @@ async def supervisor_main(config_path: Path) -> None:
         )
         await reconcile_in_progress_updates(_reconcile_ssh, _reconcile_notifier)
     except Exception as _e:  # nosec B110
-        from utils.logging import get_logger as _gl
+        from utils.core.logging import get_logger as _gl
 
         _gl("main").warning("update_reconcile_startup_failed", error=str(_e))
 
@@ -331,7 +331,7 @@ async def supervisor_main(config_path: Path) -> None:
         if cfg.OLLAMA_MODEL_AUTO:
             _best = await _asyncio.to_thread(select_best_model)
             if _best != cfg.OLLAMA_MODEL:
-                from utils.logging import get_logger as _get_logger
+                from utils.core.logging import get_logger as _get_logger
 
                 _get_logger("main").info(
                     "model_auto_switch",
@@ -362,7 +362,7 @@ async def supervisor_main(config_path: Path) -> None:
     knowledge_store = None
     try:
         from utils.knowledge_store import ChromaKnowledgeStore
-        from utils.logging import get_logger as _get_logger
+        from utils.core.logging import get_logger as _get_logger
 
         _ks_log = _get_logger("main")
         chroma_path = Path(cfg.CHROMADB_PATH)
@@ -441,7 +441,7 @@ async def supervisor_main(config_path: Path) -> None:
     # Periodic backup reconciliation and offload loop — keeps inventory in sync and
     # ensures new HA-side backups (including automatic daily ones) are pulled locally.
     async def _backup_reconcile_loop() -> None:
-        from utils.logging import get_logger as _gl
+        from utils.core.logging import get_logger as _gl
         from utils.ssh_client import AsyncSSHClient as _SSH
 
         _log = _gl("main")
@@ -717,7 +717,7 @@ def main() -> None:
     # Must be set before importing agent modules so config.py picks up the right path
     os.environ["PUEO_CONFIG"] = str(config_path)
 
-    from utils.logging import setup_logging
+    from utils.core.logging import setup_logging
 
     setup_logging(
         console_text=(

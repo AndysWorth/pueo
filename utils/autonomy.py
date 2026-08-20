@@ -17,7 +17,7 @@ import uuid
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from utils.notify import NotifierProtocol

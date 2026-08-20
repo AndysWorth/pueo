@@ -54,17 +54,17 @@ from interfaces import (
     NetAlertXClientProtocol,
     SSHClientProtocol,
 )
-from utils.context import estimate_tokens, sliding_window_lines
+from utils.core.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
-from utils.logging import get_logger, setup_logging, set_correlation_id
+from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm_factory import _default_model_for_provider, make_llm_client
-from utils.prompts import load_prompt
+from utils.core.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
-from utils.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
+from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
 from utils.ha_rest_client import HARepairIssue, HARestClient, get_update_status
 from utils.resource import ResourcePoller
-from utils.retry import async_retry
+from utils.core.retry import async_retry
 from utils.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_log_monitor")
@@ -179,7 +179,7 @@ async def analyze_repair_issue(
 ) -> RepairIssueAnalysis:
     """LLM plain-English analysis of an HA repair issue."""
     from utils.llm_factory import _default_model_for_provider, make_llm_client
-    from utils.prompts import load_prompt
+    from utils.core.prompts import load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
@@ -256,7 +256,7 @@ async def tail_remote_log_stream(
                         reason="known-transient network error pattern",
                     )
                     try:  # pragma: no cover
-                        from utils.timeline import write_timeline_event
+                        from utils.core.timeline import write_timeline_event
 
                         write_timeline_event(
                             "WARNING",
@@ -284,7 +284,7 @@ async def tail_remote_log_stream(
                     and evaluation.confidence_score > CONFIDENCE_THRESHOLD
                 ):
                     try:  # pragma: no cover
-                        from utils.timeline import write_timeline_event
+                        from utils.core.timeline import write_timeline_event
 
                         write_timeline_event(
                             "ERROR",
@@ -406,7 +406,7 @@ def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> 
         mark_card_resolved(_conn, suppression_key)
 
     try:
-        from utils.timeline import write_timeline_event
+        from utils.core.timeline import write_timeline_event
 
         write_timeline_event(
             "INFO",
@@ -595,7 +595,7 @@ async def poll_for_updates(
                         },
                     )
                 try:  # pragma: no cover
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "INFO",
@@ -916,7 +916,7 @@ async def poll_for_repairs(
                 mark_repair_resolved(issue_key)
                 log.info("repair_resolved", issue_key=issue_key)
                 try:
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "INFO",

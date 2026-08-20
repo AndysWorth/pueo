@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Optional
 
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from utils.tool_registry import AgentLoopResult, ToolRegistry
