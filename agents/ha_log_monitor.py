@@ -57,15 +57,15 @@ from interfaces import (
 from utils.core.context import estimate_tokens, sliding_window_lines
 from utils.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
-from utils.llm_factory import _default_model_for_provider, make_llm_client
+from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
-from utils.ha_rest_client import HARepairIssue, HARestClient, get_update_status
+from utils.ha.ha_rest_client import HARepairIssue, HARestClient, get_update_status
 from utils.resource import ResourcePoller
 from utils.core.retry import async_retry
-from utils.ssh_client import AsyncSSHClient
+from utils.ha.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_log_monitor")
 
@@ -178,7 +178,7 @@ async def analyze_repair_issue(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> RepairIssueAnalysis:
     """LLM plain-English analysis of an HA repair issue."""
-    from utils.llm_factory import _default_model_for_provider, make_llm_client
+    from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
     from utils.core.prompts import load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
@@ -680,7 +680,7 @@ async def poll_for_notifications(
         record_notification_seen,
     )
     from netalertx.api_client import NetAlertXAPIClient
-    from utils.ha_ws_client import HAWebSocketClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
 
     interval = HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60
     _ws: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(
@@ -796,8 +796,8 @@ async def poll_for_repairs(
         record_repair_seen,
     )
     from utils.card_types import CARD_TYPE_HA_REPAIR
-    from utils.ha_rest_client import get_ha_repair_issues
-    from utils.ha_ws_client import HAWebSocketClient
+    from utils.ha.ha_rest_client import get_ha_repair_issues
+    from utils.ha.ha_ws_client import HAWebSocketClient
 
     interval = HA_REPAIR_POLL_INTERVAL_MINUTES * 60
     _client: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(

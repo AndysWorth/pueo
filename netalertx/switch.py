@@ -185,7 +185,7 @@ async def main(
     )
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     _docker_user = NETALERTX_DOCKER_SSH_USER or HA_USER
     _docker_key = NETALERTX_DOCKER_SSH_KEY_PATH or SSH_KEY_PATH

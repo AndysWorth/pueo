@@ -25,7 +25,7 @@ class TestRunCloudEscalation:
         from utils.cloud_escalation import run_cloud_escalation
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import pytest
 
         registry = self._make_registry()
@@ -51,13 +51,13 @@ class TestRunCloudEscalation:
         from utils.cloud_escalation import run_cloud_escalation
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         fake_result = AgentLoopResult(outcome="success", steps=[])
 
         with (
             patch("utils.billing.check_billing_caps"),
-            patch("utils.cloud_client.ClaudeAPIClient") as MockClient,
+            patch("utils.llm.cloud_client.ClaudeAPIClient") as MockClient,
             patch("utils.agent_loop.AgentLoop") as MockLoop,
             patch("utils.tool_executor.ToolExecutor"),
         ):
@@ -84,14 +84,14 @@ class TestRunCloudEscalation:
         from utils.cloud_escalation import run_cloud_escalation
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         fake_result = AgentLoopResult(outcome="exhausted", steps=[])
         captured: list[str] = []
 
         with (
             patch("utils.billing.check_billing_caps"),
-            patch("utils.cloud_client.ClaudeAPIClient"),
+            patch("utils.llm.cloud_client.ClaudeAPIClient"),
             patch("utils.tool_executor.ToolExecutor"),
             patch("utils.agent_loop.AgentLoop") as MockLoop,
         ):
@@ -124,12 +124,12 @@ class TestRunCloudEscalation:
         from utils.cloud_escalation import run_cloud_escalation
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import pytest
 
         with (
             patch("utils.billing.check_billing_caps"),
-            patch("utils.cloud_client.ClaudeAPIClient"),
+            patch("utils.llm.cloud_client.ClaudeAPIClient"),
             patch("utils.tool_executor.ToolExecutor"),
             patch("utils.agent_loop.AgentLoop") as MockLoop,
         ):

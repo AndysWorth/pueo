@@ -269,7 +269,7 @@ async def supervisor_main(config_path: Path) -> None:
     import uvicorn
     from utils.notify import get_notifier
     from utils.resource import ResourcePoller
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
     from utils.supervisor import LoopSupervisor, event_bus, set_supervisor_instance
     from web.dashboard import app as dashboard_app
 
@@ -286,7 +286,7 @@ async def supervisor_main(config_path: Path) -> None:
     try:
         from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import get_notifier as _get_notifier
-        from utils.ssh_client import AsyncSSHClient as _SSH
+        from utils.ha.ssh_client import AsyncSSHClient as _SSH
 
         _reconcile_ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
         _reconcile_notifier = _get_notifier(
@@ -410,11 +410,11 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Build the initial HA environment profile and register a periodic refresh loop.
     if cfg.HA_API_TOKEN:
-        from utils.ha_environment import (
+        from utils.ha.ha_environment import (
             build_environment_profile,
             save_environment_profile,
         )
-        from utils.ha_ws_client import HAWebSocketClient
+        from utils.ha.ha_ws_client import HAWebSocketClient
 
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
         _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
@@ -442,7 +442,7 @@ async def supervisor_main(config_path: Path) -> None:
     # ensures new HA-side backups (including automatic daily ones) are pulled locally.
     async def _backup_reconcile_loop() -> None:
         from utils.core.logging import get_logger as _gl
-        from utils.ssh_client import AsyncSSHClient as _SSH
+        from utils.ha.ssh_client import AsyncSSHClient as _SSH
 
         _log = _gl("main")
         while True:
@@ -480,13 +480,13 @@ async def supervisor_main(config_path: Path) -> None:
     # Pass rest_client so the poller can call recorder.purge during disk-critical auto-recovery.
     _rest_client_for_poller = None
     if cfg.HA_API_TOKEN:
-        from utils.ha_rest_client import HARestClient
+        from utils.ha.ha_rest_client import HARestClient
 
         _rest_client_for_poller = HARestClient(
             cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN
         )
 
-    from utils.llm_factory import make_llm_client
+    from utils.llm.llm_factory import make_llm_client
 
     supervisor.start(
         "resource_poll",

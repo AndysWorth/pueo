@@ -34,7 +34,7 @@ class TestNetAlertXDetector:
         return httpx.AsyncClient(transport=_VersionTransport())
 
     def test_supervisor_path_returns_addon_mode(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         ssh = FakeSSHClient(
@@ -51,7 +51,7 @@ class TestNetAlertXDetector:
         assert result.container_name == "netalertx"
 
     def test_docker_fallback_when_supervisor_fails(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         ssh = FakeSSHClient(
@@ -67,7 +67,7 @@ class TestNetAlertXDetector:
         assert result.mode == "docker"
 
     def test_raises_when_neither_supervisor_nor_docker(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         ssh = FakeSSHClient(
@@ -83,7 +83,7 @@ class TestNetAlertXDetector:
             )
 
     def test_version_empty_when_api_unreachable(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
         import httpx
 
@@ -99,7 +99,7 @@ class TestNetAlertXDetector:
         assert result.version == ""
 
     def test_supervisor_command_is_tried_first(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         ssh = FakeSSHClient(
@@ -118,7 +118,7 @@ class TestNetAlertXDetector:
 
     def test_fetch_version_without_injected_client(self, monkeypatch):
         import netalertx.detector as det_mod
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         version_client = self._make_http_client("v99.0.0")
@@ -469,7 +469,7 @@ class TestNetAlertXInstallerSteps1to4:
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _make_supervisor_ssh(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             command_results={
@@ -494,7 +494,7 @@ class TestNetAlertXInstallerSteps1to4:
         )
 
     def _make_docker_ssh(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             command_results={
@@ -590,7 +590,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step1_no_target_aborts(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -644,7 +644,7 @@ class TestNetAlertXInstallerSteps1to4:
     ):
         """HA supervisor returns 'started', not 'running' — installer must accept it."""
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -685,7 +685,7 @@ class TestNetAlertXInstallerSteps1to4:
         self, tmp_path, monkeypatch
     ):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -729,7 +729,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step2_mosquitto_install_rejection_aborts(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -788,7 +788,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step3_multiple_interfaces_requires_approval(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -825,7 +825,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step3_multiple_interfaces_rejection_aborts(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -851,7 +851,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step3_no_interface_aborts(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -888,7 +888,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step4_repo_add_aborts_if_verify_fails(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -1043,7 +1043,7 @@ class TestNetAlertXInstallerSteps1to4:
         self, tmp_path, monkeypatch
     ):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -1081,8 +1081,8 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step2_mosquitto_start_poll_fails_aborts(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.installer import run_steps_1_to_4
         from netalertx.installer_diagnostics import InstallerDiagnostic
 
@@ -1150,7 +1150,7 @@ class TestNetAlertXInstallerSteps1to4:
 
     def test_step4_repo_freshly_added_advances_state(self, tmp_path, monkeypatch):
         import asyncio
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer import run_steps_1_to_4
 
         db = _make_installer_db(tmp_path, monkeypatch)
@@ -1322,7 +1322,7 @@ class TestInstallerHelpers5to8:
     def test_poll_addon_state_timeout_returns_false(self):
         import asyncio
         from netalertx.installer import _poll_addon_state
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"ha apps info slug_x": (0, "state: stopped", "")}
@@ -1336,7 +1336,7 @@ class TestInstallerHelpers5to8:
         import asyncio
         import logging
         from netalertx.installer import _poll_addon_state
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"ha apps info slug_p": (0, "state: stopped", "")}
@@ -1352,7 +1352,7 @@ class TestInstallerHelpers5to8:
     def test_poll_addon_not_state_timeout_returns_false(self):
         import asyncio
         from netalertx.installer import _poll_addon_not_state
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"ha apps info slug_y": (0, "state: unknown", "")}
@@ -1365,7 +1365,7 @@ class TestInstallerHelpers5to8:
     def test_poll_addon_not_state_returns_true_when_state_changes(self):
         import asyncio
         from netalertx.installer import _poll_addon_not_state
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"ha apps info slug_z": (0, "state: running", "")}
@@ -1378,7 +1378,7 @@ class TestInstallerHelpers5to8:
     def test_detect_subnet_returns_empty_when_no_inet(self):
         import asyncio
         from netalertx.installer import _detect_subnet
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={
@@ -1391,7 +1391,7 @@ class TestInstallerHelpers5to8:
     def test_detect_subnet_returns_empty_on_invalid_ip(self):
         import asyncio
         from netalertx.installer import _detect_subnet
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"ip addr show eth0": (0, "inet 999.999.999.999/99\n", "")}
@@ -1509,7 +1509,7 @@ class TestNetAlertXInstallerSteps5to8:
         self, app_conf=_ORIG_APP_CONF, automations="", mqtt_present=True
     ):
         """SSH client configured for a typical steps-5-8 run (all pass)."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             file_contents={
@@ -1572,7 +1572,7 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             file_contents={
@@ -1657,7 +1657,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         from netalertx.installer import run_steps_5_to_8
         from netalertx.installer_diagnostics import InstallerDiagnostic
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         async def poll_false(*a, **k):
             return False
@@ -1665,7 +1665,7 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_not_state", poll_false)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         diag = InstallerDiagnostic(
             primary_hypothesis="Network issue downloading image",
@@ -1709,7 +1709,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         from netalertx.installer import run_steps_5_to_8
         from netalertx.installer_diagnostics import InstallerDiagnostic
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         async def poll_not_state_true(*a, **k):
             return True
@@ -1723,7 +1723,7 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_state_false)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         diag = InstallerDiagnostic(
             primary_hypothesis="Add-on config issue causing immediate exit",
@@ -1770,7 +1770,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         db = _make_installer_db_at_state(
@@ -1870,7 +1870,7 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             file_contents={
@@ -2166,7 +2166,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         original_automations = "- id: existing_automation\n  trigger: []\n"
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             file_contents={
@@ -2241,7 +2241,7 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_not_state", poll_true)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             file_contents={
@@ -2317,7 +2317,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2365,7 +2365,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2444,7 +2444,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2490,7 +2490,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         call_counts: dict[str, int] = {}
 
@@ -2833,7 +2833,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2874,7 +2874,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2920,7 +2920,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -2960,7 +2960,7 @@ class TestNetAlertXInstallerSteps5to8:
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -3012,7 +3012,7 @@ class TestRunInstaller:
         import asyncio
 
         from netalertx.installer import run_installer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         async def poll_true(*a, **k):
             return True
@@ -3086,7 +3086,7 @@ class TestRunInstaller:
         import asyncio
 
         from netalertx.installer import run_installer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
 
         from agents import ha_agent_advanced
@@ -3120,7 +3120,7 @@ class TestRunInstaller:
 
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from agents import ha_agent_advanced
 
         db = tmp_path / "main_poll_timeout.db"
@@ -3155,7 +3155,7 @@ class TestRunInstaller:
 
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.notify import FakeNotifier
         from agents import ha_agent_advanced
 
@@ -3196,7 +3196,7 @@ class TestRunInstaller:
 
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from agents import ha_agent_advanced
 
         db = tmp_path / "main_poll_ready.db"
@@ -3311,7 +3311,7 @@ class TestHaNameSyncReadSources:
     def test_source3_only_returns_device_tracker_names(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         states = [
             {
@@ -3331,7 +3331,7 @@ class TestHaNameSyncReadSources:
     def test_source2_fills_gaps_not_covered_by_source3(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # Source 3 has phone; Source 2 has a tablet not in Source 3
         states = [
@@ -3356,7 +3356,7 @@ class TestHaNameSyncReadSources:
     def test_source1_wins_over_source3_for_same_mac(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:FF"
         states = [
@@ -3392,7 +3392,7 @@ class TestHaNameSyncReadSources:
         import asyncio
         import json as _json
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "11:22:33:44:55:66"
         registry_json = {
@@ -3419,7 +3419,7 @@ class TestHaNameSyncReadSources:
     def test_source2_filenotfounderror_silently_skipped(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         states = [
             {
@@ -3441,7 +3441,7 @@ class TestHaNameSyncReadSources:
         import asyncio
         import json as _json
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         registry_json = {
             "data": {
@@ -3478,7 +3478,7 @@ class TestHaNameSyncReadSources:
     def test_source1_failure_falls_back_to_lower_sources(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         states = [
             {
@@ -3513,7 +3513,7 @@ class TestHaNameSyncCases1And2:
     def test_case1_blank_devname_writes_and_locks(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:01"
         nax = _FakeNAXClient(
@@ -3533,7 +3533,7 @@ class TestHaNameSyncCases1And2:
     def test_case1_mac_as_devname_triggers_write(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:02"
         # devName is the MAC address itself → matches auto-generated pattern
@@ -3558,7 +3558,7 @@ class TestHaNameSyncCases1And2:
     def test_case1_unknown_prefix_triggers_write(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:03"
         nax = _FakeNAXClient(
@@ -3580,7 +3580,7 @@ class TestHaNameSyncCases1And2:
     def test_case2_matching_name_locks_only(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:04"
         nax = _FakeNAXClient(
@@ -3605,7 +3605,7 @@ class TestHaNameSyncCases1And2:
     def test_case2_case_insensitive_match_locks_only(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:05"
         nax = _FakeNAXClient(
@@ -3630,7 +3630,7 @@ class TestHaNameSyncCases1And2:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:06"
         nax = _FakeNAXClient(
@@ -3668,7 +3668,7 @@ class TestHaNameSyncCases1And2:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:07"
         # devName is a MAC address (auto-generated) → Step A does not apply;
@@ -3703,7 +3703,7 @@ class TestHaNameSyncCases1And2:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nax = _FakeNAXClient([])
         ha_http = _ha_states_transport([])  # empty → zero MAC entries
@@ -3740,7 +3740,7 @@ class TestHaNameSyncCases1And2:
     def test_multiple_devices_mixed_cases(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         devices = [
             {
@@ -3811,7 +3811,7 @@ class TestHaNameSyncCases1And2:
     def test_sync_names_skips_devices_with_empty_mac(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:01"
         devices = [
@@ -3839,7 +3839,7 @@ class TestHaNameSyncCases1And2:
         """devName values that are not strings (e.g. float from API) must not crash."""
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:FF"
         devices = [
@@ -3873,7 +3873,7 @@ class TestHaNameSyncCases3And4:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:10"
         nax = _FakeNAXClient(
@@ -3912,7 +3912,7 @@ class TestHaNameSyncCases3And4:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:11"
         nax = _FakeNAXClient(
@@ -3946,7 +3946,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         macs = ["AA:BB:CC:DD:EE:12", "AA:BB:CC:DD:EE:13"]
         devices = [
@@ -3976,7 +3976,7 @@ class TestHaNameSyncCases3And4:
     def test_case4_step_a_plausible_name_locked(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:20"
         nax = _FakeNAXClient(
@@ -4004,7 +4004,7 @@ class TestHaNameSyncCases3And4:
     def test_case4_step_b_reverse_dns_written(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:21"
         nax = _FakeNAXClient(
@@ -4039,7 +4039,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:22"
         nax = _FakeNAXClient(
@@ -4068,7 +4068,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:23"
         nax = _FakeNAXClient(
@@ -4099,7 +4099,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:24"
         nax = _FakeNAXClient(
@@ -4136,7 +4136,7 @@ class TestHaNameSyncCases3And4:
     def test_sync_device_case1_writes_ha_name(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:30"
         nax = _FakeNAXClient(
@@ -4154,7 +4154,7 @@ class TestHaNameSyncCases3And4:
 
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:31"
         nax = _FakeNAXClient(
@@ -4181,7 +4181,7 @@ class TestHaNameSyncCases3And4:
     def test_sync_device_not_found_does_not_crash(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         nax = _FakeNAXClient([])  # no devices at all
         ha_http = _ha_states_transport([])
@@ -4194,7 +4194,7 @@ class TestHaNameSyncCases3And4:
     def test_sync_device_step_a_locks_plausible_name(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:32"
         nax = _FakeNAXClient(
@@ -4278,7 +4278,7 @@ class TestNetAlertXLogMonitor:
 
     @pytest.fixture
     def llm_actionable(self):
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         from netalertx.log_monitor import LogEvaluation
 
@@ -4291,7 +4291,7 @@ class TestNetAlertXLogMonitor:
 
     @pytest.fixture
     def llm_not_actionable(self):
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         from netalertx.log_monitor import LogEvaluation
 
@@ -4324,7 +4324,7 @@ class TestNetAlertXLogMonitor:
     def test_analyze_returns_safe_default_on_llm_error(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         from netalertx.log_monitor import analyze_log_line_with_ai
 
@@ -4341,7 +4341,7 @@ class TestNetAlertXLogMonitor:
     def test_stream_non_critical_lines_skip_triage(self, llm_not_actionable):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.log_monitor import tail_netalertx_log_stream
 
@@ -4354,7 +4354,7 @@ class TestNetAlertXLogMonitor:
     def test_stream_critical_line_invokes_triage(self, llm_not_actionable, monkeypatch):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         import netalertx.log_monitor as mod
         from netalertx.log_monitor import tail_netalertx_log_stream
@@ -4375,8 +4375,8 @@ class TestNetAlertXLogMonitor:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.log_monitor import LogEvaluation
 
@@ -4416,7 +4416,7 @@ class TestNetAlertXLogMonitor:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         import netalertx.log_monitor as mod
 
@@ -4460,7 +4460,7 @@ class TestNetAlertXLogMonitor:
     def test_analyze_log_line_uses_model_factory(self, monkeypatch):
         import asyncio
         import netalertx.log_monitor as log_mod
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.log_monitor import LogEvaluation, analyze_log_line_with_ai
 
         r = LogEvaluation(
@@ -5111,7 +5111,7 @@ class TestNetAlertXDiagnostic:
         )
 
     def _make_fake_llm(self, category: str = "networking") -> "object":
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
 
@@ -5199,7 +5199,7 @@ class TestNetAlertXDiagnostic:
     def test_llm_called_with_anomaly_context(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
 
@@ -5219,7 +5219,7 @@ class TestNetAlertXDiagnostic:
     def test_diagnose_health_report_uses_model_factory(self, monkeypatch):
         import asyncio
         import netalertx.diagnosis as diag_mod
-        from utils.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeLLMClient
         from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
 
         diag = NetAlertXDiagnostic(
@@ -5293,7 +5293,7 @@ class TestNetAlertXHealer:
         import sqlite3
 
         from netalertx.healer import NetAlertXHealer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         if ssh_client is None:
             ssh_client = FakeSSHClient()
@@ -5337,7 +5337,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5361,7 +5361,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5378,7 +5378,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -5411,7 +5411,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # auto_execute_result=True means should_auto_execute returns True → MEDIUM auto-proceeds
         gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
@@ -5443,7 +5443,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # auto_execute_result=False means should_auto_execute returns False → HIGH needs approval
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -5477,7 +5477,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         ssh = FakeSSHClient()
@@ -5496,7 +5496,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         ssh = FakeSSHClient()
@@ -5603,7 +5603,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5720,7 +5720,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         ssh = FakeSSHClient()
@@ -5769,7 +5769,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         old_yaml = "- trigger:\n    platform: webhook\n    eve_mac: '{{trigger.json.eve_mac}}'\n"
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -5797,7 +5797,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         camel_yaml = (
             "- trigger:\n    platform: webhook\n    eveMac: '{{trigger.json.eveMac}}'\n"
@@ -5816,7 +5816,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         ssh = FakeSSHClient()  # no file contents → FileNotFoundError on read
@@ -5841,7 +5841,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5858,7 +5858,7 @@ class TestNetAlertXHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -5894,7 +5894,7 @@ class TestNetAlertXHealer:
         called = []
 
         from netalertx.healer import NetAlertXHealer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.notify import FakeNotifier
 
         healer = NetAlertXHealer(
@@ -5918,7 +5918,7 @@ class TestNetAlertXHealer:
         import pytest as _pytest
         from utils.autonomy import FakeAutonomyGate
         from netalertx.healer import NetAlertXHealer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.notify import FakeNotifier
 
         healer = NetAlertXHealer(
@@ -6163,7 +6163,7 @@ class TestNetAlertXMaintenanceHealer:
         import sqlite3
 
         from netalertx.healer import NetAlertXHealer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         if ssh_client is None:
             ssh_client = FakeSSHClient()
@@ -6208,7 +6208,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         ha_ssh = FakeSSHClient(
@@ -6233,7 +6233,7 @@ class TestNetAlertXMaintenanceHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -6255,7 +6255,7 @@ class TestNetAlertXMaintenanceHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -6280,7 +6280,7 @@ class TestNetAlertXMaintenanceHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -6349,7 +6349,7 @@ class TestNetAlertXMaintenanceHealer:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         notifier = FakeNotifier(approve=True)
@@ -6490,8 +6490,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_api_unreachable_exits_early(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import run_diagnose
 
@@ -6520,7 +6520,7 @@ class TestNetAlertXOneShotDiagnose:
         app_conf=None → valid app.conf; app_conf=<str> → that content;
         omit file_contents entirely to simulate a missing file (see test_app_conf_missing).
         """
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             file_contents={
@@ -6537,8 +6537,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_healthy_system_no_heal(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import run_diagnose
 
@@ -6563,8 +6563,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_stale_scan_triggers_diagnosis_and_heal(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6606,8 +6606,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_config_issues_trigger_diagnosis(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6641,8 +6641,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_critical_log_line_triggers_triage(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.log_monitor import LogEvaluation
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6673,8 +6673,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_mosquitto_not_running_triggers_diagnosis(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6709,8 +6709,8 @@ class TestNetAlertXOneShotDiagnose:
     def test_app_conf_missing_triggers_diagnosis(self):
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6751,7 +6751,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_check_mosquitto_running_started(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _check_mosquitto_running
 
@@ -6764,7 +6764,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_check_mosquitto_running_stopped(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _check_mosquitto_running
 
@@ -6777,7 +6777,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_check_mosquitto_running_no_output(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _check_mosquitto_running
 
@@ -6788,7 +6788,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_fetch_log_snapshot_empty_slug_returns_empty(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _fetch_log_snapshot
 
@@ -6798,7 +6798,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_fetch_log_snapshot_returns_last_100_lines(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _fetch_log_snapshot
 
@@ -6811,7 +6811,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_fetch_app_conf_empty_slug_returns_none(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _fetch_app_conf
 
@@ -6821,7 +6821,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_fetch_app_conf_returns_file_contents(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _fetch_app_conf
 
@@ -6834,7 +6834,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_fetch_app_conf_missing_file_returns_none(self):
         import asyncio
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.one_shot_diagnose import _fetch_app_conf
 
@@ -6845,8 +6845,8 @@ class TestNetAlertXOneShotDiagnose:
         """Empty addon_slug triggers the 'if not _slug:' ConfigIssue branch."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6883,8 +6883,8 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
         from unittest.mock import patch
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6926,8 +6926,8 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
         from unittest.mock import patch
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -6968,8 +6968,8 @@ class TestNetAlertXOneShotDiagnose:
         """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -7011,8 +7011,8 @@ class TestNetAlertXOneShotDiagnose:
         """mqtt_probe_fn returning False → mqtt_active=False in LLM diagnosis prompt."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -7053,8 +7053,8 @@ class TestNetAlertXOneShotDiagnose:
         """mqtt_active=False + mosquitto running → ConfigIssue added → LLM called."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -7097,8 +7097,8 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -7223,7 +7223,7 @@ class TestStep8SlugWriteback:
         )
 
     def _make_full_ssh(self, automations=""):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         slug = "netalertx_fa"
         data_path = f"/addon_configs/{slug}"
@@ -7360,8 +7360,8 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         """When addon_slug is empty, ha store addons output is parsed and slug is used."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.one_shot_diagnose import run_diagnose
 
         store_output = (
@@ -7415,8 +7415,8 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         """When ha store addons returns no slug, HIGH config issue is flagged."""
         import asyncio
 
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
 
@@ -7576,7 +7576,7 @@ class TestNetAlertXUninstallerStateMachine:
         return FakeAutonomyGate(auto_execute_result=False)
 
     def test_full_uninstall_resets_state_to_not_installed(self, tmp_path, monkeypatch):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.uninstaller import run_uninstaller, _read_install_state
 
         db = _make_uninstaller_db(tmp_path, monkeypatch)
@@ -7622,7 +7622,7 @@ class TestNetAlertXUninstallerStateMachine:
         assert "ha apps uninstall db21ed7f_netalertx_fa" in ssh.commands_run
 
     def test_rejection_aborts_without_changes(self, tmp_path, monkeypatch):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.uninstaller import run_uninstaller, _read_install_state
 
         db = _make_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL")
@@ -7656,7 +7656,7 @@ class TestNetAlertXUninstallerStateMachine:
 
     def test_stop_failure_is_non_fatal(self, tmp_path, monkeypatch):
         """A failed ha apps stop should be logged as a warning, not abort."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.uninstaller import run_uninstaller, _read_install_state
 
         db = _make_uninstaller_db(tmp_path, monkeypatch)
@@ -7686,7 +7686,7 @@ class TestNetAlertXUninstallerStateMachine:
         assert final == "NOT_INSTALLED"
 
     def test_automation_removed_from_automations_yaml(self, tmp_path, monkeypatch):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.uninstaller import run_uninstaller
 
         db = _make_uninstaller_db(tmp_path, monkeypatch)
@@ -7773,7 +7773,7 @@ def _make_docker_installer_db(tmp_path, monkeypatch, state="NOT_INSTALLED"):
 
 class TestCheckDiskSpace:
     def test_returns_available_gb_when_sufficient(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import check_disk_space
 
         # 31457280 KB = 30 GB
@@ -7791,7 +7791,7 @@ class TestCheckDiskSpace:
         assert result == 30.0
 
     def test_raises_when_too_low(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import check_disk_space, DiskSpaceTooLowError
 
         # 2097152 KB = 2 GB
@@ -7834,7 +7834,7 @@ class TestDockerInstallerStateMachine:
 
     def test_step1_rejects_macos_host(self, tmp_path, monkeypatch):
         """Abort with CRITICAL card when Docker host reports macOS (darwin)."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
         from utils.autonomy import RiskLevel
 
@@ -7870,7 +7870,7 @@ class TestDockerInstallerStateMachine:
 
     def test_step1_macos_terminal_state_prevents_rerun(self, tmp_path, monkeypatch):
         """Second call skips SSH entirely when state is DOCKER_MACOS_UNSUPPORTED."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
         monkeypatch.setattr(
@@ -7896,7 +7896,7 @@ class TestDockerInstallerStateMachine:
 
     def test_step1_fails_when_docker_unavailable(self, tmp_path, monkeypatch):
         """Abort when 'docker info' returns non-zero."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
         monkeypatch.setattr(
@@ -7921,7 +7921,7 @@ class TestDockerInstallerStateMachine:
 
     def test_step2_aborts_when_disk_too_low(self, tmp_path, monkeypatch):
         """Abort at disk check when available GB < min_gb."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
         monkeypatch.setattr(
@@ -7957,7 +7957,7 @@ class TestDockerInstallerStateMachine:
 
     def test_full_flow_reaches_fully_operational(self, tmp_path, monkeypatch):
         """Happy path: all steps succeed → FULLY_OPERATIONAL."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
         monkeypatch.setattr(
@@ -8041,7 +8041,7 @@ class TestDockerInstallerStateMachine:
         self, tmp_path, monkeypatch
     ):
         """Resuming from DOCKER_RUNNING re-launches container if it's not running."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import run_docker_installer
 
         monkeypatch.setattr(
@@ -8112,7 +8112,7 @@ class TestDockerInstallerStateMachine:
 
     def test_mqtt_routing_skipped_on_rejection(self, tmp_path, monkeypatch):
         """When HITL is rejected at step 8, installer still advances to DOCKER_MQTT_ROUTED."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_installer import _step8_route_mqtt
 
         db = _make_docker_installer_db(tmp_path, monkeypatch, state="DOCKER_HEALTHY")
@@ -8142,7 +8142,7 @@ class TestDetectDeploymentDockerTarget:
     """detect_deployment respects the deploy_target parameter."""
 
     def test_docker_target_skips_supervisor_probe(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
         import httpx
 
@@ -8168,7 +8168,7 @@ class TestDetectDeploymentDockerTarget:
         assert result.api_base_url == "http://192.168.1.50:20212"
 
     def test_ha_target_raises_when_supervisor_down(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.detector import detect_deployment
 
         ssh = FakeSSHClient(
@@ -8248,7 +8248,7 @@ class TestDiskCheckModule:
     """Shared disk-space guard: DiskSpaceTooLowError + check_target_disk_space."""
 
     def test_check_target_disk_space_returns_available_gb(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.disk_check import check_target_disk_space
 
         # 31457280 KB = 30 GB
@@ -8265,7 +8265,7 @@ class TestDiskCheckModule:
         assert result == 30.0
 
     def test_check_target_disk_space_raises_when_too_low(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 
         # 2097152 KB = 2 GB
@@ -8301,7 +8301,7 @@ class TestDiskCheckModule:
         assert exc.available_gb == 2.0
 
     def test_check_target_disk_space_raises_on_bad_df_output(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.disk_check import check_target_disk_space
 
         ssh = FakeSSHClient(
@@ -8332,7 +8332,7 @@ class TestDiskCheckModule:
             "Filesystem  1K-blocks  Used     Available  Use%  Mounted on\n"
             "/dev/sda1   104857600  102760448  2097152  98%  /\n"
         )
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             command_results={"df -k / 2>/dev/null || df -k /": (0, df_output, "")}
@@ -8372,7 +8372,7 @@ class TestNetalertxMigrateCard:
     def _make_poller(self, notifier, tmp_db, monkeypatch, deploy_target="ha"):
         """Return a ResourcePoller with minimal config wired."""
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         # Minimal SSH that won't be called for migration card checks
         ssh = FakeSSHClient(command_results={})
@@ -8396,7 +8396,7 @@ class TestNetalertxMigrateCard:
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         db = tmp_path / "state.db"
         with sqlite3.connect(str(db)) as conn:
@@ -8444,7 +8444,7 @@ class TestNetalertxMigrateCard:
         """Card not sent when deploy_target=docker (already migrated)."""
         from unittest.mock import AsyncMock, MagicMock
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
         monkeypatch.setattr(_cfg, "NETALERTX_DEPLOY_TARGET", "docker")
@@ -8470,7 +8470,7 @@ class TestNetalertxMigrateCard:
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
         db = tmp_path / "state.db"
@@ -8506,7 +8506,7 @@ class TestNetalertxMigrateCard:
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
         from utils.resource import ResourcePoller
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
         db = tmp_path / "state.db"
@@ -9007,7 +9007,7 @@ class TestDockerUninstallerStateMachine:
         return FakeNotifier(approve=approve)
 
     def test_full_uninstall_resets_state_to_not_installed(self, tmp_path, monkeypatch):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_uninstaller import run_docker_uninstaller
         from netalertx.uninstaller import _read_install_state
 
@@ -9057,7 +9057,7 @@ class TestDockerUninstallerStateMachine:
         assert _read_install_state(db) == "NOT_INSTALLED"
 
     def test_rejected_approval_leaves_state_unchanged(self, tmp_path, monkeypatch):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_uninstaller import run_docker_uninstaller
         from netalertx.uninstaller import _read_install_state
 
@@ -9090,7 +9090,7 @@ class TestDockerUninstallerStateMachine:
 
     def test_container_stop_failure_continues(self, tmp_path, monkeypatch):
         """A failed docker stop is a warning, not an abort."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_uninstaller import run_docker_uninstaller
         from netalertx.uninstaller import _read_install_state
 
@@ -9125,7 +9125,7 @@ class TestDockerUninstallerStateMachine:
 
     def test_config_dir_kept_when_second_hitl_rejected(self, tmp_path, monkeypatch):
         """Rejecting the config dir removal prompt keeps the directory."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_uninstaller import run_docker_uninstaller
 
         db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
@@ -9179,7 +9179,7 @@ class TestDockerUninstallerStateMachine:
 
     def test_automation_removed_from_ha(self, tmp_path, monkeypatch):
         """Webhook automation is removed from HA SSH client."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.docker_uninstaller import run_docker_uninstaller
 
         db = _make_docker_uninstaller_db(tmp_path, monkeypatch)
@@ -9278,7 +9278,7 @@ class TestNetAlertXSwitchFlow:
         self, tmp_path, monkeypatch
     ):
         """When current == target platform, switch is a no-op."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(
@@ -9309,7 +9309,7 @@ class TestNetAlertXSwitchFlow:
 
     def test_not_operational_returns_current_state(self, tmp_path, monkeypatch):
         """If not FULLY_OPERATIONAL, switch aborts early."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(
@@ -9332,7 +9332,7 @@ class TestNetAlertXSwitchFlow:
         """Rejecting the switch HITL card leaves state at FULLY_OPERATIONAL."""
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(
@@ -9361,7 +9361,7 @@ class TestNetAlertXSwitchFlow:
         """An approved HA→Docker switch calls run_uninstaller."""
         import netalertx.uninstaller
         import netalertx.docker_installer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(
@@ -9409,7 +9409,7 @@ class TestNetAlertXSwitchFlow:
         """An approved Docker→HA switch calls run_docker_uninstaller."""
         import netalertx.docker_uninstaller
         import netalertx.installer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(
@@ -9454,7 +9454,7 @@ class TestNetAlertXSwitchFlow:
         """If the uninstaller returns something other than NOT_INSTALLED, installer is not called."""
         import netalertx.uninstaller
         import netalertx.docker_installer
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 
         db = _make_switch_db(

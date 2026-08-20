@@ -336,7 +336,7 @@ async def main(
     from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     _ssh = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     )
     from netalertx.api_client import NetAlertXAPIClient
     from utils.autonomy import AutonomyGate
-    from utils.ha_environment import HAEnvironmentProfile
+    from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
     from utils.tool_registry import FixEnrichment
 

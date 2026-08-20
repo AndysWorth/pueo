@@ -143,11 +143,11 @@ class TestNotificationLifecycle:
         from agents import ha_agent_advanced
         from agents import ha_notification_manager
         from agents.ha_notification_manager import _NotificationLLMOutput
-        from utils.ha_rest_client import FakeHARestClient
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
-        from utils.ollama_client import FakeLLMClient
-        from utils.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         db_path = str(tmp_path / "test.db")
         watch_dir = tmp_path / "watch"
@@ -271,7 +271,7 @@ class TestBackupPipelineToRoute:
         remote_path = f"/backup/{slug}.tar"
         sha256 = hashlib.sha256(fake_bytes).hexdigest()
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             download_contents={remote_path: fake_bytes},
@@ -317,7 +317,7 @@ class TestBackupPipelineToRoute:
         fake_bytes = b"full flow test bytes"
         sha256 = hashlib.sha256(fake_bytes).hexdigest()
 
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
             download_contents={remote_path: fake_bytes},
@@ -342,7 +342,7 @@ class TestUpdateCardToRoute:
 
         from agents import ha_update_manager
         import web.dashboard as dashboard
-        from utils.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_rest_client import FakeHARestClient
         from utils.notify import FileNotifier
 
         watch_dir = tmp_path / "watch"

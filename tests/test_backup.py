@@ -65,7 +65,7 @@ class TestTriggerBackupChain:
     def executor(self, db_path):
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
 
         ssh = FakeSSHClient(
@@ -389,7 +389,7 @@ class TestPurgeLocalBackupsLocation:
 class TestResolveBackupRemotePathSlugValidation:
     def test_unknown_slug_returns_none_without_ssh(self):
         """'unknown_slug' (with underscore) fails _SLUG_RE and returns None immediately."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         result = asyncio.run(
@@ -402,7 +402,7 @@ class TestResolveBackupRemotePathSlugValidation:
 
     def test_valid_hex_slug_proceeds_to_ssh(self):
         """A valid all-hex slug passes _SLUG_RE and makes at least one SSH call."""
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={})
         asyncio.run(

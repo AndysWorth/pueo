@@ -230,7 +230,7 @@ class TestHitlConfigKeys:
 class TestHitlPipelineGate:
     @pytest.fixture
     def ssh_ok(self):
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
 
         return FakeSSHClient(
             file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
@@ -259,7 +259,7 @@ class TestHitlPipelineGate:
 
     @pytest.fixture
     def llm_critical(self):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         return FakeToolCallingLLMClient(
             [
@@ -281,7 +281,7 @@ class TestHitlPipelineGate:
 
     @pytest.fixture
     def llm_low_fix(self):
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         return FakeToolCallingLLMClient(
             [
@@ -773,8 +773,8 @@ class TestAutonomyGate:
     def test_level1_sandbox_pipeline_produces_no_ssh_writes(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from agents import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
@@ -820,8 +820,8 @@ class TestAutonomyGate:
     def test_level4_warning_severity_runs_without_hitl(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from agents import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
@@ -866,8 +866,8 @@ class TestAutonomyGate:
     def test_level4_apply_fix_commits_config_without_hitl(self, db_path):
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
-        from utils.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from config import CONFIG_REMOTE_PATH
         from agents import ha_agent_sandbox_engine
 

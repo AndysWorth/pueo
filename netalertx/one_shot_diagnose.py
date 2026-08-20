@@ -160,7 +160,7 @@ async def run_diagnose(
     from netalertx.api_client import NetAlertXAPIClient
     from utils.autonomy import AutonomyGate
     from utils.notify import get_notifier
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     _ssh = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH
@@ -309,6 +309,6 @@ async def run_diagnose(
                 notifier=_notifier,
             )
         # Use the AgentLoop-based repair path (item 46).
-        from utils.llm_factory import make_llm_client
+        from utils.llm.llm_factory import make_llm_client
 
         await _healer.heal_with_loop(diagnostic, llm_client=make_llm_client())

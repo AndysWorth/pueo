@@ -66,7 +66,7 @@ def _make_enrichment_json() -> str:
 def _make_executor(*, llm_client=None, notifier=None):
     from utils.autonomy import FakeAutonomyGate
     from utils.notify import FakeNotifier
-    from utils.ssh_client import FakeSSHClient
+    from utils.ha.ssh_client import FakeSSHClient
     from utils.tool_executor import ToolExecutor
 
     ssh = FakeSSHClient(
@@ -366,9 +366,9 @@ class TestInvestigateDevice:
         import json
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
 
         ws = FakeHAWebSocketClient(
@@ -408,9 +408,9 @@ class TestInvestigateDevice:
         import asyncio
 
         from utils.autonomy import FakeAutonomyGate
-        from utils.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
 
         ws = FakeHAWebSocketClient()
@@ -451,7 +451,7 @@ class TestInvestigateDevice:
 
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        from utils.ssh_client import FakeSSHClient
+        from utils.ha.ssh_client import FakeSSHClient
         from utils.tool_executor import ToolExecutor
 
         nax_api = MagicMock()

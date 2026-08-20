@@ -34,13 +34,13 @@ from config import (
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
 from utils.autonomy import RiskLevel
 from utils.core.context import truncate_to_budget
-from utils.ha_rest_client import HARestClient, UpdateStatus, get_update_status
+from utils.ha.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from utils.autonomy import AutonomyGate, FakeAutonomyGate
-    from utils.ha_environment import HAEnvironmentProfile
+    from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
 
 log = get_logger("ha_update_manager")
@@ -150,7 +150,7 @@ async def analyze_breaking_changes(
             ),
         )
 
-    from utils.llm_factory import make_llm_client
+    from utils.llm.llm_factory import make_llm_client
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
@@ -269,7 +269,7 @@ async def run_update_preflight(
     """
     from .ha_agent_advanced import enforce_ha_retention
     from utils.resource import get_resource_status, poll_host_resources
-    from utils.ssh_client import AsyncSSHClient
+    from utils.ha.ssh_client import AsyncSSHClient
 
     disk_threshold = HA_DISK_WARN_GB + _PREFLIGHT_DISK_BUFFER_GB
 
@@ -632,7 +632,7 @@ async def _self_check_llm_cross_reference(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> SelfCheckCommandRisk:
     """Ask the LLM which Pueo SSH commands appear in the update's breaking changes."""
-    from utils.llm_factory import make_llm_client
+    from utils.llm.llm_factory import make_llm_client
 
     client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
@@ -1175,7 +1175,7 @@ async def execute_addon_update(
     if ha_rest_client is not None:
         rest = ha_rest_client
     else:
-        from utils.ha_rest_client import HARestClient
+        from utils.ha.ha_rest_client import HARestClient
 
         rest = HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout=30.0)
 
