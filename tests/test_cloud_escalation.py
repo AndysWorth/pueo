@@ -24,7 +24,7 @@ class TestRunCloudEscalation:
         from utils.repair.billing import BillingCapError
         from utils.repair.cloud_escalation import run_cloud_escalation
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         import pytest
 
@@ -50,7 +50,7 @@ class TestRunCloudEscalation:
         from utils.agent.agent_loop import AgentLoopResult
         from utils.repair.cloud_escalation import run_cloud_escalation
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         fake_result = AgentLoopResult(outcome="success", steps=[])
@@ -83,7 +83,7 @@ class TestRunCloudEscalation:
         from utils.agent.agent_loop import AgentLoopResult
         from utils.repair.cloud_escalation import run_cloud_escalation
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         fake_result = AgentLoopResult(outcome="exhausted", steps=[])
@@ -123,7 +123,7 @@ class TestRunCloudEscalation:
         from utils.repair.billing import BillingCapError
         from utils.repair.cloud_escalation import run_cloud_escalation
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         import pytest
 

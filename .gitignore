@@ -96,7 +96,7 @@ venv.bak/
 pueo.pid
 ha_agent_state.db
 *.log
-hitl/
+/hitl/
 backups/
 chromadb/
 user_tools/*.py

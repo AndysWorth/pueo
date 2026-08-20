@@ -878,7 +878,7 @@ _MEMINFO_OUTPUT = (
 
 class TestResourceParsing:
     def test_parse_host_info_extracts_disk_fields(self):
-        from utils.resource import _parse_host_info
+        from utils.disk.resource import _parse_host_info
 
         free, total, used = _parse_host_info(_HOST_INFO_OUTPUT)
         assert free == 4.5
@@ -886,14 +886,14 @@ class TestResourceParsing:
         assert used == 9.1
 
     def test_parse_meminfo_extracts_available_and_total(self):
-        from utils.resource import _parse_meminfo
+        from utils.disk.resource import _parse_meminfo
 
         available_mb, total_mb = _parse_meminfo(_MEMINFO_OUTPUT)
         assert available_mb == pytest.approx(563200 / 1024.0)
         assert total_mb == pytest.approx(1931384 / 1024.0)
 
     def test_parse_meminfo_missing_fields_returns_zero(self):
-        from utils.resource import _parse_meminfo
+        from utils.disk.resource import _parse_meminfo
 
         available_mb, total_mb = _parse_meminfo("Buffers: 12345 kB\n")
         assert available_mb == 0.0
@@ -902,7 +902,7 @@ class TestResourceParsing:
 
 class TestResourceStatus:
     def test_construction_and_field_access(self):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         s = ResourceStatus(
             disk_free_gb=4.5,
@@ -919,7 +919,7 @@ class TestResourceStatus:
         assert s.disk_critical is False
 
     def test_critical_flag_independent_of_warn(self):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         s = ResourceStatus(
             disk_free_gb=1.5,
@@ -952,7 +952,7 @@ class TestPollHostResources:
         )
 
     def test_returns_correct_disk_values(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(self._fake_ssh(disk_free=4.5), 5.0, 2.0, 256.0)
@@ -961,7 +961,7 @@ class TestPollHostResources:
         assert status.disk_total_gb == 13.6
 
     def test_disk_warn_flag_set_when_below_warn_threshold(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(self._fake_ssh(disk_free=3.0), 5.0, 2.0, 256.0)
@@ -970,7 +970,7 @@ class TestPollHostResources:
         assert status.disk_critical is False
 
     def test_disk_critical_flag_set_when_below_critical_threshold(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(self._fake_ssh(disk_free=1.5), 5.0, 2.0, 256.0)
@@ -979,7 +979,7 @@ class TestPollHostResources:
         assert status.disk_warn is True
 
     def test_disk_flags_clear_when_above_thresholds(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(self._fake_ssh(disk_free=8.0), 5.0, 2.0, 256.0)
@@ -988,7 +988,7 @@ class TestPollHostResources:
         assert status.disk_critical is False
 
     def test_mem_warn_flag_set_when_below_warn_threshold(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(
@@ -998,7 +998,7 @@ class TestPollHostResources:
         assert status.mem_warn is True
 
     def test_mem_warn_clear_when_above_threshold(self):
-        from utils.resource import poll_host_resources
+        from utils.disk.resource import poll_host_resources
 
         status = asyncio.run(
             poll_host_resources(
@@ -1012,12 +1012,12 @@ class TestCheckDiskNotCritical:
     def test_raises_disk_critical_error_when_cached_status_is_critical(
         self, monkeypatch
     ):
-        from utils.resource import (
+        from utils.disk.resource import (
             ResourceStatus,
             check_disk_not_critical,
             DiskCriticalError,
         )
-        import utils.resource as resource_mod
+        import utils.disk.resource as resource_mod
 
         critical_status = ResourceStatus(
             disk_free_gb=1.5,
@@ -1034,8 +1034,8 @@ class TestCheckDiskNotCritical:
             check_disk_not_critical(2.0)
 
     def test_passes_when_cached_status_is_not_critical(self, monkeypatch):
-        from utils.resource import ResourceStatus, check_disk_not_critical
-        import utils.resource as resource_mod
+        from utils.disk.resource import ResourceStatus, check_disk_not_critical
+        import utils.disk.resource as resource_mod
 
         ok_status = ResourceStatus(
             disk_free_gb=4.5,
@@ -1051,8 +1051,8 @@ class TestCheckDiskNotCritical:
         check_disk_not_critical(2.0)  # must not raise
 
     def test_passes_when_no_cached_status(self, monkeypatch):
-        from utils.resource import check_disk_not_critical
-        import utils.resource as resource_mod
+        from utils.disk.resource import check_disk_not_critical
+        import utils.disk.resource as resource_mod
 
         monkeypatch.setattr(resource_mod, "_last_resource_status", None)
         check_disk_not_critical(2.0)  # must not raise
@@ -1090,7 +1090,7 @@ class TestResourcePollerAlerts:
         disk_critical: bool = False,
         mem_warn: bool = False,
     ):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=disk_free,
@@ -1104,7 +1104,7 @@ class TestResourcePollerAlerts:
         )
 
     def _make_poller(self, notifier):
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         return ResourcePoller(
@@ -1117,7 +1117,7 @@ class TestResourcePollerAlerts:
         )
 
     def test_sends_disk_critical_alert_on_first_breach(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1127,7 +1127,7 @@ class TestResourcePollerAlerts:
         assert "CRITICAL" in notifier.sent[0]["subject"]
 
     def test_deduplicates_consecutive_disk_critical_alerts(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1137,7 +1137,7 @@ class TestResourcePollerAlerts:
         assert len(notifier.sent) == 1
 
     def test_resends_alert_after_condition_clears_and_retriggers(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1149,7 +1149,7 @@ class TestResourcePollerAlerts:
         assert len(notifier.sent) == 2
 
     def test_sends_disk_warn_alert_when_warn_only(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1160,7 +1160,7 @@ class TestResourcePollerAlerts:
         assert "disk" in notifier.sent[0]["subject"].lower()
 
     def test_sends_mem_warn_alert_when_mem_low(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1170,7 +1170,7 @@ class TestResourcePollerAlerts:
         assert "memory" in notifier.sent[0]["subject"].lower()
 
     def test_no_alert_when_all_thresholds_ok(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1180,8 +1180,8 @@ class TestResourcePollerAlerts:
 
     def test_disk_critical_payload_includes_disk_free_after_gb(self, monkeypatch):
         """HITL card payload carries disk_free_after_gb from the post-recovery re-poll."""
-        import utils.resource as resource_mod
-        from utils.notify import FakeNotifier
+        import utils.disk.resource as resource_mod
+        from utils.hitl.notify import FakeNotifier
 
         async def fake_poll(*_args, **_kwargs):
             return self._make_status(disk_free=2.3)
@@ -1198,8 +1198,8 @@ class TestResourcePollerAlerts:
     def test_disk_critical_recovery_retries_after_cooldown(self, monkeypatch):
         """Recovery runs again and a new HITL card is emitted after the cooldown elapses."""
         import time
-        import utils.resource as resource_mod
-        from utils.notify import FakeNotifier
+        import utils.disk.resource as resource_mod
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1217,7 +1217,7 @@ class TestResourcePollerAlerts:
 
     def test_disk_critical_suppressed_within_cooldown(self, monkeypatch):
         """No additional card is sent while disk stays CRITICAL within the cooldown window."""
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
@@ -1232,15 +1232,15 @@ class TestResourcePollerAlerts:
 
     def test_disk_warn_triggers_proactive_recovery(self, monkeypatch):
         """When disk_warn fires, run_safe_disk_recovery is called as proactive cleanup."""
-        import utils.resource as resource_mod
-        import utils.disk_recovery as dr_mod
-        from utils.notify import FakeNotifier
+        import utils.disk.resource as resource_mod
+        import utils.disk.disk_recovery as dr_mod
+        from utils.hitl.notify import FakeNotifier
 
         recovery_called: list[bool] = []
 
         async def fake_recovery(*_args, **_kwargs):
             recovery_called.append(True)
-            from utils.disk_recovery import RecoverySummary
+            from utils.disk.disk_recovery import RecoverySummary
 
             return RecoverySummary()
 
@@ -1257,11 +1257,11 @@ class TestResourcePollerAlerts:
 
     def test_disk_warn_proactive_recovery_result_included_in_body(self, monkeypatch):
         """Warning notification body mentions space freed by proactive recovery."""
-        import utils.disk_recovery as dr_mod
-        from utils.notify import FakeNotifier
+        import utils.disk.disk_recovery as dr_mod
+        from utils.hitl.notify import FakeNotifier
 
         async def fake_recovery(*_args, **_kwargs):
-            from utils.disk_recovery import RecoveryAction, RecoverySummary
+            from utils.disk.disk_recovery import RecoveryAction, RecoverySummary
 
             s = RecoverySummary()
             s.actions.append(
@@ -1285,8 +1285,8 @@ class TestResourcePollerAlerts:
         assert "50" in body  # freed MB mentioned
 
     def test_update_resource_status_sets_cache(self, monkeypatch):
-        from utils.resource import ResourceStatus, update_resource_status
-        import utils.resource as resource_mod
+        from utils.disk.resource import ResourceStatus, update_resource_status
+        import utils.disk.resource as resource_mod
 
         monkeypatch.setattr(resource_mod, "_last_resource_status", None)
         status = self._make_status(disk_free=6.0)
@@ -1294,10 +1294,10 @@ class TestResourcePollerAlerts:
         assert resource_mod._last_resource_status is status
 
     def test_run_polls_and_updates_cache_then_cancels(self, monkeypatch):
-        from utils.resource import ResourcePoller, ResourceStatus
-        from utils.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller, ResourceStatus
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        import utils.resource as resource_mod
+        import utils.disk.resource as resource_mod
 
         polled: list[int] = []
         poll_status = self._make_status(disk_free=6.0)
@@ -1327,10 +1327,10 @@ class TestResourcePollerAlerts:
         assert resource_mod._last_resource_status is poll_status
 
     def test_run_catches_poll_error_and_sleeps(self, monkeypatch):
-        from utils.resource import ResourcePoller
-        from utils.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        import utils.resource as resource_mod
+        import utils.disk.resource as resource_mod
 
         async def failing_poll(*_args, **_kwargs):
             raise RuntimeError("ssh down")
@@ -1371,8 +1371,8 @@ class TestExecuteRemoteBackupDiskCheck:
     def test_raises_disk_critical_error_when_cached_status_is_critical(
         self, monkeypatch, db_path
     ):
-        from utils.resource import ResourceStatus, DiskCriticalError
-        import utils.resource as resource_mod
+        from utils.disk.resource import ResourceStatus, DiskCriticalError
+        import utils.disk.resource as resource_mod
         from agents import ha_agent_advanced
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -1395,8 +1395,8 @@ class TestExecuteRemoteBackupDiskCheck:
         assert "ha backup new" not in ssh.commands_run
 
     def test_proceeds_when_cached_status_is_not_critical(self, monkeypatch, db_path):
-        from utils.resource import ResourceStatus
-        import utils.resource as resource_mod
+        from utils.disk.resource import ResourceStatus
+        import utils.disk.resource as resource_mod
         from agents import ha_agent_advanced
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -1418,7 +1418,7 @@ class TestExecuteRemoteBackupDiskCheck:
         assert slug == "test-slug"
 
     def test_proceeds_when_no_cached_status(self, monkeypatch, db_path):
-        import utils.resource as resource_mod
+        import utils.disk.resource as resource_mod
         from agents import ha_agent_advanced
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -3264,49 +3264,49 @@ def _make_db_with_tables(db_path: str, state_rows: list | None = None) -> None:
 
 class TestAuditCheckService:
     def test_not_loaded(self, monkeypatch):
-        import utils.service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(
             svc,
             "service_status",
             lambda: {"loaded": False, "running": False, "pid": None},
         )
-        from utils.audit import check_service
+        from utils.system.audit import check_service
 
         result = check_service()
         assert result.status == "WARN"
         assert "not installed" in result.detail
 
     def test_loaded_not_running(self, monkeypatch):
-        import utils.service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(
             svc,
             "service_status",
             lambda: {"loaded": True, "running": False, "pid": None},
         )
-        from utils.audit import check_service
+        from utils.system.audit import check_service
 
         result = check_service()
         assert result.status == "CRITICAL"
         assert "not running" in result.detail
 
     def test_running(self, monkeypatch):
-        import utils.service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(
             svc,
             "service_status",
             lambda: {"loaded": True, "running": True, "pid": 12345},
         )
-        from utils.audit import check_service
+        from utils.system.audit import check_service
 
         result = check_service()
         assert result.status == "OK"
         assert "12345" in result.detail
 
     def test_launchctl_error(self, monkeypatch):
-        import utils.service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(
             svc,
@@ -3318,7 +3318,7 @@ class TestAuditCheckService:
                 "error": "macOS only",
             },
         )
-        from utils.audit import check_service
+        from utils.system.audit import check_service
 
         result = check_service()
         assert result.status == "WARN"
@@ -3327,7 +3327,7 @@ class TestAuditCheckService:
 
 class TestAuditCheckHaDisk:
     def test_disk_ok(self):
-        from utils.audit import check_ha_disk
+        from utils.system.audit import check_ha_disk
         from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
@@ -3349,7 +3349,7 @@ class TestAuditCheckHaDisk:
             yaml.dump({"agent": {"ha_disk_critical_gb": 2.0, "ha_disk_warn_gb": 5.0}})
         )
         importlib.reload(sys.modules["config"])
-        from utils.audit import check_ha_disk
+        from utils.system.audit import check_ha_disk
         from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
@@ -3371,7 +3371,7 @@ class TestAuditCheckHaDisk:
             yaml.dump({"agent": {"ha_disk_critical_gb": 2.0, "ha_disk_warn_gb": 5.0}})
         )
         importlib.reload(sys.modules["config"])
-        from utils.audit import check_ha_disk
+        from utils.system.audit import check_ha_disk
         from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
@@ -3385,7 +3385,7 @@ class TestAuditCheckHaDisk:
         assert "4.0 GB free" in result.detail
 
     def test_ssh_failure(self):
-        from utils.audit import check_ha_disk
+        from utils.system.audit import check_ha_disk
         from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenSSHClient(FakeSSHClient):
@@ -3414,7 +3414,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
@@ -3440,7 +3440,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         client = FakeSSHClient(
@@ -3457,7 +3457,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         # HA has abc123 but DB has nothing
@@ -3475,7 +3475,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenClient(FakeSSHClient):
@@ -3492,7 +3492,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         result = asyncio.run(check_backup_registry(ssh_client=FakeSSHClient()))
@@ -3516,7 +3516,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         # HA returns no backups
@@ -3550,7 +3550,7 @@ class TestAuditCheckBackupRegistry:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_backup_registry
+        from utils.system.audit import check_backup_registry
         from utils.ha.ssh_client import FakeSSHClient
 
         class _BrokenClient(FakeSSHClient):
@@ -3565,7 +3565,7 @@ class TestAuditCheckBackupRegistry:
 
 class TestAuditCheckPendingHitl:
     def test_no_dir(self, tmp_path):
-        from utils.audit import check_pending_hitl
+        from utils.system.audit import check_pending_hitl
 
         result = check_pending_hitl(watch_dir=str(tmp_path / "nonexistent"))
         assert result.status == "OK"
@@ -3578,7 +3578,7 @@ class TestAuditCheckPendingHitl:
             json.dumps({"notification_id": card_id, "sent_at": 1000})
         )
         (tmp_path / f"{card_id}.approved").touch()
-        from utils.audit import check_pending_hitl
+        from utils.system.audit import check_pending_hitl
 
         result = check_pending_hitl(watch_dir=str(tmp_path))
         assert result.status == "OK"
@@ -3593,7 +3593,7 @@ class TestAuditCheckPendingHitl:
         (tmp_path / f"{card_id}.json").write_text(
             json.dumps({"notification_id": card_id, "sent_at": sent_at})
         )
-        from utils.audit import check_pending_hitl
+        from utils.system.audit import check_pending_hitl
 
         result = check_pending_hitl(watch_dir=str(tmp_path))
         assert result.status == "WARN"
@@ -3608,7 +3608,7 @@ class TestAuditCheckPendingHitl:
         (tmp_path / f"{card_id}.json").write_text(
             json.dumps({"notification_id": card_id, "sent_at": sent_at})
         )
-        from utils.audit import check_pending_hitl
+        from utils.system.audit import check_pending_hitl
 
         result = check_pending_hitl(watch_dir=str(tmp_path))
         assert result.status == "CRITICAL"
@@ -3620,7 +3620,7 @@ class TestAuditCheckNetalertx:
         import config
 
         monkeypatch.setattr(config, "NETALERTX_HOST", "")
-        from utils.audit import check_netalertx
+        from utils.system.audit import check_netalertx
 
         result = asyncio.run(check_netalertx())
         assert result.status == "OK"
@@ -3655,7 +3655,7 @@ class TestAuditCheckNetalertx:
             def __init__(self):
                 pass
 
-        from utils.audit import check_netalertx
+        from utils.system.audit import check_netalertx
 
         result = asyncio.run(check_netalertx(api_client=_FakeClient()))
         assert result.status == "CRITICAL"
@@ -3690,7 +3690,7 @@ class TestAuditCheckNetalertx:
             def __init__(self):
                 pass
 
-        from utils.audit import check_netalertx
+        from utils.system.audit import check_netalertx
 
         result = asyncio.run(check_netalertx(api_client=_FakeClient()))
         assert result.status == "WARN"
@@ -3725,7 +3725,7 @@ class TestAuditCheckNetalertx:
             def __init__(self):
                 pass
 
-        from utils.audit import check_netalertx
+        from utils.system.audit import check_netalertx
 
         result = asyncio.run(check_netalertx(api_client=_FakeClient()))
         assert result.status == "OK"
@@ -3751,7 +3751,7 @@ class TestAuditCheckNetalertx:
             def __init__(self):
                 pass
 
-        from utils.audit import check_netalertx
+        from utils.system.audit import check_netalertx
 
         result = asyncio.run(check_netalertx(api_client=_FakeClient()))
         assert result.status == "WARN"
@@ -3763,7 +3763,7 @@ class TestAuditCheckNetalertxApiToken:
         import config
 
         monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", False)
-        from utils.audit import check_netalertx_api_token
+        from utils.system.audit import check_netalertx_api_token
 
         result = check_netalertx_api_token()
         assert result.status == "OK"
@@ -3774,7 +3774,7 @@ class TestAuditCheckNetalertxApiToken:
 
         monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", True)
         monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "")
-        from utils.audit import check_netalertx_api_token
+        from utils.system.audit import check_netalertx_api_token
 
         result = check_netalertx_api_token()
         assert result.status == "WARN"
@@ -3786,7 +3786,7 @@ class TestAuditCheckNetalertxApiToken:
 
         monkeypatch.setattr(config, "NETALERTX_SETUP_DESIRED", True)
         monkeypatch.setattr(config, "NETALERTX_API_TOKEN", "tok123")
-        from utils.audit import check_netalertx_api_token
+        from utils.system.audit import check_netalertx_api_token
 
         result = check_netalertx_api_token()
         assert result.status == "OK"
@@ -3798,7 +3798,7 @@ class TestAuditCheckStateHistory:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "empty.db"))
-        from utils.audit import check_state_history
+        from utils.system.audit import check_state_history
 
         result = check_state_history()
         assert result.status == "WARN"
@@ -3811,7 +3811,7 @@ class TestAuditCheckStateHistory:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_state_history
+        from utils.system.audit import check_state_history
 
         result = check_state_history()
         assert result.status == "OK"
@@ -3828,7 +3828,7 @@ class TestAuditCheckStateHistory:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_state_history
+        from utils.system.audit import check_state_history
 
         result = check_state_history()
         assert result.status == "WARN"
@@ -3845,7 +3845,7 @@ class TestAuditCheckStateHistory:
         import config
 
         monkeypatch.setattr(config, "DB_PATH", db)
-        from utils.audit import check_state_history
+        from utils.system.audit import check_state_history
 
         result = check_state_history()
         assert result.status == "OK"
@@ -3867,7 +3867,7 @@ class TestAuditCheckUpdateCheck:
             )
         )
         importlib.reload(sys.modules["config"])
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "WARN"
@@ -3900,7 +3900,7 @@ class TestAuditCheckUpdateCheck:
                 }
             )
         )
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "WARN"
@@ -3934,7 +3934,7 @@ class TestAuditCheckUpdateCheck:
             )
         )
         (tmp_path / f"{card_id}.approved").touch()
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "CRITICAL"
@@ -3969,7 +3969,7 @@ class TestAuditCheckUpdateCheck:
             )
         )
         (tmp_path / f"{card_id}.approved").touch()
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "OK"
@@ -4002,7 +4002,7 @@ class TestAuditCheckUpdateCheck:
             )
         )
         (tmp_path / f"{card_id}.rejected").touch()
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "OK"
@@ -4025,7 +4025,7 @@ class TestAuditCheckUpdateCheck:
 
         # Write an invalid JSON file
         (tmp_path / "garbage.json").write_text("not json {{{{")
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "OK"
@@ -4057,7 +4057,7 @@ class TestAuditCheckUpdateCheck:
                 }
             )
         )
-        from utils.audit import check_update_check
+        from utils.system.audit import check_update_check
 
         result = check_update_check(watch_dir=str(tmp_path))
         assert result.status == "OK"
@@ -4065,7 +4065,7 @@ class TestAuditCheckUpdateCheck:
 
 class TestAuditPriorityOrdering:
     def test_sorted_critical_before_warn_before_ok(self):
-        from utils.audit import AuditResult, format_audit_report
+        from utils.system.audit import AuditResult, format_audit_report
 
         results = [
             AuditResult("check_a", "OK", "all good"),
@@ -4080,7 +4080,7 @@ class TestAuditPriorityOrdering:
         assert results[2].status == "OK"
 
     def test_format_report_includes_priority_actions(self):
-        from utils.audit import AuditResult, format_audit_report
+        from utils.system.audit import AuditResult, format_audit_report
 
         results = [
             AuditResult("check_a", "CRITICAL", "disk full", "free disk"),
@@ -4092,7 +4092,7 @@ class TestAuditPriorityOrdering:
         assert "[CRITICAL]" in report
 
     def test_format_report_no_priority_section_when_all_ok(self):
-        from utils.audit import AuditResult, format_audit_report
+        from utils.system.audit import AuditResult, format_audit_report
 
         results = [AuditResult("check_a", "OK", "fine")]
         report = format_audit_report(results, now=1000000)
@@ -4101,7 +4101,7 @@ class TestAuditPriorityOrdering:
 
 class TestAuditSaveReport:
     def test_saves_to_audits_dir(self, tmp_path):
-        from utils.audit import save_audit_report
+        from utils.system.audit import save_audit_report
 
         report = "# Pueo Audit\n\nAll clear.\n"
         out = save_audit_report(report, audits_dir=str(tmp_path / "audits"))
@@ -4113,7 +4113,7 @@ class TestAuditSaveReport:
 class TestAuditMainEntry:
     def test_main_audit_runs_and_saves(self, tmp_path, monkeypatch):
         """main_audit() writes a file to audits_dir and prints a summary."""
-        from utils.audit import AuditResult
+        from utils.system.audit import AuditResult
 
         ok_result = AuditResult("service", "OK", "running fine")
         warn_result = AuditResult("ha_disk", "WARN", "4.0 GB free", "free disk")
@@ -4121,7 +4121,7 @@ class TestAuditMainEntry:
         async def _fake_run_audit(**kwargs):
             return [ok_result, warn_result]
 
-        import utils.audit as audit_mod
+        import utils.system.audit as audit_mod
 
         monkeypatch.setattr(audit_mod, "run_audit", _fake_run_audit)
 
@@ -4135,7 +4135,7 @@ class TestAuditMainEntry:
 
     def test_run_audit_handles_unexpected_exception(self, monkeypatch, tmp_path):
         """run_audit() wraps exceptions from async checks as WARN results."""
-        import utils.audit as audit_mod
+        import utils.system.audit as audit_mod
 
         async def _bad_check(**kwargs):
             raise RuntimeError("unexpected!")
@@ -4257,49 +4257,49 @@ def _make_disk_ssh(
 
 class TestParseSizeToBytes:
     def test_kilobytes(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("4.0K") == 4096
 
     def test_integer_megabytes(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("164M") == 164 * 1024**2
 
     def test_decimal_megabytes(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("94.5M") == int(94.5 * 1024**2)
 
     def test_gigabytes(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("1.7G") == int(1.7 * 1024**3)
 
     def test_small_kilobytes(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("644.0K") == int(644.0 * 1024)
 
     def test_zero_string(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("0") == 0
 
     def test_empty_string(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("") == 0
 
     def test_malformed_returns_zero(self):
-        from utils.disk_usage import _parse_size_to_bytes
+        from utils.disk.disk_usage import _parse_size_to_bytes
 
         assert _parse_size_to_bytes("abc") == 0
 
 
 class TestParseDuOutput:
     def test_parses_tab_separated_output(self):
-        from utils.disk_usage import _parse_du_output
+        from utils.disk.disk_usage import _parse_du_output
 
         result = _parse_du_output(
             "94.5M\t/homeassistant/home-assistant_v2.db\n4.0K\t/share\n"
@@ -4308,26 +4308,26 @@ class TestParseDuOutput:
         assert result["/share"] == 4096
 
     def test_parses_space_separated_fallback(self):
-        from utils.disk_usage import _parse_du_output
+        from utils.disk.disk_usage import _parse_du_output
 
         result = _parse_du_output("94.5M  /homeassistant/home-assistant_v2.db\n")
         assert "/homeassistant/home-assistant_v2.db" in result
 
     def test_skips_lines_without_separator(self):
-        from utils.disk_usage import _parse_du_output
+        from utils.disk.disk_usage import _parse_du_output
 
         result = _parse_du_output("justoneword\n94.5M\t/valid/path\n")
         assert len(result) == 1
         assert "/valid/path" in result
 
     def test_skips_empty_lines(self):
-        from utils.disk_usage import _parse_du_output
+        from utils.disk.disk_usage import _parse_du_output
 
         result = _parse_du_output("\n\n94.5M\t/valid/path\n\n")
         assert len(result) == 1
 
     def test_empty_output_returns_empty_dict(self):
-        from utils.disk_usage import _parse_du_output
+        from utils.disk.disk_usage import _parse_du_output
 
         assert _parse_du_output("") == {}
 
@@ -4335,14 +4335,14 @@ class TestParseDuOutput:
 class TestFetchDiskBreakdown:
     def test_returns_four_sections(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert len(bd.sections) == 4
 
     def test_section_titles(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         titles = [s.title for s in bd.sections]
@@ -4355,7 +4355,7 @@ class TestFetchDiskBreakdown:
 
     def test_overall_disk_stats(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.disk_free_gb == pytest.approx(2.2, abs=0.01)
@@ -4364,14 +4364,14 @@ class TestFetchDiskBreakdown:
 
     def test_disk_used_pct_computed(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.disk_used_pct == pytest.approx(79.4, abs=1.0)
 
     def test_addon_slug_mapped_to_friendly_name(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         addon_section = next(s for s in bd.sections if s.title == "Addon Data")
@@ -4381,7 +4381,7 @@ class TestFetchDiskBreakdown:
 
     def test_unknown_addon_slug_kept_as_is(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         addon_section = next(s for s in bd.sections if s.title == "Addon Data")
@@ -4390,7 +4390,7 @@ class TestFetchDiskBreakdown:
 
     def test_config_section_sorted_largest_first(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         config_section = next(
@@ -4401,7 +4401,7 @@ class TestFetchDiskBreakdown:
 
     def test_shared_storage_is_empty(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         shared = next(s for s in bd.sections if s.title == "Shared Storage")
@@ -4409,7 +4409,7 @@ class TestFetchDiskBreakdown:
 
     def test_bad_addon_json_falls_back_to_slug(self):
         ssh = _make_disk_ssh(addon_json="not json at all")
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         # Should not raise; slug used as display name
         bd = asyncio.run(fetch_disk_breakdown(ssh))
@@ -4421,7 +4421,7 @@ class TestFetchDiskBreakdown:
         import time
 
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         before = time.time()
         bd = asyncio.run(fetch_disk_breakdown(ssh))
@@ -4429,7 +4429,7 @@ class TestFetchDiskBreakdown:
 
     def test_pct_of_section_sums_near_100(self):
         ssh = _make_disk_ssh()
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         for section in bd.sections:
@@ -4439,14 +4439,14 @@ class TestFetchDiskBreakdown:
 
     def test_empty_du_output_all_sections_empty(self):
         ssh = _make_disk_ssh(du_output="")
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert all(s.is_empty for s in bd.sections)
 
     def test_sqlite3_unavailable_gives_none_db_tables(self):
         ssh = _make_disk_ssh(db_download_error=FileNotFoundError("no db"))
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.db_tables is None
@@ -4454,7 +4454,7 @@ class TestFetchDiskBreakdown:
     def test_sqlite3_available_populates_db_tables(self):
         db_bytes = _make_sqlite_db_bytes()
         ssh = _make_disk_ssh(db_bytes=db_bytes)
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.db_tables is not None
@@ -4465,7 +4465,7 @@ class TestFetchDiskBreakdown:
 
     def test_db_tables_corrupted_bytes_returns_none(self):
         ssh = _make_disk_ssh(db_bytes=b"not a sqlite database at all")
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.db_tables is None
@@ -4473,7 +4473,7 @@ class TestFetchDiskBreakdown:
     def test_custom_components_populated(self):
         db_bytes = _make_sqlite_db_bytes()
         ssh = _make_disk_ssh(db_bytes=db_bytes)
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.custom_components is not None
@@ -4484,7 +4484,7 @@ class TestFetchDiskBreakdown:
     def test_custom_components_sorted_largest_first(self):
         db_bytes = _make_sqlite_db_bytes()
         ssh = _make_disk_ssh(db_bytes=db_bytes)
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.custom_components is not None
@@ -4493,7 +4493,7 @@ class TestFetchDiskBreakdown:
 
     def test_custom_components_none_on_empty_output(self):
         ssh = _make_disk_ssh(cc_du_output="")
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.custom_components is None
@@ -4501,7 +4501,7 @@ class TestFetchDiskBreakdown:
     def test_container_images_estimated_gb_computed(self):
         db_bytes = _make_sqlite_db_bytes()
         ssh = _make_disk_ssh(db_bytes=db_bytes)
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         # disk_used=10.8 GB minus visible sections (~300 MB) should be a large positive
@@ -4512,7 +4512,7 @@ class TestFetchDiskBreakdown:
         ssh = _make_disk_ssh(
             host_info="disk_free: 0.0\ndisk_total: 0.0\ndisk_used: 0.0\n"
         )
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.container_images_estimated_gb is None
@@ -4523,7 +4523,7 @@ class TestFetchDiskBreakdown:
         ssh = _make_disk_ssh(
             host_info="disk_free: 13.0\ndisk_total: 13.6\ndisk_used: 0.1\n"
         )
-        from utils.disk_usage import fetch_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown
 
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert bd.container_images_estimated_gb is not None
@@ -4532,14 +4532,14 @@ class TestFetchDiskBreakdown:
 
 class TestDiskCacheAccessors:
     def test_get_returns_none_initially(self, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
 
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
         assert du_mod.get_disk_breakdown() is None
 
     def test_update_then_get_roundtrip(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskBreakdown
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskBreakdown
 
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
         bd = DiskBreakdown(fetched_at=12345.0)
@@ -4549,8 +4549,8 @@ class TestDiskCacheAccessors:
 
 class TestDiskUsagePollerRun:
     def test_polls_and_updates_cache_then_cancels(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskBreakdown, DiskUsagePoller
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskBreakdown, DiskUsagePoller
 
         fake_bd = DiskBreakdown(fetched_at=9999.0)
         call_count = 0
@@ -4580,8 +4580,8 @@ class TestDiskUsagePollerRun:
         assert du_mod.get_disk_breakdown() is fake_bd
 
     def test_catches_ssh_error_and_continues(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskUsagePoller
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskUsagePoller
 
         call_count = 0
 
@@ -4630,7 +4630,7 @@ class TestScanOrphanedAddonDirs:
         )
 
     def test_returns_empty_when_no_orphans(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = (
             '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
@@ -4645,7 +4645,7 @@ class TestScanOrphanedAddonDirs:
         assert result == []
 
     def test_detects_orphan_in_addons_dir(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = (
             '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
@@ -4662,7 +4662,7 @@ class TestScanOrphanedAddonDirs:
         assert "/mnt/data/supervisor/addons/db21ed7f_netalertx" in result[0].paths
 
     def test_detects_orphan_in_configs_dir(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = (
             '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
@@ -4679,7 +4679,7 @@ class TestScanOrphanedAddonDirs:
         assert "/addon_configs/db21ed7f_netalertx" in result[0].paths
 
     def test_detects_orphan_in_both_dirs(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = (
             '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
@@ -4700,7 +4700,7 @@ class TestScanOrphanedAddonDirs:
         assert len(orphan.paths) == 2
 
     def test_installed_slugs_not_returned_as_orphans(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = (
             '{"result":"ok","data":{"addons":['
@@ -4716,7 +4716,7 @@ class TestScanOrphanedAddonDirs:
         assert result == []
 
     def test_bad_json_treats_all_as_orphaned(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         ssh = self._make_ssh(
             installed_json="not json at all",
@@ -4728,7 +4728,7 @@ class TestScanOrphanedAddonDirs:
         assert any(o.slug == "some_addon" for o in result)
 
     def test_size_bytes_parsed_from_du_output(self):
-        from utils.disk_recovery import scan_orphaned_addon_dirs
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
         installed = '{"result":"ok","data":{"addons":[]}}'
         ssh = self._make_ssh(
@@ -4920,7 +4920,7 @@ class TestAgentLoopEpisodeRecording:
     ):
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import build_ha_tool_registry
@@ -5029,7 +5029,7 @@ class TestAgentLoopEpisodeRecording:
         """_build_episode captures yaml_content from apply_fix step."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import (
@@ -5085,7 +5085,7 @@ class TestAgentLoopEpisodeRecording:
         """_build_episode includes read_logs output in symptoms."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import (
@@ -5141,13 +5141,13 @@ class TestAgentLoopEpisodeRecording:
 
 class TestAnonymizer:
     def test_ipv4_replaced_with_placeholder(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         assert a.text("Host is 192.168.1.50 online") == "Host is <host_1> online"
 
     def test_same_ip_gets_same_placeholder(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         result = a.text("192.168.1.50 and 192.168.1.50 again")
@@ -5155,7 +5155,7 @@ class TestAnonymizer:
         assert "<host_2>" not in result
 
     def test_different_ips_get_different_placeholders(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         result = a.text("10.0.0.1 and 10.0.0.2")
@@ -5163,7 +5163,7 @@ class TestAnonymizer:
         assert "<host_2>" in result
 
     def test_backup_slug_replaced(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         result = a.text("backup slug a1b2c3d4 created")
@@ -5171,7 +5171,7 @@ class TestAnonymizer:
         assert "<slug_1>" in result
 
     def test_config_path_filename_anonymized(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         result = a.text("Editing /config/automations/morning.yaml")
@@ -5179,7 +5179,7 @@ class TestAnonymizer:
         assert "/config/automations/<file>" in result
 
     def test_config_path_top_level_preserved(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         # Top-level /config/configuration.yaml has no sub-directory, so not matched
@@ -5187,13 +5187,13 @@ class TestAnonymizer:
         assert "/config/configuration.yaml" in result
 
     def test_empty_string_unchanged(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         assert a.text("") == ""
 
     def test_args_anonymizes_string_values(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         result = a.args({"host": "192.168.1.1", "count": 5})
@@ -5201,7 +5201,7 @@ class TestAnonymizer:
         assert result["count"] == 5
 
     def test_args_preserves_structure_on_bad_json(self):
-        from utils.anonymizer import Anonymizer
+        from utils.cases.anonymizer import Anonymizer
 
         a = Anonymizer()
         original = {"key": "value"}
@@ -5456,7 +5456,7 @@ class TestExportSingleEpisodeYaml:
 class TestCaseSubmitterValidation:
     def test_empty_repo_raises(self):
         import asyncio
-        from utils.case_submitter import CaseSubmitError, submit_episode
+        from utils.cases.case_submitter import CaseSubmitError, submit_episode
 
         with pytest.raises(CaseSubmitError, match="Invalid"):
             asyncio.run(
@@ -5471,7 +5471,7 @@ class TestCaseSubmitterValidation:
 
     def test_malformed_repo_raises(self):
         import asyncio
-        from utils.case_submitter import CaseSubmitError, submit_episode
+        from utils.cases.case_submitter import CaseSubmitError, submit_episode
 
         with pytest.raises(CaseSubmitError, match="Invalid"):
             asyncio.run(
@@ -5486,14 +5486,14 @@ class TestCaseSubmitterValidation:
 
     def test_valid_repo_format_passes_validation(self, monkeypatch):
         import asyncio
-        from utils.case_submitter import _validate_repo
+        from utils.cases.case_submitter import _validate_repo
 
         _validate_repo("owner/pueo-cases")
         _validate_repo("my-org/my.repo_123")
 
     def test_path_traversal_rejected(self):
         import asyncio
-        from utils.case_submitter import CaseSubmitError, submit_episode
+        from utils.cases.case_submitter import CaseSubmitError, submit_episode
 
         with pytest.raises(CaseSubmitError, match="Invalid"):
             asyncio.run(
@@ -5512,25 +5512,25 @@ class TestCaseSubmitterValidation:
 
 class TestCaseIngesterValidate:
     def test_empty_repo_raises(self):
-        from utils.case_ingester import CaseIngestError, _validate_repo
+        from utils.cases.case_ingester import CaseIngestError, _validate_repo
 
         with pytest.raises(CaseIngestError, match="Invalid"):
             _validate_repo("")
 
     def test_malformed_repo_raises(self):
-        from utils.case_ingester import CaseIngestError, _validate_repo
+        from utils.cases.case_ingester import CaseIngestError, _validate_repo
 
         with pytest.raises(CaseIngestError, match="Invalid"):
             _validate_repo("not-a-valid/repo/path/extra")
 
     def test_path_traversal_rejected(self):
-        from utils.case_ingester import CaseIngestError, _validate_repo
+        from utils.cases.case_ingester import CaseIngestError, _validate_repo
 
         with pytest.raises(CaseIngestError, match="Invalid"):
             _validate_repo("../evil/repo")
 
     def test_valid_repo_format_passes(self):
-        from utils.case_ingester import _validate_repo
+        from utils.cases.case_ingester import _validate_repo
 
         _validate_repo("owner/pueo-cases")
         _validate_repo("my-org/my.repo_123")
@@ -5538,13 +5538,13 @@ class TestCaseIngesterValidate:
 
 class TestCaseIngesterState:
     def test_load_state_missing_dir_returns_empty(self, tmp_path):
-        from utils.case_ingester import load_ingest_state
+        from utils.cases.case_ingester import load_ingest_state
 
         state = load_ingest_state(str(tmp_path / "nonexistent"))
         assert state == {}
 
     def test_save_and_load_roundtrip(self, tmp_path):
-        from utils.case_ingester import load_ingest_state, save_ingest_state
+        from utils.cases.case_ingester import load_ingest_state, save_ingest_state
 
         save_ingest_state(str(tmp_path), {"last_ingest_ts": 12345.0, "foo": "bar"})
         state = load_ingest_state(str(tmp_path))
@@ -5552,7 +5552,7 @@ class TestCaseIngesterState:
         assert state["foo"] == "bar"
 
     def test_save_creates_directory(self, tmp_path):
-        from utils.case_ingester import load_ingest_state, save_ingest_state
+        from utils.cases.case_ingester import load_ingest_state, save_ingest_state
 
         nested = str(tmp_path / "a" / "b" / "c")
         save_ingest_state(nested, {"last_ingest_ts": 0.0})
@@ -5560,7 +5560,7 @@ class TestCaseIngesterState:
         assert state["last_ingest_ts"] == 0.0
 
     def test_corrupt_state_file_returns_empty(self, tmp_path):
-        from utils.case_ingester import load_ingest_state
+        from utils.cases.case_ingester import load_ingest_state
 
         (tmp_path / "state.json").write_text("not valid json", encoding="utf-8")
         state = load_ingest_state(str(tmp_path))
@@ -5569,7 +5569,7 @@ class TestCaseIngesterState:
 
 class TestCaseIngesterChunkEpisode:
     def test_minimal_episode_produces_chunk(self):
-        from utils.case_ingester import _chunk_episode
+        from utils.cases.case_ingester import _chunk_episode
 
         record = {
             "id": "abc123def456",
@@ -5590,7 +5590,7 @@ class TestCaseIngesterChunkEpisode:
         assert meta["collection"] == "community_cases"
 
     def test_episode_with_description_and_fix(self):
-        from utils.case_ingester import _chunk_episode
+        from utils.cases.case_ingester import _chunk_episode
 
         record = {
             "id": "x" * 20,
@@ -5609,7 +5609,7 @@ class TestCaseIngesterChunkEpisode:
         assert "Added to allowlist" in text
 
     def test_empty_symptoms_and_hypothesis_returns_none(self):
-        from utils.case_ingester import _chunk_episode
+        from utils.cases.case_ingester import _chunk_episode
 
         record = {
             "id": "abc",
@@ -5624,7 +5624,7 @@ class TestCaseIngesterChunkEpisode:
         assert "Trigger: ha_log" in text
 
     def test_no_id_uses_unknown_slug(self):
-        from utils.case_ingester import _chunk_episode
+        from utils.cases.case_ingester import _chunk_episode
 
         record = {"trigger": "ha_log", "symptoms": ["err"], "hypothesis_chain": []}
         result = _chunk_episode(record, pr_number=1, ingest_date="2026-08-11T00:00:00Z")
@@ -5633,7 +5633,7 @@ class TestCaseIngesterChunkEpisode:
         assert "unknown" in chunk_id
 
     def test_chunk_id_truncates_long_id(self):
-        from utils.case_ingester import _chunk_episode
+        from utils.cases.case_ingester import _chunk_episode
 
         record = {
             "id": "a" * 50,
@@ -5698,7 +5698,7 @@ class TestCaseIngesterIngest:
 
     def test_invalid_repo_raises(self, tmp_path):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import CaseIngestError, ingest_community_cases
+        from utils.cases.case_ingester import CaseIngestError, ingest_community_cases
 
         store = FakeKnowledgeStore()
         with pytest.raises(CaseIngestError, match="Invalid"):
@@ -5707,7 +5707,7 @@ class TestCaseIngesterIngest:
     def test_no_merged_prs_returns_zero(self, tmp_path, monkeypatch):
         import json
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
 
@@ -5716,13 +5716,13 @@ class TestCaseIngesterIngest:
                 return json.dumps([])
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 0
 
     def test_ingest_one_episode(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         episode_yaml = self._make_episode_yaml("ep001")
@@ -5737,7 +5737,7 @@ class TestCaseIngesterIngest:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 1
         docs = store._docs.get("community_cases", [])
@@ -5749,7 +5749,7 @@ class TestCaseIngesterIngest:
 
     def test_ingest_multiple_prs(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         yaml1 = self._make_episode_yaml("ep001")
@@ -5772,13 +5772,13 @@ class TestCaseIngesterIngest:
                 return self._make_contents(yaml2)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 2
 
     def test_state_saved_after_ingest(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases, load_ingest_state
+        from utils.cases.case_ingester import ingest_community_cases, load_ingest_state
 
         store = FakeKnowledgeStore()
         episode_yaml = self._make_episode_yaml()
@@ -5793,7 +5793,7 @@ class TestCaseIngesterIngest:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         state = load_ingest_state(str(tmp_path))
         assert "last_ingest_ts" in state
@@ -5802,7 +5802,7 @@ class TestCaseIngesterIngest:
     def test_since_timestamp_filters_old_prs(self, tmp_path, monkeypatch):
         import json
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases, save_ingest_state
+        from utils.cases.case_ingester import ingest_community_cases, save_ingest_state
 
         store = FakeKnowledgeStore()
         # Save a "future" last_ingest_ts so no PRs are newer
@@ -5822,13 +5822,13 @@ class TestCaseIngesterIngest:
                 ]
             )
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 0
 
     def test_non_episode_files_skipped(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         episode_yaml = self._make_episode_yaml()
@@ -5850,7 +5850,7 @@ class TestCaseIngesterIngest:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         # Only episodes/ep.yaml qualifies (README.md and .txt excluded)
         assert n == 1
@@ -5859,7 +5859,7 @@ class TestCaseIngesterIngest:
         import base64
         import json
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
 
@@ -5878,14 +5878,14 @@ class TestCaseIngesterIngest:
                 )
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         # Should not raise — malformed file is silently skipped
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 0
 
     def test_gh_failure_on_files_skips_pr(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases, CaseIngestError
+        from utils.cases.case_ingester import ingest_community_cases, CaseIngestError
 
         store = FakeKnowledgeStore()
 
@@ -5895,14 +5895,14 @@ class TestCaseIngesterIngest:
                 return self._make_pr_list([1])
             raise CaseIngestError("network timeout")
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         # PR file fetch fails → PR skipped → 0 ingested, no exception raised
         n = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert n == 0
 
     def test_upsert_idempotent_on_repeat_run(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         episode_yaml = self._make_episode_yaml("ep-stable")
@@ -5917,7 +5917,7 @@ class TestCaseIngesterIngest:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         # Second run sees same PR as already ingested (since_ts covers it)
         ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         n2 = ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
@@ -5926,7 +5926,7 @@ class TestCaseIngesterIngest:
 
     def test_community_cases_collection_used(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         episode_yaml = self._make_episode_yaml()
@@ -5941,7 +5941,7 @@ class TestCaseIngesterIngest:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         ingest_community_cases("owner/pueo-cases", str(tmp_path), store)
         assert "community_cases" in store._docs
         assert len(store._docs["community_cases"]) == 1
@@ -5952,7 +5952,7 @@ class TestCaseIngesterIngest:
 
 class TestGenerateEvalScenario:
     def test_ha_log_trigger_produces_read_logs_mock(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "abc123def456",
@@ -5971,7 +5971,7 @@ class TestGenerateEvalScenario:
         assert scenario["fix_must_parse"] is True
 
     def test_ha_config_trigger_produces_read_config_mock(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "cfgid001",
@@ -5988,7 +5988,7 @@ class TestGenerateEvalScenario:
         assert "apply_fix" in scenario["expected_tools_called"]
 
     def test_netalertx_trigger_produces_query_netalertx_mock(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "nax001",
@@ -6004,7 +6004,7 @@ class TestGenerateEvalScenario:
         assert scenario["fix_must_parse"] is False
 
     def test_unknown_trigger_falls_back_to_investigation(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "misc001",
@@ -6018,7 +6018,7 @@ class TestGenerateEvalScenario:
         assert "read_logs" in scenario["mocks"]
 
     def test_ha_log_monitor_maps_to_ha_log(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "mon001",
@@ -6031,7 +6031,7 @@ class TestGenerateEvalScenario:
         assert scenario["trigger"] == "ha_log"
 
     def test_description_and_hypothesis_go_into_description_field(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "x" * 20,
@@ -6046,7 +6046,7 @@ class TestGenerateEvalScenario:
         assert "Auth error" in scenario["description"]
 
     def test_no_content_returns_fallback_description(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "bare001",
@@ -6059,7 +6059,7 @@ class TestGenerateEvalScenario:
         assert "PR #42" in scenario["description"]
 
     def test_finish_repair_always_in_expected_tools(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         for trigger in ("ha_log", "ha_config", "netalertx", "manual"):
             record = {
@@ -6073,7 +6073,7 @@ class TestGenerateEvalScenario:
             assert "finish_repair" in scenario["expected_tools_called"]
 
     def test_id_slug_truncated_at_12_chars(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "z" * 50,
@@ -6086,7 +6086,7 @@ class TestGenerateEvalScenario:
         assert scenario["name"] == f"community_pr10_{'z' * 12}"
 
     def test_expected_outcome_is_success(self):
-        from utils.case_ingester import generate_eval_scenario
+        from utils.cases.case_ingester import generate_eval_scenario
 
         record = {
             "id": "ok1",
@@ -6105,7 +6105,7 @@ class TestGenerateEvalScenario:
 class TestWriteEvalScenario:
     def test_writes_yaml_file_to_dir(self, tmp_path):
         import yaml
-        from utils.case_ingester import write_eval_scenario
+        from utils.cases.case_ingester import write_eval_scenario
 
         scenario = {
             "name": "community_pr5_abc123def456",
@@ -6123,7 +6123,7 @@ class TestWriteEvalScenario:
         assert loaded["trigger"] == "ha_log"
 
     def test_creates_directory_if_missing(self, tmp_path):
-        from utils.case_ingester import write_eval_scenario
+        from utils.cases.case_ingester import write_eval_scenario
 
         nested = tmp_path / "a" / "b"
         scenario = {
@@ -6145,7 +6145,10 @@ class TestWriteEvalScenario:
         # Add project root so EvalScenario can be imported
         sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
         from evals.run_evals import EvalScenario
-        from utils.case_ingester import generate_eval_scenario, write_eval_scenario
+        from utils.cases.case_ingester import (
+            generate_eval_scenario,
+            write_eval_scenario,
+        )
 
         record = {
             "id": "roundtrip001",
@@ -6194,7 +6197,7 @@ class TestIngestWithScenariosDir:
     def test_scenario_file_written_per_episode(self, tmp_path, monkeypatch):
         import yaml
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         scenarios_dir = tmp_path / "scenarios"
@@ -6220,7 +6223,7 @@ class TestIngestWithScenariosDir:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         n = ingest_community_cases(
             "owner/repo", str(tmp_path), store, scenarios_dir=str(scenarios_dir)
         )
@@ -6232,7 +6235,7 @@ class TestIngestWithScenariosDir:
     def test_no_scenarios_dir_writes_nothing(self, tmp_path, monkeypatch):
         import yaml
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.case_ingester import ingest_community_cases
+        from utils.cases.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
         episode_yaml = yaml.dump(
@@ -6256,7 +6259,7 @@ class TestIngestWithScenariosDir:
                 return self._make_contents(episode_yaml)
             return "[]"
 
-        monkeypatch.setattr("utils.case_ingester._run_gh", fake_run_gh)
+        monkeypatch.setattr("utils.cases.case_ingester._run_gh", fake_run_gh)
         # No scenarios_dir passed — should not create any files in tmp_path
         before = set(tmp_path.iterdir())
         ingest_community_cases("owner/repo", str(tmp_path), store)

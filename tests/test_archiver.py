@@ -19,7 +19,7 @@ class TestArchiveHaLog:
                 "/config/home-assistant.log": b"log line 1\nlog line 2\n"
             },
         )
-        from utils.archiver import archive_ha_log
+        from utils.disk.archiver import archive_ha_log
 
         result = asyncio.run(archive_ha_log(fake_ssh, tmp_path))
 
@@ -38,7 +38,7 @@ class TestArchiveHaLog:
         fake_ssh = FakeSSHClient(
             command_results={"stat -c %s": (0, "0", "")},
         )
-        from utils.archiver import archive_ha_log
+        from utils.disk.archiver import archive_ha_log
 
         result = asyncio.run(archive_ha_log(fake_ssh, tmp_path))
 
@@ -49,7 +49,7 @@ class TestArchiveHaLog:
             command_results={"stat -c %s": (0, "1048576", "")},
             download_error=RuntimeError("SSH connection refused"),
         )
-        from utils.archiver import archive_ha_log
+        from utils.disk.archiver import archive_ha_log
 
         # Should not raise — archive failure is non-fatal
         result = asyncio.run(archive_ha_log(fake_ssh, tmp_path))
@@ -64,7 +64,7 @@ class TestArchiveHaLog:
             command_results={"stat -c %s": (0, "512", "")},
             download_contents={"/config/home-assistant.log": b"hello"},
         )
-        from utils.archiver import archive_ha_log
+        from utils.disk.archiver import archive_ha_log
 
         result = asyncio.run(archive_ha_log(fake_ssh, archive_dir))
 
@@ -78,7 +78,7 @@ class TestArchiveJournalDump:
         fake_ssh = FakeSSHClient(
             command_results={"journalctl": (0, journal_text, "")},
         )
-        from utils.archiver import archive_journal_dump
+        from utils.disk.archiver import archive_journal_dump
 
         result = asyncio.run(archive_journal_dump(fake_ssh, tmp_path))
 
@@ -95,7 +95,7 @@ class TestArchiveJournalDump:
         fake_ssh = FakeSSHClient(
             command_results={"journalctl": (0, "   ", "")},
         )
-        from utils.archiver import archive_journal_dump
+        from utils.disk.archiver import archive_journal_dump
 
         result = asyncio.run(archive_journal_dump(fake_ssh, tmp_path))
 
@@ -105,7 +105,7 @@ class TestArchiveJournalDump:
         fake_ssh = FakeSSHClient(
             command_results={"journalctl": (1, "", "journalctl: error")},
         )
-        from utils.archiver import archive_journal_dump
+        from utils.disk.archiver import archive_journal_dump
 
         # Empty/error output → None (non-fatal)
         result = asyncio.run(archive_journal_dump(fake_ssh, tmp_path))
@@ -134,7 +134,7 @@ class TestEnforceArchiveRetention:
         self._make_file(d / "a.log.gz", 100)
         self._make_file(d / "b.log.gz", 100)
 
-        from utils.archiver import enforce_archive_retention
+        from utils.disk.archiver import enforce_archive_retention
 
         freed = enforce_archive_retention(d, max_bytes=10_000)
 
@@ -149,7 +149,7 @@ class TestEnforceArchiveRetention:
         self._make_file(d / "mid.log.gz", 200, mtime_offset=-50)
         self._make_file(d / "new.log.gz", 200, mtime_offset=1)  # future = newest
 
-        from utils.archiver import enforce_archive_retention
+        from utils.disk.archiver import enforce_archive_retention
 
         # Budget = 400 bytes, total = 600 → must delete at least the oldest
         enforce_archive_retention(d, max_bytes=400)
@@ -163,7 +163,7 @@ class TestEnforceArchiveRetention:
         self._make_file(d / "b.log.gz", 300, mtime_offset=-100)
         self._make_file(d / "c.log.gz", 300, mtime_offset=1)
 
-        from utils.archiver import enforce_archive_retention
+        from utils.disk.archiver import enforce_archive_retention
 
         # Budget = 300 bytes, total = 900 → two oldest must go to get under budget
         enforce_archive_retention(d, max_bytes=300)
@@ -173,7 +173,7 @@ class TestEnforceArchiveRetention:
         assert (d / "c.log.gz").exists(), "newest file should be kept"
 
     def test_returns_zero_for_nonexistent_dir(self, tmp_path):
-        from utils.archiver import enforce_archive_retention
+        from utils.disk.archiver import enforce_archive_retention
 
         freed = enforce_archive_retention(tmp_path / "no_such_dir", max_bytes=1000)
 
@@ -185,7 +185,7 @@ class TestEnforceArchiveRetention:
         self._make_file(subdir / "old.log.gz", 500, mtime_offset=-100)
         self._make_file(subdir / "new.log.gz", 500, mtime_offset=1)
 
-        from utils.archiver import enforce_archive_retention
+        from utils.disk.archiver import enforce_archive_retention
 
         # Budget = 500 bytes, total = 1000 → must delete the oldest
         enforce_archive_retention(d, max_bytes=500)
@@ -241,9 +241,9 @@ class TestMeasurePueoFootprint:
         importlib.reload(sys.modules["config"])
 
         # Reload pueo_storage so it picks up the new config
-        if "utils.pueo_storage" in sys.modules:
-            importlib.reload(sys.modules["utils.pueo_storage"])
-        from utils.pueo_storage import measure_pueo_footprint
+        if "utils.disk.pueo_storage" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.pueo_storage"])
+        from utils.disk.pueo_storage import measure_pueo_footprint
 
         fp = measure_pueo_footprint()
 
@@ -288,9 +288,9 @@ class TestMeasurePueoFootprint:
             )
         )
         importlib.reload(sys.modules["config"])
-        if "utils.pueo_storage" in sys.modules:
-            importlib.reload(sys.modules["utils.pueo_storage"])
-        from utils.pueo_storage import measure_pueo_footprint
+        if "utils.disk.pueo_storage" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.pueo_storage"])
+        from utils.disk.pueo_storage import measure_pueo_footprint
 
         fp = measure_pueo_footprint()
 

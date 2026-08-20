@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from utils.hardware import (
+from utils.disk.hardware import (
     CANDIDATE_MODELS,
     HardwareProfile,
     OllamaModelInfo,
@@ -71,10 +71,12 @@ class TestDetectLocalHardware:
             raise ValueError(f"unexpected: {cmd}")
 
         with patch(
-            "utils.hardware.subprocess.check_output", side_effect=fake_check_output
+            "utils.disk.hardware.subprocess.check_output", side_effect=fake_check_output
         ):
-            with patch("utils.hardware.platform.system", return_value="Darwin"):
-                with patch("utils.hardware.platform.machine", return_value="arm64"):
+            with patch("utils.disk.hardware.platform.system", return_value="Darwin"):
+                with patch(
+                    "utils.disk.hardware.platform.machine", return_value="arm64"
+                ):
                     p = detect_local_hardware()
 
         assert p.chip == "Apple M1 Max"
@@ -94,9 +96,9 @@ class TestDetectLocalHardware:
             text = meminfo_text if "meminfo" in str(path) else cpuinfo_text
             return io.StringIO(text)
 
-        with patch("utils.hardware.platform.system", return_value="Linux"):
-            with patch("utils.hardware.platform.machine", return_value="x86_64"):
-                with patch("utils.hardware.open", fake_open, create=True):
+        with patch("utils.disk.hardware.platform.system", return_value="Linux"):
+            with patch("utils.disk.hardware.platform.machine", return_value="x86_64"):
+                with patch("utils.disk.hardware.open", fake_open, create=True):
                     p = detect_local_hardware()
 
         assert "AMD" in p.chip
@@ -106,10 +108,10 @@ class TestDetectLocalHardware:
 
     def test_fallback_on_error(self):
         with patch(
-            "utils.hardware.subprocess.check_output",
+            "utils.disk.hardware.subprocess.check_output",
             side_effect=RuntimeError("no sysctl"),
         ):
-            with patch("utils.hardware.platform.system", return_value="Darwin"):
+            with patch("utils.disk.hardware.platform.system", return_value="Darwin"):
                 p = detect_local_hardware()
 
         assert p.chip == "Unknown"
@@ -147,21 +149,25 @@ class TestCheckModelCaps:
         show_out = (
             "  Capabilities:\n    completion  tools  insert\n  context length: 32768\n"
         )
-        with patch("utils.hardware.subprocess.check_output", return_value=show_out):
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
             has_tools, ctx = _check_model_caps("qwen2.5-coder:7b")
         assert has_tools is True
         assert ctx == 32768
 
     def test_no_tools(self):
         show_out = "  Capabilities:\n    completion\n  context length: 8192\n"
-        with patch("utils.hardware.subprocess.check_output", return_value=show_out):
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
             has_tools, ctx = _check_model_caps("some-model:latest")
         assert has_tools is False
         assert ctx == 8192
 
     def test_subprocess_failure_returns_false(self):
         with patch(
-            "utils.hardware.subprocess.check_output", side_effect=FileNotFoundError
+            "utils.disk.hardware.subprocess.check_output", side_effect=FileNotFoundError
         ):
             has_tools, ctx = _check_model_caps("missing:model")
         assert has_tools is False
@@ -189,7 +195,7 @@ class TestListOllamaModels:
             return show_tools  # for ollama show <name>
 
         with patch(
-            "utils.hardware.subprocess.check_output", side_effect=fake_check_output
+            "utils.disk.hardware.subprocess.check_output", side_effect=fake_check_output
         ):
             models = list_ollama_models()
 
@@ -204,7 +210,7 @@ class TestListOllamaModels:
 
     def test_returns_empty_when_ollama_not_running(self):
         with patch(
-            "utils.hardware.subprocess.check_output", side_effect=FileNotFoundError
+            "utils.disk.hardware.subprocess.check_output", side_effect=FileNotFoundError
         ):
             models = list_ollama_models()
         assert models == []
@@ -336,19 +342,21 @@ class TestSelectBestModel:
         import config
 
         with patch(
-            "utils.hardware.detect_local_hardware", return_value=_profile(ram_gb=1.0)
+            "utils.disk.hardware.detect_local_hardware",
+            return_value=_profile(ram_gb=1.0),
         ):
-            with patch("utils.hardware.list_ollama_models", return_value=[]):
+            with patch("utils.disk.hardware.list_ollama_models", return_value=[]):
                 result = select_best_model()
 
         assert result == config.OLLAMA_MODEL
 
     def test_returns_recommended_model(self):
         with patch(
-            "utils.hardware.detect_local_hardware", return_value=_profile(ram_gb=64.0)
+            "utils.disk.hardware.detect_local_hardware",
+            return_value=_profile(ram_gb=64.0),
         ):
             with patch(
-                "utils.hardware.list_ollama_models",
+                "utils.disk.hardware.list_ollama_models",
                 return_value=[_model("qwen2.5-coder:32b", 19.0)],
             ):
                 result = select_best_model()

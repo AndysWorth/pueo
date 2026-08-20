@@ -155,14 +155,14 @@ class TestSerializeAnalysis:
         }
 
     def test_fallback_returns_heuristic_with_source_key(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(None, self._heuristic(), is_fallback=True)
         assert result["source"] == "heuristic"
         assert result["text"] == "heuristic text"
 
     def test_investigation_result_sets_source_investigation(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(
             self._make_report(), self._heuristic(), is_fallback=False
@@ -171,7 +171,7 @@ class TestSerializeAnalysis:
         assert result["text"] == "NetAlertX is the culprit"
 
     def test_investigation_preserves_top_consumers_from_heuristic(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(
             self._make_report(), self._heuristic(), is_fallback=False
@@ -181,14 +181,14 @@ class TestSerializeAnalysis:
         ]
 
     def test_hitl_sufficient_false_when_manual_only_nonempty(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         report = self._make_report(manual_only=["Expand physical storage"])
         result = _serialize_analysis(report, self._heuristic(), is_fallback=False)
         assert result["hitl_sufficient"] is False
 
     def test_hitl_sufficient_true_when_manual_only_empty(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(
             self._make_report(manual_only=[]), self._heuristic(), is_fallback=False
@@ -196,7 +196,7 @@ class TestSerializeAnalysis:
         assert result["hitl_sufficient"] is True
 
     def test_confidence_included_in_investigation_result(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(
             self._make_report(confidence=0.75), self._heuristic(), is_fallback=False
@@ -204,7 +204,7 @@ class TestSerializeAnalysis:
         assert result["confidence"] == pytest.approx(0.75)
 
     def test_hitl_actions_serialized(self):
-        from utils.resource import _serialize_analysis
+        from utils.disk.resource import _serialize_analysis
 
         result = _serialize_analysis(
             self._make_report(), self._heuristic(), is_fallback=False
@@ -217,7 +217,7 @@ class TestBuildDiskInvestigationContext:
     """Tests for _build_disk_investigation_context() in resource.py."""
 
     def _make_status(self, disk_free=1.9, disk_total=13.6):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=disk_free,
@@ -231,7 +231,7 @@ class TestBuildDiskInvestigationContext:
         )
 
     def test_includes_disk_free_and_total(self):
-        from utils.resource import _build_disk_investigation_context
+        from utils.disk.resource import _build_disk_investigation_context
 
         ctx = _build_disk_investigation_context(
             self._make_status(disk_free=1.9, disk_total=13.6),
@@ -244,7 +244,7 @@ class TestBuildDiskInvestigationContext:
         assert "13.60 GB" in ctx
 
     def test_includes_post_recovery_info_when_available(self):
-        from utils.resource import _build_disk_investigation_context
+        from utils.disk.resource import _build_disk_investigation_context
 
         ctx = _build_disk_investigation_context(
             self._make_status(),
@@ -257,7 +257,7 @@ class TestBuildDiskInvestigationContext:
         assert "still CRITICAL" in ctx
 
     def test_includes_top_consumers_when_heuristic_has_them(self):
-        from utils.resource import _build_disk_investigation_context
+        from utils.disk.resource import _build_disk_investigation_context
 
         heuristic = {
             "top_consumers": [{"name": "NetAlertX", "size_human": "8.0 GB"}],
@@ -297,7 +297,7 @@ class TestResourcePollerInvestigationIntegration:
         monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
 
     def _make_status(self, disk_free=1.5):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=disk_free,
@@ -322,8 +322,8 @@ class TestResourcePollerInvestigationIntegration:
         )
 
     def test_disk_analysis_source_is_investigation_when_llm_available(self):
-        from utils.notify import FakeNotifier
-        from utils.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()
@@ -343,7 +343,8 @@ class TestResourcePollerInvestigationIntegration:
             new=AsyncMock(return_value=(report, False)),
         ) as mock_inv:
             with patch(
-                "utils.resource._build_disk_investigation_context", return_value="ctx"
+                "utils.disk.resource._build_disk_investigation_context",
+                return_value="ctx",
             ):
                 asyncio.run(poller._check_and_alert(self._make_status()))
 
@@ -355,8 +356,8 @@ class TestResourcePollerInvestigationIntegration:
         assert da["text"] == "NetAlertX is consuming 8 GB"
 
     def test_disk_analysis_source_is_heuristic_on_fallback(self):
-        from utils.notify import FakeNotifier
-        from utils.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()
@@ -375,7 +376,8 @@ class TestResourcePollerInvestigationIntegration:
             new=AsyncMock(return_value=(None, True)),
         ):
             with patch(
-                "utils.resource._build_disk_investigation_context", return_value="ctx"
+                "utils.disk.resource._build_disk_investigation_context",
+                return_value="ctx",
             ):
                 asyncio.run(poller._check_and_alert(self._make_status()))
 
@@ -384,8 +386,8 @@ class TestResourcePollerInvestigationIntegration:
         assert da["source"] == "heuristic"
 
     def test_investigation_skipped_when_no_llm_client(self):
-        from utils.notify import FakeNotifier
-        from utils.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         notifier = FakeNotifier()

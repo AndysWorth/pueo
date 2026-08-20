@@ -147,7 +147,7 @@ class TestInstallerCardToRoute:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         watch_dir = tmp_path / "watch"
         watch_dir.mkdir()

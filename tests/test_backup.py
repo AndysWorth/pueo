@@ -64,7 +64,7 @@ class TestTriggerBackupChain:
     @pytest.fixture
     def executor(self, db_path):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
 
@@ -101,7 +101,7 @@ class TestTriggerBackupChain:
         mock_record.assert_called_once_with(slug)
 
     def test_trigger_backup_disk_critical_blocked(self, executor):
-        from utils.resource import DiskCriticalError
+        from utils.disk.resource import DiskCriticalError
 
         with patch(
             "agents.ha_agent_advanced.execute_remote_backup",

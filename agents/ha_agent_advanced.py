@@ -37,7 +37,7 @@ from utils.core.logging import (
 from utils.llm.llm_factory import make_llm_client
 from utils.core.prompts import load_prompt
 from .ha_agent_core import DiagnosticsReport
-from utils.resource import DiskCriticalError, check_disk_not_critical
+from utils.disk.resource import DiskCriticalError, check_disk_not_critical
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
 
@@ -619,7 +619,7 @@ def mark_log_triage_hitl_sent(
     conn.commit()
     # Register in hitl_suppression so the queue-pending check in
     # should_send_log_triage_hitl() can block cooldown-elapsed re-fires.
-    from utils.hitl_tracker import mark_card_sent
+    from utils.hitl.hitl_tracker import mark_card_sent
 
     mark_card_sent(
         conn,
@@ -985,7 +985,7 @@ async def offload_pending_backups(
         if not offloaded:
             log.warning("backup_offload_pending_failed", slug=slug)
 
-    from utils.resource import get_resource_status
+    from utils.disk.resource import get_resource_status
 
     _status = get_resource_status()
     await enforce_ha_retention(

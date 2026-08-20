@@ -65,7 +65,7 @@ def _make_enrichment_json() -> str:
 
 def _make_executor(*, llm_client=None, notifier=None):
     from utils.agent.autonomy import FakeAutonomyGate
-    from utils.notify import FakeNotifier
+    from utils.hitl.notify import FakeNotifier
     from utils.ha.ssh_client import FakeSSHClient
     from utils.agent.tool_executor import ToolExecutor
 
@@ -88,7 +88,7 @@ def _make_executor(*, llm_client=None, notifier=None):
 class TestEnrichFixContext:
     def test_returns_enrichment_when_llm_client_provided(self):
         notifier_obj = None
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier_obj = FakeNotifier()
         llm = _CapturingFakeLLMClient(_make_enrichment_json())
@@ -122,7 +122,7 @@ class TestEnrichFixContext:
 
 class TestApplyFixPayload:
     def _run_apply_fix(self, llm_client):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier(approve=False)
         executor = _make_executor(llm_client=llm_client, notifier=notifier)
@@ -370,7 +370,7 @@ class TestInvestigateDevice:
 
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
 
@@ -412,7 +412,7 @@ class TestInvestigateDevice:
 
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
 
@@ -453,7 +453,7 @@ class TestInvestigateDevice:
         from unittest.mock import MagicMock
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
 

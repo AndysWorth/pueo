@@ -14,7 +14,7 @@ import pytest
 
 from agents import ha_agent_advanced
 from utils.agent.autonomy import FakeAutonomyGate
-from utils.notify import FakeNotifier
+from utils.hitl.notify import FakeNotifier
 from utils.ha.ssh_client import FakeSSHClient
 from utils.agent.tool_executor import ToolExecutor
 from utils.agent.tool_registry import ToolCall
@@ -746,7 +746,7 @@ class TestGetDiskUsageTool:
     """get_disk_usage returns a formatted breakdown using cached or fresh data."""
 
     def _make_fake_breakdown(self):
-        from utils.disk_usage import DiskBreakdown, DiskItem, DiskSection
+        from utils.disk.disk_usage import DiskBreakdown, DiskItem, DiskSection
 
         backup_item = DiskItem(
             path="/backup/abc123.tar",
@@ -774,7 +774,7 @@ class TestGetDiskUsageTool:
         )
 
     def test_uses_cached_breakdown(self, executor, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
 
         fake = self._make_fake_breakdown()
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", fake)
@@ -788,7 +788,7 @@ class TestGetDiskUsageTool:
         assert "abc123.tar" in result.output
 
     def test_fetches_fresh_when_no_cache(self, executor, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
 
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
         fake = self._make_fake_breakdown()
@@ -804,7 +804,7 @@ class TestGetDiskUsageTool:
         assert "8.5 GB used" in result.output
 
     def test_fetches_fresh_when_cache_stale(self, executor, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
 
         stale = self._make_fake_breakdown()
         stale.fetched_at = 0.0  # epoch — always stale
@@ -824,7 +824,7 @@ class TestGetDiskUsageTool:
         assert "5.0 GB free" in result.output
 
     def test_container_estimate_included(self, executor, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
 
         fake = self._make_fake_breakdown()
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", fake)
@@ -1295,7 +1295,7 @@ class TestGapDetection:
         monkeypatch.setattr(AgentLoop, "run", fake_run)
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
 
@@ -1341,7 +1341,7 @@ class TestGapDetection:
         monkeypatch.setattr(AgentLoop, "run", fake_run)
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
 

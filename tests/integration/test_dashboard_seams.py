@@ -145,7 +145,7 @@ class TestNotificationLifecycle:
         from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -343,7 +343,7 @@ class TestUpdateCardToRoute:
         from agents import ha_update_manager
         import web.dashboard as dashboard
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         watch_dir = tmp_path / "watch"
         watch_dir.mkdir()

@@ -32,7 +32,7 @@ class AuditResult:
 
 def check_service() -> AuditResult:
     """Check whether the launchd service is installed and running."""
-    from utils.service import service_status
+    from utils.system.service import service_status
 
     st = service_status()
     if st.get("error"):
@@ -68,7 +68,7 @@ async def check_ha_disk(
 ) -> AuditResult:
     """Check HA host disk free vs. configured critical/warn thresholds."""
     import config
-    from utils.resource import poll_host_resources
+    from utils.disk.resource import poll_host_resources
     from utils.ha.ssh_client import AsyncSSHClient
 
     try:

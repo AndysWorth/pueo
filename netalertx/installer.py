@@ -55,7 +55,7 @@ from utils.core.logging import get_logger, set_correlation_id
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.installer")
 
@@ -1452,7 +1452,7 @@ async def main(
     )
     from config import NETALERTX_SSH_HOST, NETALERTX_SSH_KEY_PATH, NETALERTX_SSH_USER
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     _ssh = ssh_client or AsyncSSHClient(

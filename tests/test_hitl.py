@@ -24,7 +24,7 @@ _BAD_FIX = "http:\n  server_port: 8124\n"  # missing homeassistant: block
 
 class TestFakeNotifier:
     def test_send_records_call(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         n = FakeNotifier()
         asyncio.run(n.send("subject", "body", {"notification_id": "x"}))
@@ -32,7 +32,7 @@ class TestFakeNotifier:
         assert n.sent[0]["subject"] == "subject"
 
     def test_send_records_payload(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         n = FakeNotifier()
         asyncio.run(
@@ -41,21 +41,21 @@ class TestFakeNotifier:
         assert n.sent[0]["payload"]["severity"] == "CRITICAL"
 
     def test_wait_for_approval_returns_true_when_configured(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         n = FakeNotifier(approve=True)
         result = asyncio.run(n.wait_for_approval("any-id"))
         assert result is True
 
     def test_wait_for_approval_returns_false_when_rejected(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         n = FakeNotifier(approve=False)
         result = asyncio.run(n.wait_for_approval("any-id"))
         assert result is False
 
     def test_multiple_sends_accumulate(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         n = FakeNotifier()
         asyncio.run(n.send("s1", "b1", {}))
@@ -65,7 +65,7 @@ class TestFakeNotifier:
 
 class TestFileNotifier:
     def test_send_writes_json_file(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
         import json
 
         n = FileNotifier(watch_dir=str(tmp_path))
@@ -77,7 +77,7 @@ class TestFileNotifier:
         assert data["notification_id"] == "nid-1"
 
     def test_send_creates_watch_dir_if_missing(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         new_dir = tmp_path / "hitl"
         n = FileNotifier(watch_dir=str(new_dir))
@@ -85,7 +85,7 @@ class TestFileNotifier:
         assert new_dir.exists()
 
     def test_wait_for_approval_resolves_approved(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         n = FileNotifier(watch_dir=str(tmp_path), poll_interval=0.01)
         (tmp_path / "nid-ok.approved").touch()
@@ -93,7 +93,7 @@ class TestFileNotifier:
         assert result is True
 
     def test_wait_for_approval_resolves_rejected(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         n = FileNotifier(watch_dir=str(tmp_path), poll_interval=0.01)
         (tmp_path / "nid-no.rejected").touch()
@@ -101,7 +101,7 @@ class TestFileNotifier:
         assert result is False
 
     def test_resend_clears_stale_approved(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         n = FileNotifier(watch_dir=str(tmp_path))
         asyncio.run(n.send("s", "b", {"notification_id": "card-1"}))
@@ -111,7 +111,7 @@ class TestFileNotifier:
         assert (tmp_path / "card-1.json").exists()
 
     def test_resend_clears_stale_rejected(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         n = FileNotifier(watch_dir=str(tmp_path))
         asyncio.run(n.send("s", "b", {"notification_id": "card-2"}))
@@ -120,7 +120,7 @@ class TestFileNotifier:
         assert not (tmp_path / "card-2.rejected").exists()
 
     def test_resend_clears_multiple_stale_files(self, tmp_path):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         n = FileNotifier(watch_dir=str(tmp_path))
         asyncio.run(n.send("s", "b", {"notification_id": "card-3"}))
@@ -134,13 +134,13 @@ class TestFileNotifier:
 
 class TestGetNotifier:
     def test_default_returns_file_notifier(self, tmp_path):
-        from utils.notify import FileNotifier, get_notifier
+        from utils.hitl.notify import FileNotifier, get_notifier
 
         n = get_notifier("file", notify_watch_dir=str(tmp_path))
         assert isinstance(n, FileNotifier)
 
     def test_ntfy_returns_ntfy_notifier(self, tmp_path):
-        from utils.notify import NtfyNotifier, get_notifier
+        from utils.hitl.notify import NtfyNotifier, get_notifier
 
         n = get_notifier(
             "ntfy", notify_url="https://ntfy.sh/topic", notify_watch_dir=str(tmp_path)
@@ -148,7 +148,7 @@ class TestGetNotifier:
         assert isinstance(n, NtfyNotifier)
 
     def test_ntfy_wait_for_approval_delegates_to_file(self, tmp_path):
-        from utils.notify import NtfyNotifier
+        from utils.hitl.notify import NtfyNotifier
 
         n = NtfyNotifier(url="https://ntfy.sh/topic", watch_dir=str(tmp_path))
         nid = "test-ntfy-approval"
@@ -156,7 +156,7 @@ class TestGetNotifier:
         assert asyncio.run(n.wait_for_approval(nid)) is True
 
     def test_ntfy_wait_for_rejection_delegates_to_file(self, tmp_path):
-        from utils.notify import NtfyNotifier
+        from utils.hitl.notify import NtfyNotifier
 
         n = NtfyNotifier(url="https://ntfy.sh/topic", watch_dir=str(tmp_path))
         nid = "test-ntfy-rejection"
@@ -164,13 +164,13 @@ class TestGetNotifier:
         assert asyncio.run(n.wait_for_approval(nid)) is False
 
     def test_webhook_returns_webhook_notifier(self):
-        from utils.notify import WebhookNotifier, get_notifier
+        from utils.hitl.notify import WebhookNotifier, get_notifier
 
         n = get_notifier("webhook", notify_url="http://example.com/hook")
         assert isinstance(n, WebhookNotifier)
 
     def test_unknown_type_defaults_to_file(self, tmp_path):
-        from utils.notify import FileNotifier, get_notifier
+        from utils.hitl.notify import FileNotifier, get_notifier
 
         n = get_notifier("unknown_type", notify_watch_dir=str(tmp_path))
         assert isinstance(n, FileNotifier)
@@ -302,7 +302,7 @@ class TestHitlPipelineGate:
         )
 
     def test_critical_issue_sends_notification(self, ssh_ok, llm_critical, db_path):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
@@ -320,7 +320,7 @@ class TestHitlPipelineGate:
     def test_critical_issue_notification_contains_severity(
         self, ssh_ok, llm_critical, db_path
     ):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
@@ -340,7 +340,7 @@ class TestHitlPipelineGate:
         """When HITL is needed, apply_fix queues the notification with the YAML payload
         and the agent loop exits immediately — backup runs in the dashboard on approval.
         """
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
@@ -359,7 +359,7 @@ class TestHitlPipelineGate:
         assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
     def test_rejection_aborts_backup(self, ssh_ok, llm_critical, db_path):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=False)
@@ -375,7 +375,7 @@ class TestHitlPipelineGate:
         assert not any("ha backup new" in cmd for cmd in ssh_ok.commands_run)
 
     def test_rejection_records_state(self, ssh_ok, llm_critical, db_path):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
         import sqlite3 as sqlite3_mod
 
@@ -396,7 +396,7 @@ class TestHitlPipelineGate:
         assert action[0] == "awaiting_approval"
 
     def test_low_severity_no_notification_sent(self, ssh_ok, llm_low_fix, db_path):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
@@ -414,7 +414,7 @@ class TestHitlPipelineGate:
     def test_low_severity_proceeds_directly_to_backup(
         self, ssh_ok, llm_low_fix, db_path
     ):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.autonomy import FakeAutonomyGate
 
         notifier = FakeNotifier(approve=True)
@@ -555,7 +555,7 @@ class TestAutonomyGate:
 
     def test_level1_rejects_without_notifying_for_all_risks(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=1)
         for risk in RiskLevel:
@@ -570,7 +570,7 @@ class TestAutonomyGate:
 
     def test_level4_approves_low_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=False)
@@ -584,7 +584,7 @@ class TestAutonomyGate:
 
     def test_level4_approves_medium_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=False)
@@ -598,7 +598,7 @@ class TestAutonomyGate:
 
     def test_level4_approves_high_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=False)
@@ -612,7 +612,7 @@ class TestAutonomyGate:
 
     def test_level4_notifies_for_critical_and_approves(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=True)
@@ -626,7 +626,7 @@ class TestAutonomyGate:
 
     def test_level4_notifies_for_critical_and_rejects(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=False)
@@ -640,7 +640,7 @@ class TestAutonomyGate:
 
     def test_level3_approves_low_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=False)
@@ -654,7 +654,7 @@ class TestAutonomyGate:
 
     def test_level3_notifies_for_medium(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
@@ -667,7 +667,7 @@ class TestAutonomyGate:
 
     def test_level3_notifies_for_high(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
@@ -680,7 +680,7 @@ class TestAutonomyGate:
 
     def test_level3_notifies_for_critical(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
@@ -693,7 +693,7 @@ class TestAutonomyGate:
 
     def test_level2_notifies_for_all_risks(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=2)
         for risk in RiskLevel:
@@ -707,7 +707,7 @@ class TestAutonomyGate:
 
     def test_require_approval_waits_until_approved(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
@@ -721,7 +721,7 @@ class TestAutonomyGate:
 
     def test_require_approval_waits_until_rejected(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=False)
@@ -736,7 +736,7 @@ class TestAutonomyGate:
     def test_require_approval_logs_hitl_wait_and_result(self, caplog):
         import logging
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
@@ -772,7 +772,7 @@ class TestAutonomyGate:
 
     def test_level1_sandbox_pipeline_produces_no_ssh_writes(self, db_path):
         from utils.agent.autonomy import AutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from agents import ha_agent_sandbox_engine
@@ -819,7 +819,7 @@ class TestAutonomyGate:
 
     def test_level4_warning_severity_runs_without_hitl(self, db_path):
         from utils.agent.autonomy import AutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from agents import ha_agent_sandbox_engine
@@ -865,7 +865,7 @@ class TestAutonomyGate:
 
     def test_level4_apply_fix_commits_config_without_hitl(self, db_path):
         from utils.agent.autonomy import AutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from config import CONFIG_REMOTE_PATH
@@ -914,7 +914,7 @@ class TestAutonomyGate:
 
     def test_queue_for_approval_level1_returns_false_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=1)
         notifier = FakeNotifier()
@@ -926,7 +926,7 @@ class TestAutonomyGate:
 
     def test_queue_for_approval_level4_returns_true_without_notifying_for_high(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier()
@@ -938,7 +938,7 @@ class TestAutonomyGate:
 
     def test_queue_for_approval_level3_returns_true_for_low_without_notifying(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier()
@@ -950,7 +950,7 @@ class TestAutonomyGate:
 
     def test_queue_for_approval_level2_sends_notification_and_returns_false(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=2)
         notifier = FakeNotifier()
@@ -968,7 +968,7 @@ class TestAutonomyGate:
 
     def test_queue_for_approval_level3_sends_notification_for_high(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=3)
         notifier = FakeNotifier()

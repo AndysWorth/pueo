@@ -41,7 +41,7 @@ from utils.core.prompts import load_prompt
 if TYPE_CHECKING:
     from utils.agent.autonomy import AutonomyGate, FakeAutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("ha_update_manager")
 
@@ -268,7 +268,7 @@ async def run_update_preflight(
     Returns a structured summary that is embedded in the update approval card body.
     """
     from .ha_agent_advanced import enforce_ha_retention
-    from utils.resource import get_resource_status, poll_host_resources
+    from utils.disk.resource import get_resource_status, poll_host_resources
     from utils.ha.ssh_client import AsyncSSHClient
 
     disk_threshold = HA_DISK_WARN_GB + _PREFLIGHT_DISK_BUFFER_GB
@@ -448,7 +448,7 @@ async def request_update_approval(
 
     body = "\n".join(body_parts)
 
-    from utils.card_types import CARD_TYPE_UPDATE
+    from utils.hitl.card_types import CARD_TYPE_UPDATE
 
     payload: dict = {
         "notification_id": nid,
@@ -577,7 +577,7 @@ async def run_update_check(
 
     # Approval cards — Core/OS always require approval; add-ons defer to autonomy level.
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
 
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
@@ -791,7 +791,7 @@ async def _poll_core_version(
     _get_disk: Optional[Callable] = None,
 ) -> bool:
     """Poll `ha core info` every ``interval`` seconds until version matches target or timeout."""
-    from utils.resource import get_resource_status
+    from utils.disk.resource import get_resource_status
 
     sleep_fn = _sleep or asyncio.sleep
     get_disk_fn = _get_disk or get_resource_status
@@ -1255,7 +1255,7 @@ def _pending_higher_priority_components(component: str, watch_dir: Path) -> list
             )
         except Exception:  # nosec B112
             continue
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         if other_payload.get("card_type") != CARD_TYPE_UPDATE:
             continue
@@ -1372,7 +1372,7 @@ async def reconcile_in_progress_updates(
     the marker so the card does not sit unresolved indefinitely.
     If SSH fails the marker is left in place and retried on next startup.
     """
-    from utils.card_types import CARD_TYPE_UPDATE
+    from utils.hitl.card_types import CARD_TYPE_UPDATE
 
     _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
     in_progress_files = list(_watch_dir.glob("*.in_progress"))
@@ -1462,7 +1462,7 @@ def reconcile_stale_approved_cards(
     Setting resolved_at lets the next poll treat the entity as a fresh occurrence.
     Returns the number of rows resolved.
     """
-    from utils.hitl_tracker import mark_card_resolved, stable_nid
+    from utils.hitl.hitl_tracker import mark_card_resolved, stable_nid
 
     _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
     resolved = 0

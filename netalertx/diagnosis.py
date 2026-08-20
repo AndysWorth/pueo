@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 import config as _config
 from utils.core.context import estimate_tokens
-from utils.llm_trace import LLMTrace
+from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt

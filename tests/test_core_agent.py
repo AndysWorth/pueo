@@ -247,7 +247,7 @@ class TestLogMonitor:
         import asyncio as asyncio_mod
         from agents import ha_log_monitor
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         created_names: list[str] = []
 
@@ -284,7 +284,7 @@ class TestLogMonitor:
         import asyncio as asyncio_mod
         from agents import ha_log_monitor
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         created_names: list[str] = []
 
@@ -1767,10 +1767,10 @@ class TestSupervisorMain:
         from agents import ha_agent_advanced
         from agents import ha_log_monitor
         import uvicorn
-        import utils.resource as rm
+        import utils.disk.resource as rm
         import utils.ha.ssh_client as sc
         import netalertx.log_monitor as nax
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(config_path))
         importlib.reload(cfg_mod)
@@ -1799,7 +1799,7 @@ class TestSupervisorMain:
         monkeypatch.setattr(rm, "ResourcePoller", _FakePoller)
         monkeypatch.setattr(sc, "AsyncSSHClient", lambda *a, **kw: object())
 
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
 
         monkeypatch.setattr(notify_mod, "get_notifier", lambda *a, **kw: FakeNotifier())
 
@@ -3299,7 +3299,7 @@ class TestRunUpdateCheck:
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         fake = FakeHARestClient(
             states=[
@@ -3356,7 +3356,7 @@ class TestRunUpdateCheck:
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         fake_rest = FakeHARestClient(
             states=[
@@ -3394,7 +3394,7 @@ class TestRunUpdateCheck:
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         fake_rest = FakeHARestClient(
             states=[
@@ -3446,7 +3446,7 @@ class TestRunUpdateCheck:
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         fake = FakeHARestClient(
             states=[
@@ -3788,7 +3788,7 @@ class TestRunUpdateCheckWithAnalysis:
     def test_analysis_runs_for_core_update(self, tmp_path, capsys):
         from agents.ha_update_manager import UpdateReadinessReport, run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         # Pre-populate the cache so no WAN fetch is needed.
@@ -3836,7 +3836,7 @@ class TestRunUpdateCheckWithAnalysis:
     def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from unittest.mock import AsyncMock, patch
 
@@ -3864,7 +3864,7 @@ class TestRunUpdateCheckWithAnalysis:
         """A HITL approval card is dispatched when a Core update is detected."""
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -3891,7 +3891,7 @@ class TestRunUpdateCheckWithAnalysis:
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -3917,7 +3917,7 @@ class TestRunUpdateCheckWithAnalysis:
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -3957,7 +3957,7 @@ class TestRequestUpdateApproval:
     def test_core_update_uses_critical_risk(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -3973,7 +3973,7 @@ class TestRequestUpdateApproval:
     def test_os_update_uses_critical_risk(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -3986,7 +3986,7 @@ class TestRequestUpdateApproval:
     def test_supervisor_update_uses_high_risk(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -3998,7 +3998,7 @@ class TestRequestUpdateApproval:
     def test_addon_update_uses_medium_risk(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -4010,7 +4010,7 @@ class TestRequestUpdateApproval:
     def test_payload_includes_version_info(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -4027,7 +4027,7 @@ class TestRequestUpdateApproval:
             request_update_approval,
         )
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         report = UpdateReadinessReport(
             target_version="2026.7.0",
@@ -4053,7 +4053,7 @@ class TestRequestUpdateApproval:
     def test_payload_empty_lists_when_no_report(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -4067,7 +4067,7 @@ class TestRequestUpdateApproval:
     def test_disk_info_included_in_payload(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -4089,7 +4089,7 @@ class TestRequestUpdateApproval:
     def test_custom_notification_id_used(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -4108,7 +4108,7 @@ class TestRequestUpdateApproval:
         """Level-4 autonomy auto-executes MEDIUM-risk add-on updates."""
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import AutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=True)
@@ -4122,7 +4122,7 @@ class TestRequestUpdateApproval:
         """Level-4 autonomy must still ask for CRITICAL-risk core updates."""
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import AutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = AutonomyGate(level=4)
         notifier = FakeNotifier(approve=True)
@@ -4487,7 +4487,7 @@ class TestExecuteHaReboot:
 
     def test_sends_success_card_after_api_ready(self, tmp_path, monkeypatch):
         from agents.ha_update_manager import execute_ha_reboot
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
 
@@ -4537,7 +4537,7 @@ class TestExecuteHaReboot:
 
     def test_sends_failure_card_when_api_poll_times_out(self, tmp_path, monkeypatch):
         from agents.ha_update_manager import execute_ha_reboot
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
 
@@ -4585,7 +4585,7 @@ class TestExecuteHaReboot:
     def test_skips_api_poll_when_tcp_poll_fails(self, tmp_path, monkeypatch):
         """If TCP poll times out, _api_poll must not be called."""
         from agents.ha_update_manager import execute_ha_reboot
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
 
@@ -4802,7 +4802,7 @@ class TestSendPostUpdateCard:
 
     def test_sends_to_notifier_on_success(self):
         from agents.ha_update_manager import _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         asyncio.run(
@@ -4815,7 +4815,7 @@ class TestSendPostUpdateCard:
 
     def test_sends_to_notifier_on_failure(self):
         from agents.ha_update_manager import _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         asyncio.run(
@@ -4825,7 +4825,7 @@ class TestSendPostUpdateCard:
 
     def test_payload_contains_component_and_versions(self):
         from agents.ha_update_manager import _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         asyncio.run(
@@ -4841,7 +4841,7 @@ class TestSendPostUpdateCard:
 
     def test_payload_includes_config_check_output(self):
         from agents.ha_update_manager import _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         asyncio.run(
@@ -4871,7 +4871,7 @@ class TestExecuteCoreUpdate:
 
     def _make_gate_notifier(self, approve: bool = True):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeAutonomyGate(approval_result=approve), FakeNotifier(approve=approve)
 
@@ -5160,7 +5160,7 @@ class TestExecuteOsUpdate:
     def test_calls_backup_and_issues_os_update(self):
         from agents.ha_update_manager import execute_os_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5184,7 +5184,7 @@ class TestExecuteOsUpdate:
     def test_returns_false_on_timeout(self):
         from agents.ha_update_manager import execute_os_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5252,7 +5252,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5285,7 +5285,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5315,7 +5315,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5351,7 +5351,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5396,7 +5396,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5435,7 +5435,7 @@ class TestExecuteAddonUpdate:
         from agents.ha_update_manager import execute_addon_update
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5487,7 +5487,7 @@ class TestExecuteUpdate:
     def test_dispatches_core_to_execute_core_update(self):
         from agents.ha_update_manager import execute_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch, AsyncMock
 
@@ -5510,7 +5510,7 @@ class TestExecuteUpdate:
     def test_dispatches_os_to_execute_os_update(self):
         from agents.ha_update_manager import execute_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch
 
@@ -5533,7 +5533,7 @@ class TestExecuteUpdate:
     def test_dispatches_addon_to_execute_addon_update(self):
         from agents.ha_update_manager import execute_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch
 
@@ -5913,7 +5913,7 @@ class TestSendPostUpdateCardWithSelfCheck:
 
     def test_self_check_included_in_payload(self):
         from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         sc = PueoSelfCheckResult(
@@ -5936,7 +5936,7 @@ class TestSendPostUpdateCardWithSelfCheck:
 
     def test_self_check_absent_when_none(self):
         from agents.ha_update_manager import _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         asyncio.run(_send_post_update_card(self._make_update(), notifier, True, "", ""))
@@ -5944,7 +5944,7 @@ class TestSendPostUpdateCardWithSelfCheck:
 
     def test_command_risks_appear_in_body(self):
         from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         sc = PueoSelfCheckResult(
@@ -5965,7 +5965,7 @@ class TestSendPostUpdateCardWithSelfCheck:
 
     def test_degraded_status_in_body_when_command_fails(self):
         from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         sc = PueoSelfCheckResult(
@@ -6031,7 +6031,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from agents.ha_update_manager import execute_core_update, PueoSelfCheckResult
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
         gate = FakeAutonomyGate()
@@ -6068,7 +6068,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from agents.ha_update_manager import execute_core_update
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ssh = FakeSSHClient()
         gate = FakeAutonomyGate()
@@ -6098,7 +6098,7 @@ class TestExecuteCoreUpdateSelfCheck:
         from agents.ha_update_manager import execute_core_update
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
         gate = FakeAutonomyGate()
@@ -6730,7 +6730,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity(
             "update.home_assistant_core_update",
@@ -6754,7 +6754,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity("update.home_assistant_core_update")
         client = FakeHARestClient(states=[entity])
@@ -6781,7 +6781,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         states: list[dict] = [
             self._make_update_entity("update.home_assistant_core_update")
@@ -6816,7 +6816,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity(
             "update.home_assistant_core_update",
@@ -6851,7 +6851,7 @@ class TestPollForUpdates:
         from agents.ha_update_manager import UpdateReadinessReport
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         entity = self._make_update_entity(
@@ -6906,7 +6906,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity(
             "update.some_addon_update",
@@ -6939,7 +6939,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         # First run: update available → card sent, DB updated
         entity = self._make_update_entity(
@@ -6977,7 +6977,7 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity(
             "update.home_assistant_core_update", installed="2026.1.0", latest="2026.2.0"
@@ -7023,8 +7023,8 @@ class TestPollForUpdates:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
-        from utils.hitl_tracker import stable_nid
+        from utils.hitl.notify import FakeNotifier
+        from utils.hitl.hitl_tracker import stable_nid
 
         entity = self._make_update_entity(
             "update.home_assistant_core_update",
@@ -7097,7 +7097,7 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
@@ -7137,7 +7137,7 @@ class TestPollForNotifications:
         )
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         mark_notification_hitl_sent("http_login", db_path=db_path)
@@ -7158,7 +7158,7 @@ class TestPollForNotifications:
     def test_poll_failure_continues(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         class ExplodingWSClient:
             async def get_persistent_notifications(self) -> list:
@@ -7185,7 +7185,7 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
@@ -7216,7 +7216,7 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         class ExplodingLLM:
             async def chat(self, model, messages, options, format):
@@ -7245,7 +7245,7 @@ class TestPollForNotifications:
         import sqlite3
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
@@ -7280,7 +7280,7 @@ class TestPollForNotifications:
         from agents.ha_log_monitor import poll_for_notifications
         from agents.ha_notification_manager import mark_notification_hitl_sent
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         created_at_1 = "2024-08-01T10:00:00+00:00"
@@ -7358,7 +7358,7 @@ class TestPollForNotifications:
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         class FakeNetAlertXClient:
@@ -8078,7 +8078,7 @@ class TestRunNotifications:
     def test_sends_card_for_new_notification(self, db_path):
         from agents.ha_notification_manager import run_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ws = FakeHAWebSocketClient(
             notifications=[
@@ -8112,7 +8112,7 @@ class TestRunNotifications:
             run_notifications,
         )
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         mark_notification_hitl_sent("http_login", db_path=db_path)
@@ -8142,7 +8142,7 @@ class TestRunNotifications:
     def test_no_entities_returns_zero(self, db_path):
         from agents.ha_notification_manager import run_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ws = FakeHAWebSocketClient(notifications=[])
         notifier = FakeNotifier()
@@ -8158,7 +8158,7 @@ class TestRunNotifications:
 
     def test_poll_failure_returns_zero(self, db_path):
         from agents.ha_notification_manager import run_notifications
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         class FailingWSClient:
             async def get_device_registry(self):
@@ -8181,7 +8181,7 @@ class TestRunNotifications:
     def test_card_id_uses_notif_prefix(self, db_path):
         from agents.ha_notification_manager import run_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ws = FakeHAWebSocketClient(
             notifications=[
@@ -8210,7 +8210,7 @@ class TestRunNotifications:
         from agents import ha_notification_manager
         from agents.ha_notification_manager import run_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(
             socket, "gethostbyaddr", lambda ip: (_ for _ in ()).throw(socket.herror())
@@ -8453,7 +8453,7 @@ class TestToolRegistrySchemas:
 class TestToolExecutor:
     def _make_executor(self, ssh=None, gate=None, notifier=None):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
 
@@ -8610,7 +8610,7 @@ class TestToolExecutor:
         from utils.agent.tool_executor import ToolExecutor
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         executor = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -8752,7 +8752,7 @@ class TestToolExecutor:
 
     def test_query_netalertx_health_with_client(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8786,7 +8786,7 @@ class TestToolExecutor:
 
     def test_query_netalertx_devices(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8820,7 +8820,7 @@ class TestToolExecutor:
 
     def test_query_netalertx_events(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8853,7 +8853,7 @@ class TestToolExecutor:
 
     def test_query_netalertx_unknown_type(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8887,7 +8887,7 @@ class TestToolExecutor:
 
     def test_query_netalertx_api_exception(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8923,7 +8923,7 @@ class TestToolExecutor:
 
     def test_restart_netalertx_success(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8939,7 +8939,7 @@ class TestToolExecutor:
 
     def test_restart_netalertx_with_api_scan_trigger(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -8988,7 +8988,7 @@ class TestToolExecutor:
 
     def test_rewrite_netalertx_conf_success(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9023,7 +9023,7 @@ class TestToolExecutor:
 
     def test_rewrite_netalertx_conf_validation_blocks_bad_overrides(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9077,7 +9077,7 @@ class TestToolExecutor:
                 return iter([])
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.agent.tool_executor import ToolExecutor
 
         executor = ToolExecutor(
@@ -9139,7 +9139,7 @@ class TestToolExecutor:
 
     def test_restart_netalertx_scan_trigger_exception_is_swallowed(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9173,7 +9173,7 @@ class TestToolExecutor:
     def test_rewrite_netalertx_conf_missing_file_starts_fresh(self):
         """If app.conf doesn't exist, _rewrite_netalertx_conf starts from empty."""
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9199,7 +9199,7 @@ class TestToolExecutor:
 
     def test_rewrite_netalertx_conf_write_failure(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9240,7 +9240,7 @@ class TestToolExecutor:
         """An exception escaping a tool method is caught by execute()'s outer handler."""
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9285,7 +9285,7 @@ class TestToolExecutor:
     def test_query_knowledge_with_store_returns_results(self):
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9314,7 +9314,7 @@ class TestToolExecutor:
     def test_query_knowledge_integration_filter(self):
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9350,7 +9350,7 @@ class TestToolExecutor:
     def test_get_ha_profile_tool_returns_profile(self):
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_environment import HAEnvironmentProfile
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9376,7 +9376,7 @@ class TestToolExecutor:
 
     def test_get_ha_profile_tool_when_no_profile(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9397,7 +9397,7 @@ class TestToolExecutor:
     def test_apply_fix_hitl_queuing_returns_awaiting_approval(self):
         """When gate.queue_for_approval returns False, apply_fix returns awaiting_approval."""
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9433,7 +9433,7 @@ class TestToolExecutor:
     def test_apply_fix_hitl_queuing_sets_apply_fix_used_flag(self):
         """Queuing for HITL sets _apply_fix_used so double-queuing is blocked."""
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9464,7 +9464,7 @@ class TestToolExecutor:
     def test_fake_autonomy_gate_queue_for_approval_auto_execute(self):
         """FakeAutonomyGate.queue_for_approval returns True when auto_execute_result=True."""
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         notifier = FakeNotifier()
@@ -9483,7 +9483,7 @@ class TestToolExecutor:
     def test_fake_autonomy_gate_queue_for_approval_sends_notification(self):
         """FakeAutonomyGate.queue_for_approval sends notification and returns False when not auto."""
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False)
         notifier = FakeNotifier()
@@ -9502,7 +9502,7 @@ class TestToolExecutor:
     def test_query_knowledge_with_store_no_results(self):
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolCall
@@ -9532,7 +9532,7 @@ class TestAgentLoop:
     def _make_loop(self, call_sequence, ssh=None, gate=None, notifier=None):
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -9673,7 +9673,7 @@ class TestAgentLoop:
         # list, so we use a custom client that snapshots messages at call time.
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolRegistry, ToolDefinition
@@ -9742,7 +9742,7 @@ class TestAgentLoop:
         # immediate terminal exit.
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolRegistry, ToolDefinition
@@ -9953,7 +9953,7 @@ class TestAgentLoop:
         # When calls_remaining <= 2, the nudge mandates calling the terminal tool.
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolRegistry, ToolDefinition
@@ -10051,7 +10051,7 @@ class TestAgentLoop:
         """AgentLoop.run() must reset the executor so apply_fix cap resets."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -10102,7 +10102,7 @@ class TestAgentLoop:
         """AgentLoop exits with 'awaiting_approval' when a tool returns awaiting_approval=True."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -10154,7 +10154,7 @@ class TestAgentLoop:
         """A 'Continue' user message is injected into history after each tool result."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -10223,7 +10223,7 @@ class TestAgentLoop:
         """When content fallback fires, the assistant message stored in history has content=''."""
         from utils.agent.agent_loop import AgentLoop
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -10302,7 +10302,7 @@ class TestAgentLoop:
 
         from utils.agent.agent_loop import AgentLoop, LimitReviewDecision
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolDefinition, ToolRegistry
@@ -10410,7 +10410,7 @@ class TestAgentLoop:
         """AGENT_MAX_TOTAL_CALLS caps the total even when LLM keeps requesting more."""
         from utils.agent.agent_loop import AgentLoop, LimitReviewDecision
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
         from utils.agent.tool_registry import ToolDefinition, ToolRegistry
@@ -11264,7 +11264,7 @@ class TestUpdatePriority:
         import json
 
         from agents.ha_update_manager import _pending_higher_priority_components
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         card = tmp_path / "abc.json"
         card.write_text(
@@ -11277,7 +11277,7 @@ class TestUpdatePriority:
         import json
 
         from agents.ha_update_manager import _pending_higher_priority_components
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         card = tmp_path / "abc.json"
         card.write_text(
@@ -11306,7 +11306,7 @@ class TestExecuteUpdatePreflight:
     def test_blocked_when_reboot_required_active(self):
         from agents.ha_update_manager import execute_update
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from unittest.mock import patch
 
@@ -11342,7 +11342,7 @@ class TestNotificationPollBackoff:
         """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         sleep_calls: list[float] = []
         iteration = [0]
@@ -11387,7 +11387,7 @@ class TestNotificationPollBackoff:
         """After the third failure the backoff stays at 120 — it does not grow beyond that."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         sleep_calls: list[float] = []
         iteration = [0]
@@ -11437,7 +11437,7 @@ class TestRepairPollBackoff:
         """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_repairs
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         sleep_calls: list[float] = []
         iteration = [0]
@@ -11479,7 +11479,7 @@ class TestRepairPollBackoff:
         """Backoff does not grow beyond 120 seconds on sustained failures."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_repairs
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         sleep_calls: list[float] = []
         iteration = [0]
@@ -11532,7 +11532,7 @@ class TestRepairCardClassification:
         """Run exactly one poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         notifier = FakeNotifier()
@@ -11776,7 +11776,7 @@ class TestRepairIssueAnalysis:
         import asyncio as asyncio_mod
         from agents import ha_agent_advanced
         from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = str(tmp_path / "test.db")
@@ -11893,7 +11893,7 @@ class TestUpdatePreflightLogic:
     def db_path(self, monkeypatch, tmp_path):
         from agents import ha_agent_advanced
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -11904,7 +11904,7 @@ class TestUpdatePreflightLogic:
         return path
 
     def _good_disk(self):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=5.0,
@@ -11918,7 +11918,7 @@ class TestUpdatePreflightLogic:
         )
 
     def _low_disk(self):
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=1.8,
@@ -11934,7 +11934,7 @@ class TestUpdatePreflightLogic:
     def test_disk_ok_supervisor_current(self, db_path, monkeypatch):
         """Disk is fine and Supervisor is current — no problems, no enforcement."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import run_update_preflight
         from utils.ha.ha_rest_client import FakeHARestClient
 
@@ -11953,7 +11953,7 @@ class TestUpdatePreflightLogic:
         """Disk low, no eligible slugs — enforcement is no-op, problem reported."""
         from agents import ha_agent_advanced
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import run_update_preflight
         from utils.ha.ha_rest_client import FakeHARestClient
 
@@ -11984,7 +11984,7 @@ class TestUpdatePreflightLogic:
     def test_supervisor_update_available_via_rest(self, db_path, monkeypatch):
         """REST shows a Supervisor update available — supervisor_status='update_available'."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import run_update_preflight
         from utils.ha.ha_rest_client import FakeHARestClient
 
@@ -12014,10 +12014,10 @@ class TestUpdatePreflightLogic:
     ):
         """request_update_approval() for Core calls preflight and card body has component info."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import request_update_approval
         from utils.ha.ha_rest_client import FakeHARestClient, UpdateStatus
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -12060,10 +12060,10 @@ class TestUpdatePreflightLogic:
         """When backups are purged during preflight, card body includes the freed-space note."""
         from agents import ha_agent_advanced
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import request_update_approval
         from utils.ha.ha_rest_client import FakeHARestClient, UpdateStatus
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -12255,7 +12255,7 @@ class TestExternalUpdateResolution:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl_tracker import stable_nid
+        from utils.hitl.hitl_tracker import stable_nid
 
         suppression_key = "update:update.matter_server_update"
         nid = stable_nid(suppression_key)
@@ -12331,7 +12331,7 @@ class TestExternalUpdateResolution:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         suppression_key = "update:update.matter_server_update"
         self._insert_pending_card(suppression_key)
@@ -12431,7 +12431,7 @@ class TestExternalUpdateResolution:
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl_tracker import stable_nid
+        from utils.hitl.hitl_tracker import stable_nid
 
         suppression_key = "update:update.matter_server_update"
         nid = stable_nid(suppression_key)
@@ -12556,7 +12556,7 @@ class TestResourceClearanceTimeline:
 
     @staticmethod
     def _good_status():
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         return ResourceStatus(
             disk_free_gb=5.0,
@@ -12571,8 +12571,8 @@ class TestResourceClearanceTimeline:
 
     def test_disk_critical_clears_writes_timeline_event(self, db_path, monkeypatch):
         """When disk_critical clears, a timeline INFO event is written."""
-        from utils.notify import FakeNotifier
-        from utils.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
 
         timeline_calls: list[dict] = []
 
@@ -12609,8 +12609,8 @@ class TestResourceClearanceTimeline:
 
     def test_disk_warn_clears_writes_timeline_event(self, db_path, monkeypatch):
         """When disk_warn clears, a timeline INFO event is written."""
-        from utils.notify import FakeNotifier
-        from utils.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
 
         timeline_calls: list[dict] = []
 
@@ -12653,7 +12653,7 @@ class TestReconcileInProgressUpdates:
     def _make_card_json(
         self, latest_version: str, installed_version: str = "2026.8.1"
     ) -> dict:
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         return {
             "payload": {
@@ -12675,7 +12675,7 @@ class TestReconcileInProgressUpdates:
     def test_version_matched_sends_success_card_and_deletes_marker(self, tmp_path):
         """When current version matches latest_version, sends a success result card."""
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         stem = "abc123"
         json_path = tmp_path / f"{stem}.json"
@@ -12701,7 +12701,7 @@ class TestReconcileInProgressUpdates:
     def test_version_mismatch_sends_unknown_card_and_deletes_marker(self, tmp_path):
         """When current version does not match, sends an 'outcome unknown' card."""
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         stem = "def456"
         json_path = tmp_path / f"{stem}.json"
@@ -12726,7 +12726,7 @@ class TestReconcileInProgressUpdates:
     def test_ssh_failure_leaves_marker_in_place(self, tmp_path):
         """If SSH fails, the marker is left for retry on next startup."""
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         stem = "ghi789"
         json_path = tmp_path / f"{stem}.json"
@@ -12750,7 +12750,7 @@ class TestReconcileInProgressUpdates:
     def test_non_update_card_skipped(self, tmp_path):
         """Cards with a different card_type are ignored."""
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         stem = "skip001"
         json_path = tmp_path / f"{stem}.json"
@@ -12773,7 +12773,7 @@ class TestReconcileInProgressUpdates:
     def test_no_in_progress_files_is_noop(self, tmp_path):
         """Empty watch dir returns without making any SSH calls."""
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         ssh = FakeSSHClient()
         notifier = FakeNotifier()
@@ -12817,7 +12817,7 @@ class TestPollCoreVersionDiskMonitoring:
 
                 return json.dumps({"data": {"version": v, "update_available": True}})
 
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         critical_status = ResourceStatus(
             disk_free_gb=0.5,
@@ -12861,7 +12861,7 @@ class TestPollCoreVersionDiskMonitoring:
     def test_disk_check_does_not_abort_poll(self):
         """Disk critical does not cause the poll to stop — update may still succeed."""
         from agents.ha_update_manager import _poll_core_version
-        from utils.resource import ResourceStatus
+        from utils.disk.resource import ResourceStatus
 
         target = "2026.8.2"
         call_count = [0]
@@ -12913,7 +12913,7 @@ class TestDiskExhaustionWarningInCard:
     def db_path(self, monkeypatch, tmp_path):
         from agents import ha_agent_advanced
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -12927,10 +12927,10 @@ class TestDiskExhaustionWarningInCard:
     ):
         """When preflight.disk_ok is False, disk_exhaustion_risk=True in payload."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import request_update_approval
         from utils.ha.ha_rest_client import FakeHARestClient, UpdateStatus
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -13002,10 +13002,10 @@ class TestDiskExhaustionWarningInCard:
     ):
         """When preflight.disk_ok is True, disk_exhaustion_risk=False in payload."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import request_update_approval
         from utils.ha.ha_rest_client import FakeHARestClient, UpdateStatus
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -13057,10 +13057,10 @@ class TestDiskExhaustionWarningInCard:
     ):
         """Card body explains the ~2-3 GB Supervisor image download risk."""
         from agents import ha_update_manager
-        import utils.resource as _res
+        import utils.disk.resource as _res
         from agents.ha_update_manager import request_update_approval
         from utils.ha.ha_rest_client import FakeHARestClient, UpdateStatus
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         monkeypatch.setattr(ha_update_manager, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -13196,7 +13196,7 @@ class TestReconcileStaleApprovedCards:
         import sqlite3
 
         from agents.ha_update_manager import reconcile_stale_approved_cards
-        from utils.hitl_tracker import stable_nid
+        from utils.hitl.hitl_tracker import stable_nid
 
         card_key = "update:update.noaa_it_all_update"
         nid = stable_nid(card_key)
@@ -13229,7 +13229,7 @@ class TestReconcileStaleApprovedCards:
         import sqlite3
 
         from agents.ha_update_manager import reconcile_stale_approved_cards
-        from utils.hitl_tracker import stable_nid
+        from utils.hitl.hitl_tracker import stable_nid
 
         card_key = "update:update.home_assistant_os_update"
         nid = stable_nid(card_key)

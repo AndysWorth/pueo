@@ -44,7 +44,7 @@ check_disk_space = check_target_disk_space
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.docker_installer")
 
@@ -794,7 +794,7 @@ async def main(
         NOTIFY_WATCH_DIR,
     )
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     _docker_host = NETALERTX_DOCKER_HOST

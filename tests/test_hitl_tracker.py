@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from utils.hitl_tracker import (
+from utils.hitl.hitl_tracker import (
     check_reminders_due,
     get_known_issues,
     get_rejection_count,

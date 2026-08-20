@@ -32,7 +32,7 @@ from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("ha_notification_manager")
 
@@ -535,7 +535,7 @@ async def run_notifications(
     from netalertx.api_client import NetAlertXAPIClient
     from utils.ha.ha_rest_client import HARestClient
     from utils.ha.ha_ws_client import HAWebSocketClient
-    from utils.notify import FileNotifier
+    from utils.hitl.notify import FileNotifier
 
     rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover
         HA_HOST, HA_API_PORT, HA_API_TOKEN

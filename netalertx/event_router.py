@@ -21,11 +21,11 @@ from typing import TYPE_CHECKING, Any, Union
 from pydantic import BaseModel
 
 from utils.agent.autonomy import RiskLevel
-from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.event_router")
 

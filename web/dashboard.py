@@ -28,7 +28,7 @@ from config import (
     NOTIFY_WATCH_DIR,
 )
 from utils.core.logging import get_logger
-from utils.card_types import (
+from utils.hitl.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
     CARD_TYPE_DASHBOARD_ENTITY,
@@ -373,7 +373,7 @@ def _load_last_backup() -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
-    from utils.resource import get_resource_status
+    from utils.disk.resource import get_resource_status
     from utils.agent.supervisor import get_supervisor_instance
     from utils.core.timeline import load_timeline_events
 
@@ -474,7 +474,7 @@ async def _execute_queued_update(
     from agents.ha_update_manager import execute_update
     from utils.agent.autonomy import AutonomyGate
     from utils.ha.ha_rest_client import HARestClient, UpdateStatus
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     try:
@@ -578,7 +578,7 @@ async def _execute_queued_ha_repair(
     """Handle an approved HA repair card — reboot or dismiss."""
     import config as _config
     from utils.ha.ha_rest_client import HARestClient, dismiss_ha_repair_issue
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     try:
@@ -659,7 +659,7 @@ async def _execute_netalertx_heal(
     from netalertx.api_client import NetAlertXAPIClient
     from netalertx.healer import NetAlertXHealer
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
@@ -737,7 +737,7 @@ async def _execute_resource_action(
         offload_backup_to_local,
         purge_local_backups,
     )
-    from utils.resource import get_resource_status
+    from utils.disk.resource import get_resource_status
     from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
@@ -825,11 +825,11 @@ async def _execute_disk_recovery(
         offload_backup_to_local,
         purge_local_backups,
     )
-    from utils.disk_recovery import (
+    from utils.disk.disk_recovery import (
         audit_supervisor_tmp,
         purge_recorder,
     )
-    from utils.resource import get_resource_status
+    from utils.disk.resource import get_resource_status
     from utils.ha.ssh_client import AsyncSSHClient
 
     (watch_dir / f"{nid}.in_progress").touch()
@@ -1026,7 +1026,7 @@ async def _execute_cloud_escalation(
     from utils.repair.billing import BillingCapError
     from utils.agent.autonomy import AutonomyGate
     from utils.repair.cloud_escalation import run_cloud_escalation
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.agent.tool_registry import build_ha_tool_registry
     from config import AUTONOMY_LEVEL, NOTIFIER, NOTIFY_URL
@@ -1239,7 +1239,7 @@ async def _execute_netalertx_migrate(
         if sv is not None:
             import netalertx.uninstaller as _uninstaller
             from utils.agent.autonomy import AutonomyGate
-            from utils.notify import get_notifier
+            from utils.hitl.notify import get_notifier
 
             _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
             _notifier = get_notifier(
@@ -1285,7 +1285,7 @@ async def _execute_netalertx_switch(
         if sv is not None:
             import netalertx.switch as _switch
             from utils.agent.autonomy import AutonomyGate
-            from utils.notify import get_notifier
+            from utils.hitl.notify import get_notifier
 
             _gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
             _notifier = get_notifier(
@@ -1415,7 +1415,7 @@ async def approve(nid: str) -> RedirectResponse:
             )
             suppression_key = payload.get("suppression_key", "")
             if suppression_key:
-                from utils.hitl_tracker import mark_card_approved as _mark_approved
+                from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
                 with sqlite3.connect(DB_PATH) as conn:
                     _mark_approved(conn, suppression_key)
@@ -1443,7 +1443,7 @@ async def approve(nid: str) -> RedirectResponse:
 
         suppression_key = payload.get("suppression_key", "")
         if suppression_key:
-            from utils.hitl_tracker import mark_card_approved as _mark_approved
+            from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
             with sqlite3.connect(DB_PATH) as conn:
                 _mark_approved(conn, suppression_key)
@@ -1526,7 +1526,7 @@ async def repair_inject(body: RepairInjectRequest) -> JSONResponse:
 @app.post("/reject/{nid}")
 async def reject(nid: str) -> RedirectResponse:
     from config import REJECTION_COOLDOWN_HOURS
-    from utils.hitl_tracker import mark_card_rejected
+    from utils.hitl.hitl_tracker import mark_card_rejected
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
@@ -1542,7 +1542,7 @@ async def reject(nid: str) -> RedirectResponse:
 
 @app.post("/defer/{nid}")
 async def defer(nid: str) -> RedirectResponse:
-    from utils.hitl_tracker import mark_card_deferred
+    from utils.hitl.hitl_tracker import mark_card_deferred
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
@@ -1561,7 +1561,7 @@ async def defer(nid: str) -> RedirectResponse:
 @app.post("/suppress/{nid}")
 async def suppress(nid: str) -> RedirectResponse:
     """Mark a card as a Known Issue — suppress until the condition resolves."""
-    from utils.hitl_tracker import mark_card_acknowledged
+    from utils.hitl.hitl_tracker import mark_card_acknowledged
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
@@ -1579,7 +1579,7 @@ async def suppress(nid: str) -> RedirectResponse:
 @app.get("/known-issues")
 async def known_issues() -> JSONResponse:
     """Return all active Known Issues as JSON."""
-    from utils.hitl_tracker import get_known_issues
+    from utils.hitl.hitl_tracker import get_known_issues
 
     with sqlite3.connect(DB_PATH) as conn:
         issues = get_known_issues(conn)
@@ -1589,7 +1589,7 @@ async def known_issues() -> JSONResponse:
 @app.post("/known-issues/resolve/{card_key:path}")
 async def resolve_known_issue(card_key: str) -> RedirectResponse:
     """Clear a Known Issue; next occurrence will start fresh."""
-    from utils.hitl_tracker import mark_card_resolved
+    from utils.hitl.hitl_tracker import mark_card_resolved
 
     with sqlite3.connect(DB_PATH) as conn:
         mark_card_resolved(conn, card_key)
@@ -1770,9 +1770,9 @@ async def sync_backup_inventory() -> JSONResponse:
 async def disk_tab(request: Request) -> HTMLResponse:
     import time as _time
 
-    import utils.disk_usage as _du
+    import utils.disk.disk_usage as _du
     from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB, PUEO_LOCAL_MAX_GB
-    from utils.pueo_storage import measure_pueo_footprint
+    from utils.disk.pueo_storage import measure_pueo_footprint
 
     breakdown = _du.get_disk_breakdown()
     age_seconds = None
@@ -1806,9 +1806,9 @@ async def disk_tab(request: Request) -> HTMLResponse:
 async def disk_queue_orphan_cleanup() -> JSONResponse:
     """Queue an approval card to clean up orphaned add-on data directories."""
     import config as _config
-    from utils.card_types import CARD_TYPE_DISK_RECOVERY
-    from utils.disk_recovery import scan_orphaned_addon_dirs
-    from utils.notify import get_notifier
+    from utils.hitl.card_types import CARD_TYPE_DISK_RECOVERY
+    from utils.disk.disk_recovery import scan_orphaned_addon_dirs
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
@@ -1865,7 +1865,7 @@ async def disk_queue_orphan_cleanup() -> JSONResponse:
 
 @app.post("/disk/refresh")
 async def disk_refresh() -> JSONResponse:
-    import utils.disk_usage as _du
+    import utils.disk.disk_usage as _du
     from utils.ha.ssh_client import AsyncSSHClient
 
     import config as _config
@@ -2043,12 +2043,12 @@ def _build_settings_groups() -> list[dict]:
 async def settings_tab(request: Request) -> HTMLResponse:
     import asyncio as _asyncio
     import config as _config
-    from utils.hardware import (
+    from utils.disk.hardware import (
         detect_local_hardware,
         list_ollama_models,
         recommend_model,
     )
-    from utils.service import service_status
+    from utils.system.service import service_status
 
     profile = await _asyncio.to_thread(detect_local_hardware)
     available = await _asyncio.to_thread(list_ollama_models)
@@ -2151,7 +2151,7 @@ async def model_status() -> JSONResponse:
     """Return current model, hardware profile, available models, and recommendation."""
     import asyncio as _asyncio
     import config as _config
-    from utils.hardware import (
+    from utils.disk.hardware import (
         detect_local_hardware,
         list_ollama_models,
         recommend_model,
@@ -2188,7 +2188,7 @@ async def model_switch(request: Request) -> JSONResponse:
     """Switch the active Ollama model. POST body: {model_name?: str}."""
     import asyncio as _asyncio
     import config as _config
-    from utils.hardware import (
+    from utils.disk.hardware import (
         apply_model_selection,
         detect_local_hardware,
         list_ollama_models,
@@ -2232,7 +2232,7 @@ async def model_refresh_cache() -> JSONResponse:
     """Re-query Ollama and update the model cache in SQLite."""
     import asyncio as _asyncio
     from agents.ha_agent_advanced import store_model_cache
-    from utils.hardware import list_ollama_models
+    from utils.disk.hardware import list_ollama_models
 
     models = await _asyncio.to_thread(list_ollama_models)
     store_model_cache(
@@ -2300,14 +2300,14 @@ async def loop_run_now(loop_name: str) -> JSONResponse:
 
 @app.get("/service/status")
 async def service_status_endpoint() -> JSONResponse:
-    from utils.service import service_status
+    from utils.system.service import service_status
 
     return JSONResponse(service_status())
 
 
 @app.post("/service/install")
 async def service_install() -> JSONResponse:
-    from utils.service import install_service
+    from utils.system.service import install_service
 
     try:
         install_service()
@@ -2318,7 +2318,7 @@ async def service_install() -> JSONResponse:
 
 @app.post("/service/restart")
 async def service_restart_endpoint() -> JSONResponse:
-    from utils.service import restart_service
+    from utils.system.service import restart_service
 
     try:
         restart_service()
@@ -2329,7 +2329,7 @@ async def service_restart_endpoint() -> JSONResponse:
 
 @app.post("/service/uninstall")
 async def service_uninstall() -> JSONResponse:
-    from utils.service import uninstall_service
+    from utils.system.service import uninstall_service
 
     try:
         uninstall_service()
@@ -2340,7 +2340,7 @@ async def service_uninstall() -> JSONResponse:
 
 @app.post("/service/stop")
 async def service_stop() -> JSONResponse:
-    from utils.service import stop_service
+    from utils.system.service import stop_service
 
     try:
         stop_service()
@@ -2351,7 +2351,7 @@ async def service_stop() -> JSONResponse:
 
 @app.post("/service/start")
 async def service_start() -> JSONResponse:
-    from utils.service import start_service
+    from utils.system.service import start_service
 
     try:
         start_service()
@@ -2369,7 +2369,7 @@ _PUEO_DIR = Path(__file__).parent.parent
 
 @app.get("/control", response_class=HTMLResponse)
 async def control_tab(request: Request) -> HTMLResponse:
-    from utils.service import PLIST_TARGET, service_status
+    from utils.system.service import PLIST_TARGET, service_status
 
     svc = service_status()
     svc["plist_exists"] = PLIST_TARGET.exists()
@@ -2646,7 +2646,7 @@ async def _run_chat_loop(
     )
     from utils.agent.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.llm.llm_factory import make_llm_client
     from utils.agent.supervisor import get_supervisor_instance, publish_chat_event
     from utils.agent.tool_executor import ToolExecutor
@@ -2887,7 +2887,7 @@ async def submit_episode_to_case_library(
 
     Returns JSON with 'pr_url' on success or 'error' on failure.
     """
-    from utils.case_submitter import CaseSubmitError, submit_episode
+    from utils.cases.case_submitter import CaseSubmitError, submit_episode
     from utils.repair.repair_episode import (
         export_single_episode_yaml,
         load_episode,

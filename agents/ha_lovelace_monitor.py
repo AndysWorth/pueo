@@ -12,7 +12,7 @@ from interfaces import (
     LLMClientProtocol,
 )
 from utils.core.logging import get_logger
-from utils.notify import NotifierProtocol
+from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("ha_lovelace_monitor")
 
@@ -221,15 +221,15 @@ async def poll_for_dashboard_entity_issues(
 ) -> None:
     """Polling loop — checks all Lovelace dashboards for missing entity references."""
     import config as _cfg
-    from utils.card_types import CARD_TYPE_DASHBOARD_ENTITY
+    from utils.hitl.card_types import CARD_TYPE_DASHBOARD_ENTITY
     from utils.ha.ha_ws_client import HAWebSocketClient
-    from utils.hitl_tracker import (
+    from utils.hitl.hitl_tracker import (
         mark_card_resolved,
         mark_card_sent,
         should_send_card,
         stable_nid,
     )
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
 
     _db_path: str = db_path or _cfg.DB_PATH
     _interval: int = (

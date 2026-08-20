@@ -135,7 +135,7 @@ def mark_episode_submitted(db_path: str, episode_id: str, pr_url: str) -> None:
 
 def export_single_episode_yaml(episode: RepairEpisode, description: str = "") -> str:
     """Anonymize and serialize one episode to YAML, with an optional description header."""
-    from utils.anonymizer import Anonymizer
+    from utils.cases.anonymizer import Anonymizer
 
     anon = Anonymizer()
     summaries = episode.tool_result_summaries or [""] * len(episode.tool_sequence)
@@ -211,7 +211,7 @@ def export_episodes_yaml(
     Each episode gets its own Anonymizer instance so placeholder numbering
     is consistent within the episode but independent across episodes.
     """
-    from utils.anonymizer import Anonymizer
+    from utils.cases.anonymizer import Anonymizer
 
     records: list[dict[str, Any]] = []
     for ep in episodes:
