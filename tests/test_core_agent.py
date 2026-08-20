@@ -502,7 +502,7 @@ class TestAdvancedDB:
 
     def test_record_state_memory_stores_correlation_id(self, db_path):
         from agents import ha_agent_advanced
-        from utils.logging import set_correlation_id
+        from utils.core.logging import set_correlation_id
 
         set_correlation_id("test-cid-adv")
         ha_agent_advanced.init_local_database()
@@ -1433,7 +1433,7 @@ class TestSandboxDB:
 
     def test_record_state_memory_stores_correlation_id(self, db_path):
         from agents import ha_agent_sandbox_engine
-        from utils.logging import set_correlation_id
+        from utils.core.logging import set_correlation_id
 
         set_correlation_id("test-cid-sbx")
         ha_agent_sandbox_engine.init_local_database()
@@ -2183,25 +2183,25 @@ class TestCheckHaVersion:
 
 class TestLoadPrompt:
     def test_loads_known_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("diagnose_config")
         assert "Home Assistant" in text
 
     def test_loads_repair_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("diagnose_config_repair")
         assert len(text) > 20
 
     def test_loads_triage_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("triage_log")
         assert "log" in text.lower()
 
     def test_kwargs_substitution(self, tmp_path, monkeypatch):
-        from utils import prompts
+        from utils.core import prompts
 
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -2215,7 +2215,7 @@ class TestLoadPrompt:
         assert result == "Hello Alice, you have 3 items."
 
     def test_no_kwargs_returns_raw_text(self, tmp_path, monkeypatch):
-        from utils import prompts
+        from utils.core import prompts
 
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
@@ -2227,39 +2227,39 @@ class TestLoadPrompt:
         assert "{placeholders}" in result
 
     def test_missing_prompt_raises(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         with pytest.raises(FileNotFoundError):
             load_prompt("nonexistent_prompt_xyz")
 
     def test_loads_agent_loop_ha_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("agent_loop_ha")
         assert "hypothesis" in text.lower()
         assert "finish_repair" in text
 
     def test_loads_agent_loop_chat_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("agent_loop_chat")
         assert "finish_chat" in text
         assert "recall" in text.lower()
 
     def test_loads_analyze_notification_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("analyze_notification")
         assert "Home Assistant" in text
 
     def test_loads_analyze_breaking_changes_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("analyze_breaking_changes")
         assert "breaking" in text.lower()
 
     def test_loads_selfcheck_command_risk_prompt(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("selfcheck_command_risk")
         assert "command" in text.lower()
@@ -10642,10 +10642,10 @@ class TestLoopCrashTimeline:
 
     def test_crash_writes_loop_crash_timeline_event(self, tmp_path):
         import sqlite3 as _sq
-        import utils.timeline
+        import utils.core.timeline
         from utils.supervisor import LoopSupervisor
 
-        # The _patch_timeline_db autouse fixture already redirected utils.timeline.DB_PATH
+        # The _patch_timeline_db autouse fixture already redirected utils.core.timeline.DB_PATH
         # to a per-test temp DB with the timeline_events table.
         call_count = 0
 
@@ -10667,7 +10667,7 @@ class TestLoopCrashTimeline:
         asyncio.run(_run())
 
         rows = (
-            _sq.connect(utils.timeline.DB_PATH)
+            _sq.connect(utils.core.timeline.DB_PATH)
             .execute(
                 "SELECT level, source, message, detail_json FROM timeline_events"
                 " WHERE source = 'loop_crash'"
@@ -12214,7 +12214,9 @@ class TestExternalUpdateResolution:
                 {"level": level, "source": source, "message": message, "detail": detail}
             )
 
-        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", fake_write_timeline
+        )
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
@@ -12259,7 +12261,7 @@ class TestExternalUpdateResolution:
 
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
-            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
@@ -12286,7 +12288,7 @@ class TestExternalUpdateResolution:
 
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
-            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
 
         entity = {
@@ -12328,7 +12330,7 @@ class TestExternalUpdateResolution:
 
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
-            "utils.timeline.write_timeline_event", lambda *a, **kw: None
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
 
         # FakeHARestClient(states=[]) creates a fresh self._states=[] list that is
@@ -12445,7 +12447,9 @@ class TestExternalUpdateResolution:
                 }
             )
 
-        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", fake_write_timeline
+        )
         monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
@@ -12497,7 +12501,9 @@ class TestRepairReconcileTimeline:
                 {"level": level, "source": source, "message": message}
             )
 
-        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", fake_write_timeline
+        )
 
         class EmptyRepairWS:
             async def get_repair_issues(self):
@@ -12567,7 +12573,9 @@ class TestResourceClearanceTimeline:
                 {"level": level, "source": source, "message": message}
             )
 
-        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", fake_write_timeline
+        )
 
         poller = ResourcePoller(
             ssh_client=FakeSSHClient(),
@@ -12603,7 +12611,9 @@ class TestResourceClearanceTimeline:
                 {"level": level, "source": source, "message": message}
             )
 
-        monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", fake_write_timeline
+        )
 
         poller = ResourcePoller(
             ssh_client=FakeSSHClient(),
@@ -13287,7 +13297,7 @@ class TestCodeProposalPromptFile:
     """Confirms prompts/code_proposal.md loads without error."""
 
     def test_prompt_loads_without_error(self):
-        from utils.prompts import load_prompt
+        from utils.core.prompts import load_prompt
 
         text = load_prompt("code_proposal")
         assert "capability-gap" in text

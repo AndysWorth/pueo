@@ -27,7 +27,7 @@ from config import (
     FEDERATED_CASES_REPO,
     NOTIFY_WATCH_DIR,
 )
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
@@ -375,7 +375,7 @@ def _load_last_backup() -> dict:
 async def overview(request: Request) -> HTMLResponse:
     from utils.resource import get_resource_status
     from utils.supervisor import get_supervisor_instance
-    from utils.timeline import load_timeline_events
+    from utils.core.timeline import load_timeline_events
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -507,7 +507,7 @@ async def _execute_queued_update(
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.approved").touch()
             try:
-                from utils.timeline import write_timeline_event
+                from utils.core.timeline import write_timeline_event
 
                 write_timeline_event(
                     "INFO",
@@ -524,7 +524,7 @@ async def _execute_queued_update(
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
             try:
-                from utils.timeline import write_timeline_event
+                from utils.core.timeline import write_timeline_event
 
                 write_timeline_event(
                     "ERROR",
@@ -539,7 +539,7 @@ async def _execute_queued_update(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "ERROR",
@@ -693,7 +693,7 @@ async def _execute_netalertx_heal(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "INFO",
@@ -708,7 +708,7 @@ async def _execute_netalertx_heal(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "ERROR",
@@ -761,7 +761,7 @@ async def _execute_resource_action(
                     fail_count += 1
             if fail_count:
                 try:
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "WARN",
@@ -783,7 +783,7 @@ async def _execute_resource_action(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "INFO",
@@ -798,7 +798,7 @@ async def _execute_resource_action(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "ERROR",
@@ -910,7 +910,7 @@ async def _execute_disk_recovery(
                 f"cleanup_orphaned_addon_dirs: removed {len(deleted_paths)} path(s)"
             )
             try:
-                from utils.timeline import write_timeline_event as _write_ev
+                from utils.core.timeline import write_timeline_event as _write_ev
 
                 _write_ev(
                     "INFO",
@@ -925,7 +925,7 @@ async def _execute_disk_recovery(
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
                 "INFO",
@@ -1037,7 +1037,7 @@ async def _execute_cloud_escalation(
 
     async def _on_timeline(tool_name: str, status_line: str) -> None:
         try:
-            from utils.timeline import write_timeline_event
+            from utils.core.timeline import write_timeline_event
             from utils.supervisor import publish_event
 
             write_timeline_event("INFO", "agent_loop", status_line)
@@ -1979,7 +1979,7 @@ async def timeline(
     level: str = Query(default=""),
     source: str = Query(default=""),
 ) -> HTMLResponse:
-    from utils.timeline import count_timeline_events, load_timeline_events
+    from utils.core.timeline import count_timeline_events, load_timeline_events
     from config import TIMELINE_PAGE_SIZE
 
     offset = (page - 1) * TIMELINE_PAGE_SIZE
@@ -2008,7 +2008,7 @@ async def timeline(
 @app.get("/timeline/{event_id}", response_class=HTMLResponse)
 async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
     from fastapi.responses import Response as _Response
-    from utils.timeline import get_timeline_event
+    from utils.core.timeline import get_timeline_event
 
     event = get_timeline_event(event_id)
     if event is None:
@@ -2464,7 +2464,7 @@ async def delete_chat_session(session_id: int) -> JSONResponse:
 @app.get("/chat/sessions/{session_id}/debug-log")
 async def chat_debug_log(session_id: int) -> Response:
     """Download a plain-text reconstruction of a chat session for debugging."""
-    from utils.prompts import load_prompt
+    from utils.core.prompts import load_prompt
 
     try:
         system_prompt = load_prompt("agent_loop_chat")

@@ -26,7 +26,7 @@ from utils.archiver import (
     archive_journal_dump,
     enforce_archive_retention,
 )
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 log = get_logger("disk_recovery")
 

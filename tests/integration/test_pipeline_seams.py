@@ -46,7 +46,7 @@ class TestLogMonitorActionablePath:
     def _patch_module_globals(self, monkeypatch):
         """Reset module-level globals so tests don't bleed into each other."""
         from agents import ha_log_monitor
-        from utils.rate_limiter import Debouncer, RateLimiter
+        from utils.core.rate_limiter import Debouncer, RateLimiter
 
         monkeypatch.setattr(ha_log_monitor, "SELF_HEALING_ENABLED", True)
         monkeypatch.setattr(ha_log_monitor, "CONFIDENCE_THRESHOLD", 0.7)
@@ -150,7 +150,7 @@ class TestLogMonitorActionablePath:
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
-        from utils.rate_limiter import Debouncer, RateLimiter
+        from utils.core.rate_limiter import Debouncer, RateLimiter
 
         monkeypatch.setattr(ha_log_monitor, "SELF_HEALING_ENABLED", False)
         monkeypatch.setattr(ha_log_monitor, "CONFIDENCE_THRESHOLD", 0.7)

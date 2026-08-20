@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from utils.context import truncate_to_budget
+from utils.core.context import truncate_to_budget
 
 _FIELD_CHAR_LIMIT = 4000
 _TRUNCATION_MARKER = "\n...[truncated]..."

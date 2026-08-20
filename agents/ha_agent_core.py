@@ -17,12 +17,12 @@ from config import (
     HA_KNOWN_VERSION,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
-from utils.context import estimate_tokens, truncate_to_budget
+from utils.core.context import estimate_tokens, truncate_to_budget
 from utils.llm_trace import LLMTrace
-from utils.logging import get_logger, setup_logging, set_correlation_id
+from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm_factory import make_llm_client
-from utils.prompts import load_prompt
-from utils.retry import async_retry, SSH_RETRY_KWARGS
+from utils.core.prompts import load_prompt
+from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_agent_core")

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol

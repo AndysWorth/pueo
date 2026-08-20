@@ -34,7 +34,7 @@ from netalertx.diagnosis import diagnose_health_report
 from netalertx.health import NetAlertXHealthMonitor
 from netalertx.installer import _parse_slug_from_store, _write_addon_slug_to_config
 from netalertx.log_monitor import CRITICAL_LOG_PATTERN, analyze_log_line_with_ai
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient

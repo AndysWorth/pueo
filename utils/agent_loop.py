@@ -22,8 +22,8 @@ from config import (
     AGENT_MAX_TOTAL_CALLS,
     AGENT_MAX_WALL_SECONDS,
 )
-from utils.logging import get_logger
-from utils.prompts import load_prompt
+from utils.core.logging import get_logger
+from utils.core.prompts import load_prompt
 from utils.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 
 _UNSET = object()  # sentinel for provider-aware model default

@@ -18,7 +18,7 @@ from typing import Optional
 import aiomqtt
 from pydantic import BaseModel
 
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 log = get_logger("netalertx.mqtt_subscriber")
 

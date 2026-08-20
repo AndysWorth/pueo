@@ -50,7 +50,7 @@ from netalertx.installer_diagnostics import (
     diagnose_installer_failure,
     format_diagnostic_for_hitl,
 )
-from utils.logging import get_logger, set_correlation_id
+from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol

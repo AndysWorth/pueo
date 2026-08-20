@@ -36,7 +36,7 @@ from config import (
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.autonomy import RiskLevel
-from utils.logging import get_logger, set_correlation_id
+from utils.core.logging import get_logger, set_correlation_id
 
 # Backward-compatible alias — existing tests import check_disk_space from here.
 check_disk_space = check_target_disk_space

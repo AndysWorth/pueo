@@ -6,7 +6,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     pass
@@ -194,7 +194,7 @@ class LoopSupervisor:
                 self._emit(name)
                 log.error("loop_crashed", loop=name, error=str(exc), restart_in=delay)
                 try:
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "ERROR",

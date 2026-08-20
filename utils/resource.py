@@ -8,7 +8,7 @@ from typing import Any, Optional
 import yaml as _yaml
 
 from interfaces import SSHClientProtocol
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 log = get_logger("resource")
 
@@ -488,7 +488,7 @@ class ResourcePoller:
                     },
                 )
                 try:
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "CRITICAL",
@@ -519,7 +519,7 @@ class ResourcePoller:
                 with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rc:
                     mark_card_resolved(_rc, "resource:disk_critical")
                 try:
-                    from utils.timeline import write_timeline_event
+                    from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "INFO",
@@ -622,7 +622,7 @@ class ResourcePoller:
                             },
                         )
                         try:
-                            from utils.timeline import write_timeline_event
+                            from utils.core.timeline import write_timeline_event
 
                             write_timeline_event(
                                 "WARN",
@@ -644,7 +644,7 @@ class ResourcePoller:
                     with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rw:
                         mark_card_resolved(_rw, "resource:disk_warn")
                     try:
-                        from utils.timeline import write_timeline_event
+                        from utils.core.timeline import write_timeline_event
 
                         write_timeline_event(
                             "INFO",

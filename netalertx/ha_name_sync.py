@@ -33,7 +33,7 @@ from config import (
     HA_HOST,
     NETALERTX_AUTO_GENERATED_NAME_PATTERNS,
 )
-from utils.logging import get_logger
+from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
