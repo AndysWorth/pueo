@@ -24,7 +24,7 @@ class TestOllamaEmbeddingFunction:
 
     @pytest.fixture
     def ef(self):
-        from utils.knowledge_store import _OllamaEmbeddingFunction
+        from utils.knowledge.knowledge_store import _OllamaEmbeddingFunction
 
         return _OllamaEmbeddingFunction(
             model="nomic-embed-text", endpoint="http://localhost:11434"
@@ -103,10 +103,10 @@ class TestChromeKnowledgeStoreRoundTrip:
         except ImportError:
             pytest.skip("chromadb not installed")
 
-        from utils.knowledge_store import ChromaKnowledgeStore
+        from utils.knowledge.knowledge_store import ChromaKnowledgeStore
 
         # Patch _embed to return a fixed vector
-        from utils.knowledge_store import _OllamaEmbeddingFunction
+        from utils.knowledge.knowledge_store import _OllamaEmbeddingFunction
 
         def _embed(self, texts):
             return [[float(i) for i in range(16)] for _ in texts]

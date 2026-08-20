@@ -18,17 +18,17 @@ if TYPE_CHECKING:
 
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
-    from utils.ha_blog_scraper import fetch_blog_release_notes
-    from utils.ha_docs_scraper import (
+    from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
+    from utils.knowledge.ha_docs_scraper import (
         discover_installed_integrations,
         embed_cached_integration_docs,
         fetch_integration_doc,
     )
-    from utils.ha_release_notes_scraper import (
+    from utils.knowledge.ha_release_notes_scraper import (
         fetch_ha_release_notes,
         scrape_cached_release_notes,
     )
-    from utils.hacs_scraper import (
+    from utils.knowledge.hacs_scraper import (
         discover_hacs_integrations,
         embed_cached_changelogs,
         fetch_hacs_changelog,
@@ -185,8 +185,8 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
 
 async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
     """Embed unembedded successful repair episodes into ChromaDB every 10 minutes."""
-    from utils.knowledge_store import embed_local_episode
-    from utils.repair_episode import get_unembedded_successful_episodes
+    from utils.knowledge.knowledge_store import embed_local_episode
+    from utils.repair.repair_episode import get_unembedded_successful_episodes
 
     while True:
         episodes = get_unembedded_successful_episodes(db_path)
@@ -365,7 +365,7 @@ async def supervisor_main(config_path: Path) -> None:
 
     knowledge_store = None
     try:
-        from utils.knowledge_store import ChromaKnowledgeStore
+        from utils.knowledge.knowledge_store import ChromaKnowledgeStore
         from utils.core.logging import get_logger as _get_logger
 
         _ks_log = _get_logger("main")
@@ -816,7 +816,7 @@ def main() -> None:
         asyncio.run(ha_notification_manager.run_notifications())
     elif args.mode == "rag-refresh":  # pragma: no cover
         import config
-        from utils.knowledge_store import ChromaKnowledgeStore
+        from utils.knowledge.knowledge_store import ChromaKnowledgeStore
 
         store = ChromaKnowledgeStore(
             config.CHROMADB_PATH, config.RAG_EMBED_MODEL, config.OLLAMA_ENDPOINT
@@ -858,7 +858,7 @@ def main() -> None:
         asyncio.run(main_audit())
     elif args.mode == "export-episodes":
         from agents import ha_agent_advanced
-        from utils.repair_episode import export_episodes_yaml, load_episodes
+        from utils.repair.repair_episode import export_episodes_yaml, load_episodes
 
         ha_agent_advanced.init_local_database()
         since_ts: Optional[float] = None

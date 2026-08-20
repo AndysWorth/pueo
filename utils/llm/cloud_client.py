@@ -154,7 +154,7 @@ class ClaudeAPIClient:
         """Raise BillingCapError before making an API call if caps would be exceeded."""
         if not getattr(self, "_incident_id", ""):
             return
-        from utils.billing import check_billing_caps
+        from utils.repair.billing import check_billing_caps
 
         char_count = _count_message_chars(messages)
         if tools:
@@ -170,7 +170,7 @@ class ClaudeAPIClient:
         """Record actual token usage after a successful API call."""
         if not getattr(self, "_incident_id", ""):
             return
-        from utils.billing import estimate_cost, record_cloud_spend
+        from utils.repair.billing import estimate_cost, record_cloud_spend
 
         cost = estimate_cost(model, input_tokens, output_tokens)
         record_cloud_spend(self._incident_id, model, input_tokens, output_tokens, cost)

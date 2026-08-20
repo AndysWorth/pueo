@@ -984,7 +984,7 @@ class ToolExecutor:
                 error="apply_fix may only be called once per loop run",
             )
 
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         try:
             original = await self._ha_ssh.read_file(CONFIG_REMOTE_PATH)

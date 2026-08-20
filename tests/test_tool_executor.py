@@ -127,7 +127,7 @@ class TestApplyFixPayload:
         notifier = FakeNotifier(approve=False)
         executor = _make_executor(llm_client=llm_client, notifier=notifier)
 
-        with patch("utils.yaml_validator.validate_proposed_fix") as mock_val:
+        with patch("utils.repair.yaml_validator.validate_proposed_fix") as mock_val:
             mock_val.return_value = type("R", (), {"is_safe": True, "reasons": []})()
             result = asyncio.run(executor._apply_fix(_PROPOSED_YAML, "Fix port"))
 

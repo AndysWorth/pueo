@@ -200,7 +200,7 @@ class AgentLoop:
         start_wall: float,
     ) -> str:
         """Serialize a RepairEpisode to SQLite and return its ID."""
-        from utils.repair_episode import RepairEpisode, serialize_episode
+        from utils.repair.repair_episode import RepairEpisode, serialize_episode
 
         data = self._build_episode(steps, episode_stub, start_wall)
         episode = RepairEpisode(

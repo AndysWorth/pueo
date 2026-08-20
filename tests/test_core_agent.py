@@ -98,7 +98,7 @@ class TestSandboxEngine:
 class TestRetrieveSimilarEpisodes:
     def test_episodes_found_returns_formatted_block(self):
         from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -114,7 +114,7 @@ class TestRetrieveSimilarEpisodes:
 
     def test_empty_collection_returns_empty_string(self):
         from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         result = _retrieve_similar_episodes("any context", store, top_k=2)
@@ -139,7 +139,7 @@ class TestRetrieveSimilarEpisodes:
     def test_episodes_prepended_to_initial_context(self):
         """Integration: _retrieve_similar_episodes output is prepended in main()."""
         from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         # FakeKnowledgeStore checks query_text in doc — doc must contain the query
@@ -1477,7 +1477,7 @@ class TestBackupSlugExtraction:
 
 
 def _make_episode_for_main_test(timestamp: float = 1_000_000.0, ep_id: str = "ep-1"):
-    from utils.repair_episode import RepairEpisode
+    from utils.repair.repair_episode import RepairEpisode
 
     return RepairEpisode(
         id=ep_id,
@@ -1549,7 +1549,7 @@ class TestMain:
         import yaml
         from agents import ha_agent_advanced
         import main as main_module
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         config = tmp_path / "config.yaml"
         config.write_text("")
@@ -1574,7 +1574,7 @@ class TestMain:
         import yaml
         from agents import ha_agent_advanced
         import main as main_module
-        from utils.repair_episode import RepairEpisode, serialize_episode
+        from utils.repair.repair_episode import RepairEpisode, serialize_episode
 
         config = tmp_path / "config.yaml"
         config.write_text("")
@@ -1644,7 +1644,11 @@ class TestRepairEpisodeResultSummary:
         return path
 
     def test_serialize_stores_result_summary(self, db_path):
-        from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
+        from utils.repair.repair_episode import (
+            RepairEpisode,
+            load_episode,
+            serialize_episode,
+        )
         from utils.agent.tool_registry import ToolCall
 
         ep = RepairEpisode(
@@ -1668,7 +1672,11 @@ class TestRepairEpisodeResultSummary:
         assert loaded.tool_result_summaries == ["config content here", "repair done"]
 
     def test_result_summary_survives_round_trip(self, db_path):
-        from utils.repair_episode import RepairEpisode, load_episode, serialize_episode
+        from utils.repair.repair_episode import (
+            RepairEpisode,
+            load_episode,
+            serialize_episode,
+        )
         from utils.agent.tool_registry import ToolCall
 
         long_output = "x" * 1000  # should be stored as-is (serializer doesn't truncate)
@@ -1696,7 +1704,7 @@ class TestRepairEpisodeResultSummary:
         import json
         import sqlite3 as _sqlite3
 
-        from utils.repair_episode import load_episode
+        from utils.repair.repair_episode import load_episode
         from utils.agent.tool_registry import ToolCall
 
         tc = ToolCall(name="read_config", arguments={})
@@ -2065,7 +2073,7 @@ class TestSupervisorMain:
 
         import config as cfg_mod
         import main as m
-        import utils.knowledge_store as ks_mod
+        import utils.knowledge.knowledge_store as ks_mod
         import utils.agent.tool_executor as te_mod
 
         monkeypatch.setattr(cfg_mod, "CHROMADB_PATH", str(chroma_dir))
@@ -2538,7 +2546,7 @@ class TestSandboxPipeline:
 
     @pytest.fixture
     def knowledge_store(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         return FakeKnowledgeStore()
 
@@ -3640,7 +3648,7 @@ class TestFetchReleaseNotesCached:
 
     def test_stub_sentinel_written_to_cache(self, tmp_path):
         """fetch_ha_release_notes writes STUB: prefix when body is a short stub."""
-        from utils.ha_release_notes_scraper import fetch_ha_release_notes
+        from utils.knowledge.ha_release_notes_scraper import fetch_ha_release_notes
 
         stub_body = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
         releases = [{"tag_name": "2026.8.0", "body": stub_body}]
@@ -3652,8 +3660,8 @@ class TestFetchReleaseNotesCached:
 
     def test_stub_sentinel_skipped_by_scraper(self, tmp_path):
         """scrape_cached_release_notes skips files whose content starts with STUB:."""
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         stub_file = tmp_path / "2026.8.0.txt"
         stub_file.write_text("STUB:https://www.home-assistant.io/blog/...")
@@ -9231,7 +9239,7 @@ class TestToolExecutor:
     def test_execute_outer_exception_handler(self):
         """An exception escaping a tool method is caught by execute()'s outer handler."""
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -9276,7 +9284,7 @@ class TestToolExecutor:
 
     def test_query_knowledge_with_store_returns_results(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -9305,7 +9313,7 @@ class TestToolExecutor:
 
     def test_query_knowledge_integration_filter(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -9493,7 +9501,7 @@ class TestToolExecutor:
 
     def test_query_knowledge_with_store_no_results(self):
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_executor import ToolExecutor
@@ -10538,9 +10546,9 @@ class TestRunRagRefresh:
 
     def _patch_network(self, monkeypatch, tmp_path):
         """Patch all network-dependent functions to no-ops."""
-        import utils.ha_docs_scraper as docs_mod
-        import utils.ha_release_notes_scraper as ha_mod
-        import utils.hacs_scraper as hacs_mod
+        import utils.knowledge.ha_docs_scraper as docs_mod
+        import utils.knowledge.ha_release_notes_scraper as ha_mod
+        import utils.knowledge.hacs_scraper as hacs_mod
 
         monkeypatch.setattr(ha_mod, "fetch_ha_release_notes", lambda *a, **kw: 0)
         monkeypatch.setattr(hacs_mod, "discover_hacs_integrations", lambda *a, **kw: [])
@@ -10557,7 +10565,7 @@ class TestRunRagRefresh:
         monkeypatch.setattr("config.RAG_HA_DOCS_CACHE_DIR", str(tmp_path / "docs"))
 
     def test_produces_progress_output(self, tmp_path, monkeypatch, capsys):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         self._patch_network(monkeypatch, tmp_path)
@@ -10570,7 +10578,7 @@ class TestRunRagRefresh:
         assert "integration doc" in out
 
     def test_embeds_ha_release_notes(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         notes_dir = tmp_path / "ha_notes"
@@ -10592,7 +10600,7 @@ class TestRunRagRefresh:
         assert len(store.query("new light platform", top_k=5)) > 0
 
     def test_embeds_hacs_changelogs(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         hacs_dir = tmp_path / "hacs"
@@ -10609,7 +10617,7 @@ class TestRunRagRefresh:
         assert results[0].collection == "hacs_changelogs"
 
     def test_embeds_integration_docs(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         docs_dir = tmp_path / "docs"
@@ -10626,7 +10634,7 @@ class TestRunRagRefresh:
         assert results[0].collection == "ha_integration_docs"
 
     def test_skips_hacs_discovery_when_no_token(self, tmp_path, monkeypatch, capsys):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         self._patch_network(monkeypatch, tmp_path)

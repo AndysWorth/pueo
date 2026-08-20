@@ -532,7 +532,7 @@ class TestBillingGuard:
     """Tests for utils/billing.py — estimate_cost, caps, record helpers."""
 
     def test_estimate_cost_sonnet(self):
-        from utils.billing import estimate_cost
+        from utils.repair.billing import estimate_cost
 
         # Sonnet: $3 input / $15 output per MTok
         cost = estimate_cost("claude-sonnet-4-5", 1_000_000, 0)
@@ -542,19 +542,19 @@ class TestBillingGuard:
         assert abs(cost2 - 15.00) < 0.01
 
     def test_estimate_cost_haiku(self):
-        from utils.billing import estimate_cost
+        from utils.repair.billing import estimate_cost
 
         cost = estimate_cost("claude-haiku-4-5", 1_000_000, 0)
         assert abs(cost - 0.25) < 0.01
 
     def test_estimate_cost_opus(self):
-        from utils.billing import estimate_cost
+        from utils.repair.billing import estimate_cost
 
         cost = estimate_cost("claude-opus-5", 1_000_000, 0)
         assert abs(cost - 15.00) < 0.01
 
     def test_estimate_cost_unknown_model_uses_fallback(self):
-        from utils.billing import estimate_cost
+        from utils.repair.billing import estimate_cost
 
         # Unknown model → same as sonnet fallback
         cost = estimate_cost("unknown-model-xyz", 1_000_000, 0)
@@ -582,7 +582,7 @@ class TestBillingGuard:
                 """
             )
 
-        from utils.billing import get_incident_spend, record_cloud_spend
+        from utils.repair.billing import get_incident_spend, record_cloud_spend
 
         record_cloud_spend("inc-1", "claude-sonnet-4-5", 100, 50, 0.001)
         record_cloud_spend("inc-1", "claude-sonnet-4-5", 200, 100, 0.002)
@@ -614,7 +614,7 @@ class TestBillingGuard:
                 """
             )
 
-        from utils.billing import get_daily_spend, record_cloud_spend
+        from utils.repair.billing import get_daily_spend, record_cloud_spend
 
         record_cloud_spend("inc-1", "claude-sonnet-4-5", 100, 50, 1.00)
         record_cloud_spend("inc-2", "claude-sonnet-4-5", 100, 50, 2.00)
@@ -645,7 +645,7 @@ class TestBillingGuard:
                 """
             )
 
-        from utils.billing import (
+        from utils.repair.billing import (
             BillingCapError,
             check_billing_caps,
             record_cloud_spend,
@@ -681,7 +681,7 @@ class TestBillingGuard:
                 """
             )
 
-        from utils.billing import (
+        from utils.repair.billing import (
             BillingCapError,
             check_billing_caps,
             record_cloud_spend,
@@ -715,7 +715,7 @@ class TestBillingGuard:
                 """
             )
 
-        from utils.billing import check_billing_caps
+        from utils.repair.billing import check_billing_caps
 
         # Should not raise — tiny call well under both caps
         check_billing_caps("inc-1", "claude-sonnet-4-5", 100, 50)
@@ -790,7 +790,7 @@ class TestClaudeAPIClientBilling:
             )
         )
 
-        from utils.billing import get_incident_spend
+        from utils.repair.billing import get_incident_spend
 
         assert get_incident_spend("inc-test") > 0
 
@@ -828,7 +828,7 @@ class TestClaudeAPIClientBilling:
         resp = _make_anthropic_response(tool_use)
         client = self._make_client(resp, incident_id="inc-cap")
 
-        from utils.billing import BillingCapError
+        from utils.repair.billing import BillingCapError
 
         with pytest.raises(BillingCapError):
             asyncio.run(
