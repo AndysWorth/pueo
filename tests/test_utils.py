@@ -1361,7 +1361,7 @@ class TestResourcePollerAlerts:
 class TestExecuteRemoteBackupDiskCheck:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "disk_check_test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -1373,7 +1373,7 @@ class TestExecuteRemoteBackupDiskCheck:
     ):
         from utils.resource import ResourceStatus, DiskCriticalError
         import utils.resource as resource_mod
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         critical_status = ResourceStatus(
@@ -1397,7 +1397,7 @@ class TestExecuteRemoteBackupDiskCheck:
     def test_proceeds_when_cached_status_is_not_critical(self, monkeypatch, db_path):
         from utils.resource import ResourceStatus
         import utils.resource as resource_mod
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         ok_status = ResourceStatus(
@@ -1419,7 +1419,7 @@ class TestExecuteRemoteBackupDiskCheck:
 
     def test_proceeds_when_no_cached_status(self, monkeypatch, db_path):
         import utils.resource as resource_mod
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(resource_mod, "_last_resource_status", None)
@@ -3043,7 +3043,7 @@ class TestTimelineUtils:
     @pytest.fixture()
     def tl_db(self, tmp_path, monkeypatch):
         """Isolated SQLite DB with timeline_events table."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.timeline as tl_mod
 
         db = str(tmp_path / "tl_test.db")
@@ -4749,7 +4749,7 @@ _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
 # ── utils/repair_episode.py ──────────────────────────────────────────────────────
 
-import ha_agent_advanced as _haa_mod
+import agents.ha_agent_advanced as _haa_mod
 from utils.repair_episode import RepairEpisode, load_episodes, serialize_episode
 from utils.tool_registry import ToolCall
 
@@ -5216,7 +5216,7 @@ class TestAnonymizer:
 class TestExportEpisodesYaml:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)

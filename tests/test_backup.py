@@ -83,16 +83,16 @@ class TestTriggerBackupChain:
         slug = "abc12345"
         with (
             patch(
-                "ha_agent_advanced.execute_remote_backup",
+                "agents.ha_agent_advanced.execute_remote_backup",
                 new=AsyncMock(return_value=slug),
             ),
-            patch("ha_agent_advanced.record_backup_slug") as mock_record,
+            patch("agents.ha_agent_advanced.record_backup_slug") as mock_record,
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(return_value=True),
             ),
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
             result = asyncio.run(executor._trigger_backup())
 
@@ -104,7 +104,7 @@ class TestTriggerBackupChain:
         from utils.resource import DiskCriticalError
 
         with patch(
-            "ha_agent_advanced.execute_remote_backup",
+            "agents.ha_agent_advanced.execute_remote_backup",
             new=AsyncMock(side_effect=DiskCriticalError("disk full")),
         ):
             result = asyncio.run(executor._trigger_backup())
@@ -117,16 +117,16 @@ class TestTriggerBackupChain:
         slug = "deadbeef"
         with (
             patch(
-                "ha_agent_advanced.execute_remote_backup",
+                "agents.ha_agent_advanced.execute_remote_backup",
                 new=AsyncMock(return_value=slug),
             ),
-            patch("ha_agent_advanced.record_backup_slug") as mock_record,
+            patch("agents.ha_agent_advanced.record_backup_slug") as mock_record,
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(return_value=False),
             ),
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
             result = asyncio.run(executor._trigger_backup())
 
@@ -150,7 +150,7 @@ class TestTriggerBackupChain:
 
 class TestBackupNaming:
     def test_execute_remote_backup_uses_timestamped_name(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         src = inspect.getsource(ha_agent_advanced.execute_remote_backup)
         assert "Agent_PreFix_Snapshot" not in src
@@ -164,19 +164,19 @@ class TestBackupNaming:
 
 class TestSandboxEngineReexports:
     def test_execute_remote_backup_importable_from_sandbox_engine(self):
-        from ha_agent_sandbox_engine import execute_remote_backup  # noqa: F401
+        from agents.ha_agent_sandbox_engine import execute_remote_backup  # noqa: F401
 
         assert callable(execute_remote_backup)
 
     def test_record_backup_slug_importable_from_sandbox_engine(self):
-        from ha_agent_sandbox_engine import record_backup_slug  # noqa: F401
+        from agents.ha_agent_sandbox_engine import record_backup_slug  # noqa: F401
 
         assert callable(record_backup_slug)
 
     def test_no_duplicate_implementation_in_sandbox_engine(self):
         """The sandbox engine re-exports from ha_agent_advanced, not its own copy."""
-        import ha_agent_advanced
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
 
         assert (
             ha_agent_sandbox_engine.execute_remote_backup
@@ -210,15 +210,19 @@ class TestOffloadPendingBackups:
 
     def test_offload_pending_calls_offload_for_each_ha_slug(self, db_path):
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(return_value=True),
             ) as mock_offload,
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
-            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+            asyncio.run(
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).offload_pending_backups()
+            )
 
         assert mock_offload.call_count == 2
         called_slugs = {c.args[0] for c in mock_offload.call_args_list}
@@ -235,15 +239,19 @@ class TestOffloadPendingBackups:
             )
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(return_value=True),
             ) as mock_offload,
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
-            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+            asyncio.run(
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).offload_pending_backups()
+            )
 
         assert mock_offload.call_count == 1
         assert mock_offload.call_args.args[0] == "slug-new"
@@ -258,29 +266,37 @@ class TestOffloadPendingBackups:
             )
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(return_value=True),
             ) as mock_offload,
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
-            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+            asyncio.run(
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).offload_pending_backups()
+            )
 
         mock_offload.assert_not_called()
 
     def test_offload_pending_partial_failure_continues(self, db_path):
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
             patch(
-                "ha_agent_advanced.offload_backup_to_local",
+                "agents.ha_agent_advanced.offload_backup_to_local",
                 new=AsyncMock(side_effect=[False, True]),
             ) as mock_offload,
-            patch("ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
-            patch("ha_agent_advanced.purge_local_backups"),
+            patch("agents.ha_agent_advanced.enforce_ha_retention", new=AsyncMock()),
+            patch("agents.ha_agent_advanced.purge_local_backups"),
         ):
-            asyncio.run(__import__("ha_agent_advanced").offload_pending_backups())
+            asyncio.run(
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).offload_pending_backups()
+            )
 
         assert mock_offload.call_count == 2
 
@@ -317,7 +333,7 @@ class TestPurgeLocalBackupsLocation:
         )
 
     def test_purge_sets_location_ha_when_still_on_ha(self, tmp_path, db_path):
-        from ha_agent_advanced import purge_local_backups
+        from agents.ha_agent_advanced import purge_local_backups
 
         # Need two slugs: purge skips the most-recent one, so "old" must not be newest.
         with sqlite3.connect(db_path) as conn:
@@ -325,9 +341,9 @@ class TestPurgeLocalBackupsLocation:
             self._insert_offloaded(conn, "old-still-on-ha", offload_age_days=40)
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
-            patch("ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
-            patch("ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
+            patch("agents.ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
         ):
             purge_local_backups()
 
@@ -341,7 +357,7 @@ class TestPurgeLocalBackupsLocation:
     def test_purge_sets_location_purged_when_also_deleted_from_ha(
         self, tmp_path, db_path
     ):
-        from ha_agent_advanced import purge_local_backups
+        from agents.ha_agent_advanced import purge_local_backups
 
         # Need two slugs for the same reason; target has deleted_from_ha set.
         with sqlite3.connect(db_path) as conn:
@@ -351,9 +367,9 @@ class TestPurgeLocalBackupsLocation:
             )
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
-            patch("ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
-            patch("ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.BACKUP_LOCAL_DIR", str(tmp_path)),
+            patch("agents.ha_agent_advanced.BACKUP_RETAIN_LOCAL_DAYS", 30),
         ):
             purge_local_backups()
 
@@ -377,9 +393,9 @@ class TestResolveBackupRemotePathSlugValidation:
 
         ssh = FakeSSHClient()
         result = asyncio.run(
-            __import__("ha_agent_advanced")._resolve_backup_remote_path(
-                "unknown_slug", ssh
-            )
+            __import__(
+                "agents.ha_agent_advanced", fromlist=[""]
+            )._resolve_backup_remote_path("unknown_slug", ssh)
         )
         assert result is None
         assert ssh.commands_run == []
@@ -390,7 +406,9 @@ class TestResolveBackupRemotePathSlugValidation:
 
         ssh = FakeSSHClient(command_results={})
         asyncio.run(
-            __import__("ha_agent_advanced")._resolve_backup_remote_path("abc123ef", ssh)
+            __import__(
+                "agents.ha_agent_advanced", fromlist=[""]
+            )._resolve_backup_remote_path("abc123ef", ssh)
         )
         assert len(ssh.commands_run) >= 1
 
@@ -437,13 +455,13 @@ class TestEnforceHaRetentionForceCritical:
                 return (0, "", "")
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
-            patch("ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
         ):
             deleted = asyncio.run(
-                __import__("ha_agent_advanced").enforce_ha_retention(
-                    ssh_client=_FakeSSH(), force_critical=True
-                )
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).enforce_ha_retention(ssh_client=_FakeSSH(), force_critical=True)
             )
 
         assert deleted == 1
@@ -461,11 +479,11 @@ class TestEnforceHaRetentionForceCritical:
                 ssh_calls.append(cmd)
                 return (0, "", "")
 
-        with patch("ha_agent_advanced.DB_PATH", db_path):
+        with patch("agents.ha_agent_advanced.DB_PATH", db_path):
             deleted = asyncio.run(
-                __import__("ha_agent_advanced").enforce_ha_retention(
-                    ssh_client=_FakeSSH(), force_critical=True
-                )
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).enforce_ha_retention(ssh_client=_FakeSSH(), force_critical=True)
             )
 
         assert deleted == 0  # 1 backup, floor=1 → nothing to delete
@@ -484,13 +502,13 @@ class TestEnforceHaRetentionForceCritical:
                 return (0, "", "")
 
         with (
-            patch("ha_agent_advanced.DB_PATH", db_path),
-            patch("ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
+            patch("agents.ha_agent_advanced.DB_PATH", db_path),
+            patch("agents.ha_agent_advanced.BACKUP_RETAIN_ON_HA", 2),
         ):
             deleted = asyncio.run(
-                __import__("ha_agent_advanced").enforce_ha_retention(
-                    ssh_client=_FakeSSH(), force_critical=False
-                )
+                __import__(
+                    "agents.ha_agent_advanced", fromlist=[""]
+                ).enforce_ha_retention(ssh_client=_FakeSSH(), force_critical=False)
             )
 
         assert deleted == 0

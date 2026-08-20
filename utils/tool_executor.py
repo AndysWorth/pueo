@@ -325,7 +325,7 @@ class ToolExecutor:
             )
 
     async def _trigger_backup(self) -> ToolResult:
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             enforce_ha_retention,
             execute_remote_backup,
             offload_backup_to_local,
@@ -1049,14 +1049,14 @@ class ToolExecutor:
             )
 
         # Backup invariant: backup before every write
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             enforce_ha_retention,
             execute_remote_backup,
             offload_backup_to_local,
             purge_local_backups,
             record_backup_slug,
         )
-        from ha_agent_sandbox_engine import (
+        from agents.ha_agent_sandbox_engine import (
             commit_atomic_swap,
             deploy_and_test_in_sandbox,
         )
@@ -1095,7 +1095,7 @@ class ToolExecutor:
         )
 
     async def _verify_fix(self) -> ToolResult:
-        from ha_agent_sandbox_engine import execute_remote_preflight_check
+        from agents.ha_agent_sandbox_engine import execute_remote_preflight_check
 
         try:
             exit_code, stdout, stderr = await execute_remote_preflight_check(
@@ -1157,7 +1157,7 @@ class ToolExecutor:
         """Enrich an IP address with MAC, vendor, hostname, and NetAlertX context."""
         import re
 
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         if not ip or not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
             return ToolResult(

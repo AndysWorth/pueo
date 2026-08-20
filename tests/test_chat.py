@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import ha_agent_advanced
+from agents import ha_agent_advanced
 from utils.autonomy import FakeAutonomyGate
 from utils.notify import FakeNotifier
 from utils.ssh_client import FakeSSHClient
@@ -1261,7 +1261,7 @@ class TestGapDetection:
 
     def test_sandbox_engine_calls_proposal_loop_on_gap(self, db_path, monkeypatch):
         """When AgentLoop result has capability_gap=True, main() calls _run_code_proposal_loop."""
-        import ha_agent_sandbox_engine as engine
+        from agents import ha_agent_sandbox_engine as engine
         from utils.agent_loop import AgentLoopResult
 
         calls: list[dict] = []
@@ -1285,7 +1285,7 @@ class TestGapDetection:
 
         monkeypatch.setattr(engine, "fetch_remote_config", fake_fetch)
         monkeypatch.setattr(engine, "DB_PATH", db_path)
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
         ha_agent_advanced.init_local_database()
@@ -1313,7 +1313,7 @@ class TestGapDetection:
 
     def test_sandbox_engine_skips_proposal_loop_without_gap(self, db_path, monkeypatch):
         """When capability_gap=False, main() does not call _run_code_proposal_loop."""
-        import ha_agent_sandbox_engine as engine
+        from agents import ha_agent_sandbox_engine as engine
         from utils.agent_loop import AgentLoopResult
 
         calls: list[dict] = []
@@ -1331,7 +1331,7 @@ class TestGapDetection:
 
         monkeypatch.setattr(engine, "fetch_remote_config", fake_fetch)
         monkeypatch.setattr(engine, "DB_PATH", db_path)
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
         ha_agent_advanced.init_local_database()

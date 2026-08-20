@@ -21,7 +21,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 
 class TestDiagnosticsReport:
     def test_valid_clear_report(self):
-        from ha_agent_core import DiagnosticsReport
+        from agents.ha_agent_core import DiagnosticsReport
 
         report = DiagnosticsReport(
             is_valid=True,
@@ -33,7 +33,7 @@ class TestDiagnosticsReport:
         assert report.recommended_fix_yaml is None
 
     def test_invalid_report_with_fix_yaml(self):
-        from ha_agent_core import DiagnosticsReport
+        from agents.ha_agent_core import DiagnosticsReport
 
         report = DiagnosticsReport(
             is_valid=False,
@@ -50,13 +50,13 @@ class TestDiagnosticsReport:
         assert "platform" in report.recommended_fix_yaml
 
     def test_missing_required_fields_raises(self):
-        from ha_agent_core import DiagnosticsReport
+        from agents.ha_agent_core import DiagnosticsReport
 
         with pytest.raises(ValidationError):
             DiagnosticsReport(is_valid=True)  # severity and identified_issues missing
 
     def test_json_round_trip(self):
-        from ha_agent_core import DiagnosticsReport
+        from agents.ha_agent_core import DiagnosticsReport
 
         original = DiagnosticsReport(
             is_valid=False,
@@ -73,7 +73,7 @@ class TestDiagnosticsReport:
 
 class TestSandboxEngine:
     def test_sandbox_paths_derived_from_config_remote_path(self):
-        import ha_agent_sandbox_engine as e
+        from agents import ha_agent_sandbox_engine as e
 
         config_dir = e.CONFIG_REMOTE_PATH.rsplit("/", 1)[0]
         config_file = e.CONFIG_REMOTE_PATH.rsplit("/", 1)[1]
@@ -85,7 +85,7 @@ class TestSandboxEngine:
             yaml.dump({"home_assistant": {"config_path": "/custom/path/config.yaml"}})
         )
         importlib.reload(sys.modules["config"])
-        import ha_agent_sandbox_engine as e
+        from agents import ha_agent_sandbox_engine as e
 
         importlib.reload(e)
         assert e.SANDBOX_REMOTE_DIR == "/custom/path/.agent_sandbox"
@@ -97,7 +97,7 @@ class TestSandboxEngine:
 
 class TestRetrieveSimilarEpisodes:
     def test_episodes_found_returns_formatted_block(self):
-        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
         from utils.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -113,7 +113,7 @@ class TestRetrieveSimilarEpisodes:
         assert "ZHA error: fix by restarting" in result
 
     def test_empty_collection_returns_empty_string(self):
-        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
         from utils.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -121,7 +121,7 @@ class TestRetrieveSimilarEpisodes:
         assert result == ""
 
     def test_store_raises_returns_empty_string(self):
-        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
 
         class BrokenStore:
             def query(self, *a, **k):
@@ -131,14 +131,14 @@ class TestRetrieveSimilarEpisodes:
         assert result == ""
 
     def test_none_store_returns_empty_string(self):
-        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
 
         result = _retrieve_similar_episodes("any context", None, top_k=2)
         assert result == ""
 
     def test_episodes_prepended_to_initial_context(self):
         """Integration: _retrieve_similar_episodes output is prepended in main()."""
-        from ha_agent_sandbox_engine import _retrieve_similar_episodes
+        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
         from utils.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -161,64 +161,64 @@ class TestRetrieveSimilarEpisodes:
 
 class TestLogMonitor:
     def test_pattern_matches_component_error(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert CRITICAL_LOG_PATTERN.search(
             "2024-01-15 12:00:00 ERROR (MainThread) Component error: light.hue"
         )
 
     def test_pattern_matches_failed_to_initialize(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert CRITICAL_LOG_PATTERN.search(
             "CRITICAL Failed to initialize integration zwave_js"
         )
 
     def test_pattern_matches_traceback(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert CRITICAL_LOG_PATTERN.search("ERROR Traceback (most recent call last):")
 
     def test_pattern_matches_invalid_config(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert CRITICAL_LOG_PATTERN.search(
             "ERROR Invalid config for [sensor]: required key not provided @ data['platform']"
         )
 
     def test_pattern_ignores_info(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert not CRITICAL_LOG_PATTERN.search(
             "INFO (MainThread) [homeassistant.core] Starting Home Assistant"
         )
 
     def test_pattern_ignores_warnings(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert not CRITICAL_LOG_PATTERN.search(
             "WARNING [homeassistant.components.sensor] Minor deprecation notice"
         )
 
     def test_pattern_ignores_debug(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert not CRITICAL_LOG_PATTERN.search("DEBUG Loaded integration: light")
 
     def test_pattern_matches_error_doing_job(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert CRITICAL_LOG_PATTERN.search("ERROR Error doing job: handle_state_change")
 
     def test_pattern_requires_trigger_keyword(self):
-        from ha_log_monitor import CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
 
         assert not CRITICAL_LOG_PATTERN.search(
             "ERROR Something benign happened with no known trigger keyword"
         )
 
     def test_log_evaluation_schema(self):
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         result = LogEvaluation(
             is_actionable=True,
@@ -229,7 +229,7 @@ class TestLogMonitor:
         assert result.confidence_score == 0.95
 
     def test_confidence_threshold_value(self):
-        from ha_log_monitor import CONFIDENCE_THRESHOLD
+        from agents.ha_log_monitor import CONFIDENCE_THRESHOLD
 
         assert 0.0 < CONFIDENCE_THRESHOLD < 1.0
 
@@ -238,14 +238,14 @@ class TestLogMonitor:
             yaml.dump({"agent": {"log_confidence_threshold": 0.85}})
         )
         importlib.reload(sys.modules["config"])
-        import ha_log_monitor
+        from agents import ha_log_monitor
 
         importlib.reload(ha_log_monitor)
         assert ha_log_monitor.CONFIDENCE_THRESHOLD == 0.85
 
     def test_main_schedules_notification_polling_when_configured(self, monkeypatch):
         import asyncio as asyncio_mod
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -282,7 +282,7 @@ class TestLogMonitor:
 
     def test_main_skips_notification_polling_when_interval_zero(self, monkeypatch):
         import asyncio as asyncio_mod
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -323,7 +323,7 @@ class TestLogMonitor:
 
 class TestLogEvaluation:
     def test_missing_fields_raises(self):
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         with pytest.raises(ValidationError):
             LogEvaluation(
@@ -331,7 +331,7 @@ class TestLogEvaluation:
             )  # root_cause_summary and confidence_score missing
 
     def test_json_round_trip(self):
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         original = LogEvaluation(
             is_actionable=False,
@@ -348,14 +348,14 @@ class TestLogEvaluation:
 class TestAdvancedDB:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         return path
 
     def test_init_creates_state_history_table(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -368,7 +368,7 @@ class TestAdvancedDB:
         assert "state_history" in tables
 
     def test_init_creates_backup_registry_table(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -381,13 +381,13 @@ class TestAdvancedDB:
         assert "backup_registry" in tables
 
     def test_init_is_idempotent(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.init_local_database()
 
     def test_record_state_memory_inserts_row(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_state_memory("abc123", True, ["issue1"], "test action")
@@ -396,7 +396,7 @@ class TestAdvancedDB:
         assert count == 1
 
     def test_record_state_memory_fields(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_state_memory(
@@ -412,7 +412,7 @@ class TestAdvancedDB:
         assert row[3] == "patched"
 
     def test_record_backup_slug_inserts_row(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-abc")
@@ -421,7 +421,7 @@ class TestAdvancedDB:
         assert count == 1
 
     def test_record_backup_slug_status_is_active(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-xyz")
@@ -430,7 +430,7 @@ class TestAdvancedDB:
         assert status == "ACTIVE"
 
     def test_schema_version_table_created(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -443,7 +443,7 @@ class TestAdvancedDB:
         assert "schema_version" in tables
 
     def test_schema_version_is_current_after_init(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -451,7 +451,7 @@ class TestAdvancedDB:
         assert version == 22
 
     def test_version_unchanged_on_second_init(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.init_local_database()
@@ -461,7 +461,7 @@ class TestAdvancedDB:
         assert rows[0][0] == 22
 
     def test_pre_migration_database_upgraded(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         # Simulate a database that existed before migration versioning was added
         with sqlite3.connect(db_path) as conn:
@@ -490,7 +490,7 @@ class TestAdvancedDB:
         assert version == 22
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -501,7 +501,7 @@ class TestAdvancedDB:
         assert "correlation_id" in cols
 
     def test_record_state_memory_stores_correlation_id(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.logging import set_correlation_id
 
         set_correlation_id("test-cid-adv")
@@ -518,7 +518,7 @@ class TestAdvancedDB:
 class TestHAEnvironmentProfile:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -687,14 +687,14 @@ class TestHAEnvironmentProfile:
 class TestBackupInventory:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         return path
 
     def test_migration_v5_adds_inventory_columns(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -708,7 +708,7 @@ class TestBackupInventory:
         assert "deleted_from_ha_at" in cols
 
     def test_record_backup_slug_sets_location_ha(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-loc")
@@ -719,7 +719,7 @@ class TestBackupInventory:
         assert location == "ha"
 
     def test_record_backup_slug_size_bytes_default_zero(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-sz")
@@ -730,7 +730,7 @@ class TestBackupInventory:
         assert size == 0
 
     def test_record_backup_slug_stores_explicit_name(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-named", name="Pueo_2026-08-05_1430")
@@ -741,7 +741,7 @@ class TestBackupInventory:
         assert name == "Pueo_2026-08-05_1430"
 
     def test_record_backup_slug_auto_generates_name(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("slug-auto")
@@ -752,7 +752,7 @@ class TestBackupInventory:
         assert name is not None and name.startswith("Pueo_")
 
     def test_parse_backup_list_valid_json(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[{"slug":"abc123","size_bytes":56760320,"name":"Pueo_2026-08-05_1430"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
@@ -763,7 +763,7 @@ class TestBackupInventory:
         assert result[0]["ha_created_at"] is None  # no date in JSON
 
     def test_parse_backup_list_extracts_ha_created_at(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[{"slug":"abc","size_bytes":1000,"date":"2026-07-15T10:30:00+00:00"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
@@ -772,14 +772,14 @@ class TestBackupInventory:
         assert 1752000000 < result[0]["ha_created_at"] < 1800000000
 
     def test_parse_backup_list_extracts_ha_created_at_zulu(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[{"slug":"abc","size_bytes":1000,"date":"2026-07-15T10:30:00Z"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
         assert result[0]["ha_created_at"] is not None
 
     def test_parse_backup_list_multiple_backups(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[{"slug":"aaa","size_bytes":1000},{"slug":"bbb","size_bytes":2000}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
@@ -788,20 +788,20 @@ class TestBackupInventory:
         assert result[1]["slug"] == "bbb"
 
     def test_parse_backup_list_empty_backups(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[]}}'
         result = ha_agent_advanced._parse_backup_list(output)
         assert result == []
 
     def test_parse_backup_list_invalid_json(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         result = ha_agent_advanced._parse_backup_list("not valid json")
         assert result == []
 
     def test_parse_backup_list_missing_size_defaults_zero(self):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         output = '{"result":"ok","data":{"backups":[{"slug":"xyz"}]}}'
         result = ha_agent_advanced._parse_backup_list(output)
@@ -811,7 +811,7 @@ class TestBackupInventory:
         assert result[0]["ha_created_at"] is None
 
     def test_reconcile_inserts_ha_only_slug(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         backup_json = (
@@ -829,7 +829,7 @@ class TestBackupInventory:
         assert row[2] == "ha"
 
     def test_reconcile_skips_existing_slug(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("existing-slug")
@@ -843,7 +843,7 @@ class TestBackupInventory:
         assert count == 1
 
     def test_reconcile_backfills_size_and_name_for_zero_byte_rows(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug(
@@ -868,7 +868,7 @@ class TestBackupInventory:
     def test_reconcile_warns_on_orphaned_slug(self, db_path, caplog):
         import logging
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("orphan-slug")
@@ -879,7 +879,7 @@ class TestBackupInventory:
         assert any("orphan" in r.message for r in caplog.records)
 
     def test_reconcile_marks_orphan_deleted_from_ha(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("gone-slug")
@@ -894,7 +894,7 @@ class TestBackupInventory:
         assert row[0] is not None  # deleted_from_ha_at should be set
 
     def test_reconcile_stores_ha_created_at(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         backup_json = '{"result":"ok","data":{"backups":[{"slug":"dated","size_bytes":1000,"date":"2026-07-15T10:00:00Z"}]}}'
@@ -908,7 +908,7 @@ class TestBackupInventory:
         assert row[0] is not None
 
     def test_reconcile_backfills_ha_created_at_on_existing_row(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("old-slug")
@@ -922,7 +922,7 @@ class TestBackupInventory:
         assert row[0] is not None
 
     def test_reconcile_returns_counts(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("gone-slug")
@@ -937,7 +937,7 @@ class TestBackupInventory:
         assert marked_deleted == 1
 
     def test_reconcile_skips_on_ssh_error(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
 
@@ -953,7 +953,7 @@ class TestBackupInventory:
     def test_reconcile_skips_deleted_from_ha_in_orphan_check(self, db_path, caplog):
         import logging
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.record_backup_slug("already-gone")
@@ -976,7 +976,7 @@ class TestBackupInventory:
 class TestBackupOffloading:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -986,7 +986,7 @@ class TestBackupOffloading:
     @pytest.fixture(autouse=True)
     def _patch_resolve_direct(self, monkeypatch):
         """Make _resolve_backup_remote_path return the direct {slug}.tar path by default."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         async def _direct(slug, client):
             return f"/backup/{slug}.tar"
@@ -1009,7 +1009,7 @@ class TestBackupOffloading:
     ):
         import asyncio
         import hashlib
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "abc123"
@@ -1039,7 +1039,7 @@ class TestBackupOffloading:
         self, db_path, monkeypatch, tmp_path
     ):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "mismatch-slug"
@@ -1064,7 +1064,7 @@ class TestBackupOffloading:
         self, db_path, monkeypatch, tmp_path
     ):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "fail-slug"
@@ -1083,7 +1083,7 @@ class TestBackupOffloading:
 
     def test_offload_disabled_skips_download(self, db_path, monkeypatch, tmp_path):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
@@ -1095,7 +1095,7 @@ class TestBackupOffloading:
 
     def test_offload_no_remote_hash_proceeds(self, db_path, monkeypatch, tmp_path):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "nohash-slug"
@@ -1121,7 +1121,7 @@ class TestBackupOffloading:
         import asyncio
         import hashlib
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "abc123"
@@ -1159,7 +1159,7 @@ class TestBackupOffloading:
     ):
         import asyncio
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "abc123"
@@ -1194,7 +1194,7 @@ class TestBackupOffloading:
 class TestResolveBackupRemotePath:
     def test_direct_path_returned_when_slug_tar_exists(self):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "abc123"
@@ -1206,7 +1206,7 @@ class TestResolveBackupRemotePath:
 
     def test_fallback_ssh_search_when_direct_not_found(self):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         slug = "abc123"
@@ -1222,7 +1222,7 @@ class TestResolveBackupRemotePath:
 
     def test_returns_none_when_not_found_anywhere(self):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -1233,7 +1233,7 @@ class TestResolveBackupRemotePath:
 
     def test_returns_none_for_non_hex_slug(self):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -1250,8 +1250,8 @@ class TestResolveBackupRemotePath:
 class TestSandboxDB:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
@@ -1259,7 +1259,7 @@ class TestSandboxDB:
         return path
 
     def test_init_creates_state_history_table(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1272,7 +1272,7 @@ class TestSandboxDB:
         assert "state_history" in tables
 
     def test_init_creates_backup_registry_table(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1285,13 +1285,13 @@ class TestSandboxDB:
         assert "backup_registry" in tables
 
     def test_init_is_idempotent(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.init_local_database()
 
     def test_record_state_memory_inserts_row(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.record_state_memory(
@@ -1302,7 +1302,7 @@ class TestSandboxDB:
         assert count == 1
 
     def test_record_state_memory_fields(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.record_state_memory(
@@ -1318,7 +1318,7 @@ class TestSandboxDB:
         assert row[3] == "patched"
 
     def test_record_backup_slug_inserts_row(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.record_backup_slug("slug-abc")
@@ -1327,7 +1327,7 @@ class TestSandboxDB:
         assert count == 1
 
     def test_record_backup_slug_status_is_active(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.record_backup_slug("slug-xyz")
@@ -1336,7 +1336,7 @@ class TestSandboxDB:
         assert status == "ACTIVE"
 
     def test_schema_version_table_created(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1349,7 +1349,7 @@ class TestSandboxDB:
         assert "schema_version" in tables
 
     def test_schema_version_is_current_after_init(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1357,7 +1357,7 @@ class TestSandboxDB:
         assert version == 22
 
     def test_version_unchanged_on_second_init(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         ha_agent_sandbox_engine.init_local_database()
@@ -1367,7 +1367,7 @@ class TestSandboxDB:
         assert rows[0][0] == 22
 
     def test_pre_migration_database_upgraded(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         with sqlite3.connect(db_path) as conn:
             conn.execute(
@@ -1395,7 +1395,7 @@ class TestSandboxDB:
         assert version == 22
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1406,7 +1406,7 @@ class TestSandboxDB:
         assert "correlation_id" in cols
 
     def test_migration_v3_creates_netalertx_install_state_table(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1419,7 +1419,7 @@ class TestSandboxDB:
         assert "netalertx_install_state" in tables
 
     def test_migration_v4_creates_netalertx_state_table(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -1432,7 +1432,7 @@ class TestSandboxDB:
         assert "netalertx_state" in tables
 
     def test_record_state_memory_stores_correlation_id(self, db_path):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
         from utils.logging import set_correlation_id
 
         set_correlation_id("test-cid-sbx")
@@ -1447,7 +1447,7 @@ class TestSandboxDB:
 
 
 @pytest.mark.parametrize(
-    "module_name", ["ha_agent_advanced", "ha_agent_sandbox_engine"]
+    "module_name", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
 )
 class TestBackupSlugExtraction:
     def test_extract_standard_slug_line(self, module_name):
@@ -1528,7 +1528,7 @@ class TestMain:
         assert "monitor" in capsys.readouterr().out
 
     def test_export_episodes_no_episodes_exits_0(self, monkeypatch, tmp_path, capsys):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import main as main_module
 
         config = tmp_path / "config.yaml"
@@ -1547,7 +1547,7 @@ class TestMain:
 
     def test_export_episodes_outputs_yaml(self, monkeypatch, tmp_path, capsys):
         import yaml
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import main as main_module
         from utils.repair_episode import serialize_episode
 
@@ -1572,7 +1572,7 @@ class TestMain:
 
     def test_export_episodes_since_filter(self, monkeypatch, tmp_path, capsys):
         import yaml
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import main as main_module
         from utils.repair_episode import RepairEpisode, serialize_episode
 
@@ -1605,7 +1605,7 @@ class TestMain:
         assert parsed[0]["id"] == "new"
 
     def test_export_episodes_bad_since_exits_1(self, monkeypatch, tmp_path, capsys):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import main as main_module
 
         config = tmp_path / "config.yaml"
@@ -1636,7 +1636,7 @@ class TestRepairEpisodeResultSummary:
 
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -1756,8 +1756,8 @@ class TestSupervisorMain:
     def _patch_all(self, monkeypatch, config_path: Path) -> list:
         """Patch external deps so supervisor_main() runs and terminates immediately."""
         import config as cfg_mod
-        import ha_agent_advanced
-        import ha_log_monitor
+        from agents import ha_agent_advanced
+        from agents import ha_log_monitor
         import uvicorn
         import utils.resource as rm
         import utils.ssh_client as sc
@@ -2133,7 +2133,7 @@ class TestCheckHaVersion:
             yaml.dump({"home_assistant": {"known_version": "2026.7.2"}})
         )
         importlib.reload(sys.modules["config"])
-        import ha_agent_core
+        from agents import ha_agent_core
 
         importlib.reload(ha_agent_core)
         import logging
@@ -2153,7 +2153,7 @@ class TestCheckHaVersion:
             yaml.dump({"home_assistant": {"known_version": "2026.6.0"}})
         )
         importlib.reload(sys.modules["config"])
-        import ha_agent_core
+        from agents import ha_agent_core
 
         importlib.reload(ha_agent_core)
         import logging
@@ -2170,7 +2170,7 @@ class TestCheckHaVersion:
 
     def test_no_known_version_skips_check(self, isolated_config):
         importlib.reload(sys.modules["config"])
-        import ha_agent_core
+        from agents import ha_agent_core
 
         importlib.reload(ha_agent_core)
         ssh = self._ssh("")
@@ -2283,7 +2283,7 @@ class TestCorePipeline:
     @pytest.fixture
     def llm_valid(self):
         from utils.ollama_client import FakeLLMClient
-        from ha_agent_core import DiagnosticsReport
+        from agents.ha_agent_core import DiagnosticsReport
 
         r = DiagnosticsReport(
             is_valid=True,
@@ -2294,18 +2294,18 @@ class TestCorePipeline:
         return FakeLLMClient(r.model_dump_json())
 
     def test_main_valid_config_completes(self, ssh, llm_valid):
-        import ha_agent_core
+        from agents import ha_agent_core
 
         asyncio.run(ha_agent_core.main(ssh_client=ssh, llm_client=llm_valid))
 
     def test_main_fetch_config_called(self, ssh, llm_valid):
-        import ha_agent_core
+        from agents import ha_agent_core
 
         asyncio.run(ha_agent_core.main(ssh_client=ssh, llm_client=llm_valid))
         assert "ha core check" in " ".join(ssh.commands_run)
 
     def test_main_llm_was_invoked(self, ssh, llm_valid):
-        import ha_agent_core
+        from agents import ha_agent_core
 
         asyncio.run(ha_agent_core.main(ssh_client=ssh, llm_client=llm_valid))
         assert len(llm_valid.calls) == 1
@@ -2329,7 +2329,7 @@ class TestAdvancedPipeline:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "adv_test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -2341,7 +2341,7 @@ class TestAdvancedPipeline:
     @pytest.fixture
     def llm_valid(self):
         from utils.ollama_client import FakeLLMClient
-        from ha_agent_advanced import DiagnosticsReport
+        from agents.ha_agent_advanced import DiagnosticsReport
 
         r = DiagnosticsReport(
             is_valid=True,
@@ -2354,7 +2354,7 @@ class TestAdvancedPipeline:
     @pytest.fixture
     def llm_invalid(self):
         from utils.ollama_client import FakeLLMClient
-        from ha_agent_advanced import DiagnosticsReport
+        from agents.ha_agent_advanced import DiagnosticsReport
 
         r = DiagnosticsReport(
             is_valid=False,
@@ -2365,7 +2365,7 @@ class TestAdvancedPipeline:
         return FakeLLMClient(r.model_dump_json())
 
     def test_valid_config_records_state(self, ssh, llm_valid, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_agent_advanced.main(ssh_client=ssh, llm_client=llm_valid))
@@ -2374,14 +2374,14 @@ class TestAdvancedPipeline:
         assert count == 1
 
     def test_invalid_config_triggers_backup(self, ssh, llm_invalid, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_agent_advanced.main(ssh_client=ssh, llm_client=llm_invalid))
         assert any("ha backup new" in cmd for cmd in ssh.commands_run)
 
     def test_invalid_config_backup_slug_recorded(self, ssh, llm_invalid, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_agent_advanced.main(ssh_client=ssh, llm_client=llm_invalid))
@@ -2391,7 +2391,7 @@ class TestAdvancedPipeline:
         assert slug[0] == "adv-slug-1"
 
     def test_valid_config_preflight_check_runs(self, ssh, llm_valid, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_agent_advanced.main(ssh_client=ssh, llm_client=llm_valid))
@@ -2440,8 +2440,8 @@ class TestSandboxPipeline:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_sandbox_engine
-        import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "sbx_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
@@ -2545,7 +2545,7 @@ class TestSandboxPipeline:
     def test_valid_config_no_backup_taken(
         self, ssh_ok, llm_valid, db_path, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2558,7 +2558,7 @@ class TestSandboxPipeline:
     def test_valid_config_records_state(
         self, ssh_ok, llm_valid, db_path, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2573,7 +2573,7 @@ class TestSandboxPipeline:
     def test_repair_path_writes_config(
         self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2590,7 +2590,7 @@ class TestSandboxPipeline:
     def test_repair_path_backup_recorded(
         self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2609,7 +2609,7 @@ class TestSandboxPipeline:
     def test_sandbox_fail_aborts_atomic_swap(
         self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2625,7 +2625,7 @@ class TestSandboxPipeline:
     def test_bad_fix_rejected_before_backup(
         self, ssh_ok, llm_bad_fix, db_path, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2640,7 +2640,7 @@ class TestSandboxPipeline:
     def test_bad_fix_records_rejection_in_state(
         self, ssh_ok, llm_bad_fix, db_path, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2659,7 +2659,7 @@ class TestSandboxPipeline:
     def test_sandbox_fail_records_state(
         self, ssh_sandbox_fail, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2679,7 +2679,7 @@ class TestSandboxPipeline:
     def test_repair_path_llm_consulted(
         self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store
     ):
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -2701,7 +2701,7 @@ class TestLogMonitorTriage:
     @pytest.fixture
     def llm_actionable(self):
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         r = LogEvaluation(
             is_actionable=True,
@@ -2713,7 +2713,7 @@ class TestLogMonitorTriage:
     @pytest.fixture
     def llm_not_actionable(self):
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         r = LogEvaluation(
             is_actionable=False,
@@ -2723,7 +2723,7 @@ class TestLogMonitorTriage:
         return FakeLLMClient(r.model_dump_json())
 
     def test_analyze_actionable_line(self, llm_actionable):
-        from ha_log_monitor import analyze_log_line_with_ai
+        from agents.ha_log_monitor import analyze_log_line_with_ai
 
         result, _trace = asyncio.run(
             analyze_log_line_with_ai(
@@ -2734,7 +2734,7 @@ class TestLogMonitorTriage:
         assert result.confidence_score == 0.95
 
     def test_analyze_non_actionable_line(self, llm_not_actionable):
-        from ha_log_monitor import analyze_log_line_with_ai
+        from agents.ha_log_monitor import analyze_log_line_with_ai
 
         result, _trace = asyncio.run(
             analyze_log_line_with_ai(["INFO some benign event"], llm_not_actionable)
@@ -2742,7 +2742,7 @@ class TestLogMonitorTriage:
         assert result.is_actionable is False
 
     def test_analyze_calls_llm(self, llm_actionable):
-        from ha_log_monitor import analyze_log_line_with_ai
+        from agents.ha_log_monitor import analyze_log_line_with_ai
 
         asyncio.run(analyze_log_line_with_ai(["ERROR Traceback"], llm_actionable))
         assert len(llm_actionable.calls) == 1
@@ -2751,7 +2751,7 @@ class TestLogMonitorTriage:
         """A stream with no critical lines should complete without triggering triage."""
         from utils.ssh_client import FakeSSHClient
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import tail_remote_log_stream
+        from agents.ha_log_monitor import tail_remote_log_stream
 
         ssh = FakeSSHClient(stream_data=["INFO Starting up", "DEBUG loaded"])
         llm = FakeLLMClient("{}")
@@ -2763,9 +2763,9 @@ class TestLogMonitorTriage:
     ):
         """A stream with a CRITICAL line should invoke AI triage."""
         from utils.ssh_client import FakeSSHClient
-        from ha_log_monitor import tail_remote_log_stream
+        from agents.ha_log_monitor import tail_remote_log_stream
 
-        monkeypatch.setattr("ha_log_monitor._debouncer.record", lambda: False)
+        monkeypatch.setattr("agents.ha_log_monitor._debouncer.record", lambda: False)
 
         ssh = FakeSSHClient(
             stream_data=["ERROR Component error: light.hue broke", "INFO ok"]
@@ -2777,7 +2777,7 @@ class TestLogMonitorTriage:
 
     def test_transient_errno_is_econnreset(self):
         """ECONNRESET (54) and EPIPE (32) are classified as transient."""
-        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+        from agents.ha_log_monitor import _TRANSIENT_SSH_ERRNOS
 
         assert 54 in _TRANSIENT_SSH_ERRNOS  # ECONNRESET (macOS)
         assert 32 in _TRANSIENT_SSH_ERRNOS  # EPIPE
@@ -2785,14 +2785,14 @@ class TestLogMonitorTriage:
 
     def test_non_transient_errno_not_in_set(self):
         """Generic I/O errors are NOT classified as transient."""
-        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+        from agents.ha_log_monitor import _TRANSIENT_SSH_ERRNOS
 
         assert 5 not in _TRANSIENT_SSH_ERRNOS  # EIO
         assert 111 not in _TRANSIENT_SSH_ERRNOS  # ECONNREFUSED
 
     def test_non_oserror_not_transient(self):
         """A ValueError is never classified as a transient SSH connection reset."""
-        from ha_log_monitor import _TRANSIENT_SSH_ERRNOS
+        from agents.ha_log_monitor import _TRANSIENT_SSH_ERRNOS
 
         e = ValueError("unexpected")
         assert not (
@@ -2801,8 +2801,8 @@ class TestLogMonitorTriage:
         )
 
     def test_analyze_log_line_uses_model_factory(self, llm_actionable, monkeypatch):
-        import ha_log_monitor
-        from ha_log_monitor import analyze_log_line_with_ai
+        from agents import ha_log_monitor
+        from agents.ha_log_monitor import analyze_log_line_with_ai
 
         calls = []
         monkeypatch.setattr(
@@ -2821,7 +2821,7 @@ class TestLogMonitorTriage:
 class TestEnforceHaRetention:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -2842,7 +2842,7 @@ class TestEnforceHaRetention:
 
     def test_no_deletion_when_at_limit(self, db_path, monkeypatch):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 2)
@@ -2855,7 +2855,7 @@ class TestEnforceHaRetention:
     def test_deletes_oldest_when_over_limit(self, db_path, monkeypatch):
         import asyncio
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 2)
@@ -2873,7 +2873,7 @@ class TestEnforceHaRetention:
     def test_never_deletes_most_recent(self, db_path, monkeypatch):
         import asyncio
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
@@ -2891,7 +2891,7 @@ class TestEnforceHaRetention:
     def test_skips_ha_only_slugs(self, db_path, monkeypatch):
         import asyncio
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
@@ -2909,7 +2909,7 @@ class TestEnforceHaRetention:
 
     def test_ssh_error_on_delete_logs_warning_no_raise(self, db_path, monkeypatch):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
@@ -2926,7 +2926,7 @@ class TestEnforceHaRetention:
 class TestPurgeLocalBackups:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -2950,7 +2950,7 @@ class TestPurgeLocalBackups:
     ):
         import time
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         old_ts = time.time() - (40 * 86400)
         new_ts = time.time() - (1 * 86400)
@@ -2976,7 +2976,7 @@ class TestPurgeLocalBackups:
 
     def test_most_recent_not_purged(self, db_path, monkeypatch, tmp_path):
         import time
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         old_ts = time.time() - (60 * 86400)
         self._insert(db_path, "only-slug", old_ts)
@@ -2991,7 +2991,7 @@ class TestPurgeLocalBackups:
         assert (local_dir / "only-slug.tar").exists()
 
     def test_noop_when_dir_missing(self, db_path, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         monkeypatch.setattr(
             ha_agent_advanced, "BACKUP_LOCAL_DIR", str(tmp_path / "nonexistent")
@@ -3000,7 +3000,7 @@ class TestPurgeLocalBackups:
 
     def test_recent_files_not_deleted(self, db_path, monkeypatch, tmp_path):
         import time
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         recent_ts = time.time() - (5 * 86400)
         self._insert(db_path, "slug-recent", recent_ts)
@@ -3018,7 +3018,7 @@ class TestPurgeLocalBackups:
 class TestPrintBackupStatus:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -3026,7 +3026,7 @@ class TestPrintBackupStatus:
         return path
 
     def test_empty_prints_no_backups(self, db_path, capsys):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.print_backup_status()
         out = capsys.readouterr().out
@@ -3034,7 +3034,7 @@ class TestPrintBackupStatus:
 
     def test_shows_slug_and_marks(self, db_path, capsys):
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         with sqlite3.connect(db_path) as conn:
             conn.execute(
@@ -3238,13 +3238,13 @@ class TestGetUpdateStatus:
 # ── ha_update_manager ────────────────────────────────────────────────────────────
 class TestFormatUpdateTable:
     def test_empty_list_returns_message(self):
-        from ha_update_manager import _format_update_table
+        from agents.ha_update_manager import _format_update_table
 
         result = _format_update_table([])
         assert "No update entities found" in result
 
     def test_shows_component_and_versions(self):
-        from ha_update_manager import _format_update_table
+        from agents.ha_update_manager import _format_update_table
         from utils.ha_rest_client import UpdateStatus
 
         updates = [
@@ -3266,7 +3266,7 @@ class TestFormatUpdateTable:
         assert "YES" in result
 
     def test_no_update_shows_no(self):
-        from ha_update_manager import _format_update_table
+        from agents.ha_update_manager import _format_update_table
         from utils.ha_rest_client import UpdateStatus
 
         updates = [
@@ -3288,7 +3288,7 @@ class TestFormatUpdateTable:
 
 class TestRunUpdateCheck:
     def test_returns_updates_with_fake_client(self):
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -3322,7 +3322,7 @@ class TestRunUpdateCheck:
 
         isolated_config.write_text(yaml.dump({"home_assistant": {"api_token": ""}}))
         importlib.reload(sys.modules["config"])
-        import ha_update_manager
+        from agents import ha_update_manager
 
         importlib.reload(ha_update_manager)
 
@@ -3332,7 +3332,7 @@ class TestRunUpdateCheck:
         assert "api_token" in out or "HA_API_TOKEN" in out
 
     def test_returns_empty_on_client_error(self, capsys):
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
 
         class ErrorClient:
             async def get_states(self, prefix=None):
@@ -3345,7 +3345,7 @@ class TestRunUpdateCheck:
 
     def test_ssh_read_file_error_is_skipped(self, tmp_path, capsys):
         """SSH config fetch failure logs a warning but does not abort analysis."""
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -3383,7 +3383,7 @@ class TestRunUpdateCheck:
     def test_analyze_breaking_changes_error_is_skipped(self, tmp_path, capsys):
         """analyze_breaking_changes failure prints a warning and returns all updates."""
         import unittest.mock as mock
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -3410,7 +3410,7 @@ class TestRunUpdateCheck:
         )
 
         with mock.patch(
-            "ha_update_manager.analyze_breaking_changes",
+            "agents.ha_update_manager.analyze_breaking_changes",
             side_effect=RuntimeError("llm exploded"),
         ):
             updates = asyncio.run(
@@ -3435,7 +3435,7 @@ class TestRunUpdateCheck:
         instead of gate.queue_for_approval (non-blocking), hanging forever when the
         dashboard was not running to respond to the approval request.
         """
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -3474,7 +3474,7 @@ class TestRunUpdateCheck:
 # ── UpdateReadinessReport schema ─────────────────────────────────────────────────
 class TestUpdateReadinessReport:
     def test_valid_construction(self):
-        from ha_update_manager import UpdateReadinessReport
+        from agents.ha_update_manager import UpdateReadinessReport
 
         report = UpdateReadinessReport(
             target_version="2026.7.0",
@@ -3489,7 +3489,7 @@ class TestUpdateReadinessReport:
         assert len(report.breaking_changes) == 1
 
     def test_empty_lists_valid(self):
-        from ha_update_manager import UpdateReadinessReport
+        from agents.ha_update_manager import UpdateReadinessReport
 
         report = UpdateReadinessReport(
             target_version="2026.7.0",
@@ -3505,7 +3505,7 @@ class TestUpdateReadinessReport:
     def test_missing_required_field_raises(self):
         import pytest
         from pydantic import ValidationError
-        from ha_update_manager import UpdateReadinessReport
+        from agents.ha_update_manager import UpdateReadinessReport
 
         with pytest.raises(ValidationError):
             UpdateReadinessReport(
@@ -3518,7 +3518,7 @@ class TestUpdateReadinessReport:
             )
 
     def test_json_round_trip(self):
-        from ha_update_manager import UpdateReadinessReport
+        from agents.ha_update_manager import UpdateReadinessReport
 
         report = UpdateReadinessReport(
             target_version="2026.7.0",
@@ -3540,7 +3540,7 @@ class TestFetchReleaseNotesCached:
         cached = tmp_path / "2026.7.0.txt"
         cached.write_text("Cached release notes content")
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(fetch_release_notes_cached("2026.7.0", str(tmp_path)))
         assert result == "Cached release notes content"
@@ -3549,7 +3549,7 @@ class TestFetchReleaseNotesCached:
         async def fake_fetcher(version: str) -> str:
             return f"Release notes for {version}"
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
             fetch_release_notes_cached("2026.7.0", str(tmp_path), _fetcher=fake_fetcher)
@@ -3565,7 +3565,7 @@ class TestFetchReleaseNotesCached:
         cached.write_text("Cached")
         mock_fetcher = AsyncMock()
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         asyncio.run(
             fetch_release_notes_cached("2026.7.0", str(tmp_path), _fetcher=mock_fetcher)
@@ -3578,7 +3578,7 @@ class TestFetchReleaseNotesCached:
         async def fake_fetcher(version: str) -> str:
             return "notes"
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         asyncio.run(
             fetch_release_notes_cached("2026.7.0", str(nested), _fetcher=fake_fetcher)
@@ -3597,7 +3597,7 @@ class TestFetchReleaseNotesCached:
                 return real_content
             raise Exception("404")
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
             fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
@@ -3611,7 +3611,7 @@ class TestFetchReleaseNotesCached:
         async def fake_fetcher(version: str) -> str:
             return stub
 
-        from ha_update_manager import fetch_release_notes_cached
+        from agents.ha_update_manager import fetch_release_notes_cached
 
         result = asyncio.run(
             fetch_release_notes_cached("2026.8.0", str(tmp_path), _fetcher=fake_fetcher)
@@ -3620,7 +3620,7 @@ class TestFetchReleaseNotesCached:
 
     def test_neutral_advisory_on_stub_notes(self):
         """analyze_breaking_changes returns neutral report without LLM when notes are a stub."""
-        from ha_update_manager import analyze_breaking_changes
+        from agents.ha_update_manager import analyze_breaking_changes
         from utils.ha_rest_client import UpdateStatus
 
         update = UpdateStatus(
@@ -3686,7 +3686,7 @@ class TestAnalyzeBreakingChanges:
         breaking_changes: list | None = None,
         pueo_command_risks: list | None = None,
     ):
-        from ha_update_manager import UpdateReadinessReport
+        from agents.ha_update_manager import UpdateReadinessReport
         from utils.ollama_client import FakeLLMClient
 
         report = UpdateReadinessReport(
@@ -3700,7 +3700,7 @@ class TestAnalyzeBreakingChanges:
         return FakeLLMClient(report.model_dump_json())
 
     def test_returns_readiness_report(self):
-        from ha_update_manager import analyze_breaking_changes
+        from agents.ha_update_manager import analyze_breaking_changes
 
         update = self._make_core_update()
         llm = self._fake_llm()
@@ -3709,7 +3709,7 @@ class TestAnalyzeBreakingChanges:
         assert report.safe_to_update is True
 
     def test_llm_called_with_version_info(self):
-        from ha_update_manager import analyze_breaking_changes
+        from agents.ha_update_manager import analyze_breaking_changes
 
         update = self._make_core_update()
         llm = self._fake_llm()
@@ -3721,7 +3721,7 @@ class TestAnalyzeBreakingChanges:
         assert "2026.6.0" in user_content
 
     def test_breaking_changes_propagated(self):
-        from ha_update_manager import analyze_breaking_changes
+        from agents.ha_update_manager import analyze_breaking_changes
 
         update = self._make_core_update()
         llm = self._fake_llm(
@@ -3735,7 +3735,7 @@ class TestAnalyzeBreakingChanges:
         assert len(report.pueo_command_risks) == 1
 
     def test_analyze_breaking_changes_uses_profile(self):
-        from ha_update_manager import analyze_breaking_changes
+        from agents.ha_update_manager import analyze_breaking_changes
         from utils.ha_environment import HAEnvironmentProfile
 
         update = self._make_core_update()
@@ -3778,7 +3778,7 @@ class TestRunUpdateCheckWithAnalysis:
         return FakeHARestClient(states=states)
 
     def test_analysis_runs_for_core_update(self, tmp_path, capsys):
-        from ha_update_manager import UpdateReadinessReport, run_update_check
+        from agents.ha_update_manager import UpdateReadinessReport, run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -3811,7 +3811,7 @@ class TestRunUpdateCheckWithAnalysis:
         assert "Breaking Change Analysis" in out
 
     def test_no_analysis_when_no_core_update(self, tmp_path, capsys):
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.ollama_client import FakeLLMClient
 
         llm = FakeLLMClient("{}")
@@ -3826,7 +3826,7 @@ class TestRunUpdateCheckWithAnalysis:
         assert llm.calls == []
 
     def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -3834,7 +3834,7 @@ class TestRunUpdateCheckWithAnalysis:
 
         llm = FakeLLMClient("{}")
         with patch(
-            "ha_update_manager.fetch_release_notes_cached",
+            "agents.ha_update_manager.fetch_release_notes_cached",
             new=AsyncMock(side_effect=Exception("GitHub unavailable")),
         ):
             asyncio.run(
@@ -3854,7 +3854,7 @@ class TestRunUpdateCheckWithAnalysis:
 
     def test_hitl_card_sent_for_core_update(self, tmp_path):
         """A HITL approval card is dispatched when a Core update is detected."""
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
@@ -3881,7 +3881,7 @@ class TestRunUpdateCheckWithAnalysis:
         when both the dashboard and the one-shot subprocess see the approval sentinel.
         """
         import unittest.mock as mock
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -3889,7 +3889,7 @@ class TestRunUpdateCheckWithAnalysis:
         notifier = FakeNotifier(approve=True)
 
         with mock.patch(
-            "ha_update_manager.execute_update",
+            "agents.ha_update_manager.execute_update",
             new=mock.AsyncMock(return_value=True),
         ) as mock_exec:
             asyncio.run(
@@ -3907,7 +3907,7 @@ class TestRunUpdateCheckWithAnalysis:
     def test_hitl_rejection_skips_execute_update(self, tmp_path):
         """When the HITL card is rejected, execute_update is not called."""
         import unittest.mock as mock
-        from ha_update_manager import run_update_check
+        from agents.ha_update_manager import run_update_check
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -3915,7 +3915,7 @@ class TestRunUpdateCheckWithAnalysis:
         notifier = FakeNotifier(approve=False)
 
         with mock.patch(
-            "ha_update_manager.execute_update",
+            "agents.ha_update_manager.execute_update",
             new=mock.AsyncMock(return_value=True),
         ) as mock_exec:
             asyncio.run(
@@ -3947,7 +3947,7 @@ class TestRequestUpdateApproval:
         )
 
     def test_core_update_uses_critical_risk(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
@@ -3963,7 +3963,7 @@ class TestRequestUpdateApproval:
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
 
     def test_os_update_uses_critical_risk(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
@@ -3976,7 +3976,7 @@ class TestRequestUpdateApproval:
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
 
     def test_supervisor_update_uses_high_risk(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
@@ -3988,7 +3988,7 @@ class TestRequestUpdateApproval:
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.HIGH
 
     def test_addon_update_uses_medium_risk(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate, RiskLevel
         from utils.notify import FakeNotifier
 
@@ -4000,7 +4000,7 @@ class TestRequestUpdateApproval:
         assert gate.require_approval_calls[0]["risk"] == RiskLevel.MEDIUM
 
     def test_payload_includes_version_info(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4014,7 +4014,10 @@ class TestRequestUpdateApproval:
         assert payload["latest_version"] == "2026.7.0"
 
     def test_payload_includes_breaking_changes_from_report(self):
-        from ha_update_manager import UpdateReadinessReport, request_update_approval
+        from agents.ha_update_manager import (
+            UpdateReadinessReport,
+            request_update_approval,
+        )
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4040,7 +4043,7 @@ class TestRequestUpdateApproval:
         assert payload["safe_to_update"] is False
 
     def test_payload_empty_lists_when_no_report(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4054,7 +4057,7 @@ class TestRequestUpdateApproval:
         assert payload["advisory"] is None
 
     def test_disk_info_included_in_payload(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4076,7 +4079,7 @@ class TestRequestUpdateApproval:
         assert payload["disk_critical"] is False
 
     def test_custom_notification_id_used(self):
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4095,7 +4098,7 @@ class TestRequestUpdateApproval:
 
     def test_autonomous_level4_auto_executes_addon(self):
         """Level-4 autonomy auto-executes MEDIUM-risk add-on updates."""
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4109,7 +4112,7 @@ class TestRequestUpdateApproval:
 
     def test_autonomous_level4_still_asks_for_core(self):
         """Level-4 autonomy must still ask for CRITICAL-risk core updates."""
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.autonomy import AutonomyGate
         from utils.notify import FakeNotifier
 
@@ -4125,25 +4128,25 @@ class TestRequestUpdateApproval:
 # ── _component_risk_level ─────────────────────────────────────────────────────────
 class TestComponentRiskLevel:
     def test_core_is_critical(self):
-        from ha_update_manager import _component_risk_level
+        from agents.ha_update_manager import _component_risk_level
         from utils.autonomy import RiskLevel
 
         assert _component_risk_level("core") == RiskLevel.CRITICAL
 
     def test_os_is_critical(self):
-        from ha_update_manager import _component_risk_level
+        from agents.ha_update_manager import _component_risk_level
         from utils.autonomy import RiskLevel
 
         assert _component_risk_level("os") == RiskLevel.CRITICAL
 
     def test_supervisor_is_high(self):
-        from ha_update_manager import _component_risk_level
+        from agents.ha_update_manager import _component_risk_level
         from utils.autonomy import RiskLevel
 
         assert _component_risk_level("supervisor") == RiskLevel.HIGH
 
     def test_addon_is_medium(self):
-        from ha_update_manager import _component_risk_level
+        from agents.ha_update_manager import _component_risk_level
         from utils.autonomy import RiskLevel
 
         assert _component_risk_level("my_addon") == RiskLevel.MEDIUM
@@ -4165,7 +4168,7 @@ class TestPollCoreVersion:
         return FakeSSHClient(command_results={"ha core info": (0, payload, "")})
 
     def test_returns_true_when_version_matches(self):
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
 
         ssh = self._make_ssh("2026.7.0", False)
         result = asyncio.run(
@@ -4176,7 +4179,7 @@ class TestPollCoreVersion:
         assert result is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
         from utils.ssh_client import FakeSSHClient
         import json
 
@@ -4192,7 +4195,7 @@ class TestPollCoreVersion:
         assert result is False
 
     def test_handles_json_parse_error(self):
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha core info": (0, "not-json", "")})
@@ -4204,7 +4207,7 @@ class TestPollCoreVersion:
         assert result is False
 
     def test_exception_covered_and_retried_until_timeout(self):
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
         from utils.ssh_client import FakeSSHClient
 
         # timeout=5, interval=5 → one iteration that raises, then elapsed=5 exits loop
@@ -4217,7 +4220,7 @@ class TestPollCoreVersion:
         assert result is False
 
     def test_returns_true_when_update_available_false(self):
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
         import json
         from utils.ssh_client import FakeSSHClient
 
@@ -4236,7 +4239,7 @@ class TestPollCoreVersion:
 # ── _poll_os_online ────────────────────────────────────────────────────────────
 class TestPollOsOnline:
     def test_returns_true_on_successful_connect(self):
-        from ha_update_manager import _poll_os_online
+        from agents.ha_update_manager import _poll_os_online
 
         async def fake_connect(host, port):
             class FakeWriter:
@@ -4261,7 +4264,7 @@ class TestPollOsOnline:
         assert result is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import _poll_os_online
+        from agents.ha_update_manager import _poll_os_online
 
         async def fail_connect(host, port):
             raise ConnectionRefusedError("no server")
@@ -4279,7 +4282,7 @@ class TestPollOsOnline:
         assert result is False
 
     def test_connection_error_is_swallowed_before_timeout(self):
-        from ha_update_manager import _poll_os_online
+        from agents.ha_update_manager import _poll_os_online
 
         attempts = [0]
 
@@ -4313,7 +4316,7 @@ class TestPollOsOnline:
 # ── _wait_for_ha_down ──────────────────────────────────────────────────────────
 class TestWaitForHaDown:
     def test_returns_true_immediately_on_connection_refused(self):
-        from ha_update_manager import _wait_for_ha_down
+        from agents.ha_update_manager import _wait_for_ha_down
 
         async def refused_connect(host, port):
             raise ConnectionRefusedError("no server")
@@ -4330,7 +4333,7 @@ class TestWaitForHaDown:
         assert result is True
 
     def test_returns_false_on_timeout_when_tcp_always_succeeds(self):
-        from ha_update_manager import _wait_for_ha_down
+        from agents.ha_update_manager import _wait_for_ha_down
 
         async def always_up(host, port):
             class FakeWriter:
@@ -4354,7 +4357,7 @@ class TestWaitForHaDown:
         assert result is False
 
     def test_returns_true_after_several_successes_then_refused(self):
-        from ha_update_manager import _wait_for_ha_down
+        from agents.ha_update_manager import _wait_for_ha_down
 
         calls = [0]
 
@@ -4388,7 +4391,7 @@ class TestWaitForHaDown:
 # ── _poll_ha_api_ready ─────────────────────────────────────────────────────────
 class TestPollHaApiReady:
     def test_returns_true_on_http_200(self):
-        from ha_update_manager import _poll_ha_api_ready
+        from agents.ha_update_manager import _poll_ha_api_ready
 
         async def ok_get(url, headers):
             return 200
@@ -4406,7 +4409,7 @@ class TestPollHaApiReady:
         assert result is True
 
     def test_returns_true_on_http_401(self):
-        from ha_update_manager import _poll_ha_api_ready
+        from agents.ha_update_manager import _poll_ha_api_ready
 
         async def unauth_get(url, headers):
             return 401
@@ -4424,7 +4427,7 @@ class TestPollHaApiReady:
         assert result is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import _poll_ha_api_ready
+        from agents.ha_update_manager import _poll_ha_api_ready
 
         async def error_get(url, headers):
             raise ConnectionRefusedError("down")
@@ -4442,7 +4445,7 @@ class TestPollHaApiReady:
         assert result is False
 
     def test_retries_on_connection_error_then_succeeds(self):
-        from ha_update_manager import _poll_ha_api_ready
+        from agents.ha_update_manager import _poll_ha_api_ready
 
         calls = [0]
 
@@ -4475,7 +4478,7 @@ class TestExecuteHaReboot:
         return FakeSSHClient()
 
     def test_sends_success_card_after_api_ready(self, tmp_path, monkeypatch):
-        from ha_update_manager import execute_ha_reboot
+        from agents.ha_update_manager import execute_ha_reboot
         from utils.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
@@ -4496,14 +4499,14 @@ class TestExecuteHaReboot:
 
         with (
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.execute_remote_backup",
+                "agents.ha_agent_advanced.execute_remote_backup",
                 return_value="abc123",
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.record_backup_slug"
+                "agents.ha_agent_advanced.record_backup_slug"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.offload_backup_to_local"
+                "agents.ha_agent_advanced.offload_backup_to_local"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
         ):
@@ -4525,7 +4528,7 @@ class TestExecuteHaReboot:
         assert "succeeded" in notifier.sent[0]["subject"].lower()
 
     def test_sends_failure_card_when_api_poll_times_out(self, tmp_path, monkeypatch):
-        from ha_update_manager import execute_ha_reboot
+        from agents.ha_update_manager import execute_ha_reboot
         from utils.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
@@ -4544,14 +4547,14 @@ class TestExecuteHaReboot:
 
         with (
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.execute_remote_backup",
+                "agents.ha_agent_advanced.execute_remote_backup",
                 return_value="abc123",
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.record_backup_slug"
+                "agents.ha_agent_advanced.record_backup_slug"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.offload_backup_to_local"
+                "agents.ha_agent_advanced.offload_backup_to_local"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
         ):
@@ -4573,7 +4576,7 @@ class TestExecuteHaReboot:
 
     def test_skips_api_poll_when_tcp_poll_fails(self, tmp_path, monkeypatch):
         """If TCP poll times out, _api_poll must not be called."""
-        from ha_update_manager import execute_ha_reboot
+        from agents.ha_update_manager import execute_ha_reboot
         from utils.notify import FakeNotifier
 
         monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
@@ -4594,14 +4597,14 @@ class TestExecuteHaReboot:
 
         with (
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.execute_remote_backup",
+                "agents.ha_agent_advanced.execute_remote_backup",
                 return_value="abc123",
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.record_backup_slug"
+                "agents.ha_agent_advanced.record_backup_slug"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch(
-                "ha_agent_advanced.offload_backup_to_local"
+                "agents.ha_agent_advanced.offload_backup_to_local"
             ),
             __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
         ):
@@ -4624,7 +4627,7 @@ class TestExecuteHaReboot:
 # ── _poll_addon_version ────────────────────────────────────────────────────────
 class TestPollAddonVersion:
     def test_returns_true_when_version_and_state_match(self):
-        from ha_update_manager import _poll_addon_version
+        from agents.ha_update_manager import _poll_addon_version
         import json
         from utils.ssh_client import FakeSSHClient
 
@@ -4643,7 +4646,7 @@ class TestPollAddonVersion:
         assert result is True
 
     def test_returns_false_when_state_not_started(self):
-        from ha_update_manager import _poll_addon_version
+        from agents.ha_update_manager import _poll_addon_version
         import json
         from utils.ssh_client import FakeSSHClient
 
@@ -4662,7 +4665,7 @@ class TestPollAddonVersion:
         assert result is False
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import _poll_addon_version
+        from agents.ha_update_manager import _poll_addon_version
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha apps info": (0, "not-json", "")})
@@ -4679,7 +4682,7 @@ class TestPollAddonVersion:
         assert result is False
 
     def test_exception_covered_and_retried_until_timeout(self):
-        from ha_update_manager import _poll_addon_version
+        from agents.ha_update_manager import _poll_addon_version
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha apps info": (0, "not-json", "")})
@@ -4713,7 +4716,7 @@ class TestPollAddonUpdateViaRest:
         return _QueuedClient()
 
     def test_returns_true_when_state_flips_off(self):
-        from ha_update_manager import _poll_addon_update_via_rest
+        from agents.ha_update_manager import _poll_addon_update_via_rest
 
         client = self._make_rest_client(
             [
@@ -4733,7 +4736,7 @@ class TestPollAddonUpdateViaRest:
         assert result is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import _poll_addon_update_via_rest
+        from agents.ha_update_manager import _poll_addon_update_via_rest
 
         client = self._make_rest_client([])
         result = asyncio.run(
@@ -4748,7 +4751,7 @@ class TestPollAddonUpdateViaRest:
         assert result is False
 
     def test_tolerates_get_state_exception(self):
-        from ha_update_manager import _poll_addon_update_via_rest
+        from agents.ha_update_manager import _poll_addon_update_via_rest
         from utils.ha_rest_client import FakeHARestClient
 
         call_count = [0]
@@ -4790,7 +4793,7 @@ class TestSendPostUpdateCard:
         )
 
     def test_sends_to_notifier_on_success(self):
-        from ha_update_manager import _send_post_update_card
+        from agents.ha_update_manager import _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -4803,7 +4806,7 @@ class TestSendPostUpdateCard:
         assert "succeeded" in notifier.sent[0]["subject"]
 
     def test_sends_to_notifier_on_failure(self):
-        from ha_update_manager import _send_post_update_card
+        from agents.ha_update_manager import _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -4813,7 +4816,7 @@ class TestSendPostUpdateCard:
         assert "timed out" in notifier.sent[0]["subject"]
 
     def test_payload_contains_component_and_versions(self):
-        from ha_update_manager import _send_post_update_card
+        from agents.ha_update_manager import _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -4829,7 +4832,7 @@ class TestSendPostUpdateCard:
         assert payload["success"] is True
 
     def test_payload_includes_config_check_output(self):
-        from ha_update_manager import _send_post_update_card
+        from agents.ha_update_manager import _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -4866,7 +4869,7 @@ class TestExecuteCoreUpdate:
 
     def _patch_backup(self, slug: str = "slug1"):
         """Context manager that stubs ha_agent_advanced backup functions."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import contextlib
 
         @contextlib.contextmanager
@@ -4900,7 +4903,7 @@ class TestExecuteCoreUpdate:
         return _ctx()
 
     def test_calls_backup_before_update(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "Config valid", "")})
@@ -4921,7 +4924,7 @@ class TestExecuteCoreUpdate:
         assert result is True
 
     def test_sends_post_update_card_on_success(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "Config valid", "")})
@@ -4941,7 +4944,7 @@ class TestExecuteCoreUpdate:
         assert notifier.sent[0]["payload"]["success"] is True
 
     def test_sends_post_update_card_on_timeout(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -4961,7 +4964,7 @@ class TestExecuteCoreUpdate:
         assert notifier.sent[0]["payload"]["success"] is False
 
     def test_update_command_is_issued(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(command_results={"ha core check": (0, "ok", "")})
@@ -4980,7 +4983,7 @@ class TestExecuteCoreUpdate:
         assert any("ha core update" in cmd for cmd in ssh.commands_run)
 
     def test_stderr_from_update_command_is_logged(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5004,7 +5007,7 @@ class TestExecuteCoreUpdate:
         assert result is True  # stderr warning doesn't fail the update
 
     def test_config_check_exception_is_swallowed(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         # FakeSSHClient with check=True raises on ha core check — simulate by raising in run
@@ -5033,10 +5036,10 @@ class TestExecuteCoreUpdate:
         )  # exception is swallowed, update still reported as success
 
     def test_log_triage_runs_when_logs_returned(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         evaluation_json = LogEvaluation(
             is_actionable=False,
@@ -5076,7 +5079,7 @@ class TestExecuteCoreUpdate:
         assert notifier.sent[0]["payload"]["log_triage_summary"] == "No issues found"
 
     def test_log_triage_exception_is_swallowed(self):
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
 
         # SSH raises on the logs command → covers the outer except branch
@@ -5120,7 +5123,7 @@ class TestExecuteOsUpdate:
         )
 
     def _patch_backup(self, slug: str = "slug2"):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import contextlib
 
         @contextlib.contextmanager
@@ -5147,7 +5150,7 @@ class TestExecuteOsUpdate:
         return _ctx()
 
     def test_calls_backup_and_issues_os_update(self):
-        from ha_update_manager import execute_os_update
+        from agents.ha_update_manager import execute_os_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -5171,7 +5174,7 @@ class TestExecuteOsUpdate:
         assert notifier.sent[0]["payload"]["success"] is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import execute_os_update
+        from agents.ha_update_manager import execute_os_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -5211,7 +5214,7 @@ class TestExecuteAddonUpdate:
         )
 
     def _patch_backup(self, slug: str = "slug3"):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import contextlib
 
         @contextlib.contextmanager
@@ -5238,7 +5241,7 @@ class TestExecuteAddonUpdate:
         return _ctx()
 
     def test_calls_backup_and_calls_rest_service(self):
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5271,7 +5274,7 @@ class TestExecuteAddonUpdate:
         assert notifier.sent[0]["payload"]["success"] is True
 
     def test_returns_false_on_timeout(self):
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5301,7 +5304,7 @@ class TestExecuteAddonUpdate:
         assert notifier.sent[0]["payload"]["success"] is False
 
     def test_rest_service_uses_entity_id(self):
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5337,7 +5340,7 @@ class TestExecuteAddonUpdate:
         """When call_service raises, return False without polling."""
         import httpx
 
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5382,7 +5385,7 @@ class TestExecuteAddonUpdate:
         """httpx.TimeoutException must not abort — fall through to the poll."""
         import httpx
 
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5421,7 +5424,7 @@ class TestExecuteAddonUpdate:
 
     def test_non_timeout_exception_sends_failure_card(self):
         """Non-timeout exceptions abort immediately without calling the poll."""
-        from ha_update_manager import execute_addon_update
+        from agents.ha_update_manager import execute_addon_update
         from utils.autonomy import FakeAutonomyGate
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
@@ -5474,7 +5477,7 @@ class TestExecuteUpdate:
         )
 
     def test_dispatches_core_to_execute_core_update(self):
-        from ha_update_manager import execute_update
+        from agents.ha_update_manager import execute_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -5489,15 +5492,15 @@ class TestExecuteUpdate:
             called.append("core")
             return True
 
-        with patch("ha_update_manager.execute_core_update", fake_core), patch(
-            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        with patch("agents.ha_update_manager.execute_core_update", fake_core), patch(
+            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
         ):
             asyncio.run(execute_update(self._make_update("core"), ssh, notifier, gate))
 
         assert called == ["core"]
 
     def test_dispatches_os_to_execute_os_update(self):
-        from ha_update_manager import execute_update
+        from agents.ha_update_manager import execute_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -5512,15 +5515,15 @@ class TestExecuteUpdate:
             called.append("os")
             return True
 
-        with patch("ha_update_manager.execute_os_update", fake_os), patch(
-            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        with patch("agents.ha_update_manager.execute_os_update", fake_os), patch(
+            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
         ):
             asyncio.run(execute_update(self._make_update("os"), ssh, notifier, gate))
 
         assert called == ["os"]
 
     def test_dispatches_addon_to_execute_addon_update(self):
-        from ha_update_manager import execute_update
+        from agents.ha_update_manager import execute_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -5535,8 +5538,8 @@ class TestExecuteUpdate:
             called.append("addon")
             return True
 
-        with patch("ha_update_manager.execute_addon_update", fake_addon), patch(
-            "ha_agent_advanced.is_reboot_required_active", return_value=False
+        with patch("agents.ha_update_manager.execute_addon_update", fake_addon), patch(
+            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
         ):
             asyncio.run(
                 execute_update(self._make_update("my_addon"), ssh, notifier, gate)
@@ -5550,7 +5553,7 @@ class TestExecuteUpdate:
 
 class TestSelfCheckCommandRisk:
     def test_valid_construction(self):
-        from ha_update_manager import SelfCheckCommandRisk
+        from agents.ha_update_manager import SelfCheckCommandRisk
 
         report = SelfCheckCommandRisk(
             command_risks=["ha addons → ha apps renamed"],
@@ -5560,20 +5563,20 @@ class TestSelfCheckCommandRisk:
         assert "renamed" in report.summary
 
     def test_empty_risks_valid(self):
-        from ha_update_manager import SelfCheckCommandRisk
+        from agents.ha_update_manager import SelfCheckCommandRisk
 
         report = SelfCheckCommandRisk(command_risks=[], summary="No risks found.")
         assert report.command_risks == []
 
     def test_missing_required_field_raises(self):
         from pydantic import ValidationError
-        from ha_update_manager import SelfCheckCommandRisk
+        from agents.ha_update_manager import SelfCheckCommandRisk
 
         with pytest.raises(ValidationError):
             SelfCheckCommandRisk(command_risks=["something"])  # missing summary
 
     def test_json_round_trip(self):
-        from ha_update_manager import SelfCheckCommandRisk
+        from agents.ha_update_manager import SelfCheckCommandRisk
 
         report = SelfCheckCommandRisk(
             command_risks=["ha core check removed"], summary="CLI broke."
@@ -5585,7 +5588,7 @@ class TestSelfCheckCommandRisk:
 
 class TestPueoSelfCheckResult:
     def test_all_commands_ok_when_all_pass(self):
-        from ha_update_manager import PueoSelfCheckResult
+        from agents.ha_update_manager import PueoSelfCheckResult
 
         result = PueoSelfCheckResult(
             core_check_ok=True,
@@ -5597,7 +5600,7 @@ class TestPueoSelfCheckResult:
         assert result.all_commands_ok is True
 
     def test_all_commands_ok_false_when_one_fails(self):
-        from ha_update_manager import PueoSelfCheckResult
+        from agents.ha_update_manager import PueoSelfCheckResult
 
         result = PueoSelfCheckResult(
             core_check_ok=True,
@@ -5609,7 +5612,7 @@ class TestPueoSelfCheckResult:
         assert result.all_commands_ok is False
 
     def test_backup_smoke_none_by_default(self):
-        from ha_update_manager import PueoSelfCheckResult
+        from agents.ha_update_manager import PueoSelfCheckResult
 
         result = PueoSelfCheckResult(
             core_check_ok=True,
@@ -5621,7 +5624,7 @@ class TestPueoSelfCheckResult:
         assert result.backup_smoke_ok is None
 
     def test_command_risks_defaults_to_empty_list(self):
-        from ha_update_manager import PueoSelfCheckResult
+        from agents.ha_update_manager import PueoSelfCheckResult
 
         result = PueoSelfCheckResult(
             core_check_ok=True,
@@ -5636,7 +5639,7 @@ class TestPueoSelfCheckResult:
 class TestRunPueoSelfCheck:
     def _make_fake_llm(self, risks: list[str] | None = None):
         from utils.ollama_client import FakeLLMClient
-        from ha_update_manager import SelfCheckCommandRisk
+        from agents.ha_update_manager import SelfCheckCommandRisk
 
         r = SelfCheckCommandRisk(
             command_risks=risks or [],
@@ -5645,7 +5648,7 @@ class TestRunPueoSelfCheck:
         return FakeLLMClient(response_json=r.model_dump_json())
 
     def test_all_ok_with_successful_commands(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5671,7 +5674,7 @@ class TestRunPueoSelfCheck:
         assert result.all_commands_ok is True
 
     def test_failed_core_check_sets_flag_false(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5689,7 +5692,7 @@ class TestRunPueoSelfCheck:
         assert result.all_commands_ok is False
 
     def test_failed_core_info_sets_flag_false(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5706,7 +5709,7 @@ class TestRunPueoSelfCheck:
         assert result.core_info_ok is False
 
     def test_failed_apps_list_sets_flag_false(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5723,7 +5726,7 @@ class TestRunPueoSelfCheck:
         assert result.apps_list_ok is False
 
     def test_failed_netalertx_info_sets_flag_false(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5740,7 +5743,7 @@ class TestRunPueoSelfCheck:
         assert result.netalertx_info_ok is False
 
     def test_exception_in_cli_command_is_swallowed(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
 
         class ExplodingSSH:
             async def run(self, command, check=False):
@@ -5755,7 +5758,7 @@ class TestRunPueoSelfCheck:
         assert result.all_commands_ok is False
 
     def test_backup_smoke_skipped_when_disk_constrained(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5768,7 +5771,7 @@ class TestRunPueoSelfCheck:
         assert not any("pueo_selfcheck" in cmd for cmd in ssh.commands_run)
 
     def test_backup_smoke_skipped_when_disk_free_is_none(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5780,7 +5783,7 @@ class TestRunPueoSelfCheck:
         assert result.backup_smoke_ok is None
 
     def test_backup_smoke_ok_when_disk_free_above_threshold(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5797,7 +5800,7 @@ class TestRunPueoSelfCheck:
         assert result.backup_smoke_ok is True
 
     def test_backup_smoke_false_when_slug_unknown(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -5813,7 +5816,7 @@ class TestRunPueoSelfCheck:
         assert result.backup_smoke_ok is False
 
     def test_backup_smoke_exception_sets_false(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from config import HA_DISK_WARN_GB
 
         class BrokenSSHForBackup:
@@ -5837,7 +5840,7 @@ class TestRunPueoSelfCheck:
         assert result.backup_smoke_ok is False
 
     def test_llm_cross_reference_runs_when_notes_cached(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         notes_path = tmp_path / "2026.7.0.txt"
@@ -5856,7 +5859,7 @@ class TestRunPueoSelfCheck:
         assert "ha core check" in result.command_risks[0]
 
     def test_llm_cross_reference_skipped_when_no_cache(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
@@ -5866,7 +5869,7 @@ class TestRunPueoSelfCheck:
         assert result.command_risks == []
 
     def test_llm_cross_reference_exception_is_swallowed(self, tmp_path):
-        from ha_update_manager import run_pueo_self_check
+        from agents.ha_update_manager import run_pueo_self_check
         from utils.ssh_client import FakeSSHClient
 
         notes_path = tmp_path / "2026.7.0.txt"
@@ -5901,7 +5904,7 @@ class TestSendPostUpdateCardWithSelfCheck:
         )
 
     def test_self_check_included_in_payload(self):
-        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -5924,7 +5927,7 @@ class TestSendPostUpdateCardWithSelfCheck:
         assert payload["self_check"]["backup_smoke_ok"] is True
 
     def test_self_check_absent_when_none(self):
-        from ha_update_manager import _send_post_update_card
+        from agents.ha_update_manager import _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -5932,7 +5935,7 @@ class TestSendPostUpdateCardWithSelfCheck:
         assert "self_check" not in notifier.sent[0]["payload"]
 
     def test_command_risks_appear_in_body(self):
-        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -5953,7 +5956,7 @@ class TestSendPostUpdateCardWithSelfCheck:
         assert "ha core check renamed" in body
 
     def test_degraded_status_in_body_when_command_fails(self):
-        from ha_update_manager import PueoSelfCheckResult, _send_post_update_card
+        from agents.ha_update_manager import PueoSelfCheckResult, _send_post_update_card
         from utils.notify import FakeNotifier
 
         notifier = FakeNotifier()
@@ -5989,7 +5992,7 @@ class TestExecuteCoreUpdateSelfCheck:
         )
 
     def _patch_backup(self, slug: str = "slug_sc"):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import contextlib
 
         @contextlib.contextmanager
@@ -6017,7 +6020,7 @@ class TestExecuteCoreUpdateSelfCheck:
 
     def test_self_check_included_in_card_on_success(self, tmp_path):
         from unittest.mock import patch, AsyncMock
-        from ha_update_manager import execute_core_update, PueoSelfCheckResult
+        from agents.ha_update_manager import execute_core_update, PueoSelfCheckResult
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
@@ -6041,7 +6044,7 @@ class TestExecuteCoreUpdateSelfCheck:
             return sc
 
         with self._patch_backup():
-            with patch("ha_update_manager.run_pueo_self_check", fake_self_check):
+            with patch("agents.ha_update_manager.run_pueo_self_check", fake_self_check):
                 asyncio.run(
                     execute_core_update(
                         self._make_update(), ssh, notifier, gate, _poll=fake_poll
@@ -6054,7 +6057,7 @@ class TestExecuteCoreUpdateSelfCheck:
 
     def test_self_check_not_run_on_timeout(self, tmp_path):
         from unittest.mock import patch
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
@@ -6072,7 +6075,7 @@ class TestExecuteCoreUpdateSelfCheck:
             return None
 
         with self._patch_backup():
-            with patch("ha_update_manager.run_pueo_self_check", fake_self_check):
+            with patch("agents.ha_update_manager.run_pueo_self_check", fake_self_check):
                 asyncio.run(
                     execute_core_update(
                         self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
@@ -6084,7 +6087,7 @@ class TestExecuteCoreUpdateSelfCheck:
 
     def test_self_check_exception_is_swallowed(self, tmp_path):
         from unittest.mock import patch
-        from ha_update_manager import execute_core_update
+        from agents.ha_update_manager import execute_core_update
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
@@ -6100,7 +6103,9 @@ class TestExecuteCoreUpdateSelfCheck:
             raise RuntimeError("self-check exploded")
 
         with self._patch_backup():
-            with patch("ha_update_manager.run_pueo_self_check", exploding_self_check):
+            with patch(
+                "agents.ha_update_manager.run_pueo_self_check", exploding_self_check
+            ):
                 result = asyncio.run(
                     execute_core_update(
                         self._make_update(), ssh, notifier, gate, _poll=fake_poll
@@ -6116,7 +6121,7 @@ class TestExecuteCoreUpdateSelfCheck:
 
 class TestNotificationAnalysis:
     def test_valid_construction(self):
-        from ha_notification_manager import NotificationAnalysis
+        from agents.ha_notification_manager import NotificationAnalysis
 
         n = NotificationAnalysis(
             notification_id="http_login",
@@ -6134,7 +6139,7 @@ class TestNotificationAnalysis:
         assert n.requires_hitl is True
 
     def test_missing_required_fields_raises(self):
-        from ha_notification_manager import NotificationAnalysis
+        from agents.ha_notification_manager import NotificationAnalysis
 
         with pytest.raises(ValidationError):
             NotificationAnalysis(
@@ -6143,7 +6148,7 @@ class TestNotificationAnalysis:
             )
 
     def test_json_round_trip(self):
-        from ha_notification_manager import NotificationAnalysis
+        from agents.ha_notification_manager import NotificationAnalysis
 
         original = NotificationAnalysis(
             notification_id="invalid_config",
@@ -6160,7 +6165,7 @@ class TestNotificationAnalysis:
         assert restored == original
 
     def test_optional_title_accepts_none(self):
-        from ha_notification_manager import NotificationAnalysis
+        from agents.ha_notification_manager import NotificationAnalysis
 
         n = NotificationAnalysis(
             notification_id="other_nid",
@@ -6181,7 +6186,7 @@ class TestNotificationAnalysis:
 
 class TestClassifyNotification:
     def test_http_login_hyphen_is_security_high(self):
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("http-login")
         assert category == "security"
@@ -6189,35 +6194,35 @@ class TestClassifyNotification:
 
     def test_http_login_underscore_falls_through(self):
         # HA sends "http-login" (hyphen); underscore variant is never sent by HA
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("http_login")
         assert category == "other"
         assert severity == "MEDIUM"
 
     def test_ip_ban_is_security_high(self):
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("ip-ban")
         assert category == "security"
         assert severity == "HIGH"
 
     def test_invalid_config_is_config_error_high(self):
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("invalid_config")
         assert category == "config_error"
         assert severity == "HIGH"
 
     def test_unknown_id_is_other_medium(self):
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("some_integration_error")
         assert category == "other"
         assert severity == "MEDIUM"
 
     def test_empty_string_falls_back_to_other(self):
-        from ha_notification_manager import classify_notification
+        from agents.ha_notification_manager import classify_notification
 
         category, severity = classify_notification("")
         assert category == "other"
@@ -6230,7 +6235,7 @@ class TestClassifyNotification:
 class TestRecordNotificationSeen:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -6238,7 +6243,7 @@ class TestRecordNotificationSeen:
         return path
 
     def test_new_notification_returns_true(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         result = record_notification_seen(
             "http_login", "security", "HIGH", db_path=db_path
@@ -6246,7 +6251,7 @@ class TestRecordNotificationSeen:
         assert result is True
 
     def test_duplicate_notification_returns_false(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         result = record_notification_seen(
@@ -6255,7 +6260,7 @@ class TestRecordNotificationSeen:
         assert result is False
 
     def test_new_notification_stored_in_db(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         with sqlite3.connect(db_path) as conn:
@@ -6267,7 +6272,7 @@ class TestRecordNotificationSeen:
 
     def test_duplicate_updates_last_seen_at(self, db_path):
         import time
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         time.sleep(0.01)
@@ -6281,7 +6286,7 @@ class TestRecordNotificationSeen:
         assert row[1] > row[0]
 
     def test_different_ids_both_stored(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         record_notification_seen(
@@ -6295,7 +6300,7 @@ class TestRecordNotificationSeen:
         assert count == 2
 
     def test_mark_hitl_sent_updates_field(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_hitl_sent,
         )
@@ -6311,7 +6316,7 @@ class TestRecordNotificationSeen:
         assert row[0] is not None
 
     def test_mark_dismissed_updates_fields(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_dismissed,
         )
@@ -6328,7 +6333,7 @@ class TestRecordNotificationSeen:
         assert row[1] == "user"
 
     def test_get_notification_history_returns_all(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             get_notification_history,
         )
@@ -6344,7 +6349,7 @@ class TestRecordNotificationSeen:
         assert ids == {"http_login", "invalid_config"}
 
     def test_get_pending_excludes_dismissed(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_dismissed,
             get_pending_notifications,
@@ -6361,7 +6366,7 @@ class TestRecordNotificationSeen:
         assert pending[0]["notification_id"] == "invalid_config"
 
     def test_ha_created_at_stored(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         ha_ts = 1722700876.0
         record_notification_seen(
@@ -6376,7 +6381,7 @@ class TestRecordNotificationSeen:
         assert row[0] == ha_ts
 
     def test_ha_created_at_defaults_none(self, db_path):
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
 
         record_notification_seen("http_login", "security", "HIGH", db_path=db_path)
         with sqlite3.connect(db_path) as conn:
@@ -6388,7 +6393,7 @@ class TestRecordNotificationSeen:
         assert row[0] is None
 
     def test_newer_ha_created_at_resets_hitl_sent_at(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_hitl_sent,
         )
@@ -6414,7 +6419,7 @@ class TestRecordNotificationSeen:
         assert row[1] == 2000.0
 
     def test_newer_ha_created_at_resets_first_seen_at(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_hitl_sent,
         )
@@ -6445,7 +6450,7 @@ class TestRecordNotificationSeen:
         ), "first_seen_at must be reset to now when a new occurrence is detected"
 
     def test_same_ha_created_at_does_not_reset_hitl_sent_at(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_hitl_sent,
         )
@@ -6469,7 +6474,7 @@ class TestRecordNotificationSeen:
         ), "hitl_sent_at must not be reset for same notification"
 
     def test_new_occurrence_resets_dismissed_at(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             record_notification_seen,
             mark_notification_dismissed,
         )
@@ -6501,7 +6506,7 @@ class TestRecordNotificationSeen:
         """
         import sqlite3
 
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_dismissed,
             record_notification_seen,
         )
@@ -6533,7 +6538,7 @@ class TestRecordNotificationSeen:
         """
         import sqlite3
 
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_dismissed,
             record_notification_seen,
         )
@@ -6561,7 +6566,7 @@ class TestRecordNotificationSeen:
         """Dismissed notification with an older ha_created_at is not treated as new."""
         import sqlite3
 
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_dismissed,
             record_notification_seen,
         )
@@ -6591,14 +6596,14 @@ class TestRecordNotificationSeen:
 class TestNotificationHistoryMigration:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
         return path
 
     def test_migration_creates_notification_history_table(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -6611,7 +6616,7 @@ class TestNotificationHistoryMigration:
         assert "notification_history" in tables
 
     def test_notification_history_columns(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -6635,13 +6640,13 @@ class TestNotificationHistoryMigration:
         assert expected.issubset(set(cols))
 
     def test_migration_is_idempotent(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.init_local_database()
 
     def test_migration_v10_adds_ha_created_at_column(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
@@ -6715,7 +6720,7 @@ class TestPollForUpdates:
         """Updates available at startup must trigger a notification on the first iteration."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6727,7 +6732,7 @@ class TestPollForUpdates:
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -6739,7 +6744,7 @@ class TestPollForUpdates:
         """An entity already in _notified must not fire a second notification."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6755,7 +6760,7 @@ class TestPollForUpdates:
                 raise asyncio.CancelledError()
 
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -6766,7 +6771,7 @@ class TestPollForUpdates:
         """Once an entity flips back to off, it should be removable from _notified."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6788,7 +6793,7 @@ class TestPollForUpdates:
                 raise asyncio.CancelledError()
 
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -6801,7 +6806,7 @@ class TestPollForUpdates:
         dispatch routes approve() to _execute_queued_update."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6813,7 +6818,7 @@ class TestPollForUpdates:
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -6835,8 +6840,8 @@ class TestPollForUpdates:
         import asyncio as asyncio_mod
         import unittest.mock as mock
 
-        from ha_update_manager import UpdateReadinessReport
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_update_manager import UpdateReadinessReport
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -6867,7 +6872,7 @@ class TestPollForUpdates:
         )
 
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
@@ -6891,7 +6896,7 @@ class TestPollForUpdates:
         import asyncio as asyncio_mod
         import unittest.mock as mock
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6906,9 +6911,11 @@ class TestPollForUpdates:
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with mock.patch("ha_update_manager.analyze_breaking_changes") as mock_analyze:
+        with mock.patch(
+            "agents.ha_update_manager.analyze_breaking_changes"
+        ) as mock_analyze:
             with pytest.raises(asyncio.CancelledError):
                 asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
@@ -6922,7 +6929,7 @@ class TestPollForUpdates:
         import asyncio as asyncio_mod
         import sqlite3 as _sq3
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6945,7 +6952,7 @@ class TestPollForUpdates:
                 raise asyncio.CancelledError()
 
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -6960,7 +6967,7 @@ class TestPollForUpdates:
         import asyncio as asyncio_mod
         import sqlite3 as _sq3
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
@@ -6989,7 +6996,7 @@ class TestPollForUpdates:
                 raise asyncio.CancelledError()
 
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -7006,7 +7013,7 @@ class TestPollForUpdates:
         """Stable notification_id derived from suppression_key must be in the payload."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
         from utils.hitl_tracker import stable_nid
@@ -7019,7 +7026,7 @@ class TestPollForUpdates:
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
@@ -7035,7 +7042,7 @@ class TestPollForUpdates:
 class TestPollForNotifications:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -7068,7 +7075,7 @@ class TestPollForNotifications:
 
     @staticmethod
     def _make_llm_client():
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ollama_client import FakeLLMClient
 
         out = _NotificationLLMOutput(
@@ -7080,7 +7087,7 @@ class TestPollForNotifications:
 
     def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -7116,11 +7123,11 @@ class TestPollForNotifications:
     def test_duplicate_notification_not_resent(self, db_path, monkeypatch):
         """Notification already seen AND card already sent must not produce another card."""
         import asyncio as asyncio_mod
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_hitl_sent,
             record_notification_seen,
         )
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -7142,7 +7149,7 @@ class TestPollForNotifications:
 
     def test_poll_failure_continues(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
         class ExplodingWSClient:
@@ -7168,7 +7175,7 @@ class TestPollForNotifications:
 
     def test_unknown_notification_id_classified_as_other(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -7199,7 +7206,7 @@ class TestPollForNotifications:
     def test_enrichment_failure_skips_notification(self, db_path, monkeypatch):
         """If enrich_and_analyze_notification raises, the notification is skipped."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -7228,7 +7235,7 @@ class TestPollForNotifications:
         """mark_notification_hitl_sent is called after the notifier send."""
         import asyncio as asyncio_mod
         import sqlite3
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -7262,8 +7269,8 @@ class TestPollForNotifications:
     def test_poll_sends_card_on_reappearing_notification(self, db_path, monkeypatch):
         """Re-appearing notification (same ID, newer ha_created_at) must generate a second card."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
-        from ha_notification_manager import mark_notification_hitl_sent
+        from agents.ha_log_monitor import poll_for_notifications
+        from agents.ha_notification_manager import mark_notification_hitl_sent
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -7341,7 +7348,7 @@ class TestPollForNotifications:
     def test_netalertx_name_included_in_enrichment(self, db_path, monkeypatch):
         """NetAlertX device name must appear in enriched_context when a client is provided."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -7383,29 +7390,29 @@ class TestPollForNotifications:
 
 class TestExtractIpFromMessage:
     def test_extracts_ip_after_from(self):
-        from ha_notification_manager import extract_ip_from_message
+        from agents.ha_notification_manager import extract_ip_from_message
 
         ip = extract_ip_from_message("Invalid login attempt from 192.168.1.42")
         assert ip == "192.168.1.42"
 
     def test_returns_none_when_no_ip(self):
-        from ha_notification_manager import extract_ip_from_message
+        from agents.ha_notification_manager import extract_ip_from_message
 
         assert extract_ip_from_message("Bad credentials supplied") is None
 
     def test_returns_none_for_empty_string(self):
-        from ha_notification_manager import extract_ip_from_message
+        from agents.ha_notification_manager import extract_ip_from_message
 
         assert extract_ip_from_message("") is None
 
     def test_extracts_first_ip_when_multiple(self):
-        from ha_notification_manager import extract_ip_from_message
+        from agents.ha_notification_manager import extract_ip_from_message
 
         ip = extract_ip_from_message("Login from 10.0.0.1 and also from 10.0.0.2")
         assert ip == "10.0.0.1"
 
     def test_ignores_ip_not_preceded_by_from(self):
-        from ha_notification_manager import extract_ip_from_message
+        from agents.ha_notification_manager import extract_ip_from_message
 
         assert extract_ip_from_message("Source: 192.168.1.1 connected") is None
 
@@ -7415,7 +7422,7 @@ class TestExtractIpFromMessage:
 
 class TestEnrichHttpLogin:
     def test_netalertx_match_sets_known_device(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         class FakeNAX:
             async def get_devices(self):
@@ -7426,7 +7433,7 @@ class TestEnrichHttpLogin:
         assert ctx["is_known_device"] is True
 
     def test_ws_match_sets_known_device(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
         from utils.ha_ws_client import FakeHAWebSocketClient
 
         ws = FakeHAWebSocketClient(
@@ -7445,7 +7452,7 @@ class TestEnrichHttpLogin:
         assert ws.calls == ["get_device_registry"]
 
     def test_no_match_is_unknown_device(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         class FakeNAX:
             async def get_devices(self):
@@ -7461,7 +7468,7 @@ class TestEnrichHttpLogin:
         assert ctx["netalertx_name"] is None
 
     def test_netalertx_failure_continues(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         class ExplodingNAX:
             async def get_devices(self):
@@ -7473,7 +7480,7 @@ class TestEnrichHttpLogin:
         assert ctx["netalertx_name"] is None
 
     def test_ws_failure_continues(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         class ExplodingWS:
             async def get_device_registry(self):
@@ -7483,13 +7490,13 @@ class TestEnrichHttpLogin:
         assert ctx["ha_device_name"] is None
 
     def test_source_ip_always_in_context(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
 
         ctx = asyncio.run(enrich_http_login("1.2.3.4"))
         assert ctx["source_ip"] == "1.2.3.4"
 
     def test_ws_prefers_name_by_user_over_name(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
         from utils.ha_ws_client import FakeHAWebSocketClient
 
         ws = FakeHAWebSocketClient(
@@ -7506,7 +7513,7 @@ class TestEnrichHttpLogin:
         assert ctx["ha_device_name"] == "My Custom Name"
 
     def test_ws_falls_back_to_name_when_no_name_by_user(self):
-        from ha_notification_manager import enrich_http_login
+        from agents.ha_notification_manager import enrich_http_login
         from utils.ha_ws_client import FakeHAWebSocketClient
 
         ws = FakeHAWebSocketClient(
@@ -7523,8 +7530,8 @@ class TestEnrichHttpLogin:
         assert ctx["ha_device_name"] == "Fallback Name"
 
     def test_arp_mac_added_to_context(self, monkeypatch):
-        import ha_notification_manager
-        from ha_notification_manager import _get_arp_info
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
 
         class _FakeProc:
             async def communicate(self):
@@ -7542,8 +7549,8 @@ class TestEnrichHttpLogin:
         assert result["mac_vendor"] is None
 
     def test_arp_non_randomized_mac(self, monkeypatch):
-        import ha_notification_manager
-        from ha_notification_manager import _get_arp_info
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
 
         class _FakeProc:
             async def communicate(self):
@@ -7560,8 +7567,8 @@ class TestEnrichHttpLogin:
         assert result["mac_is_randomized"] is False
 
     def test_arp_no_mac_returns_none_fields(self, monkeypatch):
-        import ha_notification_manager
-        from ha_notification_manager import _get_arp_info
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _get_arp_info
 
         class _FakeProc:
             async def communicate(self):
@@ -7579,8 +7586,8 @@ class TestEnrichHttpLogin:
         assert result["mac_vendor"] is None
 
     def test_dhcp_hostname_added_when_ssh_succeeds(self, monkeypatch):
-        import ha_notification_manager
-        from ha_notification_manager import _try_router_dhcp_hostname
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _try_router_dhcp_hostname
 
         dhcp_output = b"1234567890 aa:bb:cc:dd:ee:ff 10.0.0.50 android-phone *\n"
 
@@ -7601,8 +7608,8 @@ class TestEnrichHttpLogin:
         assert result == "android-phone"
 
     def test_dhcp_probe_silent_on_failure(self, monkeypatch):
-        import ha_notification_manager
-        from ha_notification_manager import _try_router_dhcp_hostname
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _try_router_dhcp_hostname
 
         async def fake_exec(*args, **kwargs):
             raise OSError("connection refused")
@@ -7623,7 +7630,7 @@ class TestEnrichHttpLogin:
 class TestAnalyzeNotification:
     @staticmethod
     def _make_llm_client(requires_hitl: bool = True):
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ollama_client import FakeLLMClient
 
         out = _NotificationLLMOutput(
@@ -7634,7 +7641,10 @@ class TestAnalyzeNotification:
         return FakeLLMClient(out.model_dump_json())
 
     def test_returns_notification_analysis(self):
-        from ha_notification_manager import NotificationAnalysis, analyze_notification
+        from agents.ha_notification_manager import (
+            NotificationAnalysis,
+            analyze_notification,
+        )
 
         result = asyncio.run(
             analyze_notification(
@@ -7656,7 +7666,10 @@ class TestAnalyzeNotification:
         assert result.requires_hitl is True
 
     def test_passes_config_content_truncated(self):
-        from ha_notification_manager import _NotificationLLMOutput, analyze_notification
+        from agents.ha_notification_manager import (
+            _NotificationLLMOutput,
+            analyze_notification,
+        )
         from utils.ollama_client import FakeLLMClient
 
         llm = FakeLLMClient(
@@ -7685,7 +7698,7 @@ class TestAnalyzeNotification:
         assert "configuration.yaml" in user_msg
 
     def test_enriched_context_in_payload(self):
-        from ha_notification_manager import analyze_notification
+        from agents.ha_notification_manager import analyze_notification
 
         ctx = {"source_ip": "10.0.0.1", "is_known_device": True}
         result = asyncio.run(
@@ -7696,7 +7709,7 @@ class TestAnalyzeNotification:
         assert result.enriched_context == ctx
 
     def test_requires_hitl_false_propagates(self):
-        from ha_notification_manager import analyze_notification
+        from agents.ha_notification_manager import analyze_notification
 
         result = asyncio.run(
             analyze_notification(
@@ -7711,8 +7724,8 @@ class TestAnalyzeNotification:
         assert result.requires_hitl is False
 
     def test_analyze_notification_uses_model_factory(self, monkeypatch):
-        from ha_notification_manager import analyze_notification
-        import ha_notification_manager
+        from agents.ha_notification_manager import analyze_notification
+        from agents import ha_notification_manager
         import utils.llm_factory
 
         calls = []
@@ -7737,7 +7750,7 @@ class TestAnalyzeNotification:
 class TestEnrichAndAnalyzeNotification:
     @staticmethod
     def _make_llm_client(requires_hitl: bool = True):
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ollama_client import FakeLLMClient
 
         out = _NotificationLLMOutput(
@@ -7748,7 +7761,7 @@ class TestEnrichAndAnalyzeNotification:
         return FakeLLMClient(out.model_dump_json())
 
     def test_http_login_unknown_ip_escalated_to_critical(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
 
         class NeverMatchNAX:
             async def get_devices(self):
@@ -7768,7 +7781,7 @@ class TestEnrichAndAnalyzeNotification:
         assert result.enriched_context["is_known_device"] is False
 
     def test_http_login_known_ip_stays_high(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
 
         class MatchingNAX:
             async def get_devices(self):
@@ -7787,7 +7800,7 @@ class TestEnrichAndAnalyzeNotification:
         assert result.enriched_context["netalertx_name"] == "Laptop"
 
     def test_http_login_no_ip_in_message_stays_high(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
 
         result = asyncio.run(
             enrich_and_analyze_notification(
@@ -7801,7 +7814,7 @@ class TestEnrichAndAnalyzeNotification:
         assert result.enriched_context == {}
 
     def test_invalid_config_includes_config_content_in_llm(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
         from utils.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient(
@@ -7824,7 +7837,7 @@ class TestEnrichAndAnalyzeNotification:
         assert "configuration.yaml" in user_msg
 
     def test_invalid_config_ssh_failure_continues(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
 
         class ExplodingSSH:
             async def read_file(self, path):
@@ -7854,7 +7867,7 @@ class TestEnrichAndAnalyzeNotification:
         assert result.notification_id == "invalid_config"
 
     def test_other_notification_no_enrichment(self):
-        from ha_notification_manager import enrich_and_analyze_notification
+        from agents.ha_notification_manager import enrich_and_analyze_notification
 
         result = asyncio.run(
             enrich_and_analyze_notification(
@@ -7929,7 +7942,7 @@ class TestFormatNotificationSubject:
     def _make_analysis(
         self, notification_id, enriched_context=None, original_title=None
     ):
-        from ha_notification_manager import NotificationAnalysis
+        from agents.ha_notification_manager import NotificationAnalysis
 
         return NotificationAnalysis(
             notification_id=notification_id,
@@ -7944,7 +7957,7 @@ class TestFormatNotificationSubject:
         )
 
     def test_http_login_unknown_device(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
             "http-login",
@@ -7960,7 +7973,7 @@ class TestFormatNotificationSubject:
         assert "Unknown source IP" in subject
 
     def test_http_login_netalertx_name(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
             "http-login",
@@ -7976,7 +7989,7 @@ class TestFormatNotificationSubject:
         assert "Andy's Phone" in subject
 
     def test_http_login_ha_device_name_fallback(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
             "http-login",
@@ -7992,7 +8005,7 @@ class TestFormatNotificationSubject:
         assert "Living Room Hub" in subject
 
     def test_http_login_hostname_fallback(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis(
             "http-login",
@@ -8008,21 +8021,21 @@ class TestFormatNotificationSubject:
         assert "my-laptop.local" in subject
 
     def test_invalid_config(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis("invalid_config")
         subject = _format_notification_subject(analysis)
         assert "Configuration" in subject
 
     def test_other_with_title(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis("custom_integration", original_title="My Title")
         subject = _format_notification_subject(analysis)
         assert subject == "My Title"
 
     def test_other_without_title(self):
-        from ha_notification_manager import _format_notification_subject
+        from agents.ha_notification_manager import _format_notification_subject
 
         analysis = self._make_analysis("some_random_notification_id")
         subject = _format_notification_subject(analysis)
@@ -8035,7 +8048,7 @@ class TestFormatNotificationSubject:
 class TestRunNotifications:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -8043,7 +8056,7 @@ class TestRunNotifications:
         return path
 
     def _make_llm_client(self):
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ollama_client import FakeLLMClient
 
         return FakeLLMClient(
@@ -8055,7 +8068,7 @@ class TestRunNotifications:
         )
 
     def test_sends_card_for_new_notification(self, db_path):
-        from ha_notification_manager import run_notifications
+        from agents.ha_notification_manager import run_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -8085,7 +8098,7 @@ class TestRunNotifications:
         assert sent["payload"]["ha_notification_id"] == "http_login"
 
     def test_skips_notification_when_hitl_already_sent(self, db_path):
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_hitl_sent,
             record_notification_seen,
             run_notifications,
@@ -8119,7 +8132,7 @@ class TestRunNotifications:
         assert len(notifier.sent) == 0
 
     def test_no_entities_returns_zero(self, db_path):
-        from ha_notification_manager import run_notifications
+        from agents.ha_notification_manager import run_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -8136,7 +8149,7 @@ class TestRunNotifications:
         assert count == 0
 
     def test_poll_failure_returns_zero(self, db_path):
-        from ha_notification_manager import run_notifications
+        from agents.ha_notification_manager import run_notifications
         from utils.notify import FakeNotifier
 
         class FailingWSClient:
@@ -8158,7 +8171,7 @@ class TestRunNotifications:
         assert count == 0
 
     def test_card_id_uses_notif_prefix(self, db_path):
-        from ha_notification_manager import run_notifications
+        from agents.ha_notification_manager import run_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -8186,8 +8199,8 @@ class TestRunNotifications:
     def test_unknown_ip_subject_in_card(self, db_path, monkeypatch):
         import socket
 
-        import ha_notification_manager
-        from ha_notification_manager import run_notifications
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import run_notifications
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
 
@@ -9077,7 +9090,7 @@ class TestToolExecutor:
 
     def test_apply_fix_backup_failure(self, monkeypatch):
         """apply_fix returns error when execute_remote_backup raises."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.ssh_client import FakeSSHClient
         from utils.tool_registry import ToolCall
 
@@ -10774,7 +10787,7 @@ class TestHARepairIssue:
 class TestHARepairDB:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -10782,13 +10795,13 @@ class TestHARepairDB:
         return str(db)
 
     def test_record_repair_seen_first_time_returns_true(self, db_path):
-        from ha_agent_advanced import record_repair_seen
+        from agents.ha_agent_advanced import record_repair_seen
 
         is_new = record_repair_seen("homeassistant/reboot_required")
         assert is_new is True
 
     def test_record_repair_seen_second_time_returns_false(self, db_path):
-        from ha_agent_advanced import record_repair_seen
+        from agents.ha_agent_advanced import record_repair_seen
 
         record_repair_seen("homeassistant/reboot_required")
         is_new = record_repair_seen("homeassistant/reboot_required")
@@ -10797,7 +10810,7 @@ class TestHARepairDB:
     def test_mark_repair_hitl_sent_sets_timestamp(self, db_path):
         import sqlite3
 
-        from ha_agent_advanced import mark_repair_hitl_sent, record_repair_seen
+        from agents.ha_agent_advanced import mark_repair_hitl_sent, record_repair_seen
 
         record_repair_seen("d/i")
         mark_repair_hitl_sent("d/i")
@@ -10810,7 +10823,7 @@ class TestHARepairDB:
     def test_mark_repair_resolved_sets_timestamp(self, db_path):
         import sqlite3
 
-        from ha_agent_advanced import mark_repair_resolved, record_repair_seen
+        from agents.ha_agent_advanced import mark_repair_resolved, record_repair_seen
 
         record_repair_seen("d/i")
         mark_repair_resolved("d/i")
@@ -10821,12 +10834,15 @@ class TestHARepairDB:
         assert row is not None and row[0] is not None
 
     def test_is_reboot_required_active_false_when_no_row(self, db_path):
-        from ha_agent_advanced import is_reboot_required_active
+        from agents.ha_agent_advanced import is_reboot_required_active
 
         assert is_reboot_required_active() is False
 
     def test_is_reboot_required_active_false_before_hitl_sent(self, db_path):
-        from ha_agent_advanced import is_reboot_required_active, record_repair_seen
+        from agents.ha_agent_advanced import (
+            is_reboot_required_active,
+            record_repair_seen,
+        )
 
         record_repair_seen(
             "hassio/abc123", translation_key="issue_system_reboot_required"
@@ -10834,7 +10850,7 @@ class TestHARepairDB:
         assert is_reboot_required_active() is False
 
     def test_is_reboot_required_active_true_after_hitl_sent(self, db_path):
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             is_reboot_required_active,
             mark_repair_hitl_sent,
             record_repair_seen,
@@ -10847,7 +10863,7 @@ class TestHARepairDB:
         assert is_reboot_required_active() is True
 
     def test_is_reboot_required_active_false_after_resolved(self, db_path):
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             is_reboot_required_active,
             mark_repair_hitl_sent,
             mark_repair_resolved,
@@ -10863,7 +10879,7 @@ class TestHARepairDB:
 
     def test_is_reboot_required_active_false_without_translation_key(self, db_path):
         """A row with no translation_key does not trigger is_reboot_required_active."""
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             is_reboot_required_active,
             mark_repair_hitl_sent,
             record_repair_seen,
@@ -10875,7 +10891,7 @@ class TestHARepairDB:
 
     def test_is_reboot_not_triggered_by_config_entry_reauth(self, db_path):
         """A pending config_entry_reauth repair (e.g. Cync) must not block update ordering."""
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             is_reboot_required_active,
             mark_repair_hitl_sent,
             record_repair_seen,
@@ -10887,7 +10903,7 @@ class TestHARepairDB:
 
     def test_is_reboot_not_triggered_by_device_registry_split(self, db_path):
         """A pending device_registry_split repair (HA 2026.8.0) must not block update ordering."""
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             is_reboot_required_active,
             mark_repair_hitl_sent,
             record_repair_seen,
@@ -10903,7 +10919,7 @@ class TestHARepairDB:
 class TestLogTriageDB:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -10914,7 +10930,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import record_log_triage_seen
+        from agents.ha_agent_advanced import record_log_triage_seen
 
         now = time.time()
         with sqlite3.connect(db_path) as conn:
@@ -10932,7 +10948,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import record_log_triage_seen
+        from agents.ha_agent_advanced import record_log_triage_seen
 
         t1 = time.time()
         t2 = t1 + 60
@@ -10949,7 +10965,7 @@ class TestLogTriageDB:
     def test_should_send_when_no_prior_sighting(self, db_path):
         import sqlite3
 
-        from ha_agent_advanced import should_send_log_triage_hitl
+        from agents.ha_agent_advanced import should_send_log_triage_hitl
 
         with sqlite3.connect(db_path) as conn:
             result = should_send_log_triage_hitl(conn, "unknown", cooldown_hours=4)
@@ -10959,7 +10975,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             record_log_triage_seen,
             should_send_log_triage_hitl,
         )
@@ -10973,7 +10989,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
             should_send_log_triage_hitl,
@@ -10991,7 +11007,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
             should_send_log_triage_hitl,
@@ -11014,7 +11030,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
         )
@@ -11035,7 +11051,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
             should_send_log_triage_hitl,
@@ -11054,7 +11070,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
             should_send_log_triage_hitl,
@@ -11078,7 +11094,7 @@ class TestLogTriageDB:
         import sqlite3
         import time
 
-        from ha_agent_advanced import (
+        from agents.ha_agent_advanced import (
             mark_log_triage_hitl_sent,
             record_log_triage_seen,
         )
@@ -11101,7 +11117,7 @@ class TestRepairCardDedup:
 
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -11211,27 +11227,27 @@ class TestRepairCardDedup:
 
 class TestUpdatePriority:
     def test_os_is_highest_priority(self):
-        from ha_update_manager import _update_priority
+        from agents.ha_update_manager import _update_priority
 
         assert _update_priority("os") == 0
 
     def test_supervisor_priority(self):
-        from ha_update_manager import _update_priority
+        from agents.ha_update_manager import _update_priority
 
         assert _update_priority("supervisor") == 1
 
     def test_core_priority(self):
-        from ha_update_manager import _update_priority
+        from agents.ha_update_manager import _update_priority
 
         assert _update_priority("core") == 2
 
     def test_addon_fallback_priority(self):
-        from ha_update_manager import _update_priority
+        from agents.ha_update_manager import _update_priority
 
         assert _update_priority("my_addon") == 3
 
     def test_pending_higher_returns_empty_when_no_others(self, tmp_path):
-        from ha_update_manager import _pending_higher_priority_components
+        from agents.ha_update_manager import _pending_higher_priority_components
 
         result = _pending_higher_priority_components("core", tmp_path)
         assert result == []
@@ -11239,7 +11255,7 @@ class TestUpdatePriority:
     def test_pending_higher_detects_os_when_approving_core(self, tmp_path):
         import json
 
-        from ha_update_manager import _pending_higher_priority_components
+        from agents.ha_update_manager import _pending_higher_priority_components
         from utils.card_types import CARD_TYPE_UPDATE
 
         card = tmp_path / "abc.json"
@@ -11252,7 +11268,7 @@ class TestUpdatePriority:
     def test_pending_higher_ignores_approved_card(self, tmp_path):
         import json
 
-        from ha_update_manager import _pending_higher_priority_components
+        from agents.ha_update_manager import _pending_higher_priority_components
         from utils.card_types import CARD_TYPE_UPDATE
 
         card = tmp_path / "abc.json"
@@ -11280,7 +11296,7 @@ class TestExecuteUpdatePreflight:
         )
 
     def test_blocked_when_reboot_required_active(self):
-        from ha_update_manager import execute_update
+        from agents.ha_update_manager import execute_update
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
@@ -11291,8 +11307,8 @@ class TestExecuteUpdatePreflight:
         notifier = FakeNotifier()
 
         with patch(
-            "ha_agent_advanced.is_reboot_required_active", return_value=True
-        ), patch("ha_update_manager.execute_core_update") as mock_exec:
+            "agents.ha_agent_advanced.is_reboot_required_active", return_value=True
+        ), patch("agents.ha_update_manager.execute_core_update") as mock_exec:
             result = asyncio.run(
                 execute_update(self._make_update("core"), ssh, notifier, gate)
             )
@@ -11307,7 +11323,7 @@ class TestExecuteUpdatePreflight:
 class TestNotificationPollBackoff:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -11317,7 +11333,7 @@ class TestNotificationPollBackoff:
     def test_backoff_grows_on_consecutive_failures(self, db_path, monkeypatch):
         """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
         sleep_calls: list[float] = []
@@ -11362,7 +11378,7 @@ class TestNotificationPollBackoff:
     def test_backoff_caps_at_120(self, db_path, monkeypatch):
         """After the third failure the backoff stays at 120 — it does not grow beyond that."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_notifications
+        from agents.ha_log_monitor import poll_for_notifications
         from utils.notify import FakeNotifier
 
         sleep_calls: list[float] = []
@@ -11402,7 +11418,7 @@ class TestNotificationPollBackoff:
 class TestRepairPollBackoff:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -11412,7 +11428,7 @@ class TestRepairPollBackoff:
     def test_backoff_grows_on_consecutive_failures(self, db_path, monkeypatch):
         """Sleep interval grows 30 → 60 → 120 after consecutive failures, resets on success."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_repairs
+        from agents.ha_log_monitor import poll_for_repairs
         from utils.notify import FakeNotifier
 
         sleep_calls: list[float] = []
@@ -11454,7 +11470,7 @@ class TestRepairPollBackoff:
     def test_backoff_caps_at_120(self, db_path, monkeypatch):
         """Backoff does not grow beyond 120 seconds on sustained failures."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_repairs
+        from agents.ha_log_monitor import poll_for_repairs
         from utils.notify import FakeNotifier
 
         sleep_calls: list[float] = []
@@ -11497,7 +11513,7 @@ class TestRepairCardClassification:
 
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -11507,7 +11523,7 @@ class TestRepairCardClassification:
     def _run_one_poll(self, raw_issues, monkeypatch, db_path):
         """Run exactly one poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
-        from ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
+        from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -11675,7 +11691,7 @@ class TestRepairCardClassification:
 
     def test_already_sent_repair_not_re_sent(self, db_path, monkeypatch):
         """A repair whose HITL card was already sent is not sent again on the next poll."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.record_repair_seen(
             "pycync/abc-uuid-001", translation_key="config_entry_reauth"
@@ -11717,7 +11733,7 @@ class TestRepairIssueAnalysis:
 
     def test_analyze_repair_issue_returns_schema(self):
         """Valid LLM JSON → RepairIssueAnalysis fields populated correctly."""
-        from ha_log_monitor import RepairIssueAnalysis, analyze_repair_issue
+        from agents.ha_log_monitor import RepairIssueAnalysis, analyze_repair_issue
         from utils.ollama_client import FakeLLMClient
 
         expected = RepairIssueAnalysis(
@@ -11735,7 +11751,7 @@ class TestRepairIssueAnalysis:
 
     def test_analyze_repair_issue_invalid_json(self):
         """Garbage LLM response → safe default returned, no exception raised."""
-        from ha_log_monitor import analyze_repair_issue
+        from agents.ha_log_monitor import analyze_repair_issue
         from utils.ollama_client import FakeLLMClient
 
         fake = FakeLLMClient("not valid json {{{{")
@@ -11750,8 +11766,8 @@ class TestRepairIssueAnalysis:
     def test_poll_for_repairs_uses_llm_explanation(self, tmp_path, monkeypatch):
         """poll_for_repairs enriches the card body with the LLM explanation."""
         import asyncio as asyncio_mod
-        import ha_agent_advanced
-        from ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
+        from agents import ha_agent_advanced
+        from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -11814,7 +11830,7 @@ class TestEnforceHaRetentionReturnsCount:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -11822,14 +11838,14 @@ class TestEnforceHaRetentionReturnsCount:
         return path
 
     def test_returns_zero_when_nothing_to_delete(self, db_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ssh = FakeSSHClient()
         result = asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
         assert result == 0
 
     def test_returns_zero_when_below_retention_limit(self, db_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 10)
         with sqlite3.connect(db_path) as conn:
@@ -11842,7 +11858,7 @@ class TestEnforceHaRetentionReturnsCount:
         assert result == 0
 
     def test_returns_purge_count_when_slugs_deleted(self, db_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
         with sqlite3.connect(db_path) as conn:
@@ -11867,8 +11883,8 @@ class TestUpdatePreflightLogic:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
-        import ha_update_manager
+        from agents import ha_agent_advanced
+        from agents import ha_update_manager
         import utils.resource as _res
 
         path = str(tmp_path / "test.db")
@@ -11909,9 +11925,9 @@ class TestUpdatePreflightLogic:
 
     def test_disk_ok_supervisor_current(self, db_path, monkeypatch):
         """Disk is fine and Supervisor is current — no problems, no enforcement."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import run_update_preflight
+        from agents.ha_update_manager import run_update_preflight
         from utils.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -11927,10 +11943,10 @@ class TestUpdatePreflightLogic:
 
     def test_disk_still_low_after_cleanup(self, db_path, monkeypatch):
         """Disk low, no eligible slugs — enforcement is no-op, problem reported."""
-        import ha_agent_advanced
-        import ha_update_manager
+        from agents import ha_agent_advanced
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import run_update_preflight
+        from agents.ha_update_manager import run_update_preflight
         from utils.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -11959,9 +11975,9 @@ class TestUpdatePreflightLogic:
 
     def test_supervisor_update_available_via_rest(self, db_path, monkeypatch):
         """REST shows a Supervisor update available — supervisor_status='update_available'."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import run_update_preflight
+        from agents.ha_update_manager import run_update_preflight
         from utils.ha_rest_client import FakeHARestClient
 
         monkeypatch.setattr(ha_update_manager, "HA_DISK_WARN_GB", 2.5)
@@ -11989,9 +12005,9 @@ class TestUpdatePreflightLogic:
         self, db_path, monkeypatch, tmp_path
     ):
         """request_update_approval() for Core calls preflight and card body has component info."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.ha_rest_client import FakeHARestClient, UpdateStatus
         from utils.notify import FakeNotifier
 
@@ -12034,10 +12050,10 @@ class TestUpdatePreflightLogic:
 
     def test_preflight_purge_message_in_card_body(self, db_path, monkeypatch, tmp_path):
         """When backups are purged during preflight, card body includes the freed-space note."""
-        import ha_agent_advanced
-        import ha_update_manager
+        from agents import ha_agent_advanced
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.ha_rest_client import FakeHARestClient, UpdateStatus
         from utils.notify import FakeNotifier
 
@@ -12157,7 +12173,7 @@ class TestExternalUpdateResolution:
         """Entity absent for one poll while card is pending must NOT resolve the card."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
 
         suppression_key = "update:update.matter_server_update"
@@ -12165,8 +12181,10 @@ class TestExternalUpdateResolution:
 
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(1))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12183,7 +12201,7 @@ class TestExternalUpdateResolution:
         """Two consecutive absent polls → card resolved + timeline event written once."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
 
         suppression_key = "update:update.matter_server_update"
@@ -12197,10 +12215,12 @@ class TestExternalUpdateResolution:
             )
 
         monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12223,7 +12243,7 @@ class TestExternalUpdateResolution:
         """Second-poll resolution creates an .approved sidecar next to the card JSON."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.hitl_tracker import stable_nid
 
@@ -12237,13 +12257,15 @@ class TestExternalUpdateResolution:
             ' "installed_version": "9.1.1", "latest_version": "9.2.0"}}'
         )
 
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
             "utils.timeline.write_timeline_event", lambda *a, **kw: None
         )
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12256,13 +12278,13 @@ class TestExternalUpdateResolution:
         """Entity present but update_available=False for two polls → card resolved."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
 
         suppression_key = "update:update.matter_server_update"
         self._insert_pending_card(suppression_key)
 
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
             "utils.timeline.write_timeline_event", lambda *a, **kw: None
         )
@@ -12280,7 +12302,9 @@ class TestExternalUpdateResolution:
         }
         client = FakeHARestClient(states=[entity])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12295,14 +12319,14 @@ class TestExternalUpdateResolution:
         """Entity absent first poll (timer set) then returns available → no resolution."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FakeNotifier
 
         suppression_key = "update:update.matter_server_update"
         self._insert_pending_card(suppression_key)
 
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
             "utils.timeline.write_timeline_event", lambda *a, **kw: None
         )
@@ -12334,7 +12358,9 @@ class TestExternalUpdateResolution:
                 raise asyncio.CancelledError()
 
         monkeypatch.setattr(asyncio_mod, "sleep", controlling_sleep)
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
@@ -12351,7 +12377,7 @@ class TestExternalUpdateResolution:
         """Card with last_action set + entity update_available=False → resolves on first poll."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
 
         suppression_key = "update:update.matter_server_update"
@@ -12376,7 +12402,9 @@ class TestExternalUpdateResolution:
         }
         client = FakeHARestClient(states=[entity])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(2))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12391,7 +12419,7 @@ class TestExternalUpdateResolution:
         """Timeline event detail contains exact version strings read from card JSON."""
         import asyncio as asyncio_mod
 
-        from ha_log_monitor import poll_for_updates
+        from agents.ha_log_monitor import poll_for_updates
         from utils.ha_rest_client import FakeHARestClient
         from utils.hitl_tracker import stable_nid
 
@@ -12418,10 +12446,12 @@ class TestExternalUpdateResolution:
             )
 
         monkeypatch.setattr("utils.timeline.write_timeline_event", fake_write_timeline)
-        monkeypatch.setattr("ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
         client = FakeHARestClient(states=[])
         monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
-        monkeypatch.setattr("ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poll_for_updates(ha_rest_client=client))
@@ -12441,7 +12471,7 @@ class TestRepairReconcileTimeline:
 
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -12451,8 +12481,8 @@ class TestRepairReconcileTimeline:
     def test_repair_reconcile_writes_timeline_event(self, db_path, monkeypatch):
         """Repair absent from poll after HITL card sent → timeline INFO event written."""
         import asyncio as asyncio_mod
-        import ha_agent_advanced
-        from ha_log_monitor import poll_for_repairs
+        from agents import ha_agent_advanced
+        from agents.ha_log_monitor import poll_for_repairs
 
         issue_key = "pycync/uuid-timeline-001"
         ha_agent_advanced.record_repair_seen(
@@ -12503,7 +12533,7 @@ class TestResourceClearanceTimeline:
 
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
@@ -12626,7 +12656,7 @@ class TestReconcileInProgressUpdates:
 
     def test_version_matched_sends_success_card_and_deletes_marker(self, tmp_path):
         """When current version matches latest_version, sends a success result card."""
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import FakeNotifier
 
         stem = "abc123"
@@ -12652,7 +12682,7 @@ class TestReconcileInProgressUpdates:
 
     def test_version_mismatch_sends_unknown_card_and_deletes_marker(self, tmp_path):
         """When current version does not match, sends an 'outcome unknown' card."""
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import FakeNotifier
 
         stem = "def456"
@@ -12677,7 +12707,7 @@ class TestReconcileInProgressUpdates:
 
     def test_ssh_failure_leaves_marker_in_place(self, tmp_path):
         """If SSH fails, the marker is left for retry on next startup."""
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import FakeNotifier
 
         stem = "ghi789"
@@ -12701,7 +12731,7 @@ class TestReconcileInProgressUpdates:
 
     def test_non_update_card_skipped(self, tmp_path):
         """Cards with a different card_type are ignored."""
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import FakeNotifier
 
         stem = "skip001"
@@ -12724,7 +12754,7 @@ class TestReconcileInProgressUpdates:
 
     def test_no_in_progress_files_is_noop(self, tmp_path):
         """Empty watch dir returns without making any SSH calls."""
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import FakeNotifier
 
         ssh = FakeSSHClient()
@@ -12746,8 +12776,8 @@ class TestPollCoreVersionDiskMonitoring:
 
     def test_disk_critical_during_poll_logs_warning(self, monkeypatch):
         """When disk drops below HA_DISK_CRITICAL_GB mid-poll, logs core_update_disk_critical_during_poll."""
-        import ha_update_manager
-        from ha_update_manager import _poll_core_version
+        from agents import ha_update_manager
+        from agents.ha_update_manager import _poll_core_version
 
         target = "2026.8.2"
 
@@ -12812,7 +12842,7 @@ class TestPollCoreVersionDiskMonitoring:
 
     def test_disk_check_does_not_abort_poll(self):
         """Disk critical does not cause the poll to stop — update may still succeed."""
-        from ha_update_manager import _poll_core_version
+        from agents.ha_update_manager import _poll_core_version
         from utils.resource import ResourceStatus
 
         target = "2026.8.2"
@@ -12863,8 +12893,8 @@ class TestDiskExhaustionWarningInCard:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
-        import ha_update_manager
+        from agents import ha_agent_advanced
+        from agents import ha_update_manager
         import utils.resource as _res
 
         path = str(tmp_path / "test.db")
@@ -12878,9 +12908,9 @@ class TestDiskExhaustionWarningInCard:
         self, db_path, monkeypatch, tmp_path
     ):
         """When preflight.disk_ok is False, disk_exhaustion_risk=True in payload."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.ha_rest_client import FakeHARestClient, UpdateStatus
         from utils.notify import FakeNotifier
 
@@ -12953,9 +12983,9 @@ class TestDiskExhaustionWarningInCard:
         self, db_path, monkeypatch, tmp_path
     ):
         """When preflight.disk_ok is True, disk_exhaustion_risk=False in payload."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.ha_rest_client import FakeHARestClient, UpdateStatus
         from utils.notify import FakeNotifier
 
@@ -13008,9 +13038,9 @@ class TestDiskExhaustionWarningInCard:
         self, db_path, monkeypatch, tmp_path
     ):
         """Card body explains the ~2-3 GB Supervisor image download risk."""
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.resource as _res
-        from ha_update_manager import request_update_approval
+        from agents.ha_update_manager import request_update_approval
         from utils.ha_rest_client import FakeHARestClient, UpdateStatus
         from utils.notify import FakeNotifier
 
@@ -13125,7 +13155,7 @@ class TestReconcileStaleApprovedCards:
         """
         import sqlite3
 
-        from ha_update_manager import reconcile_stale_approved_cards
+        from agents.ha_update_manager import reconcile_stale_approved_cards
 
         card_key = "update:update.home_assistant_core_update"
         db_path = str(tmp_path / "ha_agent_state.db")
@@ -13138,7 +13168,7 @@ class TestReconcileStaleApprovedCards:
                 (card_key,),
             )
 
-        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        monkeypatch.setattr("agents.ha_update_manager.DB_PATH", db_path)
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 0
@@ -13147,7 +13177,7 @@ class TestReconcileStaleApprovedCards:
         """Row pending in DB, .json + .approved on disk → resolved."""
         import sqlite3
 
-        from ha_update_manager import reconcile_stale_approved_cards
+        from agents.ha_update_manager import reconcile_stale_approved_cards
         from utils.hitl_tracker import stable_nid
 
         card_key = "update:update.noaa_it_all_update"
@@ -13165,7 +13195,7 @@ class TestReconcileStaleApprovedCards:
                 (card_key,),
             )
 
-        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        monkeypatch.setattr("agents.ha_update_manager.DB_PATH", db_path)
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 1
@@ -13180,7 +13210,7 @@ class TestReconcileStaleApprovedCards:
         """Row pending, .json exists but NO .approved sentinel → not resolved."""
         import sqlite3
 
-        from ha_update_manager import reconcile_stale_approved_cards
+        from agents.ha_update_manager import reconcile_stale_approved_cards
         from utils.hitl_tracker import stable_nid
 
         card_key = "update:update.home_assistant_os_update"
@@ -13197,7 +13227,7 @@ class TestReconcileStaleApprovedCards:
                 (card_key,),
             )
 
-        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        monkeypatch.setattr("agents.ha_update_manager.DB_PATH", db_path)
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 0
@@ -13212,7 +13242,7 @@ class TestReconcileStaleApprovedCards:
         """Row with last_action='rejected' is not reconciled."""
         import sqlite3
 
-        from ha_update_manager import reconcile_stale_approved_cards
+        from agents.ha_update_manager import reconcile_stale_approved_cards
 
         card_key = "update:update.netalertx_full_access_update"
         db_path = str(tmp_path / "ha_agent_state.db")
@@ -13225,7 +13255,7 @@ class TestReconcileStaleApprovedCards:
                 (card_key,),
             )
 
-        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        monkeypatch.setattr("agents.ha_update_manager.DB_PATH", db_path)
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 0
@@ -13234,7 +13264,7 @@ class TestReconcileStaleApprovedCards:
         """Rows with card_key not starting with 'update:' are skipped."""
         import sqlite3
 
-        from ha_update_manager import reconcile_stale_approved_cards
+        from agents.ha_update_manager import reconcile_stale_approved_cards
 
         card_key = "repair:some_repair"
         db_path = str(tmp_path / "ha_agent_state.db")
@@ -13247,7 +13277,7 @@ class TestReconcileStaleApprovedCards:
                 (card_key,),
             )
 
-        monkeypatch.setattr("ha_update_manager.DB_PATH", db_path)
+        monkeypatch.setattr("agents.ha_update_manager.DB_PATH", db_path)
         count = reconcile_stale_approved_cards(watch_dir=tmp_path)
 
         assert count == 0

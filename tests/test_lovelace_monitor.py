@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestExtractEntityRefs:
     def test_flat_card_entity(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -37,7 +37,7 @@ class TestExtractEntityRefs:
         assert refs[0].card_index == 0
 
     def test_sections_layout(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -61,7 +61,7 @@ class TestExtractEntityRefs:
         assert entity_ids == {"sensor.in_section", "light.also_in_section"}
 
     def test_entity_id_key(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -76,7 +76,7 @@ class TestExtractEntityRefs:
         assert refs[0].entity_id == "camera.front"
 
     def test_entity_id_in_entities_list(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -96,7 +96,7 @@ class TestExtractEntityRefs:
         assert refs[0].entity_id == "sensor.custom_card"
 
     def test_entities_list_mixed(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -120,7 +120,7 @@ class TestExtractEntityRefs:
         assert entity_ids == {"light.ceiling", "switch.fan", "sensor.temp"}
 
     def test_nested_cards(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -148,7 +148,7 @@ class TestExtractEntityRefs:
         assert entity_ids == {"sensor.outer", "sensor.inner"}
 
     def test_badges(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -167,7 +167,7 @@ class TestExtractEntityRefs:
         assert entity_ids == {"binary_sensor.door", "binary_sensor.motion"}
 
     def test_deduplication(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         cfg = {
             "views": [
@@ -185,7 +185,7 @@ class TestExtractEntityRefs:
         assert refs[0].entity_id == "sensor.dup"
 
     def test_empty_config(self):
-        from ha_lovelace_monitor import _extract_entity_refs
+        from agents.ha_lovelace_monitor import _extract_entity_refs
 
         refs = _extract_entity_refs({})
         assert refs == []
@@ -198,7 +198,7 @@ class TestExtractEntityRefs:
 
 class TestFuzzyCandidates:
     def test_same_domain_preferred(self):
-        from ha_lovelace_monitor import _fuzzy_candidates
+        from agents.ha_lovelace_monitor import _fuzzy_candidates
 
         registry_ids = {
             "sensor.temperature_bedroom",
@@ -211,7 +211,7 @@ class TestFuzzyCandidates:
             assert c.startswith("sensor.")
 
     def test_no_candidates_when_domain_absent(self):
-        from ha_lovelace_monitor import _fuzzy_candidates
+        from agents.ha_lovelace_monitor import _fuzzy_candidates
 
         registry_ids = {"light.ceiling", "switch.fan"}
         candidates = _fuzzy_candidates("sensor.foo", registry_ids)
@@ -225,7 +225,7 @@ class TestFuzzyCandidates:
 
 class TestDashboardEntityAnalysis:
     def test_valid_construction(self):
-        from ha_lovelace_monitor import DashboardEntityAnalysis
+        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
 
         a = DashboardEntityAnalysis(
             explanation="Entity was renamed.",
@@ -237,7 +237,7 @@ class TestDashboardEntityAnalysis:
         assert a.proposed_entity_id == "sensor.new_name"
 
     def test_construction_investigate_no_proposed(self):
-        from ha_lovelace_monitor import DashboardEntityAnalysis
+        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
 
         a = DashboardEntityAnalysis(
             explanation="Unknown.", likely_cause="deleted", action="investigate"
@@ -245,7 +245,7 @@ class TestDashboardEntityAnalysis:
         assert a.proposed_entity_id is None
 
     def test_json_round_trip(self):
-        from ha_lovelace_monitor import DashboardEntityAnalysis
+        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
 
         raw = json.dumps(
             {
@@ -376,7 +376,7 @@ def _make_ws(lovelace_cfg: dict, entity_registry: list[dict]):  # type: ignore[r
 
 class TestPollMissingEntity:
     def test_missing_entity_sends_card(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -425,7 +425,7 @@ class TestPollMissingEntity:
         assert notifier.sent[0]["payload"]["action"] == "remove"
 
     def test_present_entity_no_card(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -463,7 +463,7 @@ class TestPollMissingEntity:
         assert len(notifier.sent) == 0
 
     def test_duplicate_suppression(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -510,7 +510,7 @@ class TestPollMissingEntity:
         assert len(notifier.sent) == 0
 
     def test_reconcile_resolved(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -567,7 +567,7 @@ class TestPollMissingEntity:
         assert row is not None and row[0] is not None  # resolved_at set
 
     def test_named_dashboard_fetched(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -620,7 +620,7 @@ class TestPollMissingEntity:
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
 
     def test_sections_layout_missing_entity(self, tmp_path):
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
 
@@ -681,7 +681,7 @@ class TestPollMissingEntity:
 
 class TestAnalyzeMissingEntity:
     def test_returns_replace_analysis(self):
-        from ha_lovelace_monitor import EntityRef, _analyze_missing_entity
+        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
         from utils.ollama_client import FakeLLMClient
 
         raw = json.dumps(
@@ -702,7 +702,7 @@ class TestAnalyzeMissingEntity:
         assert result.likely_cause == "renamed"
 
     def test_returns_remove_analysis(self):
-        from ha_lovelace_monitor import EntityRef, _analyze_missing_entity
+        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
         from utils.ollama_client import FakeLLMClient
 
         raw = json.dumps(
@@ -722,7 +722,7 @@ class TestAnalyzeMissingEntity:
         assert result.proposed_entity_id is None
 
     def test_llm_failure_returns_safe_default(self):
-        from ha_lovelace_monitor import EntityRef, _analyze_missing_entity
+        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
         from utils.ollama_client import FakeLLMClient
 
         llm = FakeLLMClient("NOT VALID JSON !!!")

@@ -36,7 +36,7 @@ from utils.logging import (
 )
 from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
-from ha_agent_core import DiagnosticsReport
+from .ha_agent_core import DiagnosticsReport
 from utils.resource import DiskCriticalError, check_disk_not_critical
 from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient

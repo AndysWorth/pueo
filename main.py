@@ -265,7 +265,7 @@ async def _known_issues_poll_loop(
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     import config as cfg
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import uvicorn
     from utils.notify import get_notifier
     from utils.resource import ResourcePoller
@@ -284,7 +284,7 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Resolve any *.in_progress update cards left from a previous crashed run.
     try:
-        from ha_update_manager import reconcile_in_progress_updates
+        from agents.ha_update_manager import reconcile_in_progress_updates
         from utils.notify import get_notifier as _get_notifier
         from utils.ssh_client import AsyncSSHClient as _SSH
 
@@ -343,7 +343,7 @@ async def supervisor_main(config_path: Path) -> None:
         pass
 
     # Deferred after auto-select so ha_log_monitor.py captures the final OLLAMA_MODEL.
-    from ha_log_monitor import (
+    from agents.ha_log_monitor import (
         poll_for_notifications,
         poll_for_repairs,
         poll_for_updates,
@@ -545,7 +545,7 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Lovelace dashboard entity health check (only if interval > 0 and token is configured)
     if cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
-        from ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
 
         supervisor.start(
             "lovelace_poll",
@@ -736,77 +736,77 @@ def main() -> None:
     if args.mode == "supervisor":
         asyncio.run(supervisor_main(config_path))
     elif args.mode == "monitor":
-        import ha_log_monitor
+        from agents import ha_log_monitor
 
         asyncio.run(ha_log_monitor.main())
     elif args.mode == "diagnose":
-        import ha_agent_core
+        from agents import ha_agent_core
 
         asyncio.run(ha_agent_core.main())
     elif args.mode == "advanced":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         asyncio.run(ha_agent_advanced.main())
     elif args.mode == "repair":
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         asyncio.run(ha_agent_sandbox_engine.main())
     elif args.mode == "netalertx-setup":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.installer
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.installer.main())
     elif args.mode == "netalertx-uninstall":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.uninstaller
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.uninstaller.main())
     elif args.mode == "netalertx-docker-setup":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.docker_installer
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.docker_installer.main())
     elif args.mode == "netalertx-docker-uninstall":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.docker_uninstaller
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.docker_uninstaller.main())
     elif args.mode == "netalertx-switch":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.switch
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.switch.main())
     elif args.mode == "netalertx":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.log_monitor
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.log_monitor.main())
     elif args.mode == "netalertx-diagnose":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.one_shot_diagnose
 
         ha_agent_advanced.init_local_database()
         asyncio.run(netalertx.one_shot_diagnose.run_diagnose())
     elif args.mode == "backup-status":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         ha_agent_advanced.init_local_database()
         ha_agent_advanced.print_backup_status()
     elif args.mode == "update-check":
-        import ha_agent_advanced
-        import ha_update_manager
+        from agents import ha_agent_advanced
+        from agents import ha_update_manager
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_update_manager.run_update_check())
     elif args.mode == "notifications":
-        import ha_agent_advanced
-        import ha_notification_manager
+        from agents import ha_agent_advanced
+        from agents import ha_notification_manager
 
         ha_agent_advanced.init_local_database()
         asyncio.run(ha_notification_manager.run_notifications())
@@ -847,13 +847,13 @@ def main() -> None:
         restart_service()
         print("Pueo service restarting (launchd KeepAlive will restart it).")
     elif args.mode == "audit":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.audit import main_audit
 
         ha_agent_advanced.init_local_database()
         asyncio.run(main_audit())
     elif args.mode == "export-episodes":
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from utils.repair_episode import export_episodes_yaml, load_episodes
 
         ha_agent_advanced.init_local_database()

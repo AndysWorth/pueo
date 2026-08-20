@@ -37,7 +37,7 @@ def fake_ssh_client():
 @pytest.fixture
 def fake_llm_client():
     from utils.ollama_client import FakeLLMClient
-    from ha_agent_core import DiagnosticsReport
+    from agents.ha_agent_core import DiagnosticsReport
 
     report = DiagnosticsReport(
         is_valid=True,
@@ -91,10 +91,10 @@ def _patch_timeline_db(monkeypatch, tmp_path):
 def _reload_all_modules():
     agent_modules = [
         "config",
-        "ha_agent_core",
-        "ha_agent_advanced",
-        "ha_agent_sandbox_engine",
-        "ha_log_monitor",
+        "agents.ha_agent_core",
+        "agents.ha_agent_advanced",
+        "agents.ha_agent_sandbox_engine",
+        "agents.ha_log_monitor",
     ]
     for name in agent_modules:
         if name in sys.modules:
