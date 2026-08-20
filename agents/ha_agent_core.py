@@ -18,7 +18,7 @@ from config import (
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
 from utils.core.context import estimate_tokens, truncate_to_budget
-from utils.llm_trace import LLMTrace
+from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm.llm_factory import make_llm_client
 from utils.core.prompts import load_prompt

@@ -225,7 +225,7 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
 
     # 3. Addon slug → friendly name mapping; custom components; DB tables;
     #    orphaned addon dirs — run in parallel
-    from utils.disk_recovery import scan_orphaned_addon_dirs
+    from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
     addon_names, custom_components, db_tables, orphaned_addons_raw = (
         await asyncio.gather(

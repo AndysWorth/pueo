@@ -113,7 +113,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     # ── 4. Community cases ───────────────────────────────────────────────────
     n_cases = 0
     if config.FEDERATED_CASES_REPO:
-        from utils.case_ingester import CaseIngestError, ingest_community_cases
+        from utils.cases.case_ingester import CaseIngestError, ingest_community_cases
 
         print(
             f"[rag-refresh] Ingesting community cases from {config.FEDERATED_CASES_REPO}…"
@@ -231,7 +231,7 @@ async def _known_issues_poll_loop(
     """Hourly: fire one reminder card for each Known Issue older than reminder_days."""
     import sqlite3
 
-    from utils.hitl_tracker import check_reminders_due, touch_reminder_sent
+    from utils.hitl.hitl_tracker import check_reminders_due, touch_reminder_sent
     from utils.core.logging import get_logger as _gl
 
     _log = _gl("main")
@@ -267,8 +267,8 @@ async def supervisor_main(config_path: Path) -> None:
     import config as cfg
     from agents import ha_agent_advanced
     import uvicorn
-    from utils.notify import get_notifier
-    from utils.resource import ResourcePoller
+    from utils.hitl.notify import get_notifier
+    from utils.disk.resource import ResourcePoller
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.agent.supervisor import (
         LoopSupervisor,
@@ -289,7 +289,7 @@ async def supervisor_main(config_path: Path) -> None:
     # Resolve any *.in_progress update cards left from a previous crashed run.
     try:
         from agents.ha_update_manager import reconcile_in_progress_updates
-        from utils.notify import get_notifier as _get_notifier
+        from utils.hitl.notify import get_notifier as _get_notifier
         from utils.ha.ssh_client import AsyncSSHClient as _SSH
 
         _reconcile_ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
@@ -304,7 +304,7 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Detect local hardware and populate the model cache; optionally auto-select model
     try:
-        from utils.hardware import (
+        from utils.disk.hardware import (
             detect_local_hardware,
             list_ollama_models,
             select_best_model,
@@ -464,7 +464,7 @@ async def supervisor_main(config_path: Path) -> None:
                 _log.warning("backup_offload_loop_failed", error=str(e))
             try:
                 from pathlib import Path as _Path
-                from utils.archiver import enforce_archive_retention as _ear
+                from utils.disk.archiver import enforce_archive_retention as _ear
 
                 _ear(
                     _Path(cfg.PUEO_ARCHIVE_DIR),
@@ -519,7 +519,7 @@ async def supervisor_main(config_path: Path) -> None:
         )
 
     # Per-path disk usage polling loop
-    from utils.disk_usage import DiskUsagePoller
+    from utils.disk.disk_usage import DiskUsagePoller
 
     supervisor.start(
         "disk_usage_poll",
@@ -827,7 +827,7 @@ def main() -> None:
 
         run_dashboard()
     elif args.mode == "install-service":  # pragma: no cover
-        from utils.service import install_service
+        from utils.system.service import install_service
 
         install_service(
             pueo_dir=str(config_path.parent),
@@ -836,23 +836,23 @@ def main() -> None:
         print("Pueo service installed → com.pueo.agent")
         print(f"Dashboard → http://127.0.0.1:{os.environ.get('DASHBOARD_PORT', 8080)}")
     elif args.mode == "start-service":  # pragma: no cover
-        from utils.service import start_service
+        from utils.system.service import start_service
 
         start_service()
         print("Pueo service started → com.pueo.agent")
     elif args.mode == "stop-service":  # pragma: no cover
-        from utils.service import stop_service
+        from utils.system.service import stop_service
 
         stop_service()
         print("Pueo service stopped.")
     elif args.mode == "restart-service":  # pragma: no cover
-        from utils.service import restart_service
+        from utils.system.service import restart_service
 
         restart_service()
         print("Pueo service restarting (launchd KeepAlive will restart it).")
     elif args.mode == "audit":
         from agents import ha_agent_advanced
-        from utils.audit import main_audit
+        from utils.system.audit import main_audit
 
         ha_agent_advanced.init_local_database()
         asyncio.run(main_audit())

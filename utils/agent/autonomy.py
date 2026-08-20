@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("autonomy")
 

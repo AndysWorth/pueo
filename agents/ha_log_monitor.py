@@ -55,15 +55,15 @@ from interfaces import (
     SSHClientProtocol,
 )
 from utils.core.context import estimate_tokens, sliding_window_lines
-from utils.llm_trace import LLMTrace
+from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt
 from utils.agent.autonomy import AutonomyGate, RiskLevel
-from utils.notify import NotifierProtocol, get_notifier
+from utils.hitl.notify import NotifierProtocol, get_notifier
 from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
 from utils.ha.ha_rest_client import HARepairIssue, HARestClient, get_update_status
-from utils.resource import ResourcePoller
+from utils.disk.resource import ResourcePoller
 from utils.core.retry import async_retry
 from utils.ha.ssh_client import AsyncSSHClient
 
@@ -342,7 +342,7 @@ async def tail_remote_log_stream(
                             cause=evaluation.root_cause_summary,
                         )
                         _suppression_key = f"log_triage:{_fingerprint}"
-                        from utils.hitl_tracker import stable_nid
+                        from utils.hitl.hitl_tracker import stable_nid
 
                         with sqlite3.connect(DB_PATH) as _triage_conn:
                             mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
@@ -384,7 +384,7 @@ async def tail_remote_log_stream(
 
 def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> None:
     """Retire a pending update approval card that HA resolved without Pueo's involvement."""
-    from utils.hitl_tracker import mark_card_resolved, stable_nid
+    from utils.hitl.hitl_tracker import mark_card_resolved, stable_nid
 
     nid = stable_nid(suppression_key)
     component = "unknown"
@@ -456,7 +456,7 @@ async def poll_for_updates(
         analyze_breaking_changes,
         fetch_release_notes_cached,
     )
-    from utils.card_types import CARD_TYPE_UPDATE
+    from utils.hitl.card_types import CARD_TYPE_UPDATE
 
     interval = HA_UPDATE_CHECK_INTERVAL_HOURS * 3600
     _client: HARestClientProtocol = ha_rest_client or HARestClient(
@@ -494,7 +494,7 @@ async def poll_for_updates(
                     suppression_key, None
                 )  # update came back — reset timer
                 with sqlite3.connect(DB_PATH) as _sup_conn:
-                    from utils.hitl_tracker import mark_card_sent, should_send_card
+                    from utils.hitl.hitl_tracker import mark_card_sent, should_send_card
 
                     _should_send = should_send_card(_sup_conn, suppression_key)
                 if not _should_send:
@@ -549,7 +549,7 @@ async def poll_for_updates(
                             f"Advisory: {advisory} — {readiness.recommendation}"
                         )
 
-                    from utils.hitl_tracker import stable_nid
+                    from utils.hitl.hitl_tracker import stable_nid
 
                     # Mark sent in DB before writing file — if Pueo restarts between
                     # the two, DB says "sent" (no card visible) rather than DB saying
@@ -613,7 +613,7 @@ async def poll_for_updates(
                     pass
             elif not u.update_available:
                 with sqlite3.connect(DB_PATH) as _sup_conn3:
-                    from utils.hitl_tracker import mark_card_resolved
+                    from utils.hitl.hitl_tracker import mark_card_resolved
 
                     _pending_row = _sup_conn3.execute(
                         "SELECT send_count, last_action, resolved_at"
@@ -795,7 +795,7 @@ async def poll_for_repairs(
         mark_repair_resolved,
         record_repair_seen,
     )
-    from utils.card_types import CARD_TYPE_HA_REPAIR
+    from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
     from utils.ha.ha_rest_client import get_ha_repair_issues
     from utils.ha.ha_ws_client import HAWebSocketClient
 
@@ -874,7 +874,7 @@ async def poll_for_repairs(
                 _repair_sup_key = (
                     f"ha_repair:{issue.translation_key or issue.issue_key}"
                 )
-                from utils.hitl_tracker import stable_nid
+                from utils.hitl.hitl_tracker import stable_nid
 
                 payload: dict = {
                     "notification_id": stable_nid(_repair_sup_key),

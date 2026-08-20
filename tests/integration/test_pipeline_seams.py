@@ -60,7 +60,7 @@ class TestLogMonitorActionablePath:
         """CRITICAL log line → triage → gate blocks → notifier receives a HITL card."""
         from agents import ha_log_monitor
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
@@ -90,7 +90,7 @@ class TestLogMonitorActionablePath:
         """INFO log line below CRITICAL_LOG_PATTERN does not reach the notifier."""
         from agents import ha_log_monitor
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
@@ -119,7 +119,7 @@ class TestLogMonitorActionablePath:
         """CRITICAL line with confidence below threshold does not send a card."""
         from agents import ha_log_monitor
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
@@ -148,7 +148,7 @@ class TestLogMonitorActionablePath:
         """When SELF_HEALING_ENABLED is False, no HITL card is sent."""
         from agents import ha_log_monitor
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.core.rate_limiter import Debouncer, RateLimiter
 
@@ -181,7 +181,7 @@ class TestLogMonitorActionablePath:
         """When gate.should_auto_execute returns True, no HITL card is sent (repair is triggered)."""
         from agents import ha_log_monitor
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         self._patch_module_globals(monkeypatch)
@@ -254,7 +254,7 @@ class TestPollForNotificationsLoopBody:
         from agents import ha_agent_advanced
         from agents import ha_log_monitor
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -324,7 +324,7 @@ class TestPollForNotificationsLoopBody:
             record_notification_seen,
         )
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 

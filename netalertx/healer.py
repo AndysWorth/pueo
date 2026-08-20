@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from netalertx.diagnosis import NetAlertXDiagnostic
     from interfaces import LLMClientProtocol, SSHClientProtocol
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.healer")
 
@@ -486,7 +486,7 @@ class NetAlertXHealer:
             return
 
         fields_str = ", ".join(i.field for i in issues)
-        from utils.card_types import CARD_TYPE_NETALERTX_HEAL
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
 
         approved = await self._gate.require_approval(
             subject="Pueo: NetAlertX — fix HA automation webhook fields to camelCase",

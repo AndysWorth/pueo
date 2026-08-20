@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
     from netalertx.api_client import NetAlertXAPIClient
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.ha_name_sync")
 

@@ -377,7 +377,7 @@ def _make_ws(lovelace_cfg: dict, entity_registry: list[dict]):  # type: ignore[r
 class TestPollMissingEntity:
     def test_missing_entity_sends_card(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
@@ -426,7 +426,7 @@ class TestPollMissingEntity:
 
     def test_present_entity_no_card(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
@@ -464,13 +464,13 @@ class TestPollMissingEntity:
 
     def test_duplicate_suppression(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
         # Pre-seed the suppression table so the card is already "sent".
-        from utils.hitl_tracker import mark_card_sent
+        from utils.hitl.hitl_tracker import mark_card_sent
 
         with sqlite3.connect(db_path) as conn:
             mark_card_sent(
@@ -511,13 +511,13 @@ class TestPollMissingEntity:
 
     def test_reconcile_resolved(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
 
         # Pre-seed a pending card for sensor.recovered.
-        from utils.hitl_tracker import mark_card_sent
+        from utils.hitl.hitl_tracker import mark_card_sent
 
         with sqlite3.connect(db_path) as conn:
             mark_card_sent(
@@ -569,7 +569,7 @@ class TestPollMissingEntity:
     def test_named_dashboard_fetched(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)
@@ -621,7 +621,7 @@ class TestPollMissingEntity:
 
     def test_sections_layout_missing_entity(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         db_path = _make_hitl_db(tmp_path)

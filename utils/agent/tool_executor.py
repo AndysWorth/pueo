@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient
     from utils.agent.autonomy import AutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
     from utils.agent.tool_registry import FixEnrichment
 
 log = get_logger("tool_executor")
@@ -457,7 +457,7 @@ class ToolExecutor:
         """Return disk breakdown — use cached if fresh enough, else fetch via SSH."""
         import time
 
-        from utils.disk_usage import fetch_disk_breakdown, get_disk_breakdown
+        from utils.disk.disk_usage import fetch_disk_breakdown, get_disk_breakdown
 
         cached = get_disk_breakdown()
         age = time.time() - (cached.fetched_at if cached is not None else 0)
@@ -837,7 +837,7 @@ class ToolExecutor:
                 output="",
                 error="Run sandbox_code first and ensure all CI checks pass",
             )
-        from utils.card_types import CARD_TYPE_CODE_PROPOSAL
+        from utils.hitl.card_types import CARD_TYPE_CODE_PROPOSAL
 
         nid = get_correlation_id() or str(uuid.uuid4())
         await self._notifier.send(
@@ -913,7 +913,7 @@ class ToolExecutor:
             "🤖 Generated with [Pueo](https://github.com/AndysWorth/pueo-cases)"
         )
 
-        from utils.card_types import CARD_TYPE_OPEN_PR
+        from utils.hitl.card_types import CARD_TYPE_OPEN_PR
 
         nid = get_correlation_id() or str(uuid.uuid4())
         await self._notifier.send(
@@ -1010,7 +1010,7 @@ class ToolExecutor:
 
         from utils.agent.autonomy import RiskLevel
 
-        from utils.card_types import CARD_TYPE_REPAIR
+        from utils.hitl.card_types import CARD_TYPE_REPAIR
 
         nid = get_correlation_id() or str(uuid.uuid4())
         if enrichment:
@@ -1187,7 +1187,7 @@ class ToolExecutor:
 
     async def _switch_model(self, model_name: Optional[str]) -> ToolResult:
         """Auto-select or explicitly set the active Ollama model."""
-        from utils.hardware import (
+        from utils.disk.hardware import (
             apply_model_selection,
             detect_local_hardware,
             list_ollama_models,

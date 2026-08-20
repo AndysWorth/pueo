@@ -516,7 +516,7 @@ class TestNetAlertXInstallerSteps1to4:
         )
 
     def _notifier(self, approve: bool = True):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=approve)
 
@@ -1486,7 +1486,7 @@ class TestNetAlertXInstallerSteps5to8:
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _notifier(self, approve: bool = True):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=approve)
 
@@ -3004,7 +3004,7 @@ class TestRunInstaller:
         return FakeAutonomyGate(auto_execute_result=True)
 
     def _notifier(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=True)
 
@@ -3156,7 +3156,7 @@ class TestRunInstaller:
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from agents import ha_agent_advanced
 
         db = tmp_path / "main_token_empty.db"
@@ -3293,7 +3293,7 @@ def _make_syncer(
 ):
     from netalertx.ha_name_sync import HaNameSync
     from utils.agent.autonomy import FakeAutonomyGate
-    from utils.notify import FakeNotifier
+    from utils.hitl.notify import FakeNotifier
 
     return HaNameSync(
         ssh_client=ssh,
@@ -3629,7 +3629,7 @@ class TestHaNameSyncCases1And2:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:06"
@@ -3702,7 +3702,7 @@ class TestHaNameSyncCases1And2:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         nax = _FakeNAXClient([])
@@ -3872,7 +3872,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:10"
@@ -3911,7 +3911,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:11"
@@ -4153,7 +4153,7 @@ class TestHaNameSyncCases3And4:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         mac = "AA:BB:CC:DD:EE:31"
@@ -4374,7 +4374,7 @@ class TestNetAlertXLogMonitor:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -4415,7 +4415,7 @@ class TestNetAlertXLogMonitor:
         import asyncio as asyncio_mod
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeLLMClient
 
         import netalertx.log_monitor as mod
@@ -5300,7 +5300,7 @@ class TestNetAlertXHealer:
         if ha_ssh_client is None:
             ha_ssh_client = FakeSSHClient()
         if notifier is None:
-            from utils.notify import FakeNotifier
+            from utils.hitl.notify import FakeNotifier
 
             notifier = FakeNotifier(approve=True)
         if api_client is None:
@@ -5336,7 +5336,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5360,7 +5360,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5377,7 +5377,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -5410,7 +5410,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         # auto_execute_result=True means should_auto_execute returns True → MEDIUM auto-proceeds
@@ -5442,7 +5442,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         # auto_execute_result=False means should_auto_execute returns False → HIGH needs approval
@@ -5516,7 +5516,7 @@ class TestNetAlertXHealer:
         import sqlite3
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
         notifier = FakeNotifier(approve=True)
@@ -5568,7 +5568,7 @@ class TestNetAlertXHealer:
         import sqlite3
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5602,7 +5602,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5737,7 +5737,7 @@ class TestNetAlertXHealer:
         import sqlite3
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         notifier = FakeNotifier(approve=False)
@@ -5768,7 +5768,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         old_yaml = "- trigger:\n    platform: webhook\n    eve_mac: '{{trigger.json.eve_mac}}'\n"
@@ -5796,7 +5796,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         camel_yaml = (
@@ -5840,7 +5840,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -5857,7 +5857,7 @@ class TestNetAlertXHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True, approval_result=True)
@@ -5895,7 +5895,7 @@ class TestNetAlertXHealer:
 
         from netalertx.healer import NetAlertXHealer
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         healer = NetAlertXHealer(
             gate=FakeAutonomyGate(),
@@ -5919,7 +5919,7 @@ class TestNetAlertXHealer:
         from utils.agent.autonomy import FakeAutonomyGate
         from netalertx.healer import NetAlertXHealer
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         healer = NetAlertXHealer(
             gate=FakeAutonomyGate(),
@@ -6174,7 +6174,7 @@ class TestNetAlertXMaintenanceHealer:
                 }
             )
         if notifier is None:
-            from utils.notify import FakeNotifier
+            from utils.hitl.notify import FakeNotifier
 
             notifier = FakeNotifier(approve=True)
         if api_client is None:
@@ -6232,7 +6232,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -6254,7 +6254,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
@@ -6279,7 +6279,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
@@ -6302,7 +6302,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         gate = FakeAutonomyGate(auto_execute_result=True)
         notifier = FakeNotifier(approve=True)
@@ -6348,7 +6348,7 @@ class TestNetAlertXMaintenanceHealer:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
 
         gate = FakeAutonomyGate(auto_execute_result=True)
@@ -7211,7 +7211,7 @@ class TestStep8SlugWriteback:
         return FakeAutonomyGate(auto_execute_result=True, approval_result=True)
 
     def _notifier(self):
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         return FileNotifier("/tmp/test_hitl")
 
@@ -7561,7 +7561,7 @@ class TestRemoveWebhookAutomation:
 
 class TestNetAlertXUninstallerStateMachine:
     def _notifier(self, approve=True):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=approve)
 
@@ -8371,13 +8371,13 @@ class TestNetalertxMigrateCard:
 
     def _make_poller(self, notifier, tmp_db, monkeypatch, deploy_target="ha"):
         """Return a ResourcePoller with minimal config wired."""
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         # Minimal SSH that won't be called for migration card checks
         ssh = FakeSSHClient(command_results={})
         monkeypatch.setattr(
-            "utils.resource.import",
+            "utils.disk.resource.import",
             lambda *a, **kw: None,
             raising=False,
         )
@@ -8395,7 +8395,7 @@ class TestNetalertxMigrateCard:
         """Card sent when deploy_target=ha and NAX is FULLY_OPERATIONAL."""
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
 
         db = tmp_path / "state.db"
@@ -8413,7 +8413,7 @@ class TestNetalertxMigrateCard:
         notifier.send = AsyncMock()
 
         monkeypatch.setattr(
-            "utils.resource.import", lambda *a, **kw: None, raising=False
+            "utils.disk.resource.import", lambda *a, **kw: None, raising=False
         )
 
         import config as _cfg
@@ -8443,7 +8443,7 @@ class TestNetalertxMigrateCard:
     ):
         """Card not sent when deploy_target=docker (already migrated)."""
         from unittest.mock import AsyncMock, MagicMock
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
@@ -8469,7 +8469,7 @@ class TestNetalertxMigrateCard:
         """Card not sent when NAX is not FULLY_OPERATIONAL."""
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
@@ -8505,7 +8505,7 @@ class TestNetalertxMigrateCard:
         """Card only sent once; subsequent calls are no-ops."""
         import sqlite3
         from unittest.mock import AsyncMock, MagicMock
-        from utils.resource import ResourcePoller
+        from utils.disk.resource import ResourcePoller
         from utils.ha.ssh_client import FakeSSHClient
         import config as _cfg
 
@@ -8678,7 +8678,7 @@ class TestNetAlertXEventRouter:
         return NetAlertXEventRouter(notifier, gate), notifier, gate
 
     def test_new_device_card_sent_when_gate_blocks(self):
-        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         router, notifier, _ = self._make_router(auto_execute=False)
         asyncio.run(
@@ -8743,7 +8743,7 @@ class TestNetAlertXEventRouter:
         assert notifier.send.call_count == 2
 
     def test_route_alert_topic_calls_handle_new_device(self):
-        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         router, notifier, _ = self._make_router(auto_execute=False)
         asyncio.run(
@@ -8847,7 +8847,7 @@ class TestMQTTSubscriberNAXTopics:
         assert any("NetAlertX/scan/complete" in t for t in _NAX_TOPICS)
 
     def test_new_device_card_type_registered(self):
-        from utils.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_NEW_DEVICE
 
         assert CARD_TYPE_NETALERTX_NEW_DEVICE == "netalertx_new_device"
 
@@ -8859,7 +8859,7 @@ class TestPlatformTracking:
     """Both installers record 'platform' in details_json at FULLY_OPERATIONAL."""
 
     def test_platform_key_present_in_card_types(self):
-        from utils.card_types import CARD_TYPE_NETALERTX_SWITCH
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_SWITCH
 
         assert CARD_TYPE_NETALERTX_SWITCH == "netalertx_switch"
 
@@ -9002,7 +9002,7 @@ class TestDockerUninstallerStateMachine:
         return FakeAutonomyGate(auto_execute_result=False)
 
     def _notifier(self, approve=True):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=approve)
 
@@ -9270,7 +9270,7 @@ class TestNetAlertXSwitchFlow:
         return FakeAutonomyGate(auto_execute_result=False)
 
     def _notifier(self):
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
 
         return FakeNotifier(approve=True)
 
@@ -9331,7 +9331,7 @@ class TestNetAlertXSwitchFlow:
     def test_mismatch_rejected_leaves_state_unchanged(self, tmp_path, monkeypatch):
         """Rejecting the switch HITL card leaves state at FULLY_OPERATIONAL."""
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
         from netalertx.switch import run_switch
 

@@ -15,13 +15,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from config import DB_PATH, NETALERTX_DEPLOY_TARGET
-from utils.card_types import CARD_TYPE_NETALERTX_SWITCH
+from utils.hitl.card_types import CARD_TYPE_NETALERTX_SWITCH
 from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import SSHClientProtocol
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import NotifierProtocol
+    from utils.hitl.notify import NotifierProtocol
 
 log = get_logger("netalertx.switch")
 
@@ -184,7 +184,7 @@ async def main(
         SSH_KEY_PATH,
     )
     from utils.agent.autonomy import AutonomyGate
-    from utils.notify import get_notifier
+    from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 
     _docker_user = NETALERTX_DOCKER_SSH_USER or HA_USER

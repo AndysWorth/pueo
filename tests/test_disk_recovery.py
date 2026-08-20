@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from utils.disk_recovery import (
+from utils.disk.disk_recovery import (
     DISK_AUTO_ACTION_KEYS,
     RecoveryAction,
     RecoverySummary,
@@ -133,7 +133,7 @@ class TestArchiveOnTruncate:
     """Verify archiver integration with truncate_ha_log."""
 
     def test_archives_before_truncating(self, tmp_path):
-        from utils.archiver import archive_ha_log as _real_archive
+        from utils.disk.archiver import archive_ha_log as _real_archive
 
         call_order = []
 
@@ -153,8 +153,10 @@ class TestArchiveOnTruncate:
             patch("config.ARCHIVE_HA_LOG_ENABLED", True),
             patch("config.PUEO_ARCHIVE_DIR", str(tmp_path)),
             patch("config.PUEO_ARCHIVE_MAX_GB", 2.0),
-            patch("utils.disk_recovery.archive_ha_log", mock_archive),
-            patch("utils.disk_recovery.enforce_archive_retention", lambda *a, **k: 0),
+            patch("utils.disk.disk_recovery.archive_ha_log", mock_archive),
+            patch(
+                "utils.disk.disk_recovery.enforce_archive_retention", lambda *a, **k: 0
+            ),
         ):
             result = asyncio.run(truncate_ha_log(ssh))
 
@@ -179,7 +181,7 @@ class TestArchiveOnTruncate:
 
         with (
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
-            patch("utils.disk_recovery.archive_ha_log", mock_archive),
+            patch("utils.disk.disk_recovery.archive_ha_log", mock_archive),
         ):
             asyncio.run(truncate_ha_log(ssh))
 
@@ -545,7 +547,7 @@ class TestBuildDiskConclusion:
 
 class TestFetchAddonPersistentSizes:
     def test_parses_du_output_and_resolves_names(self):
-        from utils.disk_usage import fetch_addon_persistent_sizes
+        from utils.disk.disk_usage import fetch_addon_persistent_sizes
 
         ssh = MagicMock()
         ssh.run = AsyncMock(
@@ -567,7 +569,7 @@ class TestFetchAddonPersistentSizes:
         assert result[1]["name"] == "Mosquitto Broker"
 
     def test_returns_empty_on_ssh_exception(self):
-        from utils.disk_usage import fetch_addon_persistent_sizes
+        from utils.disk.disk_usage import fetch_addon_persistent_sizes
 
         ssh = MagicMock()
         ssh.run = AsyncMock(side_effect=Exception("permission denied"))
@@ -575,7 +577,7 @@ class TestFetchAddonPersistentSizes:
         assert result == []
 
     def test_returns_empty_on_no_output(self):
-        from utils.disk_usage import fetch_addon_persistent_sizes
+        from utils.disk.disk_usage import fetch_addon_persistent_sizes
 
         ssh = MagicMock()
         ssh.run = AsyncMock(return_value=(0, "", ""))
@@ -583,7 +585,7 @@ class TestFetchAddonPersistentSizes:
         assert result == []
 
     def test_unknown_slug_uses_slug_as_name(self):
-        from utils.disk_usage import fetch_addon_persistent_sizes
+        from utils.disk.disk_usage import fetch_addon_persistent_sizes
 
         ssh = MagicMock()
         ssh.run = AsyncMock(
@@ -597,7 +599,7 @@ class TestFetchAddonPersistentSizes:
         assert result[0]["name"] == "some_unknown_slug"
 
     def test_sorted_descending_by_size(self):
-        from utils.disk_usage import fetch_addon_persistent_sizes
+        from utils.disk.disk_usage import fetch_addon_persistent_sizes
 
         ssh = MagicMock()
         ssh.run = AsyncMock(

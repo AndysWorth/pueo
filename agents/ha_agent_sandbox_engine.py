@@ -35,7 +35,7 @@ from interfaces import (
     SSHClientProtocol,
 )
 from utils.core.context import estimate_tokens, truncate_to_budget
-from utils.llm_trace import LLMTrace
+from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import (
     get_logger,
     get_correlation_id,
@@ -48,7 +48,7 @@ from .ha_agent_core import DiagnosticsReport
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
 from utils.agent.autonomy import AutonomyGate, RiskLevel
-from utils.notify import NotifierProtocol, get_notifier
+from utils.hitl.notify import NotifierProtocol, get_notifier
 from utils.repair.yaml_validator import validate_proposed_fix
 from .ha_agent_advanced import (
     execute_remote_backup,  # noqa: F401 — re-exported; callers may import from here
@@ -782,7 +782,7 @@ async def main(
     if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
         from utils.agent.agent_loop import _format_step_trace
         from utils.repair.billing import BillingCapError, estimate_cost, get_daily_spend
-        from utils.card_types import CARD_TYPE_CLOUD_ESCALATION
+        from utils.hitl.card_types import CARD_TYPE_CLOUD_ESCALATION
 
         nid = str(uuid.uuid4())
         step_summary = _format_step_trace(result.steps)

@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import config
 from interfaces import HARestClientProtocol, SSHClientProtocol
-from utils.archiver import (
+from utils.disk.archiver import (
     archive_ha_log,
     archive_journal_dump,
     enforce_archive_retention,

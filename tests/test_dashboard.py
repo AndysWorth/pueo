@@ -780,7 +780,7 @@ class TestInstallerDiagnostics:
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
 
         async def poll_false(*a, **k):
@@ -816,7 +816,7 @@ class TestInstallerDiagnostics:
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4, _read_install_state
 
         poll_call_count = [0]
@@ -857,7 +857,7 @@ class TestInstallerDiagnostics:
         from utils.ha.ssh_client import FakeSSHClient
         from utils.llm.ollama_client import FakeLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
 
         async def poll_false(*a, **k):
@@ -895,7 +895,7 @@ class TestInstallerDiagnostics:
 # ===========================================================================
 class TestLLMTrace:
     def test_construction(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         trace = LLMTrace(
             model="qwen2.5-coder:7b",
@@ -910,7 +910,7 @@ class TestLLMTrace:
         assert isinstance(trace.timestamp, int)
 
     def test_as_dict_keys(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         trace = LLMTrace(
             model="m", system_prompt="sp", user_prompt="up", raw_response="r"
@@ -925,7 +925,7 @@ class TestLLMTrace:
         }
 
     def test_episode_id_included_in_as_dict_when_set(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         trace = LLMTrace(
             model="m",
@@ -938,7 +938,7 @@ class TestLLMTrace:
         assert d["episode_id"] == "abc-123"
 
     def test_episode_id_absent_from_as_dict_when_none(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         trace = LLMTrace(
             model="m", system_prompt="sp", user_prompt="up", raw_response="r"
@@ -947,7 +947,7 @@ class TestLLMTrace:
         assert "episode_id" not in d
 
     def test_system_prompt_truncated_in_as_dict(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         long_prompt = "x" * 5000
         trace = LLMTrace(
@@ -958,7 +958,7 @@ class TestLLMTrace:
         assert d["system_prompt"].endswith("\n...[truncated]...")
 
     def test_user_prompt_truncated_in_as_dict(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         long_prompt = "y" * 5000
         trace = LLMTrace(
@@ -969,7 +969,7 @@ class TestLLMTrace:
         assert d["user_prompt"].endswith("\n...[truncated]...")
 
     def test_short_prompts_not_truncated(self):
-        from utils.llm_trace import LLMTrace
+        from utils.hitl.llm_trace import LLMTrace
 
         trace = LLMTrace(
             model="m", system_prompt="short", user_prompt="also short", raw_response="r"
@@ -1046,7 +1046,7 @@ class TestLLMTrace:
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
@@ -1091,7 +1091,7 @@ class TestLLMTrace:
         from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.notify import FakeNotifier
+        from utils.hitl.notify import FakeNotifier
         from agents import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
@@ -1562,7 +1562,7 @@ class TestSuppressAndKnownIssues:
         import sqlite3
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.hitl_tracker import mark_card_acknowledged, mark_card_sent
+        from utils.hitl.hitl_tracker import mark_card_acknowledged, mark_card_sent
 
         db = self._setup(tmp_path, monkeypatch)
         with sqlite3.connect(db) as conn:
@@ -1579,7 +1579,7 @@ class TestSuppressAndKnownIssues:
         import sqlite3
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
-        from utils.hitl_tracker import mark_card_acknowledged, mark_card_sent
+        from utils.hitl.hitl_tracker import mark_card_acknowledged, mark_card_sent
 
         db = self._setup(tmp_path, monkeypatch)
         with sqlite3.connect(db) as conn:
@@ -1731,7 +1731,7 @@ class TestDismissNotificationRoute:
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
         from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.notify import FileNotifier
+        from utils.hitl.notify import FileNotifier
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         fake_rest = FakeHARestClient()
@@ -2354,7 +2354,7 @@ class TestCardTypeDispatch:
 
     def test_update_card_routes_to_execute_queued_update(self, watch_dir, monkeypatch):
         """CARD_TYPE_UPDATE dispatches to _execute_queued_update."""
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
@@ -2381,7 +2381,7 @@ class TestCardTypeDispatch:
 
     def test_netalertx_heal_card_routes_to_executor(self, watch_dir, monkeypatch):
         """CARD_TYPE_NETALERTX_HEAL dispatches to _execute_netalertx_heal."""
-        from utils.card_types import CARD_TYPE_NETALERTX_HEAL
+        from utils.hitl.card_types import CARD_TYPE_NETALERTX_HEAL
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
@@ -2410,7 +2410,7 @@ class TestCardTypeDispatch:
 
     def test_resource_action_card_routes_to_executor(self, watch_dir, monkeypatch):
         """CARD_TYPE_RESOURCE_ACTION dispatches to _execute_resource_action."""
-        from utils.card_types import CARD_TYPE_RESOURCE_ACTION
+        from utils.hitl.card_types import CARD_TYPE_RESOURCE_ACTION
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
@@ -2450,7 +2450,7 @@ class TestCardTypeDispatch:
         """approve() marks in_progress before the handler coroutine runs, so the
         redirect lands on a queue page that already shows the spinner."""
         import web.dashboard as dashboard
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
         in_progress_at_task_start = []
@@ -2477,7 +2477,7 @@ class TestCardTypeDispatch:
 
     def test_card_type_constants_exist(self):
         """Verify all four card type constants are importable."""
-        from utils.card_types import (
+        from utils.hitl.card_types import (
             CARD_TYPE_NETALERTX_HEAL,
             CARD_TYPE_REPAIR,
             CARD_TYPE_RESOURCE_ACTION,
@@ -2491,13 +2491,13 @@ class TestCardTypeDispatch:
 
     def test_repair_payload_includes_card_type(self):
         """apply_fix payload includes card_type=repair."""
-        from utils.card_types import CARD_TYPE_REPAIR
+        from utils.hitl.card_types import CARD_TYPE_REPAIR
 
         assert CARD_TYPE_REPAIR == "repair"
 
     def test_resource_action_payload_includes_card_type(self):
         """Disk-critical alert payload includes card_type=resource_action."""
-        from utils.card_types import CARD_TYPE_RESOURCE_ACTION
+        from utils.hitl.card_types import CARD_TYPE_RESOURCE_ACTION
 
         assert CARD_TYPE_RESOURCE_ACTION == "resource_action"
 
@@ -2537,7 +2537,7 @@ class TestExecuteQueuedUpdate:
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-ok-1"
@@ -2569,7 +2569,7 @@ class TestExecuteQueuedUpdate:
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-fail-1"
@@ -2605,7 +2605,7 @@ class TestExecuteQueuedUpdate:
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-exc-1"
@@ -2641,7 +2641,7 @@ class TestExecuteQueuedUpdate:
         from agents import ha_update_manager
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
         from utils.ha.ssh_client import FakeSSHClient
 
         nid = "upd-cleanup-1"
@@ -2763,7 +2763,7 @@ class TestExecuteNetalertxHeal:
         import netalertx.api_client as api_mod
         import utils.ha.ssh_client as ssh_mod
         import utils.agent.autonomy as autonomy_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
 
         class FakeHealer:
             async def run_heal(self, action: str) -> None:
@@ -3127,7 +3127,7 @@ class TestExecuteDiskRecovery:
     def test_repack_recorder_calls_purge_recorder(self, tmp_path, monkeypatch):
         import json as _json
         import web.dashboard as dashboard
-        import utils.disk_recovery as dr
+        import utils.disk.disk_recovery as dr
         import utils.ha.ssh_client as ssh_mod
         import config as _config
 
@@ -3138,7 +3138,7 @@ class TestExecuteDiskRecovery:
 
         async def _fake_purge(rest, keep_days, repack):
             purge_calls.append({"keep_days": keep_days, "repack": repack})
-            from utils.disk_recovery import RecoveryAction
+            from utils.disk.disk_recovery import RecoveryAction
 
             return RecoveryAction("purge_recorder", 0, "ok", True)
 
@@ -3166,7 +3166,7 @@ class TestExecuteDiskRecovery:
     def test_clean_tmp_calls_audit_and_rm(self, tmp_path, monkeypatch):
         import json as _json
         import web.dashboard as dashboard
-        import utils.disk_recovery as dr
+        import utils.disk.disk_recovery as dr
         import utils.ha.ssh_client as ssh_mod
         import config as _config
 
@@ -3181,7 +3181,7 @@ class TestExecuteDiskRecovery:
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: _FakeSSH())
 
-        from utils.disk_recovery import TmpAuditItem
+        from utils.disk.disk_recovery import TmpAuditItem
 
         async def _fake_audit(ssh):
             return [TmpAuditItem("/mnt/data/supervisor/tmp/foo", "500M", 500 * 1024**2)]
@@ -3351,15 +3351,15 @@ class TestDiskQueueOrphanCleanup:
 
     def test_returns_ok_with_card_queued(self, monkeypatch, tmp_path):
         from fastapi.testclient import TestClient
-        import utils.disk_recovery as dr_mod
+        import utils.disk.disk_recovery as dr_mod
         import utils.ha.ssh_client as ssh_mod
-        import utils.notify as notify_mod
+        import utils.hitl.notify as notify_mod
         import web.dashboard as dashboard
         import config as _config
 
         monkeypatch.setattr(_config, "NOTIFY_WATCH_DIR", str(tmp_path))
 
-        from utils.disk_recovery import OrphanedAddonDir
+        from utils.disk.disk_recovery import OrphanedAddonDir
 
         async def _fake_scan(ssh):
             return [
@@ -3396,7 +3396,7 @@ class TestDiskQueueOrphanCleanup:
 
     def test_returns_ok_no_card_when_no_orphans(self, monkeypatch, tmp_path):
         from fastapi.testclient import TestClient
-        import utils.disk_recovery as dr_mod
+        import utils.disk.disk_recovery as dr_mod
         import utils.ha.ssh_client as ssh_mod
         import web.dashboard as dashboard
 
@@ -3953,7 +3953,7 @@ class TestTimelineRoutes:
         db, _ = tl_setup
 
         async def run():
-            from utils.resource import (
+            from utils.disk.resource import (
                 ResourcePoller,
                 ResourceStatus,
                 update_resource_status,
@@ -4377,14 +4377,14 @@ class TestConfigEditor:
 
 class TestLaunchdPlistTemplate:
     def test_render_plist_substitutes_all_placeholders(self, tmp_path):
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
         assert "{{ PUEO_DIR }}" not in rendered
         assert "{{ PYTHON_PATH }}" not in rendered
 
     def test_render_plist_inserts_correct_paths(self, tmp_path):
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python3")
         assert "/opt/pueo" in rendered
@@ -4393,7 +4393,7 @@ class TestLaunchdPlistTemplate:
     def test_render_plist_produces_valid_plist(self):
         import plistlib
 
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/usr/bin/python3")
         # plistlib.loads handles the DOCTYPE declaration that ElementTree cannot
@@ -4403,7 +4403,7 @@ class TestLaunchdPlistTemplate:
     def test_render_plist_has_correct_label(self):
         import plistlib
 
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/usr/bin/python3")
         plist = plistlib.loads(rendered.encode())
@@ -4412,7 +4412,7 @@ class TestLaunchdPlistTemplate:
     def test_render_plist_has_keep_alive(self):
         import plistlib
 
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/usr/bin/python3")
         plist = plistlib.loads(rendered.encode())
@@ -4421,7 +4421,7 @@ class TestLaunchdPlistTemplate:
     def test_render_plist_working_directory_matches_pueo_dir(self):
         import plistlib
 
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/my/pueo/dir", "/usr/bin/python3")
         plist = plistlib.loads(rendered.encode())
@@ -4430,7 +4430,7 @@ class TestLaunchdPlistTemplate:
     def test_render_plist_program_arguments_include_main_py(self):
         import plistlib
 
-        from utils.service import render_plist
+        from utils.system.service import render_plist
 
         rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
         plist = plistlib.loads(rendered.encode())
@@ -4443,7 +4443,7 @@ class TestServiceStatus:
     def test_service_status_not_loaded_returns_false(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
 
@@ -4462,7 +4462,7 @@ class TestServiceStatus:
     def test_service_status_loaded_running_with_pid(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
 
@@ -4481,7 +4481,7 @@ class TestServiceStatus:
     def test_service_status_loaded_stopped_no_pid(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
 
@@ -4498,7 +4498,7 @@ class TestServiceStatus:
         assert status["pid"] is None
 
     def test_service_status_non_darwin_returns_not_loaded(self, monkeypatch):
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "linux"})())
         status = svc.service_status()
@@ -4508,7 +4508,7 @@ class TestServiceStatus:
     def test_service_status_launchctl_not_found(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
 
@@ -4524,7 +4524,7 @@ class TestServiceStatus:
         """ValueError when PID field is non-numeric must be silently caught."""
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
 
@@ -4545,7 +4545,7 @@ class TestServiceActions:
     def test_install_service_writes_plist_and_loads(self, tmp_path, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         fake_target = tmp_path / "com.pueo.agent.plist"
         monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
@@ -4578,7 +4578,7 @@ class TestServiceActions:
         """install_service() with no args resolves pueo_dir from template path."""
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         fake_target = tmp_path / "com.pueo.agent.plist"
         monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
@@ -4601,7 +4601,7 @@ class TestServiceActions:
     def test_restart_service_calls_launchctl_stop(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
         runs = []
@@ -4617,7 +4617,7 @@ class TestServiceActions:
     def test_uninstall_service_unloads_and_removes_plist(self, tmp_path, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         fake_target = tmp_path / "com.pueo.agent.plist"
         fake_target.write_text("plist content")
@@ -4640,7 +4640,7 @@ class TestServiceActions:
         """uninstall_service does nothing if plist was never installed."""
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         fake_target = tmp_path / "com.pueo.agent.plist"
         monkeypatch.setattr(svc, "PLIST_TARGET", fake_target)
@@ -4655,7 +4655,7 @@ class TestServiceActions:
     def test_stop_service_calls_launchctl_unload(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
         runs = []
@@ -4671,7 +4671,7 @@ class TestServiceActions:
     def test_start_service_calls_launchctl_load(self, monkeypatch):
         import subprocess
 
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(svc, "sys", type("_Sys", (), {"platform": "darwin"})())
         runs = []
@@ -4690,7 +4690,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4710,7 +4710,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4727,7 +4727,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         called = []
@@ -4742,7 +4742,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4758,7 +4758,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         called = []
@@ -4773,7 +4773,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         called = []
@@ -4788,7 +4788,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         called = []
@@ -4803,7 +4803,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         called = []
@@ -4818,7 +4818,7 @@ class TestDashboardServiceEndpoints:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4836,7 +4836,7 @@ class TestControlTab:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4857,7 +4857,7 @@ class TestControlTab:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4877,7 +4877,7 @@ class TestControlTab:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4908,7 +4908,7 @@ class TestControlTab:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4924,7 +4924,7 @@ class TestControlTab:
         from fastapi.testclient import TestClient
 
         import web.dashboard as dashboard
-        from utils import service as svc
+        import utils.system.service as svc
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4949,7 +4949,7 @@ class TestUpdateOrderingGuard:
     def _write_update_card(self, watch_dir: Path, nid: str, component: str) -> None:
         import json
 
-        from utils.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
 
         card = {
             "subject": f"Update: {component}",
@@ -5031,7 +5031,7 @@ class TestExecuteQueuedHARepair:
     ) -> None:
         import json
 
-        from utils.card_types import CARD_TYPE_HA_REPAIR
+        from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
 
         card = {
             "subject": "HA repair: homeassistant/reboot_required",
@@ -5088,7 +5088,7 @@ class TestExecuteQueuedHARepair:
 
         import web.dashboard as dashboard
         from starlette.testclient import TestClient
-        from utils.card_types import CARD_TYPE_HA_REPAIR
+        from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
 
         watch_dir = tmp_path / "hitl"
         watch_dir.mkdir()
@@ -5118,7 +5118,7 @@ class TestExecuteQueuedHARepair:
 
         import web.dashboard as dashboard
         from utils.ha.ssh_client import AsyncSSHClient
-        from utils.notify import get_notifier
+        from utils.hitl.notify import get_notifier
 
         watch_dir = tmp_path / "hitl"
         watch_dir.mkdir()
@@ -5303,7 +5303,7 @@ class TestPostRebootRepairScan:
 
 class TestDiskRoutes:
     def test_disk_get_no_data_returns_200(self, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -5314,8 +5314,8 @@ class TestDiskRoutes:
         assert "No disk usage data" in response.text
 
     def test_disk_get_with_data_shows_sections(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskBreakdown, DiskSection
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskBreakdown, DiskSection
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
         import time
@@ -5346,8 +5346,8 @@ class TestDiskRoutes:
         assert "79.4" in response.text
 
     def test_disk_get_shows_age_seconds(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskBreakdown
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskBreakdown
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
         import time
@@ -5360,8 +5360,8 @@ class TestDiskRoutes:
         assert "ago" in response.text
 
     def test_disk_refresh_calls_fetch(self, monkeypatch):
-        import utils.disk_usage as du_mod
-        from utils.disk_usage import DiskBreakdown
+        import utils.disk.disk_usage as du_mod
+        from utils.disk.disk_usage import DiskBreakdown
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -5387,7 +5387,7 @@ class TestDiskRoutes:
         assert len(fetch_calls) == 1
 
     def test_disk_refresh_error_returns_not_ok(self, monkeypatch):
-        import utils.disk_usage as du_mod
+        import utils.disk.disk_usage as du_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -5675,8 +5675,8 @@ class TestEpisodePrepareAndSubmit:
         async def _fake_submit(episode_id, yaml_content, cases_repo, pr_title, pr_body):
             return "https://github.com/owner/pueo-cases/pull/99"
 
-        # Dashboard imports submit_episode at call time via `from utils.case_submitter import ...`
-        monkeypatch.setattr("utils.case_submitter.submit_episode", _fake_submit)
+        # Dashboard imports submit_episode at call time via `from utils.cases.case_submitter import ...`
+        monkeypatch.setattr("utils.cases.case_submitter.submit_episode", _fake_submit)
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post(

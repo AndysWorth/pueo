@@ -198,7 +198,7 @@ class ResourcePoller:
             if is_first_breach or cooldown_elapsed:
                 try:
                     import config as _cfg
-                    from utils.disk_recovery import run_safe_disk_recovery
+                    from utils.disk.disk_recovery import run_safe_disk_recovery
 
                     if _cfg.DISK_RECOVERY_AUTO_ENABLED:
                         _inv_ctx = (
@@ -250,8 +250,8 @@ class ResourcePoller:
                 import sqlite3 as _sqlite3
 
                 import config as _cfg  # type: ignore[assignment]
-                from utils.card_types import CARD_TYPE_DISK_RECOVERY
-                from utils.hitl_tracker import (
+                from utils.hitl.card_types import CARD_TYPE_DISK_RECOVERY
+                from utils.hitl.hitl_tracker import (
                     mark_card_sent,
                     should_send_card,
                 )
@@ -331,7 +331,7 @@ class ResourcePoller:
                 # Scan for orphaned add-on data directories and add as approval option.
                 orphaned_addons: list = []
                 try:
-                    from utils.disk_recovery import scan_orphaned_addon_dirs
+                    from utils.disk.disk_recovery import scan_orphaned_addon_dirs
 
                     orphaned_addons = await scan_orphaned_addon_dirs(self._ssh)
                     if orphaned_addons:
@@ -365,8 +365,8 @@ class ResourcePoller:
                 # are likely to resolve the issue and names the primary culprit if not.
                 disk_analysis: dict = {}
                 try:
-                    from utils.disk_recovery import build_disk_conclusion
-                    from utils.disk_usage import (
+                    from utils.disk.disk_recovery import build_disk_conclusion
+                    from utils.disk.disk_usage import (
                         fetch_addon_persistent_sizes,
                         fetch_top_consumers_flat,
                         get_disk_breakdown,
@@ -457,7 +457,7 @@ class ResourcePoller:
                         )
                     )
 
-                from utils.hitl_tracker import stable_nid as _stable_nid
+                from utils.hitl.hitl_tracker import stable_nid as _stable_nid
 
                 _disk_crit_key = "resource:disk_critical"
                 # Mark sent before writing file — avoids the "not sent" DB state if
@@ -514,7 +514,7 @@ class ResourcePoller:
                 import sqlite3 as _sqlite3
 
                 import config as _cfg  # type: ignore[assignment]
-                from utils.hitl_tracker import mark_card_resolved
+                from utils.hitl.hitl_tracker import mark_card_resolved
 
                 with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rc:
                     mark_card_resolved(_rc, "resource:disk_critical")
@@ -540,7 +540,7 @@ class ResourcePoller:
                     import sqlite3 as _sqlite3
 
                     import config as _cfg  # type: ignore[assignment]
-                    from utils.hitl_tracker import (
+                    from utils.hitl.hitl_tracker import (
                         mark_card_sent,
                         should_send_card,
                     )
@@ -561,7 +561,7 @@ class ResourcePoller:
                         # disk slides further to CRITICAL.
                         warn_summary = None
                         try:
-                            from utils.disk_recovery import run_safe_disk_recovery
+                            from utils.disk.disk_recovery import run_safe_disk_recovery
 
                             if _cfg.DISK_RECOVERY_AUTO_ENABLED:
                                 warn_summary = await run_safe_disk_recovery(
@@ -598,7 +598,7 @@ class ResourcePoller:
                                 else "\nProactive recovery ran; space freed will reflect in the next poll."
                             )
 
-                        from utils.hitl_tracker import stable_nid as _stable_nid_w
+                        from utils.hitl.hitl_tracker import stable_nid as _stable_nid_w
 
                         _disk_warn_key = "resource:disk_warn"
                         with _sqlite3.connect(_db_w) as _sup_w2:
@@ -639,7 +639,7 @@ class ResourcePoller:
                     import sqlite3 as _sqlite3
 
                     import config as _cfg  # type: ignore[assignment]
-                    from utils.hitl_tracker import mark_card_resolved
+                    from utils.hitl.hitl_tracker import mark_card_resolved
 
                     with _sqlite3.connect(self._db_path or _cfg.DB_PATH) as _rw:
                         mark_card_resolved(_rw, "resource:disk_warn")
@@ -699,7 +699,7 @@ class ResourcePoller:
         try:
             import config as _cfg
             from netalertx.installer import get_install_state
-            from utils.card_types import CARD_TYPE_NETALERTX_MIGRATE
+            from utils.hitl.card_types import CARD_TYPE_NETALERTX_MIGRATE
 
             deploy_target = getattr(_cfg, "NETALERTX_DEPLOY_TARGET", "ha")
             if deploy_target != "ha":
