@@ -185,7 +185,10 @@ async def embed_local_episode(
     (upsert semantics). Marks the episode as embedded in SQLite on success.
     Returns True on success, False on any error.
     """
-    from utils.repair_episode import format_episode_for_embedding, mark_episode_embedded
+    from utils.repair.repair_episode import (
+        format_episode_for_embedding,
+        mark_episode_embedded,
+    )
 
     try:
         text = format_episode_for_embedding(episode)

@@ -5689,7 +5689,7 @@ class TestEpisodePrepareAndSubmit:
         assert data["pr_url"] == "https://github.com/owner/pueo-cases/pull/99"
 
         # Verify the episode is now marked submitted in DB
-        from utils.repair_episode import load_episode
+        from utils.repair.repair_episode import load_episode
 
         ep = load_episode(db_path, "ep-sub-1")
         assert ep is not None

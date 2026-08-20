@@ -49,7 +49,7 @@ from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
 from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
-from utils.yaml_validator import validate_proposed_fix
+from utils.repair.yaml_validator import validate_proposed_fix
 from .ha_agent_advanced import (
     execute_remote_backup,  # noqa: F401 — re-exported; callers may import from here
     record_backup_slug,  # noqa: F401 — re-exported; callers may import from here
@@ -694,7 +694,9 @@ async def main(
     if knowledge_store is not None:
         _knowledge_store = knowledge_store
     else:
-        from utils.knowledge_store import ChromaKnowledgeStore  # pragma: no cover
+        from utils.knowledge.knowledge_store import (
+            ChromaKnowledgeStore,
+        )  # pragma: no cover
 
         _knowledge_store = ChromaKnowledgeStore(  # pragma: no cover
             path=CHROMADB_PATH,
@@ -779,7 +781,7 @@ async def main(
     # - Level 1 (REPORT_ONLY): require_approval returns False, skip silently.
     if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
         from utils.agent.agent_loop import _format_step_trace
-        from utils.billing import BillingCapError, estimate_cost, get_daily_spend
+        from utils.repair.billing import BillingCapError, estimate_cost, get_daily_spend
         from utils.card_types import CARD_TYPE_CLOUD_ESCALATION
 
         nid = str(uuid.uuid4())
@@ -819,7 +821,7 @@ async def main(
             steps=len(result.steps),
         )
         if approved:
-            from utils.cloud_escalation import run_cloud_escalation
+            from utils.repair.cloud_escalation import run_cloud_escalation
 
             try:
                 result = await run_cloud_escalation(

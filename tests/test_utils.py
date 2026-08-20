@@ -660,21 +660,21 @@ logger:
 
 class TestValidationResult:
     def test_valid_construction(self):
-        from utils.yaml_validator import ValidationResult
+        from utils.repair.yaml_validator import ValidationResult
 
         r = ValidationResult(is_safe=True, reasons=[])
         assert r.is_safe is True
         assert r.reasons == []
 
     def test_unsafe_with_reasons(self):
-        from utils.yaml_validator import ValidationResult
+        from utils.repair.yaml_validator import ValidationResult
 
         r = ValidationResult(is_safe=False, reasons=["missing homeassistant block"])
         assert r.is_safe is False
         assert len(r.reasons) == 1
 
     def test_reasons_defaults_to_empty_list(self):
-        from utils.yaml_validator import ValidationResult
+        from utils.repair.yaml_validator import ValidationResult
 
         r = ValidationResult(is_safe=True)
         assert r.reasons == []
@@ -682,41 +682,41 @@ class TestValidationResult:
 
 class TestValidateProposedFix:
     def test_valid_fix_passes(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix(_VALID_ORIGINAL, _VALID_FIX)
         assert result.is_safe is True
         assert result.reasons == []
 
     def test_empty_proposed_yaml_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix(_VALID_ORIGINAL, "")
         assert result.is_safe is False
         assert any("empty" in r for r in result.reasons)
 
     def test_whitespace_only_proposed_yaml_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix(_VALID_ORIGINAL, "   \n  ")
         assert result.is_safe is False
 
     def test_unparseable_yaml_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix(_VALID_ORIGINAL, "key: [unclosed")
         assert result.is_safe is False
         assert any("does not parse" in r for r in result.reasons)
 
     def test_non_mapping_yaml_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix(_VALID_ORIGINAL, "- item1\n- item2\n")
         assert result.is_safe is False
         assert any("mapping" in r for r in result.reasons)
 
     def test_missing_homeassistant_block_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         proposed = "http:\n  server_port: 8123\n"
         result = validate_proposed_fix(_VALID_ORIGINAL, proposed)
@@ -724,7 +724,7 @@ class TestValidateProposedFix:
         assert any("homeassistant" in r for r in result.reasons)
 
     def test_removed_top_level_key_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         proposed = "homeassistant:\n  name: Home\n"
         result = validate_proposed_fix(_VALID_ORIGINAL, proposed)
@@ -732,7 +732,7 @@ class TestValidateProposedFix:
         assert any("http" in r or "logger" in r for r in result.reasons)
 
     def test_completely_different_yaml_rejected(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         proposed = "\n".join([f"key_{i}: value_{i}" for i in range(200)])
         result = validate_proposed_fix(_VALID_ORIGINAL, proposed)
@@ -740,20 +740,20 @@ class TestValidateProposedFix:
         assert any("differs too much" in r for r in result.reasons)
 
     def test_nearly_identical_fix_passes(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         fix = _VALID_ORIGINAL.replace("warning", "info")
         result = validate_proposed_fix(_VALID_ORIGINAL, fix)
         assert result.is_safe is True
 
     def test_original_with_bad_yaml_does_not_raise(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         result = validate_proposed_fix("key: [broken", _VALID_FIX)
         assert isinstance(result.is_safe, bool)
 
     def test_multiple_violations_reported(self):
-        from utils.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import validate_proposed_fix
 
         proposed = "some_new_key:\n  value: x\n"
         result = validate_proposed_fix(_VALID_ORIGINAL, proposed)
@@ -1435,7 +1435,7 @@ class TestExecuteRemoteBackupDiskCheck:
 
 class TestKnowledgeChunk:
     def test_valid_construction(self):
-        from utils.knowledge_store import KnowledgeChunk
+        from utils.knowledge.knowledge_store import KnowledgeChunk
 
         chunk = KnowledgeChunk(
             text="some text", source="ha/2024.1", collection="ha_release_notes"
@@ -1445,7 +1445,7 @@ class TestKnowledgeChunk:
         assert chunk.metadata == {}
 
     def test_construction_with_all_fields(self):
-        from utils.knowledge_store import KnowledgeChunk
+        from utils.knowledge.knowledge_store import KnowledgeChunk
 
         chunk = KnowledgeChunk(
             text="breaking change",
@@ -1460,7 +1460,7 @@ class TestKnowledgeChunk:
 
 class TestFakeKnowledgeStore:
     def test_upsert_and_query_basic(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1475,7 +1475,7 @@ class TestFakeKnowledgeStore:
         assert results[0].source == "ha_release_notes/2024.1"
 
     def test_upsert_deduplicates_by_id(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1495,7 +1495,7 @@ class TestFakeKnowledgeStore:
         assert results[0].text == "updated text"
 
     def test_query_returns_empty_for_no_match(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1508,7 +1508,7 @@ class TestFakeKnowledgeStore:
         assert results == []
 
     def test_query_respects_top_k(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1521,7 +1521,7 @@ class TestFakeKnowledgeStore:
         assert len(results) == 3
 
     def test_query_with_collection_filter(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1543,7 +1543,7 @@ class TestFakeKnowledgeStore:
         assert len(results) == 1
 
     def test_query_unknown_collection_returns_empty(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         results = store.query("anything", top_k=5, collections=["nonexistent"])
@@ -1552,7 +1552,7 @@ class TestFakeKnowledgeStore:
 
 class TestFakeKnowledgeStorePrune:
     def test_prune_removes_stale_ids(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1567,7 +1567,7 @@ class TestFakeKnowledgeStorePrune:
         assert len(store.query("old text", top_k=5)) == 0
 
     def test_prune_keeps_all_when_all_in_keep_set(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1581,7 +1581,7 @@ class TestFakeKnowledgeStorePrune:
         assert len(store._docs["ha_release_notes"]) == 2
 
     def test_prune_empty_keep_set_clears_collection(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1595,7 +1595,7 @@ class TestFakeKnowledgeStorePrune:
         assert store.query("some text", top_k=5) == []
 
     def test_prune_on_missing_collection_returns_zero(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         removed = store.prune("nonexistent", keep_ids={"any-id"})
@@ -1604,13 +1604,13 @@ class TestFakeKnowledgeStorePrune:
 
 class TestFakeKnowledgeStoreTotalCount:
     def test_empty_store_returns_zero(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         assert store.total_count() == 0
 
     def test_counts_across_collections(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert("ha_release_notes", ["a"], ["doc a"], [{"source": "a"}])
@@ -1628,21 +1628,21 @@ class TestFakeKnowledgeStoreTotalCount:
 
 class TestParseBreakingChanges:
     def test_extracts_section_with_break_keyword(self):
-        from utils.ha_release_notes_scraper import parse_breaking_changes
+        from utils.knowledge.ha_release_notes_scraper import parse_breaking_changes
 
         notes = "# 2024.1\n\nSome intro text.\n## Breaking Changes\n- Template syntax changed\n## Other\n- Bug fix"
         result = parse_breaking_changes(notes)
         assert any("Template syntax changed" in c for c in result)
 
     def test_extracts_section_with_deprecated_keyword(self):
-        from utils.ha_release_notes_scraper import parse_breaking_changes
+        from utils.knowledge.ha_release_notes_scraper import parse_breaking_changes
 
         notes = "## What's New\nFoo\n## Deprecated\nOld API removed"
         result = parse_breaking_changes(notes)
         assert any("Old API removed" in c for c in result)
 
     def test_falls_back_to_first_chunk_when_no_match(self):
-        from utils.ha_release_notes_scraper import parse_breaking_changes
+        from utils.knowledge.ha_release_notes_scraper import parse_breaking_changes
 
         notes = "No relevant sections here at all."
         result = parse_breaking_changes(notes)
@@ -1650,7 +1650,7 @@ class TestParseBreakingChanges:
         assert "No relevant sections" in result[0]
 
     def test_truncates_long_sections(self):
-        from utils.ha_release_notes_scraper import parse_breaking_changes
+        from utils.knowledge.ha_release_notes_scraper import parse_breaking_changes
 
         notes = "## Breaking Changes\n" + "x" * 3000
         result = parse_breaking_changes(notes)
@@ -1659,7 +1659,7 @@ class TestParseBreakingChanges:
 
 class TestChunkReleaseNotes:
     def test_returns_ids_docs_metas(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         ids, docs, metas = chunk_release_notes(
             "## Breaking Changes\nfoo changed", "2024.1"
@@ -1669,14 +1669,14 @@ class TestChunkReleaseNotes:
         assert all(m["version"] == "2024.1" for m in metas)
 
     def test_ids_are_unique(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         notes = "## Breaking\nfoo\n## Removed\nbar\n## Renamed\nbaz"
         ids, _, _ = chunk_release_notes(notes, "2024.2")
         assert len(ids) == len(set(ids))
 
     def test_chunk_release_notes_release_type(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         _, _, metas_ga = chunk_release_notes("## Changes\nsome text", "2026.8.0")
         assert all(m["release_type"] == "ga" for m in metas_ga)
@@ -1688,7 +1688,7 @@ class TestChunkReleaseNotes:
         assert all(m["release_type"] == "beta" for m in metas_beta)
 
     def test_chunk_release_notes_category(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         notes = (
             "intro\n"
@@ -1703,7 +1703,7 @@ class TestChunkReleaseNotes:
         assert "new_integration" in categories
 
     def test_chunk_release_notes_impacted_integration_extracted(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         notes = "## Backward Incompatible Changes\nThe `zha` integration changed.\n"
         _, _, metas = chunk_release_notes(notes, "2026.8.0")
@@ -1711,7 +1711,7 @@ class TestChunkReleaseNotes:
         assert any(m["impacted_integration"] == "zha" for m in breaking)
 
     def test_chunk_release_notes_non_breaking_has_empty_integration(self):
-        from utils.ha_release_notes_scraper import chunk_release_notes
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
 
         notes = "## New Integrations\nAdded `matter` support.\n"
         _, _, metas = chunk_release_notes(notes, "2026.8.0")
@@ -1720,7 +1720,7 @@ class TestChunkReleaseNotes:
 
 class TestKnowledgeStoreWhereClause:
     def test_where_in_filters_by_metadata(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1741,7 +1741,7 @@ class TestKnowledgeStoreWhereClause:
         assert results[0].metadata["impacted_integration"] == "zha"
 
     def test_where_none_returns_all_matches(self):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
@@ -1759,16 +1759,16 @@ class TestKnowledgeStoreWhereClause:
 
 class TestScrapeCachedReleaseNotes:
     def test_returns_zero_for_missing_dir(self):
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         result = scrape_cached_release_notes("/nonexistent/path", store)
         assert result == 0
 
     def test_processes_txt_files(self, tmp_path):
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "ha_notes"
         cache.mkdir()
@@ -1781,8 +1781,8 @@ class TestScrapeCachedReleaseNotes:
         assert len(store.query("template", top_k=5)) > 0
 
     def test_skips_non_txt_files(self, tmp_path):
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "ha_notes"
         cache.mkdir()
@@ -1794,8 +1794,8 @@ class TestScrapeCachedReleaseNotes:
 
     def test_skips_unreadable_file(self, tmp_path, monkeypatch):
         from pathlib import Path
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "ha_notes"
         cache.mkdir()
@@ -1818,25 +1818,25 @@ class TestScrapeCachedReleaseNotes:
 
 class TestHABlogScraper:
     def test_extract_blog_url_from_stub(self):
-        from utils.ha_blog_scraper import extract_blog_url_from_stub
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
 
         stub = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
         assert extract_blog_url_from_stub(stub) == stub
 
     def test_extract_blog_url_missing_returns_none(self):
-        from utils.ha_blog_scraper import extract_blog_url_from_stub
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
 
         assert extract_blog_url_from_stub("no url here") is None
 
     def test_extract_blog_url_ignores_non_blog_urls(self):
-        from utils.ha_blog_scraper import extract_blog_url_from_stub
+        from utils.knowledge.ha_blog_scraper import extract_blog_url_from_stub
 
         assert (
             extract_blog_url_from_stub("https://github.com/home-assistant/core") is None
         )
 
     def test_fetch_blog_post_strips_html(self):
-        from utils.ha_blog_scraper import fetch_blog_post
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
 
         html = (
             b"<html><body>"
@@ -1856,7 +1856,7 @@ class TestHABlogScraper:
         assert "<" not in result
 
     def test_fetch_blog_post_ignores_content_outside_article(self):
-        from utils.ha_blog_scraper import fetch_blog_post
+        from utils.knowledge.ha_blog_scraper import fetch_blog_post
 
         html = (
             b"<html><body>"
@@ -1871,7 +1871,7 @@ class TestHABlogScraper:
         assert "Footer text" not in result
 
     def test_fetch_blog_release_notes_replaces_stub(self, tmp_path):
-        from utils.ha_blog_scraper import fetch_blog_release_notes
+        from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -1890,7 +1890,7 @@ class TestHABlogScraper:
         assert "Backward Incompatible Changes" in written
 
     def test_fetch_blog_release_notes_skips_real_files(self, tmp_path):
-        from utils.ha_blog_scraper import fetch_blog_release_notes
+        from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -1905,7 +1905,7 @@ class TestHABlogScraper:
         assert stub_file.read_text(encoding="utf-8") == real_content
 
     def test_fetch_blog_release_notes_skips_stub_with_no_url(self, tmp_path):
-        from utils.ha_blog_scraper import fetch_blog_release_notes
+        from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -1917,7 +1917,7 @@ class TestHABlogScraper:
         assert count == 0
 
     def test_fetch_blog_release_notes_skips_short_blog_content(self, tmp_path):
-        from utils.ha_blog_scraper import fetch_blog_release_notes
+        from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -1931,7 +1931,7 @@ class TestHABlogScraper:
         assert count == 0
 
     def test_fetch_blog_release_notes_missing_dir(self):
-        from utils.ha_blog_scraper import fetch_blog_release_notes
+        from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
 
         count = fetch_blog_release_notes("/nonexistent/path")
         assert count == 0
@@ -1939,7 +1939,7 @@ class TestHABlogScraper:
 
 class TestParseReleaseSections:
     def test_embeds_all_sections_not_just_breaking(self):
-        from utils.ha_release_notes_scraper import parse_release_sections
+        from utils.knowledge.ha_release_notes_scraper import parse_release_sections
 
         notes = "## New Features\nAdded new light platform\n## Bug Fixes\nFixed timer"
         result = parse_release_sections(notes)
@@ -1948,7 +1948,7 @@ class TestParseReleaseSections:
         assert any("Fixed timer" in c for c in result)
 
     def test_embeds_additive_sections_with_no_breaking_keywords(self):
-        from utils.ha_release_notes_scraper import parse_release_sections
+        from utils.knowledge.ha_release_notes_scraper import parse_release_sections
 
         notes = (
             "## New Integrations\nAdded Sonos support\n## Performance\nFaster startup"
@@ -1957,7 +1957,7 @@ class TestParseReleaseSections:
         assert len(result) == 2
 
     def test_word_boundary_truncation_at_3000(self):
-        from utils.ha_release_notes_scraper import parse_release_sections
+        from utils.knowledge.ha_release_notes_scraper import parse_release_sections
 
         long_section = "word " * 700  # ~3500 chars
         notes = f"## Section\n{long_section}"
@@ -1967,7 +1967,7 @@ class TestParseReleaseSections:
         assert not result[0].endswith("wor")  # truncated at word boundary
 
     def test_returns_single_chunk_for_no_headings(self):
-        from utils.ha_release_notes_scraper import parse_release_sections
+        from utils.knowledge.ha_release_notes_scraper import parse_release_sections
 
         notes = "Just some plain text with no headings."
         result = parse_release_sections(notes)
@@ -1975,7 +1975,7 @@ class TestParseReleaseSections:
         assert "plain text" in result[0]
 
     def test_strips_empty_sections(self):
-        from utils.ha_release_notes_scraper import parse_release_sections
+        from utils.knowledge.ha_release_notes_scraper import parse_release_sections
 
         notes = "## Header\n\n## Populated\nSome content"
         result = parse_release_sections(notes)
@@ -1984,8 +1984,8 @@ class TestParseReleaseSections:
 
 class TestScrapeWithCollectedIds:
     def test_collected_ids_populated(self, tmp_path):
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -1998,8 +1998,8 @@ class TestScrapeWithCollectedIds:
         assert "ha-2024.1-0" in collected
 
     def test_collected_ids_none_does_not_error(self, tmp_path):
-        from utils.ha_release_notes_scraper import scrape_cached_release_notes
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_release_notes_scraper import scrape_cached_release_notes
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "notes"
         cache.mkdir()
@@ -2015,7 +2015,7 @@ class TestScrapeWithCollectedIds:
 
 class TestParseChangelog:
     def test_splits_by_section_header(self):
-        from utils.hacs_scraper import parse_changelog
+        from utils.knowledge.hacs_scraper import parse_changelog
 
         text = "## 1.0.0\nFirst release\n## 0.9.0\nBeta"
         result = parse_changelog(text)
@@ -2023,13 +2023,13 @@ class TestParseChangelog:
         assert "First release" in result[0]
 
     def test_returns_empty_for_blank_input(self):
-        from utils.hacs_scraper import parse_changelog
+        from utils.knowledge.hacs_scraper import parse_changelog
 
         result = parse_changelog("")
         assert result == []
 
     def test_truncates_long_sections(self):
-        from utils.hacs_scraper import parse_changelog
+        from utils.knowledge.hacs_scraper import parse_changelog
 
         text = "## 1.0.0\n" + "a" * 4000
         result = parse_changelog(text)
@@ -2038,7 +2038,7 @@ class TestParseChangelog:
 
 class TestChunkChangelog:
     def test_returns_ids_docs_metas(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         ids, docs, metas = chunk_changelog(
             "## 1.0.0\nchange one\n## 0.9.0\nchange two", "myint"
@@ -2048,7 +2048,7 @@ class TestChunkChangelog:
         assert all(m["slug"] == "myint" for m in metas)
 
     def test_returns_empty_for_blank_changelog(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         ids, docs, metas = chunk_changelog("", "myint")
         assert ids == [] and docs == [] and metas == []
@@ -2056,16 +2056,16 @@ class TestChunkChangelog:
 
 class TestEmbedCachedChangelogs:
     def test_returns_zero_for_missing_dir(self):
-        from utils.hacs_scraper import embed_cached_changelogs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         result = embed_cached_changelogs("/nonexistent/path", store)
         assert result == 0
 
     def test_processes_md_files(self, tmp_path):
-        from utils.hacs_scraper import embed_cached_changelogs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "hacs"
         cache.mkdir()
@@ -2079,8 +2079,8 @@ class TestEmbedCachedChangelogs:
         assert len(store.query("Fixed bug", top_k=5)) > 0
 
     def test_skips_non_md_files(self, tmp_path):
-        from utils.hacs_scraper import embed_cached_changelogs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "hacs"
         cache.mkdir()
@@ -2092,8 +2092,8 @@ class TestEmbedCachedChangelogs:
 
     def test_skips_unreadable_file(self, tmp_path, monkeypatch):
         from pathlib import Path
-        from utils.hacs_scraper import embed_cached_changelogs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "hacs"
         cache.mkdir()
@@ -2116,38 +2116,38 @@ class TestEmbedCachedChangelogs:
 
 class TestRepoFromReleaseUrl:
     def test_extracts_org_repo(self):
-        from utils.hacs_scraper import _repo_from_release_url
+        from utils.knowledge.hacs_scraper import _repo_from_release_url
 
         url = "https://github.com/dmamontov/hass-pycync/releases/tag/v1.0.0"
         assert _repo_from_release_url(url) == "dmamontov/hass-pycync"
 
     def test_extracts_from_releases_url(self):
-        from utils.hacs_scraper import _repo_from_release_url
+        from utils.knowledge.hacs_scraper import _repo_from_release_url
 
         url = "https://github.com/custom-org/my-integration/releases"
         assert _repo_from_release_url(url) == "custom-org/my-integration"
 
     def test_returns_none_for_non_github_url(self):
-        from utils.hacs_scraper import _repo_from_release_url
+        from utils.knowledge.hacs_scraper import _repo_from_release_url
 
         assert _repo_from_release_url("https://gitlab.com/foo/bar/releases") is None
 
     def test_returns_none_for_empty_string(self):
-        from utils.hacs_scraper import _repo_from_release_url
+        from utils.knowledge.hacs_scraper import _repo_from_release_url
 
         assert _repo_from_release_url("") is None
 
 
 class TestChunkChangelogCollectedIds:
     def test_collected_ids_populated(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         collected: set[str] = set()
         ids, _, _ = chunk_changelog("## 1.0.0\nfoo\n## 0.9.0\nbar", "myint", collected)
         assert collected == set(ids)
 
     def test_collected_ids_none_does_not_error(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         ids, docs, metas = chunk_changelog("## 1.0.0\nfoo", "myint", None)
         assert len(ids) == 1
@@ -2155,7 +2155,7 @@ class TestChunkChangelogCollectedIds:
 
 class TestHACSChunkVersion:
     def test_version_extracted_from_semver_heading(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         _, _, metas = chunk_changelog(
             "## 1.2.3\nFixed a bug.\n## 0.9.0\nAdded feature.", "myint"
@@ -2164,14 +2164,14 @@ class TestHACSChunkVersion:
         assert metas[1]["version"] == "0.9.0"
 
     def test_version_empty_when_no_semver_heading(self):
-        from utils.hacs_scraper import chunk_changelog
+        from utils.knowledge.hacs_scraper import chunk_changelog
 
         # Section heading that isn't a version number
         _, _, metas = chunk_changelog("## Unreleased\nWIP stuff.", "myint")
         assert metas[0]["version"] == ""
 
     def test_chunk_max_size_is_3000(self):
-        from utils.hacs_scraper import parse_changelog
+        from utils.knowledge.hacs_scraper import parse_changelog
 
         long_text = "## 1.0.0\n" + ("word " * 1000)
         result = parse_changelog(long_text)
@@ -2181,8 +2181,8 @@ class TestHACSChunkVersion:
 
 class TestEmbedCachedChangelogsCollectedIds:
     def test_collected_ids_populated(self, tmp_path):
-        from utils.hacs_scraper import embed_cached_changelogs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "hacs"
         cache.mkdir()
@@ -2200,7 +2200,7 @@ class TestEmbedCachedChangelogsCollectedIds:
 
 class TestParseIntegrationDoc:
     def test_strips_frontmatter(self):
-        from utils.ha_docs_scraper import parse_integration_doc
+        from utils.knowledge.ha_docs_scraper import parse_integration_doc
 
         doc = (
             "---\ntitle: Test\nha_category: Integration\n---\n## Overview\nSome content"
@@ -2211,14 +2211,14 @@ class TestParseIntegrationDoc:
         assert any("Some content" in c for c in result)
 
     def test_splits_by_headings(self):
-        from utils.ha_docs_scraper import parse_integration_doc
+        from utils.knowledge.ha_docs_scraper import parse_integration_doc
 
         doc = "## Setup\nInstall the integration.\n## Configuration\nAdd to config."
         result = parse_integration_doc(doc)
         assert len(result) == 2
 
     def test_word_boundary_truncation(self):
-        from utils.ha_docs_scraper import parse_integration_doc
+        from utils.knowledge.ha_docs_scraper import parse_integration_doc
 
         long_section = "word " * 700  # ~3500 chars
         doc = f"## Section\n{long_section}"
@@ -2228,14 +2228,14 @@ class TestParseIntegrationDoc:
         assert not result[0].endswith("wor")
 
     def test_strips_empty_sections(self):
-        from utils.ha_docs_scraper import parse_integration_doc
+        from utils.knowledge.ha_docs_scraper import parse_integration_doc
 
         doc = "## Header\n\n## Content\nActual text here"
         result = parse_integration_doc(doc)
         assert all(c.strip() for c in result)
 
     def test_handles_doc_without_frontmatter(self):
-        from utils.ha_docs_scraper import parse_integration_doc
+        from utils.knowledge.ha_docs_scraper import parse_integration_doc
 
         doc = "## Overview\nJust a plain doc with no front matter."
         result = parse_integration_doc(doc)
@@ -2245,15 +2245,15 @@ class TestParseIntegrationDoc:
 
 class TestEmbedCachedIntegrationDocs:
     def test_returns_zero_for_missing_dir(self):
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         assert embed_cached_integration_docs("/nonexistent/path", store) == 0
 
     def test_processes_md_files(self, tmp_path):
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2269,8 +2269,8 @@ class TestEmbedCachedIntegrationDocs:
         assert hits[0].collection == "ha_integration_docs"
 
     def test_skips_non_md_files(self, tmp_path):
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2281,8 +2281,8 @@ class TestEmbedCachedIntegrationDocs:
 
     def test_skips_unreadable_file(self, tmp_path, monkeypatch):
         from pathlib import Path
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2301,8 +2301,8 @@ class TestEmbedCachedIntegrationDocs:
         assert embed_cached_integration_docs(str(cache), store) == 0
 
     def test_collected_ids_populated(self, tmp_path):
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2315,8 +2315,8 @@ class TestEmbedCachedIntegrationDocs:
         assert "ha-docs-hue-0" in collected
 
     def test_is_installed_in_metadata(self, tmp_path):
-        from utils.ha_docs_scraper import embed_cached_integration_docs
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2331,7 +2331,7 @@ class TestEmbedCachedIntegrationDocs:
 
 class TestCommunityCollection:
     def test_community_cases_in_collections(self):
-        from utils.knowledge_store import COLLECTIONS
+        from utils.knowledge.knowledge_store import COLLECTIONS
 
         assert "community_cases" in COLLECTIONS
 
@@ -2340,7 +2340,7 @@ class TestFetchIntegrationDocReturnValues:
     """fetch_integration_doc tri-state return contract."""
 
     def test_returns_zero_when_already_cached(self, tmp_path):
-        from utils.ha_docs_scraper import fetch_integration_doc
+        from utils.knowledge.ha_docs_scraper import fetch_integration_doc
 
         cache = tmp_path / "docs"
         cache.mkdir()
@@ -2377,7 +2377,7 @@ class TestDiscoverHacsApiFiltering:
     def test_returns_installed_integrations(self, monkeypatch):
         import urllib.request
 
-        from utils.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
 
         payload = [
             {
@@ -2400,7 +2400,7 @@ class TestDiscoverHacsApiFiltering:
     def test_excludes_non_integration_categories(self, monkeypatch):
         import urllib.request
 
-        from utils.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
 
         payload = [
             {
@@ -2423,7 +2423,7 @@ class TestDiscoverHacsApiFiltering:
     def test_returns_empty_on_network_error(self, monkeypatch):
         import urllib.request
 
-        from utils.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
 
         monkeypatch.setattr(
             urllib.request,
@@ -2433,7 +2433,7 @@ class TestDiscoverHacsApiFiltering:
         assert _discover_via_hacs_api("http://ha:8123", "tok") == []
 
     def test_returns_empty_when_no_token(self):
-        from utils.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
 
         # No HA token — discover_hacs_integrations guards against this, but
         # _discover_via_hacs_api itself will attempt the call and get an exception
@@ -2462,7 +2462,7 @@ class TestDiscoverHacsIntegrationsEntityFallback:
     def test_excludes_hacs_manager_from_entity_scan(self, monkeypatch):
         import urllib.request
 
-        from utils.hacs_scraper import discover_hacs_integrations
+        from utils.knowledge.hacs_scraper import discover_hacs_integrations
 
         # Modern HA always sets platform=None; detection is via entity_picture brands URL
         states = [
@@ -2495,7 +2495,7 @@ class TestDiscoverHacsIntegrationsEntityFallback:
         """Built-in update entities use non-underscore brands URL — should be skipped."""
         import urllib.request
 
-        from utils.hacs_scraper import discover_hacs_integrations
+        from utils.knowledge.hacs_scraper import discover_hacs_integrations
 
         states = [
             {
@@ -2515,7 +2515,7 @@ class TestDiscoverHacsIntegrationsEntityFallback:
         assert result == []
 
     def test_returns_empty_for_missing_token(self):
-        from utils.hacs_scraper import discover_hacs_integrations
+        from utils.knowledge.hacs_scraper import discover_hacs_integrations
 
         assert discover_hacs_integrations("http://ha:8123", "") == []
 
@@ -2546,7 +2546,7 @@ class TestDiscoverInstalledIntegrations:
         """Discovery calls /api/config, not /api/states."""
         import urllib.request
 
-        from utils.ha_docs_scraper import discover_installed_integrations
+        from utils.knowledge.ha_docs_scraper import discover_installed_integrations
 
         calls: list[str] = []
 
@@ -2565,7 +2565,7 @@ class TestDiscoverInstalledIntegrations:
         """Known trivial domains (automation, sensor, etc.) are excluded."""
         import urllib.request
 
-        from utils.ha_docs_scraper import discover_installed_integrations
+        from utils.knowledge.ha_docs_scraper import discover_installed_integrations
 
         components = ["automation", "binary_sensor", "sensor", "mqtt", "frontend"]
         monkeypatch.setattr(
@@ -2581,14 +2581,14 @@ class TestDiscoverInstalledIntegrations:
         assert "mqtt" in result
 
     def test_returns_empty_for_missing_token(self):
-        from utils.ha_docs_scraper import discover_installed_integrations
+        from utils.knowledge.ha_docs_scraper import discover_installed_integrations
 
         assert discover_installed_integrations("http://ha:8123", "") == []
 
     def test_returns_empty_on_network_error(self, monkeypatch):
         import urllib.request
 
-        from utils.ha_docs_scraper import discover_installed_integrations
+        from utils.knowledge.ha_docs_scraper import discover_installed_integrations
 
         monkeypatch.setattr(
             urllib.request,
@@ -2601,7 +2601,7 @@ class TestDiscoverInstalledIntegrations:
         """Components like 'mqtt' and 'mqtt.sensor' both produce domain 'mqtt' once."""
         import urllib.request
 
-        from utils.ha_docs_scraper import discover_installed_integrations
+        from utils.knowledge.ha_docs_scraper import discover_installed_integrations
 
         components = ["mqtt", "mqtt.sensor", "mqtt.light", "hue.light", "hue"]
         monkeypatch.setattr(
@@ -4750,7 +4750,7 @@ _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 # ── utils/repair_episode.py ──────────────────────────────────────────────────────
 
 import agents.ha_agent_advanced as _haa_mod
-from utils.repair_episode import RepairEpisode, load_episodes, serialize_episode
+from utils.repair.repair_episode import RepairEpisode, load_episodes, serialize_episode
 from utils.agent.tool_registry import ToolCall
 
 
@@ -4958,7 +4958,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_episode_written_on_success(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
         loop = self._make_loop(llm, db_path=db_path)
@@ -4970,7 +4970,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_episode_id_returned_in_result(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
         loop = self._make_loop(llm, db_path=db_path)
@@ -4982,7 +4982,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_no_episode_without_db_path(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
         loop = self._make_loop(llm, db_path=None)
@@ -4994,7 +4994,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_trigger_stored(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
         loop = self._make_loop(llm, db_path=db_path, trigger="netalertx")
@@ -5004,7 +5004,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_escalated_flag_stored(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient([self._finish_call()])
         loop = self._make_loop(llm, db_path=db_path, escalated=True)
@@ -5014,7 +5014,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_hypothesis_chain_from_summary(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         llm = FakeToolCallingLLMClient(
             [self._finish_call(summary="Found stale sensor config")]
@@ -5124,7 +5124,7 @@ class TestAgentLoopEpisodeRecording:
 
     def test_no_episode_on_exhausted_outcome(self, db_path):
         from utils.llm.ollama_client import FakeToolCallingLLMClient
-        from utils.repair_episode import load_episodes
+        from utils.repair.repair_episode import load_episodes
 
         # Empty sequence → exhausted after 2 plain-text responses
         llm = FakeToolCallingLLMClient([{"content": "hmm"}, {"content": "hmm again"}])
@@ -5225,7 +5225,7 @@ class TestExportEpisodesYaml:
 
     def test_export_produces_valid_yaml(self, db_path):
         import yaml
-        from utils.repair_episode import export_episodes_yaml
+        from utils.repair.repair_episode import export_episodes_yaml
 
         ep = _make_episode(symptoms=["err1"], hypothesis_chain=["maybe fix"])
         serialize_episode(db_path, ep)
@@ -5237,7 +5237,7 @@ class TestExportEpisodesYaml:
 
     def test_export_anonymizes_ip_in_symptoms(self, db_path):
         import yaml
-        from utils.repair_episode import export_episodes_yaml
+        from utils.repair.repair_episode import export_episodes_yaml
 
         ep = _make_episode(symptoms=["Error from host 10.0.0.5"])
         serialize_episode(db_path, ep)
@@ -5247,7 +5247,7 @@ class TestExportEpisodesYaml:
 
     def test_export_structure_contains_expected_fields(self, db_path):
         import yaml
-        from utils.repair_episode import export_episodes_yaml
+        from utils.repair.repair_episode import export_episodes_yaml
 
         ep = _make_episode()
         serialize_episode(db_path, ep)
@@ -5269,7 +5269,7 @@ class TestExportEpisodesYaml:
             assert field in record, f"Missing field: {field}"
 
     def test_export_empty_list_returns_empty_yaml(self):
-        from utils.repair_episode import export_episodes_yaml
+        from utils.repair.repair_episode import export_episodes_yaml
         import yaml
 
         output = export_episodes_yaml([])
@@ -5278,7 +5278,7 @@ class TestExportEpisodesYaml:
 
     def test_export_timestamp_is_iso_string(self, db_path):
         import yaml
-        from utils.repair_episode import export_episodes_yaml
+        from utils.repair.repair_episode import export_episodes_yaml
 
         ep = _make_episode()
         serialize_episode(db_path, ep)
@@ -5328,12 +5328,12 @@ class TestLoadEpisode:
         return path
 
     def test_returns_none_for_missing_id(self, db_path):
-        from utils.repair_episode import load_episode
+        from utils.repair.repair_episode import load_episode
 
         assert load_episode(db_path, "nonexistent-id") is None
 
     def test_returns_episode_for_known_id(self, db_path):
-        from utils.repair_episode import load_episode
+        from utils.repair.repair_episode import load_episode
 
         ep = _make_episode()
         serialize_episode(db_path, ep)
@@ -5343,7 +5343,7 @@ class TestLoadEpisode:
         assert result.trigger == ep.trigger
 
     def test_submitted_fields_default_to_none(self, db_path):
-        from utils.repair_episode import load_episode
+        from utils.repair.repair_episode import load_episode
 
         ep = _make_episode()
         serialize_episode(db_path, ep)
@@ -5365,7 +5365,7 @@ class TestMarkEpisodeSubmitted:
         return path
 
     def test_sets_submitted_at_and_pr_url(self, db_path):
-        from utils.repair_episode import load_episode, mark_episode_submitted
+        from utils.repair.repair_episode import load_episode, mark_episode_submitted
 
         ep = _make_episode()
         serialize_episode(db_path, ep)
@@ -5379,7 +5379,7 @@ class TestMarkEpisodeSubmitted:
 
     def test_submitted_at_is_recent_timestamp(self, db_path):
         import time
-        from utils.repair_episode import load_episode, mark_episode_submitted
+        from utils.repair.repair_episode import load_episode, mark_episode_submitted
 
         before = time.time()
         ep = _make_episode()
@@ -5397,7 +5397,7 @@ class TestMarkEpisodeSubmitted:
 class TestExportSingleEpisodeYaml:
     def test_produces_valid_yaml_list(self):
         import yaml
-        from utils.repair_episode import export_single_episode_yaml
+        from utils.repair.repair_episode import export_single_episode_yaml
 
         ep = _make_episode()
         output = export_single_episode_yaml(ep)
@@ -5407,7 +5407,7 @@ class TestExportSingleEpisodeYaml:
 
     def test_includes_description_when_provided(self):
         import yaml
-        from utils.repair_episode import export_single_episode_yaml
+        from utils.repair.repair_episode import export_single_episode_yaml
 
         ep = _make_episode()
         output = export_single_episode_yaml(
@@ -5418,7 +5418,7 @@ class TestExportSingleEpisodeYaml:
 
     def test_omits_description_when_empty(self):
         import yaml
-        from utils.repair_episode import export_single_episode_yaml
+        from utils.repair.repair_episode import export_single_episode_yaml
 
         ep = _make_episode()
         parsed = yaml.safe_load(export_single_episode_yaml(ep, description=""))
@@ -5426,7 +5426,7 @@ class TestExportSingleEpisodeYaml:
 
     def test_anonymizes_ip_in_symptoms(self):
         import yaml
-        from utils.repair_episode import export_single_episode_yaml
+        from utils.repair.repair_episode import export_single_episode_yaml
 
         ep = _make_episode(symptoms=["Device 192.168.1.50 unreachable"])
         output = export_single_episode_yaml(ep)
@@ -5435,7 +5435,7 @@ class TestExportSingleEpisodeYaml:
 
     def test_expected_fields_present(self):
         import yaml
-        from utils.repair_episode import export_single_episode_yaml
+        from utils.repair.repair_episode import export_single_episode_yaml
 
         ep = _make_episode()
         parsed = yaml.safe_load(export_single_episode_yaml(ep))
@@ -5697,7 +5697,7 @@ class TestCaseIngesterIngest:
         )
 
     def test_invalid_repo_raises(self, tmp_path):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import CaseIngestError, ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5706,7 +5706,7 @@ class TestCaseIngesterIngest:
 
     def test_no_merged_prs_returns_zero(self, tmp_path, monkeypatch):
         import json
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5721,7 +5721,7 @@ class TestCaseIngesterIngest:
         assert n == 0
 
     def test_ingest_one_episode(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5748,7 +5748,7 @@ class TestCaseIngesterIngest:
         assert meta["trigger_type"] == "ha_log"
 
     def test_ingest_multiple_prs(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5777,7 +5777,7 @@ class TestCaseIngesterIngest:
         assert n == 2
 
     def test_state_saved_after_ingest(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases, load_ingest_state
 
         store = FakeKnowledgeStore()
@@ -5801,7 +5801,7 @@ class TestCaseIngesterIngest:
 
     def test_since_timestamp_filters_old_prs(self, tmp_path, monkeypatch):
         import json
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases, save_ingest_state
 
         store = FakeKnowledgeStore()
@@ -5827,7 +5827,7 @@ class TestCaseIngesterIngest:
         assert n == 0
 
     def test_non_episode_files_skipped(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5858,7 +5858,7 @@ class TestCaseIngesterIngest:
     def test_malformed_yaml_file_skipped(self, tmp_path, monkeypatch):
         import base64
         import json
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5884,7 +5884,7 @@ class TestCaseIngesterIngest:
         assert n == 0
 
     def test_gh_failure_on_files_skips_pr(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases, CaseIngestError
 
         store = FakeKnowledgeStore()
@@ -5901,7 +5901,7 @@ class TestCaseIngesterIngest:
         assert n == 0
 
     def test_upsert_idempotent_on_repeat_run(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -5925,7 +5925,7 @@ class TestCaseIngesterIngest:
         assert n2 == 0
 
     def test_community_cases_collection_used(self, tmp_path, monkeypatch):
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -6193,7 +6193,7 @@ class TestIngestWithScenariosDir:
 
     def test_scenario_file_written_per_episode(self, tmp_path, monkeypatch):
         import yaml
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()
@@ -6231,7 +6231,7 @@ class TestIngestWithScenariosDir:
 
     def test_no_scenarios_dir_writes_nothing(self, tmp_path, monkeypatch):
         import yaml
-        from utils.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
         from utils.case_ingester import ingest_community_cases
 
         store = FakeKnowledgeStore()

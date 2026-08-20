@@ -1023,9 +1023,9 @@ async def _execute_cloud_escalation(
     watch_dir: Path,
 ) -> None:
     """Re-run the HA repair agent loop with ClaudeAPIClient on approved escalation."""
-    from utils.billing import BillingCapError
+    from utils.repair.billing import BillingCapError
     from utils.agent.autonomy import AutonomyGate
-    from utils.cloud_escalation import run_cloud_escalation
+    from utils.repair.cloud_escalation import run_cloud_escalation
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.agent.tool_registry import build_ha_tool_registry
@@ -2804,7 +2804,7 @@ async def episodes_tab(
     trigger: str = Query(default=""),
     outcome: str = Query(default=""),
 ) -> HTMLResponse:
-    from utils.repair_episode import load_episodes
+    from utils.repair.repair_episode import load_episodes
 
     episodes = load_episodes(DB_PATH)
     if trigger:
@@ -2831,7 +2831,7 @@ async def export_episodes(
     """Return anonymized YAML of all episodes (optionally filtered by --since date)."""
     from datetime import datetime
 
-    from utils.repair_episode import export_episodes_yaml, load_episodes
+    from utils.repair.repair_episode import export_episodes_yaml, load_episodes
 
     since_ts = None
     if since:
@@ -2854,7 +2854,7 @@ async def prepare_episode_submission(
     episode_id: str,
 ) -> HTMLResponse:
     """Render review page for submitting an episode to the federated case library."""
-    from utils.repair_episode import export_single_episode_yaml, load_episode
+    from utils.repair.repair_episode import export_single_episode_yaml, load_episode
 
     episode = load_episode(DB_PATH, episode_id)
     if episode is None:
@@ -2888,7 +2888,7 @@ async def submit_episode_to_case_library(
     Returns JSON with 'pr_url' on success or 'error' on failure.
     """
     from utils.case_submitter import CaseSubmitError, submit_episode
-    from utils.repair_episode import (
+    from utils.repair.repair_episode import (
         export_single_episode_yaml,
         load_episode,
         mark_episode_submitted,

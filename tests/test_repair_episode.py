@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from utils.repair_episode import (
+from utils.repair.repair_episode import (
     RepairEpisode,
     format_episode_for_embedding,
     get_unembedded_successful_episodes,
@@ -101,7 +101,7 @@ class TestGetUnembeddedSuccessfulEpisodes:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=True)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
         results = get_unembedded_successful_episodes(db)
@@ -112,7 +112,7 @@ class TestGetUnembeddedSuccessfulEpisodes:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=False)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
         results = get_unembedded_successful_episodes(db)
@@ -122,7 +122,7 @@ class TestGetUnembeddedSuccessfulEpisodes:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=True)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
         mark_episode_embedded(db, ep.id)
@@ -132,7 +132,7 @@ class TestGetUnembeddedSuccessfulEpisodes:
     def test_returns_multiple_unembedded(self, tmp_path):
         db = str(tmp_path / "test.db")
         _init_db(db)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         ep1 = _make_episode(verification_result=True)
         ep2 = _make_episode(verification_result=True)
@@ -147,7 +147,7 @@ class TestMarkEpisodeEmbedded:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=True)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
         before = time.time()
@@ -165,7 +165,7 @@ class TestMarkEpisodeEmbedded:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=True)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
         mark_episode_embedded(db, ep.id)
@@ -177,11 +177,14 @@ class TestEmbedLocalEpisode:
         db = str(tmp_path / "test.db")
         _init_db(db)
         ep = _make_episode(verification_result=True)
-        from utils.repair_episode import serialize_episode
+        from utils.repair.repair_episode import serialize_episode
 
         serialize_episode(db, ep)
 
-        from utils.knowledge_store import FakeKnowledgeStore, embed_local_episode
+        from utils.knowledge.knowledge_store import (
+            FakeKnowledgeStore,
+            embed_local_episode,
+        )
 
         store = FakeKnowledgeStore()
         result = asyncio.run(embed_local_episode(ep, store, db))
@@ -204,7 +207,7 @@ class TestEmbedLocalEpisode:
             def upsert(self, **_):
                 raise RuntimeError("store broken")
 
-        from utils.knowledge_store import embed_local_episode
+        from utils.knowledge.knowledge_store import embed_local_episode
 
         result = asyncio.run(embed_local_episode(ep, _FailStore(), db))
         assert result is False

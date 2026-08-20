@@ -44,8 +44,8 @@ async def build_environment_profile(
     Every sub-call is wrapped in try/except so failures produce empty values
     rather than aborting the whole profile build.
     """
-    from utils.ha_docs_scraper import discover_installed_integrations
-    from utils.hacs_scraper import discover_hacs_integrations
+    from utils.knowledge.ha_docs_scraper import discover_installed_integrations
+    from utils.knowledge.hacs_scraper import discover_hacs_integrations
 
     if _discover_integrations is None:
         _discover_integrations = discover_installed_integrations  # pragma: no cover
