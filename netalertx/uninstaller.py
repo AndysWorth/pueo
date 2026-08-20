@@ -228,7 +228,7 @@ async def run_uninstaller(
             automation_removed = True
             break
         # Backup before write (safety invariant)
-        from ha_agent_sandbox_engine import execute_remote_backup
+        from agents.ha_agent_sandbox_engine import execute_remote_backup
 
         try:
             backup_slug = await execute_remote_backup(ssh_client=ssh_client)

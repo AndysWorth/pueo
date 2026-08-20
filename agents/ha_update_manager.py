@@ -267,7 +267,7 @@ async def run_update_preflight(
     3. Check whether the Supervisor has a pending update via REST or watch-dir scan.
     Returns a structured summary that is embedded in the update approval card body.
     """
-    from ha_agent_advanced import enforce_ha_retention
+    from .ha_agent_advanced import enforce_ha_retention
     from utils.resource import get_resource_status, poll_host_resources
     from utils.ssh_client import AsyncSSHClient
 
@@ -713,7 +713,7 @@ async def run_pueo_self_check(
     )
     if disk_ok:
         try:
-            from ha_agent_advanced import _extract_backup_slug
+            from .ha_agent_advanced import _extract_backup_slug
 
             _, bk_out, _ = await ssh_client.run(
                 'ha backup new --name "pueo_selfcheck_DELETE_ME"', check=False
@@ -1030,7 +1030,7 @@ async def execute_core_update(
     cache_dir: Optional[str] = None,
 ) -> bool:
     """Execute Core update: backup → ha core update → poll → post-check → result card."""
-    from ha_agent_advanced import (
+    from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
         record_backup_slug,
@@ -1068,7 +1068,7 @@ async def execute_core_update(
                 "ha core logs --lines 100", check=False
             )
             if log_out:
-                from ha_log_monitor import analyze_log_line_with_ai
+                from .ha_log_monitor import analyze_log_line_with_ai
 
                 lines = log_out.splitlines()
                 evaluation, _ = await analyze_log_line_with_ai(lines, llm_client)
@@ -1120,7 +1120,7 @@ async def execute_os_update(
     _poll: Optional[Callable] = None,
 ) -> bool:
     """Execute OS update: backup → ha os update → TCP poll → result card."""
-    from ha_agent_advanced import (
+    from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
         record_backup_slug,
@@ -1159,7 +1159,7 @@ async def execute_addon_update(
     ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Execute add-on update: backup → update.install REST service → poll → result card."""
-    from ha_agent_advanced import (
+    from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
         record_backup_slug,
@@ -1276,7 +1276,7 @@ async def execute_ha_reboot(
     _down_poll: Optional[Callable] = None,
 ) -> bool:
     """Reboot HA host: backup → reboot → wait for down → TCP poll → API ready → card."""
-    from ha_agent_advanced import (
+    from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
         record_backup_slug,
@@ -1337,7 +1337,7 @@ async def execute_update(
     ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Dispatch update execution by component type."""
-    from ha_agent_advanced import is_reboot_required_active
+    from .ha_agent_advanced import is_reboot_required_active
 
     if is_reboot_required_active():
         log.warning("update_blocked_reboot_required", component=update.component)

@@ -960,7 +960,7 @@ async def _step6_configure_app_conf(
     merged_conf, diff = _merge_app_conf(original_conf, updates)
 
     # Backup before write (safety invariant)
-    from ha_agent_sandbox_engine import execute_remote_backup
+    from agents.ha_agent_sandbox_engine import execute_remote_backup
 
     try:
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)
@@ -1159,7 +1159,7 @@ async def _step8_create_webhook_automation(
         return True
 
     # Backup before write
-    from ha_agent_sandbox_engine import execute_remote_backup
+    from agents.ha_agent_sandbox_engine import execute_remote_backup
 
     try:
         backup_slug = await execute_remote_backup(ssh_client=ssh_client)

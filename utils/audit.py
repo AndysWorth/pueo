@@ -119,7 +119,7 @@ async def check_backup_registry(
 ) -> AuditResult:
     """Compare backup_registry DB entries against actual HA backups via SSH."""
     import config
-    from ha_agent_advanced import list_ha_backups
+    from agents.ha_agent_advanced import list_ha_backups
     from utils.ssh_client import AsyncSSHClient
 
     try:

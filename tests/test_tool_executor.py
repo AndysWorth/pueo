@@ -311,7 +311,7 @@ class TestInvestigateDevice:
         executor = _make_executor()
         mock_result = enriched if enriched is not None else self._ENRICHED
         with patch(
-            "ha_notification_manager.enrich_http_login",
+            "agents.ha_notification_manager.enrich_http_login",
             new=AsyncMock(return_value=mock_result),
         ):
             return asyncio.run(executor._investigate_device(ip))
@@ -353,7 +353,7 @@ class TestInvestigateDevice:
 
         executor = _make_executor()
         with patch(
-            "ha_notification_manager.enrich_http_login",
+            "agents.ha_notification_manager.enrich_http_login",
             new=AsyncMock(side_effect=RuntimeError("ARP failed")),
         ):
             result = asyncio.run(executor._investigate_device("192.168.1.1"))
@@ -392,7 +392,7 @@ class TestInvestigateDevice:
         enriched = dict(self._ENRICHED)
         enriched["ha_device_name"] = "My Phone"
         with patch(
-            "ha_notification_manager.enrich_http_login",
+            "agents.ha_notification_manager.enrich_http_login",
             new=AsyncMock(return_value=enriched),
         ) as mock_enrich:
             result = asyncio.run(executor._investigate_device("192.168.1.42"))
@@ -425,7 +425,7 @@ class TestInvestigateDevice:
         assert executor._ws_client is ws
 
         with patch(
-            "ha_notification_manager.enrich_http_login",
+            "agents.ha_notification_manager.enrich_http_login",
             new=AsyncMock(return_value=self._ENRICHED),
         ) as mock_enrich:
             asyncio.run(executor._investigate_device("192.168.1.1"))
@@ -464,7 +464,7 @@ class TestInvestigateDevice:
         )
 
         with patch(
-            "ha_notification_manager.enrich_http_login",
+            "agents.ha_notification_manager.enrich_http_login",
             new=AsyncMock(return_value=self._ENRICHED),
         ) as mock_enrich:
             asyncio.run(executor._investigate_device("192.168.1.42"))

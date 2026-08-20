@@ -44,13 +44,13 @@ from utils.logging import (
 )
 from utils.llm_factory import make_llm_client
 from utils.prompts import load_prompt
-from ha_agent_core import DiagnosticsReport
+from .ha_agent_core import DiagnosticsReport
 from utils.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ssh_client import AsyncSSHClient
 from utils.autonomy import AutonomyGate, RiskLevel
 from utils.notify import NotifierProtocol, get_notifier
 from utils.yaml_validator import validate_proposed_fix
-from ha_agent_advanced import (
+from .ha_agent_advanced import (
     execute_remote_backup,  # noqa: F401 — re-exported; callers may import from here
     record_backup_slug,  # noqa: F401 — re-exported; callers may import from here
     offload_backup_to_local,

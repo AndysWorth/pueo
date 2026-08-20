@@ -246,8 +246,8 @@ class TestHitlPipelineGate:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_sandbox_engine
-        import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "hitl_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
@@ -307,7 +307,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=True)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -325,7 +325,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=True)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -345,7 +345,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=True)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -364,7 +364,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=False)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -381,7 +381,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=False)
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -401,7 +401,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=True)
         gate = FakeAutonomyGate(auto_execute_result=True)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -419,7 +419,7 @@ class TestHitlPipelineGate:
 
         notifier = FakeNotifier(approve=True)
         gate = FakeAutonomyGate(auto_execute_result=True)
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -759,8 +759,8 @@ class TestAutonomyGate:
 
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
-        import ha_agent_sandbox_engine
-        import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "autonomy_gate_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", path)
@@ -775,7 +775,7 @@ class TestAutonomyGate:
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
         from utils.ollama_client import FakeToolCallingLLMClient
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
             file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
@@ -822,7 +822,7 @@ class TestAutonomyGate:
         from utils.notify import FakeNotifier
         from utils.ssh_client import FakeSSHClient
         from utils.ollama_client import FakeToolCallingLLMClient
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
             file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},
@@ -869,7 +869,7 @@ class TestAutonomyGate:
         from utils.ssh_client import FakeSSHClient
         from utils.ollama_client import FakeToolCallingLLMClient
         from config import CONFIG_REMOTE_PATH
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         ssh = FakeSSHClient(
             file_contents={"/config/configuration.yaml": _ORIGINAL_CONFIG},

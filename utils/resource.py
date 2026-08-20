@@ -217,7 +217,7 @@ class ResourcePoller:
                         )
                         # Offload pending backups and enforce retention with force_critical
                         try:
-                            import ha_agent_advanced as _adv
+                            from agents import ha_agent_advanced as _adv
 
                             await _adv.offload_pending_backups(ssh_client=self._ssh)
                             await _adv.enforce_ha_retention(
@@ -571,7 +571,7 @@ class ResourcePoller:
                                     journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
                                 )
                                 try:
-                                    import ha_agent_advanced as _adv
+                                    from agents import ha_agent_advanced as _adv
 
                                     await _adv.offload_pending_backups(
                                         ssh_client=self._ssh

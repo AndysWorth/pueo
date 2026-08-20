@@ -22,7 +22,7 @@ class TestNotificationLifecycle:
     """
 
     def _setup_db(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db_path = str(tmp_path / "test.db")
@@ -41,7 +41,7 @@ class TestNotificationLifecycle:
     ):
         """record_notification_seen + mark_notification_hitl_sent → /notifications pending."""
         import web.dashboard as dashboard
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_hitl_sent,
             record_notification_seen,
         )
@@ -87,7 +87,7 @@ class TestNotificationLifecycle:
     def test_dismiss_removes_notification_from_pending(self, monkeypatch, tmp_path):
         """mark_notification_dismissed sets dismissed_at → notification no longer pending."""
         import web.dashboard as dashboard
-        from ha_notification_manager import (
+        from agents.ha_notification_manager import (
             mark_notification_dismissed,
             mark_notification_hitl_sent,
             record_notification_seen,
@@ -116,7 +116,7 @@ class TestNotificationLifecycle:
     ):
         """Two notifications of different severity: severity filter returns only matching one."""
         import web.dashboard as dashboard
-        from ha_notification_manager import record_notification_seen
+        from agents.ha_notification_manager import record_notification_seen
         from pathlib import Path
 
         db_path, watch_dir = self._setup_db(monkeypatch, tmp_path)
@@ -140,9 +140,9 @@ class TestNotificationLifecycle:
         This is the seam test for PR #85: verifies that FakeHAWebSocketClient.get_persistent_notifications()
         is used (not get_states) and that the card file + DB row are correctly written.
         """
-        import ha_agent_advanced
-        import ha_notification_manager
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents import ha_agent_advanced
+        from agents import ha_notification_manager
+        from agents.ha_notification_manager import _NotificationLLMOutput
         from utils.ha_rest_client import FakeHARestClient
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
@@ -225,7 +225,7 @@ class TestBackupPipelineToRoute:
     """
 
     def _setup_db(self, monkeypatch, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db_path = str(tmp_path / "test.db")
@@ -239,10 +239,10 @@ class TestBackupPipelineToRoute:
         return db_path, backup_dir
 
     def test_record_backup_slug_appears_in_backups_route(self, monkeypatch, tmp_path):
-        """ha_agent_advanced.record_backup_slug() → GET /backups shows the slug."""
+        """agents.ha_agent_advanced.record_backup_slug() → GET /backups shows the slug."""
         from fastapi.testclient import TestClient
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db_path, _ = self._setup_db(monkeypatch, tmp_path)
@@ -258,7 +258,7 @@ class TestBackupPipelineToRoute:
         """offload_backup_to_local() sets location='both' → /backups shows Pueo mark."""
         from fastapi.testclient import TestClient
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db_path, backup_dir = self._setup_db(monkeypatch, tmp_path)
@@ -304,7 +304,7 @@ class TestBackupPipelineToRoute:
         """Full backup flow: record slug → offload → /backups shows slug with on_pueo mark."""
         from fastapi.testclient import TestClient
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db_path, backup_dir = self._setup_db(monkeypatch, tmp_path)
@@ -340,7 +340,7 @@ class TestUpdateCardToRoute:
         """An available update generates a HITL card that the dashboard index renders."""
         from fastapi.testclient import TestClient
 
-        import ha_update_manager
+        from agents import ha_update_manager
         import web.dashboard as dashboard
         from utils.ha_rest_client import FakeHARestClient
         from utils.notify import FileNotifier

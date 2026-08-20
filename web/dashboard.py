@@ -471,7 +471,7 @@ async def _execute_queued_update(
 ) -> None:
     """Run the update pipeline for an approved update card."""
     import config as _config
-    from ha_update_manager import execute_update
+    from agents.ha_update_manager import execute_update
     from utils.autonomy import AutonomyGate
     from utils.ha_rest_client import HARestClient, UpdateStatus
     from utils.notify import get_notifier
@@ -589,7 +589,7 @@ async def _execute_queued_ha_repair(
         issue_key = payload.get("issue_key", f"{domain}/{issue_id}")
 
         if action == "reboot":
-            from ha_update_manager import execute_ha_reboot
+            from agents.ha_update_manager import execute_ha_reboot
 
             ssh = AsyncSSHClient()
             notifier = get_notifier(
@@ -597,7 +597,7 @@ async def _execute_queued_ha_repair(
             )
             success = await execute_ha_reboot(ssh, notifier)
             if success:
-                from ha_agent_advanced import mark_repair_resolved
+                from agents.ha_agent_advanced import mark_repair_resolved
 
                 mark_repair_resolved(issue_key)
                 data["fix_applied"] = True
@@ -610,7 +610,7 @@ async def _execute_queued_ha_repair(
                 json_path.write_text(json.dumps(data, indent=2))
                 (watch_dir / f"{nid}.rejected").touch()
         elif action == "restart":
-            from ha_update_manager import _poll_ha_api_ready
+            from agents.ha_update_manager import _poll_ha_api_ready
 
             ssh = AsyncSSHClient()
             await ssh.run("ha core restart")
@@ -618,7 +618,7 @@ async def _execute_queued_ha_repair(
                 _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
             )
             if online:
-                from ha_agent_advanced import mark_repair_resolved
+                from agents.ha_agent_advanced import mark_repair_resolved
 
                 mark_repair_resolved(issue_key)
                 data["fix_applied"] = True
@@ -634,7 +634,7 @@ async def _execute_queued_ha_repair(
                 _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
             )
             await dismiss_ha_repair_issue(rest, domain, issue_id)
-            from ha_agent_advanced import mark_repair_resolved
+            from agents.ha_agent_advanced import mark_repair_resolved
 
             mark_repair_resolved(issue_key)
             data["fix_applied"] = True
@@ -732,7 +732,7 @@ async def _execute_resource_action(
     import sqlite3 as _sqlite3
 
     import config as _config
-    from ha_agent_advanced import (
+    from agents.ha_agent_advanced import (
         enforce_ha_retention,
         offload_backup_to_local,
         purge_local_backups,
@@ -820,7 +820,7 @@ async def _execute_disk_recovery(
 ) -> None:
     """Run all approved disk recovery options from a disk_recovery card."""
     import config as _config
-    from ha_agent_advanced import (
+    from agents.ha_agent_advanced import (
         enforce_ha_retention,
         offload_backup_to_local,
         purge_local_backups,
@@ -1424,7 +1424,7 @@ async def approve(nid: str) -> RedirectResponse:
         # Update ordering guard: block approving a lower-priority update if a
         # higher-priority update card is still pending.
         if card_type == CARD_TYPE_UPDATE:
-            from ha_update_manager import _pending_higher_priority_components
+            from agents.ha_update_manager import _pending_higher_priority_components
 
             this_component = payload.get("component", "")
             blockers = _pending_higher_priority_components(this_component, watch_dir)
@@ -1459,12 +1459,12 @@ async def _execute_queued_fix(
     watch_dir: Path,
 ) -> None:
     """Run the backup → sandbox → atomic-swap pipeline for a queued fix approval."""
-    from ha_agent_advanced import (
+    from agents.ha_agent_advanced import (
         enforce_ha_retention,
         offload_backup_to_local,
         purge_local_backups,
     )
-    from ha_agent_sandbox_engine import (
+    from agents.ha_agent_sandbox_engine import (
         commit_atomic_swap,
         deploy_and_test_in_sandbox,
         execute_remote_backup,
@@ -1599,7 +1599,7 @@ async def resolve_known_issue(card_key: str) -> RedirectResponse:
 @app.post("/dismiss-notification/{card_id}")
 async def dismiss_notification(card_id: str) -> RedirectResponse:
     from config import HA_API_PORT, HA_API_TOKEN, HA_HOST
-    from ha_notification_manager import mark_notification_dismissed
+    from agents.ha_notification_manager import mark_notification_dismissed
     from utils.ha_rest_client import HARestClient
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
@@ -1695,7 +1695,7 @@ async def backups(request: Request) -> HTMLResponse:
 @app.post("/backups/trigger")
 async def trigger_backup_now() -> JSONResponse:
     """Run the full Pueo backup lifecycle and refresh the registry."""
-    from ha_agent_advanced import (
+    from agents.ha_agent_advanced import (
         enforce_ha_retention,
         execute_remote_backup,
         offload_backup_to_local,
@@ -1722,7 +1722,7 @@ async def trigger_backup_now() -> JSONResponse:
 @app.post("/backups/preflight")
 async def run_backup_preflight() -> JSONResponse:
     """Run an on-demand update pre-flight: disk clearance and Supervisor status check."""
-    from ha_update_manager import run_update_preflight
+    from agents.ha_update_manager import run_update_preflight
     from utils.ha_rest_client import HARestClient
     from utils.ssh_client import AsyncSSHClient
     import config as _config
@@ -1753,7 +1753,7 @@ async def run_backup_preflight() -> JSONResponse:
 @app.post("/backups/sync")
 async def sync_backup_inventory() -> JSONResponse:
     """Reconcile the local backup registry against HA and return a change summary."""
-    from ha_agent_advanced import reconcile_backup_inventory
+    from agents.ha_agent_advanced import reconcile_backup_inventory
     from utils.ssh_client import AsyncSSHClient
 
     ssh = AsyncSSHClient()
@@ -2231,7 +2231,7 @@ async def model_switch(request: Request) -> JSONResponse:
 async def model_refresh_cache() -> JSONResponse:
     """Re-query Ollama and update the model cache in SQLite."""
     import asyncio as _asyncio
-    from ha_agent_advanced import store_model_cache
+    from agents.ha_agent_advanced import store_model_cache
     from utils.hardware import list_ollama_models
 
     models = await _asyncio.to_thread(list_ollama_models)

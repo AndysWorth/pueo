@@ -368,7 +368,7 @@ class TestNetAlertXAPIClient:
 
 class TestNetAlertXMigration:
     def test_migration_creates_install_state_table(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -384,7 +384,7 @@ class TestNetAlertXMigration:
         assert "netalertx_install_state" in tables
 
     def test_install_state_table_has_correct_columns(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -398,7 +398,7 @@ class TestNetAlertXMigration:
         assert {"id", "state", "correlation_id", "timestamp", "details_json"} == cols
 
     def test_migration_is_idempotent(self, tmp_path, monkeypatch):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "test.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -415,7 +415,7 @@ class TestNetAlertXMigration:
 
 def _make_installer_db(tmp_path, monkeypatch):
     """Create and migrate a test SQLite DB, patch DB_PATH in installer module."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.installer as inst
 
     db = tmp_path / "installer_test.db"
@@ -435,7 +435,7 @@ class TestGetInstallState:
     def test_returns_state_from_db(self, tmp_path):
         import sqlite3
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.installer as inst
 
         db = str(tmp_path / "test.db")
@@ -451,7 +451,7 @@ class TestGetInstallState:
     def test_returns_fully_operational(self, tmp_path):
         import sqlite3
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.installer as inst
 
         db = str(tmp_path / "test.db")
@@ -1189,7 +1189,7 @@ class TestNetAlertXInstallerSteps1to4:
 
 def _make_installer_db_at_state(tmp_path, monkeypatch, state: str, details=None):
     """Create and migrate a test DB pre-seeded at *state*, patch DB_PATH."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.installer as inst
 
     db = tmp_path / "installer_test.db"
@@ -3026,7 +3026,7 @@ class TestRunInstaller:
         _data = "/data/netalertx"
         _conf = f"{_data}/app.conf"
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.installer as inst
 
         db = tmp_path / "installer_full.db"
@@ -3089,7 +3089,7 @@ class TestRunInstaller:
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
 
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import netalertx.installer as inst
 
         db = tmp_path / "installer_abort.db"
@@ -3121,7 +3121,7 @@ class TestRunInstaller:
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
         from utils.ssh_client import FakeSSHClient
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "main_poll_timeout.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -3157,7 +3157,7 @@ class TestRunInstaller:
         from netalertx.installer import main as installer_main
         from utils.ssh_client import FakeSSHClient
         from utils.notify import FakeNotifier
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "main_token_empty.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -3197,7 +3197,7 @@ class TestRunInstaller:
         import netalertx.installer as inst
         from netalertx.installer import main as installer_main
         from utils.ssh_client import FakeSSHClient
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         db = tmp_path / "main_poll_ready.db"
         monkeypatch.setattr(ha_agent_advanced, "DB_PATH", str(db))
@@ -5255,7 +5255,7 @@ class TestNetAlertXHealer:
         DB_PATH directly, so without this patch it writes to the real
         ha_agent_state.db during test runs.
         """
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         db = str(tmp_path / "sandbox_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
@@ -5884,7 +5884,7 @@ class TestNetAlertXHealer:
         self, tmp_path, monkeypatch
     ):
         """run_heal('fix_webhook_fields') calls _fix_ha_automation_fields."""
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
         from utils.autonomy import FakeAutonomyGate
 
         db = str(tmp_path / "healer_test.db")
@@ -6146,7 +6146,7 @@ class TestNetAlertXMaintenanceHealer:
         DB_PATH directly, so without this patch it writes to the real
         ha_agent_state.db during test runs.
         """
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         db = str(tmp_path / "sandbox_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
@@ -7495,7 +7495,7 @@ class TestRequireFaSlug:
 
 def _make_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL"):
     """Create and migrate a test SQLite DB pre-seeded at *state*, patch uninstaller DB_PATH."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.uninstaller as uninst
 
     db = tmp_path / "uninstaller_test.db"
@@ -7609,7 +7609,7 @@ class TestNetAlertXUninstallerStateMachine:
             return "backup-slug-test"
 
         monkeypatch.setattr(
-            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+            "agents.ha_agent_sandbox_engine.execute_remote_backup", fake_backup
         )
 
         final = asyncio.run(
@@ -7676,7 +7676,7 @@ class TestNetAlertXUninstallerStateMachine:
             return "backup-slug-test"
 
         monkeypatch.setattr(
-            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+            "agents.ha_agent_sandbox_engine.execute_remote_backup", fake_backup
         )
 
         final = asyncio.run(
@@ -7723,7 +7723,7 @@ class TestNetAlertXUninstallerStateMachine:
             return "slug"
 
         monkeypatch.setattr(
-            "ha_agent_sandbox_engine.execute_remote_backup", fake_backup
+            "agents.ha_agent_sandbox_engine.execute_remote_backup", fake_backup
         )
 
         asyncio.run(
@@ -7751,7 +7751,7 @@ class TestNetalertxUninstallCardRegistered:
 
 def _make_docker_installer_db(tmp_path, monkeypatch, state="NOT_INSTALLED"):
     """Create and migrate a test SQLite DB pre-seeded at *state*."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.docker_installer as dinst
 
     db = tmp_path / "docker_installer_test.db"
@@ -8018,7 +8018,7 @@ class TestDockerInstallerStateMachine:
             return "backup-slug-abc"
 
         monkeypatch.setattr(
-            "ha_agent_sandbox_engine.execute_remote_backup",
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
             _fake_backup,
         )
 
@@ -8090,7 +8090,7 @@ class TestDockerInstallerStateMachine:
             return "backup-slug-abc"
 
         monkeypatch.setattr(
-            "ha_agent_sandbox_engine.execute_remote_backup",
+            "agents.ha_agent_sandbox_engine.execute_remote_backup",
             _fake_backup,
         )
 
@@ -8865,7 +8865,7 @@ class TestPlatformTracking:
 
     def test_get_installed_platform_defaults_ha_for_unknown_state(self, tmp_path):
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.switch import _get_installed_platform
 
         db = str(tmp_path / "test.db")
@@ -8883,7 +8883,7 @@ class TestPlatformTracking:
 
     def test_get_installed_platform_reads_docker_from_state_prefix(self, tmp_path):
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.switch import _get_installed_platform
 
         db = str(tmp_path / "test.db")
@@ -8901,7 +8901,7 @@ class TestPlatformTracking:
     def test_get_installed_platform_reads_explicit_platform_field(self, tmp_path):
         import json
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.switch import _get_installed_platform
 
         db = str(tmp_path / "test.db")
@@ -8922,7 +8922,7 @@ class TestPlatformTracking:
         assert platform == "docker"
 
     def test_get_installed_platform_returns_not_installed_for_empty_db(self, tmp_path):
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.switch import _get_installed_platform
 
         db = str(tmp_path / "test.db")
@@ -8935,7 +8935,7 @@ class TestPlatformTracking:
     def test_read_platform_from_db_in_docker_uninstaller(self, tmp_path):
         import json
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.docker_uninstaller import _read_platform_from_db
 
         db = str(tmp_path / "test.db")
@@ -8956,7 +8956,7 @@ class TestPlatformTracking:
 
     def test_read_platform_defaults_ha_for_missing_key(self, tmp_path):
         import sqlite3
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from netalertx.docker_uninstaller import _read_platform_from_db
 
         db = str(tmp_path / "test.db")
@@ -8976,7 +8976,7 @@ class TestPlatformTracking:
 
 def _make_docker_uninstaller_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL"):
     """Create and migrate a test DB pre-seeded at *state*."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.docker_uninstaller as du
 
     db = tmp_path / "docker_uninstaller_test.db"
@@ -9236,7 +9236,7 @@ class TestDockerUninstallerStateMachine:
 def _make_switch_db(tmp_path, monkeypatch, state="FULLY_OPERATIONAL", platform="ha"):
     import json
     import sqlite3
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.switch as sw
 
     db = tmp_path / "switch_test.db"

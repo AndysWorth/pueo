@@ -226,7 +226,7 @@ class NetAlertXHealer:
 
         # Autonomous gap detection (item 84): mirror the HA loop behaviour.
         if result.capability_gap and result.gap_description:
-            from ha_agent_sandbox_engine import _run_code_proposal_loop
+            from agents.ha_agent_sandbox_engine import _run_code_proposal_loop
 
             log.info(
                 "gap_detection_triggered",
@@ -363,7 +363,7 @@ class NetAlertXHealer:
 
     async def _remove_ha_mqtt_key(self) -> None:
         """Remove top-level 'mqtt:' key from HA configuration.yaml via sandbox engine."""
-        from ha_agent_sandbox_engine import (
+        from agents.ha_agent_sandbox_engine import (
             commit_atomic_swap,
             deploy_and_test_in_sandbox,
             execute_remote_backup,
@@ -401,7 +401,10 @@ class NetAlertXHealer:
 
     async def _fix_ha_automation_fields(self) -> None:
         """Replace snake_case webhook fields with camelCase in HA automations."""
-        from ha_agent_sandbox_engine import execute_remote_backup, record_backup_slug
+        from agents.ha_agent_sandbox_engine import (
+            execute_remote_backup,
+            record_backup_slug,
+        )
 
         log.info("netalertx_fix_ha_automation_start")
         try:

@@ -315,7 +315,7 @@ async def tail_remote_log_stream(
                     # Persistent dedup: skip if we already sent an approval card for this
                     # error pattern within the cooldown window. Survives daemon restarts
                     # unlike the in-memory _debouncer.
-                    from ha_agent_advanced import (
+                    from .ha_agent_advanced import (
                         mark_log_triage_hitl_sent,
                         record_log_triage_seen,
                         should_send_log_triage_hitl,
@@ -451,7 +451,7 @@ async def poll_for_updates(
     cache_dir: Optional[str] = None,
 ) -> None:
     """Periodically checks for available HA updates and fires update approval cards."""
-    from ha_update_manager import (
+    from .ha_update_manager import (
         UpdateReadinessReport,
         analyze_breaking_changes,
         fetch_release_notes_cached,
@@ -473,7 +473,7 @@ async def poll_for_updates(
         {}
     )  # suppression_key → time.monotonic() of first absence
 
-    from ha_update_manager import reconcile_stale_approved_cards
+    from .ha_update_manager import reconcile_stale_approved_cards
 
     _reconciled = reconcile_stale_approved_cards()
     if _reconciled:
@@ -671,7 +671,7 @@ async def poll_for_notifications(
     db_path: str = DB_PATH,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires approval alerts."""
-    from ha_notification_manager import (
+    from .ha_notification_manager import (
         _format_notification_body,
         _format_notification_subject,
         classify_notification,
@@ -790,7 +790,7 @@ async def poll_for_repairs(
     llm_client: Optional[LLMClientProtocol] = None,
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
-    from ha_agent_advanced import (
+    from .ha_agent_advanced import (
         mark_repair_hitl_sent,
         mark_repair_resolved,
         record_repair_seen,
@@ -938,7 +938,7 @@ async def trigger_remediation_pipeline() -> None:
     set_correlation_id(cid)
     log.info("repair_cycle_started")
     try:
-        import ha_agent_sandbox_engine
+        from . import ha_agent_sandbox_engine
 
         await ha_agent_sandbox_engine.main()
     except Exception as e:

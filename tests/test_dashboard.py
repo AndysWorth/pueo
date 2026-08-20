@@ -27,7 +27,7 @@ def _make_async_return(value):
 
 def _make_installer_db(tmp_path, monkeypatch):
     """Create and migrate a test SQLite DB, patch DB_PATH in installer module."""
-    import ha_agent_advanced
+    from agents import ha_agent_advanced
     import netalertx.installer as inst
 
     db = tmp_path / "installer_test.db"
@@ -369,8 +369,8 @@ class TestDashboardRoutes:
         """Success path: backup → sandbox passes → commit → .approved written."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_agent_sandbox_engine
-        import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
 
         nid = "fix-internal-1"
         json_path = tmp_path / f"{nid}.json"
@@ -429,8 +429,8 @@ class TestDashboardRoutes:
         import json as _json
         import asyncio
         import web.dashboard as dashboard
-        import ha_agent_sandbox_engine
-        import ha_agent_advanced
+        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced
 
         nid = "fix-internal-2"
         json_path = tmp_path / f"{nid}.json"
@@ -477,7 +477,7 @@ class TestDashboardRoutes:
         import json as _json
         import asyncio
         import web.dashboard as dashboard
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         nid = "fix-internal-3"
         json_path = tmp_path / f"{nid}.json"
@@ -982,7 +982,7 @@ class TestLLMTrace:
         import asyncio
 
         from utils.ollama_client import FakeLLMClient
-        from ha_agent_core import DiagnosticsReport, analyze_config_locally
+        from agents.ha_agent_core import DiagnosticsReport, analyze_config_locally
 
         report = DiagnosticsReport(
             is_valid=True,
@@ -1002,7 +1002,7 @@ class TestLLMTrace:
         import asyncio
 
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import LogEvaluation, analyze_log_line_with_ai
+        from agents.ha_log_monitor import LogEvaluation, analyze_log_line_with_ai
 
         ev = LogEvaluation(
             is_actionable=False, root_cause_summary="benign", confidence_score=0.1
@@ -1047,7 +1047,7 @@ class TestLLMTrace:
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
         _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
@@ -1092,7 +1092,7 @@ class TestLLMTrace:
         from utils.ssh_client import FakeSSHClient
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
-        import ha_agent_sandbox_engine
+        from agents import ha_agent_sandbox_engine
 
         _orig = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
         _fix = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8124\n"
@@ -1132,7 +1132,7 @@ class TestLLMTrace:
         import asyncio
 
         from utils.ollama_client import FakeLLMClient
-        from ha_log_monitor import analyze_log_line_with_ai
+        from agents.ha_log_monitor import analyze_log_line_with_ai
 
         broken_llm = FakeLLMClient("{not valid json}")
         _result, trace = asyncio.run(
@@ -1145,7 +1145,7 @@ class TestLLMTrace:
         import asyncio
         from unittest.mock import AsyncMock, patch
 
-        from ha_log_monitor import _TRANSIENT_LOG_PATTERNS, CRITICAL_LOG_PATTERN
+        from agents.ha_log_monitor import _TRANSIENT_LOG_PATTERNS, CRITICAL_LOG_PATTERN
 
         # Confirm the patterns match as expected
         assert (
@@ -1326,7 +1326,7 @@ class TestBackupInventoryDashboard:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(dashboard, "DB_PATH", path)
@@ -1675,7 +1675,7 @@ class TestDismissNotificationRoute:
         self, tmp_path, monkeypatch
     ):
         """If the HA service call raises, no .approved file is written and DB is not updated."""
-        import ha_notification_manager
+        from agents import ha_notification_manager
         import utils.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
@@ -1726,7 +1726,7 @@ class TestDismissNotificationRoute:
         """Dismiss works on a new card occurrence even when stale .approved file exists."""
         import asyncio as _asyncio
 
-        import ha_notification_manager
+        from agents import ha_notification_manager
         import utils.ha_rest_client
         import web.dashboard as dashboard
         from fastapi.testclient import TestClient
@@ -1995,7 +1995,7 @@ class TestNotificationsDashboard:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "notif_test.db")
         monkeypatch.setattr(dashboard, "DB_PATH", path)
@@ -2534,7 +2534,7 @@ class TestExecuteQueuedUpdate:
         """execute_update returns True → .approved created, fix_applied=True in JSON."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
@@ -2566,7 +2566,7 @@ class TestExecuteQueuedUpdate:
         """execute_update returns False → .rejected created, fix_error in JSON."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
@@ -2602,7 +2602,7 @@ class TestExecuteQueuedUpdate:
         """Exception during execute_update → .rejected, fix_error set, no in_progress."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
@@ -2638,7 +2638,7 @@ class TestExecuteQueuedUpdate:
         """in_progress sentinel is cleaned up even on success."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_update_manager
+        from agents import ha_update_manager
         import utils.ssh_client as ssh_mod
         import utils.autonomy as autonomy_mod
         import utils.notify as notify_mod
@@ -2905,7 +2905,7 @@ class TestExecuteResourceAction:
         import json as _json
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
 
         db_path = tmp_path / "test.db"
@@ -2950,7 +2950,7 @@ class TestExecuteResourceAction:
         """enforce_retention action: calls enforce_ha_retention + purge_local_backups."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
@@ -3002,7 +3002,7 @@ class TestExecuteResourceAction:
         import json as _json
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
         import utils.timeline
 
@@ -3053,7 +3053,7 @@ class TestExecuteResourceAction:
         import json as _json
         import sqlite3 as _sqlite3
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
 
         db_path = tmp_path / "test.db"
@@ -3081,7 +3081,7 @@ class TestExecuteResourceAction:
         """in_progress file cleaned up after successful resource action."""
         import json as _json
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
 
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
@@ -3807,7 +3807,7 @@ class TestLoadLastBackup:
 
     def test_returns_age_string_for_recent_backup(self, monkeypatch, tmp_path):
         import sqlite3, time
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import web.dashboard as dashboard
 
         db = str(tmp_path / "test.db")
@@ -3832,7 +3832,7 @@ class TestTimelineRoutes:
     @pytest.fixture()
     def tl_setup(self, tmp_path, monkeypatch):
         """Migrated DB + patched DB_PATH in dashboard and timeline modules."""
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.timeline as tl_mod
         import web.dashboard as dashboard
 
@@ -5051,7 +5051,7 @@ class TestExecuteQueuedHARepair:
         self, tmp_path, monkeypatch
     ):
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ha_rest_client as hrc
         from unittest.mock import AsyncMock, MagicMock
 
@@ -5113,7 +5113,7 @@ class TestExecuteQueuedHARepair:
     def test_reboot_action_triggers_post_reboot_scan(self, tmp_path, monkeypatch):
         """After a successful reboot, _post_reboot_repair_scan is scheduled as a task."""
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         from unittest.mock import AsyncMock, MagicMock, patch
 
         import web.dashboard as dashboard
@@ -5142,7 +5142,8 @@ class TestExecuteQueuedHARepair:
         monkeypatch.setattr(dashboard.asyncio, "create_task", fake_create_task)
 
         with patch(
-            "ha_update_manager.execute_ha_reboot", new=AsyncMock(return_value=True)
+            "agents.ha_update_manager.execute_ha_reboot",
+            new=AsyncMock(return_value=True),
         ):
             asyncio.run(
                 dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
@@ -5178,7 +5179,8 @@ class TestExecuteQueuedHARepair:
         monkeypatch.setattr(dashboard.asyncio, "create_task", fake_create_task)
 
         with patch(
-            "ha_update_manager.execute_ha_reboot", new=AsyncMock(return_value=False)
+            "agents.ha_update_manager.execute_ha_reboot",
+            new=AsyncMock(return_value=False),
         ):
             asyncio.run(
                 dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
@@ -5192,7 +5194,7 @@ class TestExecuteQueuedHARepair:
     ):
         """action='restart' SSHes ha core restart, polls for HA API ready, writes .approved."""
         import asyncio
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
         import utils.ssh_client as ssh_mod
         from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5223,7 +5225,8 @@ class TestExecuteQueuedHARepair:
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: fake_ssh)
 
         with patch(
-            "ha_update_manager._poll_ha_api_ready", new=AsyncMock(return_value=True)
+            "agents.ha_update_manager._poll_ha_api_ready",
+            new=AsyncMock(return_value=True),
         ):
             asyncio.run(
                 dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
@@ -5254,7 +5257,8 @@ class TestExecuteQueuedHARepair:
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: fake_ssh)
 
         with patch(
-            "ha_update_manager._poll_ha_api_ready", new=AsyncMock(return_value=False)
+            "agents.ha_update_manager._poll_ha_api_ready",
+            new=AsyncMock(return_value=False),
         ):
             asyncio.run(
                 dashboard._execute_queued_ha_repair(nid, data, json_path, watch_dir)
@@ -5411,7 +5415,7 @@ class TestEpisodesTab:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(dashboard, "DB_PATH", path)
@@ -5547,7 +5551,7 @@ class TestEpisodePrepareAndSubmit:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):
         import web.dashboard as dashboard
-        import ha_agent_advanced
+        from agents import ha_agent_advanced
 
         path = str(tmp_path / "test.db")
         monkeypatch.setattr(dashboard, "DB_PATH", path)

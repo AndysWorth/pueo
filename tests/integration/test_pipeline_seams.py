@@ -23,7 +23,7 @@ class TestLogMonitorActionablePath:
     _CRITICAL_LINE = "ERROR Component error: Template rendering failed"
 
     def _make_log_eval_json(self, is_actionable=True, confidence=0.95):
-        from ha_log_monitor import LogEvaluation
+        from agents.ha_log_monitor import LogEvaluation
 
         return LogEvaluation(
             is_actionable=is_actionable,
@@ -45,7 +45,7 @@ class TestLogMonitorActionablePath:
 
     def _patch_module_globals(self, monkeypatch):
         """Reset module-level globals so tests don't bleed into each other."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.rate_limiter import Debouncer, RateLimiter
 
         monkeypatch.setattr(ha_log_monitor, "SELF_HEALING_ENABLED", True)
@@ -58,7 +58,7 @@ class TestLogMonitorActionablePath:
         self, monkeypatch, ssh_with_critical_line
     ):
         """CRITICAL log line → triage → gate blocks → notifier receives a HITL card."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -88,7 +88,7 @@ class TestLogMonitorActionablePath:
 
     def test_info_line_does_not_trigger_notifier(self, monkeypatch, ssh_with_info_line):
         """INFO log line below CRITICAL_LOG_PATTERN does not reach the notifier."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -117,7 +117,7 @@ class TestLogMonitorActionablePath:
         self, monkeypatch, ssh_with_critical_line
     ):
         """CRITICAL line with confidence below threshold does not send a card."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -146,7 +146,7 @@ class TestLogMonitorActionablePath:
         self, monkeypatch, ssh_with_critical_line
     ):
         """When SELF_HEALING_ENABLED is False, no HITL card is sent."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -179,7 +179,7 @@ class TestLogMonitorActionablePath:
         self, monkeypatch, ssh_with_critical_line
     ):
         """When gate.should_auto_execute returns True, no HITL card is sent (repair is triggered)."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
         from utils.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ollama_client import FakeLLMClient
@@ -228,7 +228,7 @@ class TestPollForNotificationsLoopBody:
     }
 
     def _make_llm_json(self):
-        from ha_notification_manager import _NotificationLLMOutput
+        from agents.ha_notification_manager import _NotificationLLMOutput
 
         return _NotificationLLMOutput(
             human_explanation="Someone tried to log into HA from IP 1.2.3.4.",
@@ -238,7 +238,7 @@ class TestPollForNotificationsLoopBody:
 
     def _one_shot_sleep(self, monkeypatch):
         """Return a patched asyncio.sleep that allows the first call, then raises CancelledError."""
-        import ha_log_monitor
+        from agents import ha_log_monitor
 
         call_count = {"n": 0}
 
@@ -251,14 +251,14 @@ class TestPollForNotificationsLoopBody:
 
     def test_new_notification_writes_card_file_and_db_row(self, monkeypatch, tmp_path):
         """One iteration: WS notification fetched → card JSON written → notification_history row inserted."""
-        import ha_agent_advanced
-        import ha_log_monitor
+        from agents import ha_agent_advanced
+        from agents import ha_log_monitor
         from utils.ha_ws_client import FakeHAWebSocketClient
         from utils.notify import FileNotifier
         from utils.ollama_client import FakeLLMClient
         from utils.ssh_client import FakeSSHClient
 
-        import ha_notification_manager
+        from agents import ha_notification_manager
 
         db_path = str(tmp_path / "test.db")
         watch_dir = tmp_path / "watch"
@@ -317,9 +317,9 @@ class TestPollForNotificationsLoopBody:
 
     def test_duplicate_notification_not_resent(self, monkeypatch, tmp_path):
         """Second iteration with same notification: card file NOT re-created (idempotency)."""
-        import ha_agent_advanced
-        import ha_log_monitor as hlm
-        from ha_notification_manager import (
+        from agents import ha_agent_advanced
+        from agents import ha_log_monitor as hlm
+        from agents.ha_notification_manager import (
             mark_notification_hitl_sent,
             record_notification_seen,
         )
