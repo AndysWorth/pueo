@@ -103,6 +103,11 @@ HA_REPAIR_POLL_INTERVAL_MINUTES: float = float(
     _agent.get("ha_repair_poll_interval_minutes", 5)
 )
 
+# HA Lovelace dashboard entity health check
+HA_LOVELACE_CHECK_INTERVAL_MINUTES: int = int(
+    _agent.get("lovelace_check_interval_minutes", 30)
+)
+
 # Log triage deduplication — suppress repeat approval cards for the same recurring error
 LOG_TRIAGE_COOLDOWN_HOURS: int = int(_agent.get("log_triage_cooldown_hours", 4))
 

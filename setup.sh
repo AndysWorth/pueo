@@ -560,6 +560,7 @@ agent:
   update_check_interval_hours: ${HA_UPDATE_CHECK_INTERVAL_HOURS}
   notification_poll_interval_minutes: 5
   ha_repair_poll_interval_minutes: 5
+  lovelace_check_interval_minutes: 30
   # update_notify_on_available: true
 EOF
     ok "config.yaml written"

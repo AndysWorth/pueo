@@ -31,6 +31,7 @@ from utils.logging import get_logger
 from utils.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
+    CARD_TYPE_DASHBOARD_ENTITY,
     CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
@@ -1306,6 +1307,73 @@ async def _execute_netalertx_switch(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_dashboard_entity_fix(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Handle an approved dashboard entity card — replace or remove the entity reference."""
+    import config as _config
+
+    try:
+        from utils.ha_rest_client import HARestClient
+
+        payload = data.get("payload", {})
+        action = payload.get("action", "investigate")
+        entity_id = payload.get("entity_id", "")
+        proposed = payload.get("proposed_entity_id")
+
+        if action == "investigate":
+            # Informational only — no write needed.
+            data["fix_applied"] = False
+            data["fix_note"] = "investigate: no Lovelace config change made"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+            return
+
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        lovelace_cfg = await rest.get_raw("/api/lovelace/config")
+        cfg_json = json.dumps(lovelace_cfg)
+
+        if action == "replace" and proposed:
+            updated_json = cfg_json.replace(f'"{entity_id}"', f'"{proposed}"')
+        elif action == "remove":
+            # Remove any JSON string occurrence of the entity_id.
+            # This handles simple "entity": "..." and entries inside "entities": [...] lists.
+            updated_json = (
+                cfg_json.replace(f'"{entity_id}", ', "")
+                .replace(f', "{entity_id}"', "")
+                .replace(f'"{entity_id}"', '""')
+            )
+        else:
+            data["fix_note"] = f"unknown action: {action}"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+            return
+
+        import json as _json
+
+        updated_cfg = _json.loads(updated_json)
+        await rest.post("/api/lovelace/config", updated_cfg)
+
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        log.info(
+            "lovelace_entity_fix_applied",
+            entity_id=entity_id,
+            action=action,
+            proposed=proposed,
+        )
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -1320,6 +1388,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_CODE_PROPOSAL: _execute_code_proposal,
     CARD_TYPE_CLOUD_ESCALATION: _execute_cloud_escalation,
     CARD_TYPE_OPEN_PR: _execute_open_pr,
+    CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
 }
 
 

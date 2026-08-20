@@ -104,6 +104,15 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def post(self, path: str, payload: dict) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}{path}", headers=self._headers, json=payload
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
     async def delete(self, path: str) -> None:
         base = self._base_url.removesuffix("/api")
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -174,6 +183,7 @@ class FakeHARestClient:
         self._raw: dict[str, dict] = raw_responses or {}
         self.service_calls: list[tuple[str, str, dict]] = []
         self.deleted: list[str] = []
+        self.posted: list[tuple[str, dict]] = []
 
     async def get_states(self, prefix: str | None = None) -> list[dict]:
         if prefix:
@@ -198,6 +208,10 @@ class FakeHARestClient:
 
     async def get_raw(self, path: str) -> dict:
         return self._raw.get(path, {})
+
+    async def post(self, path: str, payload: dict) -> dict:
+        self.posted.append((path, payload))
+        return {}
 
     async def delete(self, path: str) -> None:
         self.deleted.append(path)
