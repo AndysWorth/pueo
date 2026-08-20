@@ -32,7 +32,7 @@ from interfaces import (
 )
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
-from utils.tool_registry import (
+from utils.agent.tool_registry import (
     GET_DISK_USAGE,
     QUERY_KNOWLEDGE,
     READ_FILE,
@@ -232,11 +232,11 @@ async def run_investigation(
     The agent gathers evidence, consults the knowledge store, identifies root causes,
     and ranks remediation options. It terminates by calling finish_investigation.
     """
-    from utils.agent_loop import AgentLoop
-    from utils.tool_executor import ToolExecutor
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
 
     if gate is None:
-        from utils.autonomy import AutonomyGate
+        from utils.agent.autonomy import AutonomyGate
 
         gate = AutonomyGate(level=4)  # AUTONOMOUS — investigation registry is read-only
 

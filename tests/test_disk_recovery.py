@@ -639,7 +639,10 @@ class TestRunSafeDiskRecoveryLLMGuided:
 
     def _make_investigation_report(self, auto_keys):
         """Return a minimal InvestigationReport-like object with the given auto action_keys."""
-        from utils.investigation_loop import InvestigationAction, InvestigationReport
+        from utils.agent.investigation_loop import (
+            InvestigationAction,
+            InvestigationReport,
+        )
 
         return InvestigationReport(
             topic="HA disk space critically low",
@@ -673,7 +676,7 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.investigation_loop.investigate_with_fallback",
+                "utils.agent.investigation_loop.investigate_with_fallback",
                 new=AsyncMock(return_value=(report, False)),
             ),
         ):
@@ -699,7 +702,7 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.investigation_loop.investigate_with_fallback",
+                "utils.agent.investigation_loop.investigate_with_fallback",
                 new=AsyncMock(return_value=(None, True)),  # is_fallback=True
             ),
         ):
@@ -723,7 +726,7 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.investigation_loop.investigate_with_fallback",
+                "utils.agent.investigation_loop.investigate_with_fallback",
                 new=AsyncMock(return_value=(report, False)),
             ),
         ):

@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from netalertx.healer import NetAlertXHealer
     from netalertx.log_monitor import LogEvaluation
     from interfaces import LLMClientProtocol, SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.one_shot_diagnose")
@@ -158,7 +158,7 @@ async def run_diagnose(
     Entry point for ``--mode netalertx-diagnose``.
     """
     from netalertx.api_client import NetAlertXAPIClient
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from utils.tool_registry import (
+from utils.agent.tool_registry import (
     FixEnrichment,
     build_chat_tool_registry,
     build_ha_tool_registry,

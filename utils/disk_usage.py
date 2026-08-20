@@ -366,7 +366,7 @@ class DiskUsagePoller:
                 breakdown = await fetch_disk_breakdown(self._ssh)
                 update_disk_breakdown(breakdown)
                 try:
-                    from utils.supervisor import publish_event
+                    from utils.agent.supervisor import publish_event
 
                     publish_event(
                         {

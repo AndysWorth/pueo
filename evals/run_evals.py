@@ -26,9 +26,9 @@ import yaml
 # Add project root to path so imports work when called as a script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.agent_loop import AgentLoop  # noqa: E402
+from utils.agent.agent_loop import AgentLoop  # noqa: E402
 from utils.llm.llm_factory import make_llm_client  # noqa: E402
-from utils.tool_registry import (  # noqa: E402
+from utils.agent.tool_registry import (  # noqa: E402
     AgentLoopResult,
     ToolCall,
     ToolResult,

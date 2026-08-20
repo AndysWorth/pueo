@@ -32,14 +32,14 @@ from config import (
     HA_USER,
 )
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from utils.core.context import truncate_to_budget
 from utils.ha.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
-    from utils.autonomy import AutonomyGate, FakeAutonomyGate
+    from utils.agent.autonomy import AutonomyGate, FakeAutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
 
@@ -576,7 +576,7 @@ async def run_update_check(
             print(f"\nWarning: breaking-change analysis failed: {exc}")
 
     # Approval cards — Core/OS always require approval; add-ons defer to autonomy level.
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
 
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)

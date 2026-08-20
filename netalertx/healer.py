@@ -27,7 +27,7 @@ from netalertx.config_validator import (
     _SNAKE_TO_CAMEL,
     validate_app_conf,
 )
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from netalertx.config_validator import ConfigIssue
     from netalertx.diagnosis import NetAlertXDiagnostic
     from interfaces import LLMClientProtocol, SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.healer")
@@ -178,9 +178,9 @@ class NetAlertXHealer:
         the appropriate fix tool (restart_netalertx, rewrite_netalertx_conf,
         or apply_fix for HA config changes) before finishing.
         """
-        from utils.agent_loop import AgentLoop
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import build_netalertx_tool_registry
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_netalertx_tool_registry
 
         executor = ToolExecutor(
             ha_ssh_client=self._ha_ssh,

@@ -372,7 +372,7 @@ class TestUpdateCardToRoute:
         rest = FakeHARestClient(states=[update_entity])
 
         # Gate that sends the card file but returns False (no blocking wait for approval)
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         class _QueuingGate:
             async def require_approval(self, subject, body, payload, notifier, risk):

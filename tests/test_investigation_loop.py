@@ -10,7 +10,7 @@ class TestInvestigateWithFallback:
     """Tests for the investigate_with_fallback() convenience wrapper."""
 
     def _make_report(self):
-        from utils.investigation_loop import InvestigationReport
+        from utils.agent.investigation_loop import InvestigationReport
 
         return InvestigationReport(
             topic="test",
@@ -21,7 +21,7 @@ class TestInvestigateWithFallback:
         )
 
     def test_returns_report_and_false_on_success(self):
-        from utils.investigation_loop import investigate_with_fallback
+        from utils.agent.investigation_loop import investigate_with_fallback
         from utils.ha.ssh_client import FakeSSHClient
 
         report = self._make_report()
@@ -30,7 +30,7 @@ class TestInvestigateWithFallback:
             return report
 
         with patch(
-            "utils.investigation_loop.run_investigation",
+            "utils.agent.investigation_loop.run_investigation",
             new=AsyncMock(return_value=report),
         ):
             result_report, is_fallback = asyncio.run(
@@ -46,7 +46,7 @@ class TestInvestigateWithFallback:
         assert is_fallback is False
 
     def test_returns_none_and_true_on_timeout(self):
-        from utils.investigation_loop import investigate_with_fallback
+        from utils.agent.investigation_loop import investigate_with_fallback
         from utils.ha.ssh_client import FakeSSHClient
 
         async def _slow():
@@ -54,7 +54,7 @@ class TestInvestigateWithFallback:
             raise AssertionError("should not reach here")
 
         with patch(
-            "utils.investigation_loop.run_investigation",
+            "utils.agent.investigation_loop.run_investigation",
             new=AsyncMock(side_effect=asyncio.TimeoutError),
         ):
             result_report, is_fallback = asyncio.run(
@@ -71,11 +71,11 @@ class TestInvestigateWithFallback:
         assert is_fallback is True
 
     def test_returns_none_and_true_on_exception(self):
-        from utils.investigation_loop import investigate_with_fallback
+        from utils.agent.investigation_loop import investigate_with_fallback
         from utils.ha.ssh_client import FakeSSHClient
 
         with patch(
-            "utils.investigation_loop.run_investigation",
+            "utils.agent.investigation_loop.run_investigation",
             new=AsyncMock(side_effect=RuntimeError("ollama down")),
         ):
             result_report, is_fallback = asyncio.run(
@@ -95,15 +95,15 @@ class TestRunInvestigationGateDefault:
     """run_investigation() should create an AUTONOMOUS gate when gate=None."""
 
     def test_gate_defaults_to_autonomous_level(self):
-        from utils.autonomy import AutonomyGate, RiskLevel
-        from utils.investigation_loop import run_investigation
+        from utils.agent.autonomy import AutonomyGate, RiskLevel
+        from utils.agent.investigation_loop import run_investigation
 
         captured = {}
 
         async def _fake_loop_run(**_):
             return None
 
-        import utils.investigation_loop as il
+        import utils.agent.investigation_loop as il
 
         original = il.run_investigation
 
@@ -121,7 +121,10 @@ class TestSerializeAnalysis:
     """Tests for _serialize_analysis() module-level helper in resource.py."""
 
     def _make_report(self, manual_only=None, confidence=0.9):
-        from utils.investigation_loop import InvestigationAction, InvestigationReport
+        from utils.agent.investigation_loop import (
+            InvestigationAction,
+            InvestigationReport,
+        )
 
         return InvestigationReport(
             topic="disk",
@@ -308,7 +311,7 @@ class TestResourcePollerInvestigationIntegration:
         )
 
     def _make_report(self):
-        from utils.investigation_loop import InvestigationReport
+        from utils.agent.investigation_loop import InvestigationReport
 
         return InvestigationReport(
             topic="HA disk CRITICAL",
@@ -336,7 +339,7 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.investigation_loop.investigate_with_fallback",
+            "utils.agent.investigation_loop.investigate_with_fallback",
             new=AsyncMock(return_value=(report, False)),
         ) as mock_inv:
             with patch(
@@ -368,7 +371,7 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.investigation_loop.investigate_with_fallback",
+            "utils.agent.investigation_loop.investigate_with_fallback",
             new=AsyncMock(return_value=(None, True)),
         ):
             with patch(
@@ -397,7 +400,7 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.investigation_loop.investigate_with_fallback", new=AsyncMock()
+            "utils.agent.investigation_loop.investigate_with_fallback", new=AsyncMock()
         ) as mock_inv:
             asyncio.run(poller._check_and_alert(self._make_status()))
 

@@ -481,7 +481,7 @@ async def run_safe_disk_recovery(
 
     # --- LLM-guided path ---
     if llm_client is not None:
-        from utils.investigation_loop import investigate_with_fallback
+        from utils.agent.investigation_loop import investigate_with_fallback
 
         keys_doc = ", ".join(sorted(DISK_AUTO_ACTION_KEYS))
         inv_context = (

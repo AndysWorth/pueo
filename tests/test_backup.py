@@ -21,23 +21,23 @@ import pytest
 
 class TestAllowlist:
     def test_ha_backups_new_not_in_allowlist(self):
-        from utils.tool_executor import _HA_COMMAND_ALLOWLIST as allowlist
+        from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST as allowlist
 
         assert "ha backups new" not in allowlist
 
     def test_ha_backups_list_still_in_allowlist(self):
-        from utils.tool_executor import _HA_COMMAND_ALLOWLIST as allowlist
+        from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST as allowlist
 
         assert "ha backups list" in allowlist
 
     def test_trigger_backup_in_chat_registry(self):
-        from utils.tool_registry import build_chat_tool_registry
+        from utils.agent.tool_registry import build_chat_tool_registry
 
         reg = build_chat_tool_registry()
         assert "trigger_backup" in reg
 
     def test_trigger_backup_in_ha_registry(self):
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         reg = build_ha_tool_registry()
         assert "trigger_backup" in reg
@@ -63,10 +63,10 @@ class TestTriggerBackupChain:
 
     @pytest.fixture
     def executor(self, db_path):
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
+        from utils.agent.tool_executor import ToolExecutor
 
         ssh = FakeSSHClient(
             file_contents={},
@@ -135,7 +135,7 @@ class TestTriggerBackupChain:
         assert "offloaded=False" in result.output
 
     def test_run_ha_command_backups_new_rejected(self, executor):
-        from utils.tool_registry import ToolCall
+        from utils.agent.tool_registry import ToolCall
 
         call = ToolCall(name="run_ha_command", arguments={"command": "ha backups new"})
         result = asyncio.run(executor.execute(call))

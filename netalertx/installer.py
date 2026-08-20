@@ -45,7 +45,7 @@ from config import (
     NETALERTX_SCAN_INTERFACE,
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
-from utils.autonomy import RiskLevel
+from utils.agent.autonomy import RiskLevel
 from netalertx.installer_diagnostics import (
     diagnose_installer_failure,
     format_diagnostic_for_hitl,
@@ -54,7 +54,7 @@ from utils.core.logging import get_logger, set_correlation_id
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import NotifierProtocol
 
 log = get_logger("netalertx.installer")
@@ -1451,7 +1451,7 @@ async def main(
         NOTIFY_WATCH_DIR,
     )
     from config import NETALERTX_SSH_HOST, NETALERTX_SSH_KEY_PATH, NETALERTX_SSH_USER
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
 

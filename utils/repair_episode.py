@@ -13,7 +13,7 @@ import yaml
 
 from pydantic import BaseModel, Field
 
-from utils.tool_registry import ToolCall
+from utils.agent.tool_registry import ToolCall
 
 EpisodeTrigger = str  # "ha_log" | "netalertx" | "manual" | "escalated"
 

@@ -2627,7 +2627,7 @@ class TestLoopSupervisor:
             async def coro():
                 ran.append(1)
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2650,7 +2650,7 @@ class TestLoopSupervisor:
                 if len(calls) == 1:
                     raise RuntimeError("first call fails")
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2672,7 +2672,7 @@ class TestLoopSupervisor:
             async def coro():
                 await asyncio.sleep(999)
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2692,7 +2692,7 @@ class TestLoopSupervisor:
             async def coro():
                 pass
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2711,7 +2711,7 @@ class TestLoopSupervisor:
 
     def test_disabled_loop_not_started_when_never_called(self):
         """Loops not started by caller have no tasks in supervisor."""
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         bus: asyncio.Queue = asyncio.Queue()
         sup = LoopSupervisor(bus=bus)
@@ -2725,7 +2725,7 @@ class TestLoopSupervisor:
             async def bad_coro():
                 raise ValueError("sentinel error")
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2751,7 +2751,7 @@ class TestLoopSupervisor:
                     raise ValueError("first attempt fails")
                 # second attempt: return cleanly (simulates recovery)
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2774,7 +2774,7 @@ class TestLoopSupervisor:
             async def coro():
                 called.append(1)
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2798,7 +2798,7 @@ class TestLoopSupervisor:
             bus: asyncio.Queue = asyncio.Queue(maxsize=1)
             bus.put_nowait({"event_type": "filler"})  # Fill the queue
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
             sup.start("t", coro)
@@ -2815,7 +2815,7 @@ class TestLoopSupervisor:
             async def daemon():
                 await asyncio.sleep(999)  # simulate a long-running daemon
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2844,7 +2844,7 @@ class TestLoopSupervisor:
                 called.append(1)
                 await resume_event.wait()  # block until we signal
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -2874,7 +2874,7 @@ class TestLoopSupervisor:
             async def coro():
                 called.append(1)
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.5, backoff_cap=0.5)
@@ -2904,7 +2904,7 @@ class TestLoopSupervisor:
                 if len(calls) == 1:
                     raise RuntimeError("first call fails")
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=5.0, backoff_cap=5.0)
@@ -2924,7 +2924,7 @@ class TestLoopSupervisor:
 
     def test_pause_unknown_loop_raises(self):
         """pause/resume/run_now raise KeyError for unknown loop names."""
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         sup = LoopSupervisor()
         with pytest.raises(KeyError):
@@ -2936,7 +2936,7 @@ class TestLoopSupervisor:
 
     def test_pause_idempotent(self):
         """Calling pause() on an already-paused loop is a no-op."""
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         async def _run():
             async def daemon():
@@ -2958,7 +2958,7 @@ class TestLoopSupervisor:
 
     def test_resume_not_paused_is_noop(self):
         """Calling resume() on a running (non-paused) loop is a no-op."""
-        from utils.supervisor import LoopSupervisor
+        from utils.agent.supervisor import LoopSupervisor
 
         async def _run():
             async def daemon():
@@ -2988,7 +2988,7 @@ class TestLoopSupervisor:
                 iterations.append(1)
                 await allow_exit.wait()  # block until signalled
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
@@ -3015,7 +3015,7 @@ class TestLoopSupervisor:
             async def bad_coro():
                 raise RuntimeError("always fails")
 
-            from utils.supervisor import LoopSupervisor
+            from utils.agent.supervisor import LoopSupervisor
 
             bus: asyncio.Queue = asyncio.Queue()
             sup = LoopSupervisor(bus=bus, backoff_start=5.0, backoff_cap=5.0)
@@ -3079,7 +3079,7 @@ class TestTimelineUtils:
         published = []
         monkeypatch.setattr(tl_mod, "_publish_event_for_test", None, raising=False)
 
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
 
         captured = []
         monkeypatch.setattr(sup_mod, "publish_event", lambda e: captured.append(e))
@@ -3173,7 +3173,7 @@ class TestTimelineUtils:
 
     def test_write_sse_publish_exception_still_returns_id(self, tl_db, monkeypatch):
         """write_timeline_event() returns the id even when publish_event raises."""
-        import utils.supervisor as sup_mod
+        import utils.agent.supervisor as sup_mod
 
         monkeypatch.setattr(
             sup_mod,
@@ -4751,7 +4751,7 @@ _SIMPLE_CONFIG = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
 import agents.ha_agent_advanced as _haa_mod
 from utils.repair_episode import RepairEpisode, load_episodes, serialize_episode
-from utils.tool_registry import ToolCall
+from utils.agent.tool_registry import ToolCall
 
 
 def _make_episode(**overrides):
@@ -4918,12 +4918,12 @@ class TestAgentLoopEpisodeRecording:
         trigger="ha_log",
         escalated=False,
     ):
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import build_ha_tool_registry
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
 
         ex = ToolExecutor(
             ha_ssh_client=FakeSSHClient(),
@@ -5027,12 +5027,12 @@ class TestAgentLoopEpisodeRecording:
 
     def test_build_episode_extracts_fix_applied(self):
         """_build_episode captures yaml_content from apply_fix step."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import (
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import (
             AgentStep,
             ToolCall,
             ToolResult,
@@ -5083,12 +5083,12 @@ class TestAgentLoopEpisodeRecording:
 
     def test_build_episode_extracts_symptoms_from_read_logs(self):
         """_build_episode includes read_logs output in symptoms."""
-        from utils.agent_loop import AgentLoop
-        from utils.autonomy import FakeAutonomyGate
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
         from utils.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.tool_executor import ToolExecutor
-        from utils.tool_registry import (
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import (
             AgentStep,
             ToolCall,
             ToolResult,

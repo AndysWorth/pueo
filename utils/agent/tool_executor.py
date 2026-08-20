@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import config as _config_mod
 from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH
 from utils.core.logging import get_correlation_id, get_logger
-from utils.tool_registry import ToolCall, ToolResult
+from utils.agent.tool_registry import ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from interfaces import (
@@ -32,10 +32,10 @@ if TYPE_CHECKING:
         SSHClientProtocol,
     )
     from netalertx.api_client import NetAlertXAPIClient
-    from utils.autonomy import AutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.notify import NotifierProtocol
-    from utils.tool_registry import FixEnrichment
+    from utils.agent.tool_registry import FixEnrichment
 
 log = get_logger("tool_executor")
 
@@ -946,7 +946,7 @@ class ToolExecutor:
         if self._llm_client is None:
             return None
 
-        from utils.tool_registry import FixEnrichment
+        from utils.agent.tool_registry import FixEnrichment
 
         prompt = (
             "You are reviewing a proposed Home Assistant configuration fix.\n\n"
@@ -1008,7 +1008,7 @@ class ToolExecutor:
 
         enrichment = await self._enrich_fix_context(original, yaml_content, description)
 
-        from utils.autonomy import RiskLevel
+        from utils.agent.autonomy import RiskLevel
 
         from utils.card_types import CARD_TYPE_REPAIR
 

@@ -270,7 +270,11 @@ async def supervisor_main(config_path: Path) -> None:
     from utils.notify import get_notifier
     from utils.resource import ResourcePoller
     from utils.ha.ssh_client import AsyncSSHClient
-    from utils.supervisor import LoopSupervisor, event_bus, set_supervisor_instance
+    from utils.agent.supervisor import (
+        LoopSupervisor,
+        event_bus,
+        set_supervisor_instance,
+    )
     from web.dashboard import app as dashboard_app
 
     ha_agent_advanced.init_local_database()
@@ -356,8 +360,8 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Build shared ToolExecutor and attach to supervisor so the chat loop and
     # dashboard code_proposal handler share the same dynamic-tools registry.
-    from utils.autonomy import AutonomyGate
-    from utils.tool_executor import ToolExecutor
+    from utils.agent.autonomy import AutonomyGate
+    from utils.agent.tool_executor import ToolExecutor
 
     knowledge_store = None
     try:
@@ -575,7 +579,7 @@ async def supervisor_main(config_path: Path) -> None:
     # Route to the docker installer when deploy_target="docker"; HA installer otherwise.
     if cfg.NETALERTX_SETUP_DESIRED:
         import netalertx.installer as _nax_installer
-        from utils.autonomy import AutonomyGate
+        from utils.agent.autonomy import AutonomyGate
 
         _NETALERTX_DONE_STATES = {"FULLY_OPERATIONAL", "DOCKER_MACOS_UNSUPPORTED"}
         if _nax_installer.get_install_state(cfg.DB_PATH) not in _NETALERTX_DONE_STATES:
