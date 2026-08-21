@@ -49,11 +49,43 @@ def fake_llm_client():
 
 
 @pytest.fixture
-def isolated_config(monkeypatch, tmp_path):
+def pueo_dirs(monkeypatch, tmp_path):
+    """Provide isolated PueoDirectories backed by tmp_path.
+
+    Also monkeypatches PUEO_* env vars so that paths.get_dirs() and any
+    subsequent importlib.reload(config) both see the temp directories.
+    """
+    from paths import PueoDirectories
+
+    dirs = PueoDirectories(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+        log_dir=tmp_path / "logs",
+        runtime_dir=tmp_path / "run",
+        resources_dir=Path(__file__).parent.parent,
+    )
+    dirs.create_all()
+    monkeypatch.setenv("PUEO_CONFIG_DIR", str(dirs.config_dir))
+    monkeypatch.setenv("PUEO_DATA_DIR", str(dirs.data_dir))
+    monkeypatch.setenv("PUEO_STATE_DIR", str(dirs.state_dir))
+    monkeypatch.setenv("PUEO_CACHE_DIR", str(dirs.cache_dir))
+    monkeypatch.setenv("PUEO_LOG_DIR", str(dirs.log_dir))
+    monkeypatch.setenv("PUEO_RUNTIME_DIR", str(dirs.runtime_dir))
+    return dirs
+
+
+@pytest.fixture
+def isolated_config(monkeypatch, tmp_path, pueo_dirs):
     """
     Yields a writable Path for a temp config.yaml.
     After the test, reloads config and all agent modules so their
     module-level constants reset to the default state.
+
+    Also monkeypatches PUEO_* env vars (via pueo_dirs) so that path defaults
+    from paths.get_dirs() point to tmp_path-based directories, keeping tests
+    hermetically isolated from the real ~/Library/Application Support/Pueo/.
 
     Usage:
         def test_something(isolated_config):

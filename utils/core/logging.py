@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from config import LOG_FILE, LOG_LEVEL
@@ -126,6 +127,7 @@ def setup_logging(console_text: bool = False) -> None:
 
     json_formatter = _JsonFormatter()
 
+    Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(LOG_FILE)
     file_handler.setFormatter(json_formatter)
     logger.addHandler(file_handler)

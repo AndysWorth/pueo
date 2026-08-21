@@ -666,6 +666,9 @@ def main() -> None:
             "  restart-service     stop the service; launchd KeepAlive restarts it immediately\n"
             "  audit               self-diagnostics: gap report saved to audits/\n"
             "  export-episodes     export anonymized repair episodes as YAML (use --since DATE)\n"
+            "  migrate-paths       move existing data from checkout to platform directories\n"
+            "                      (run after upgrading from a version before Phase 2)\n"
+            "                      set PUEO_MIGRATE_DRY_RUN=1 to preview without moving\n"
         ),
     )
     parser.add_argument(
@@ -700,6 +703,7 @@ def main() -> None:
             "restart-service",
             "audit",
             "export-episodes",
+            "migrate-paths",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -876,6 +880,10 @@ def main() -> None:
             sys.stderr.write("No repair episodes found.\n")
             sys.exit(0)
         print(export_episodes_yaml(episodes), end="")
+    elif args.mode == "migrate-paths":
+        from utils.system.migrate_paths import run_migrate
+
+        run_migrate(config_path)
 
 
 if __name__ == "__main__":
