@@ -6,6 +6,7 @@ fastapi
 httpx
 jinja2
 ollama
+platformdirs
 pydantic
 manuf
 pyyaml
