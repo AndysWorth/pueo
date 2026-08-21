@@ -209,11 +209,11 @@ class TestMeasurePueoFootprint:
         db_file = tmp_path / "state.db"
         log_file = tmp_path / "pueo.log"
 
-        backup_dir.mkdir()
-        archive_dir.mkdir()
-        chroma_dir.mkdir()
-        cache_dir.mkdir()
-        hitl_dir.mkdir()
+        backup_dir.mkdir(exist_ok=True)
+        archive_dir.mkdir(exist_ok=True)
+        chroma_dir.mkdir(exist_ok=True)
+        cache_dir.mkdir(exist_ok=True)
+        hitl_dir.mkdir(exist_ok=True)
         db_file.write_bytes(b"x" * 1000)
         log_file.write_bytes(b"x" * 2000)
         (backup_dir / "backup.tar").write_bytes(b"x" * 5000)

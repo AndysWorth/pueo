@@ -196,7 +196,8 @@ class TestHitlConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.NOTIFY_WATCH_DIR == "hitl/"
+        assert Path(config.NOTIFY_WATCH_DIR).is_absolute()
+        assert Path(config.NOTIFY_WATCH_DIR).name == "hitl"
 
     def test_notifier_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"notifier": "ntfy"}}))

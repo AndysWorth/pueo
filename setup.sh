@@ -98,6 +98,11 @@ info "Syncing requirements-dev.txt..."
 .venv/bin/pip install --quiet -r requirements-dev.txt
 ok "Dependencies installed"
 
+# Resolve platform-appropriate directories now that platformdirs is installed
+PUEO_STATE_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.state_dir)" 2>/dev/null || echo "${HOME}/Library/Application Support/Pueo")
+PUEO_DATA_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.data_dir)" 2>/dev/null || echo "${HOME}/Library/Application Support/Pueo")
+PUEO_LOG_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.log_dir)" 2>/dev/null || echo "${HOME}/Library/Logs/Pueo")
+
 # ── 2. Ollama ───────────────────────────────────────────────────────────────────
 hdr "2. Ollama"
 
@@ -297,7 +302,7 @@ if $WRITE_CONFIG; then
             fi
         fi
     fi
-    ask "Local SQLite database path"        "ha_agent_state.db"             DB_PATH
+    ask "Local SQLite database path"        "${PUEO_STATE_DIR}/ha_agent_state.db"  DB_PATH
     ask "Log confidence threshold (0–1)"    "0.7"                           LOG_THRESHOLD
     ask "Self-healing enabled"              "true"                          SELF_HEALING
 
@@ -329,7 +334,7 @@ if $WRITE_CONFIG; then
     ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
 
     NOTIFY_URL=""
-    NOTIFY_WATCH_DIR="hitl/"
+    NOTIFY_WATCH_DIR="${PUEO_STATE_DIR}/hitl"
 
     if [[ "$NOTIFIER_TYPE" == "ntfy" ]]; then
         echo
@@ -337,16 +342,16 @@ if $WRITE_CONFIG; then
         echo "  Pick a unique topic name — anyone who knows it can see your alerts."
         echo "  For self-hosted ntfy use: https://ntfy.example.com/<topic>"
         ask "ntfy topic URL"  "https://ntfy.sh/pueo-$(openssl rand -hex 8)"  NOTIFY_URL
-        ask "Approval watch directory"  "hitl/"  NOTIFY_WATCH_DIR
+        ask "Approval watch directory"  "${PUEO_STATE_DIR}/hitl"  NOTIFY_WATCH_DIR
         echo
         echo "  To approve a pending repair (from this machine or via SSH):"
-        echo "    touch hitl/<notification-id>.approved"
+        echo "    touch ${PUEO_STATE_DIR}/hitl/<notification-id>.approved"
         echo "  To reject:"
-        echo "    touch hitl/<notification-id>.rejected"
+        echo "    touch ${PUEO_STATE_DIR}/hitl/<notification-id>.rejected"
     elif [[ "$NOTIFIER_TYPE" == "webhook" ]]; then
         ask "Webhook URL"  ""  NOTIFY_URL
     else
-        ask "Approval watch directory"  "hitl/"  NOTIFY_WATCH_DIR
+        ask "Approval watch directory"  "${PUEO_STATE_DIR}/hitl"  NOTIFY_WATCH_DIR
         NOTIFIER_TYPE="file"
     fi
 
@@ -551,7 +556,7 @@ agent:
   # ha_disk_critical_gb: 3.0  # keep above 1.0 (HA Supervisor hard-blocks backups below 1 GB); 3.0 leaves a 2 GB write buffer
   # ha_mem_warn_mb: 256
   # backup_offload_enabled: true
-  # backup_local_dir: "./backups/"
+  # backup_local_dir: ""     # default: ${PUEO_DATA_DIR}/backups
   # backup_retain_on_ha: 2
   # backup_retain_local_days: 30
   # disk_recovery_auto_enabled: true

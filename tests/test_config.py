@@ -75,11 +75,12 @@ class TestConfigDefaults:
 
         assert config.CONFIG_REMOTE_PATH == "/config/configuration.yaml"
 
-    def test_db_path_default(self, isolated_config):
+    def test_db_path_default(self, isolated_config, tmp_path):
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.DB_PATH == "ha_agent_state.db"
+        assert Path(config.DB_PATH).is_absolute()
+        assert Path(config.DB_PATH).name == "ha_agent_state.db"
 
     def test_self_healing_disabled_via_config(self, isolated_config):
         isolated_config.write_text(
@@ -183,7 +184,8 @@ class TestLoggingConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.LOG_FILE == "pueo.log"
+        assert Path(config.LOG_FILE).is_absolute()
+        assert Path(config.LOG_FILE).name == "pueo.log"
 
     def test_log_level_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"log_level": "DEBUG"}}))
@@ -237,7 +239,8 @@ class TestHitlConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.NOTIFY_WATCH_DIR == "hitl/"
+        assert Path(config.NOTIFY_WATCH_DIR).is_absolute()
+        assert Path(config.NOTIFY_WATCH_DIR).name == "hitl"
 
     def test_notifier_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"notifier": "ntfy"}}))
@@ -584,7 +587,8 @@ class TestResourceSensingConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.BACKUP_LOCAL_DIR == "./backups/"
+        assert Path(config.BACKUP_LOCAL_DIR).is_absolute()
+        assert Path(config.BACKUP_LOCAL_DIR).name == "backups"
 
     def test_backup_offload_config_keys_loaded_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -695,7 +699,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR == ".cache/ha_release_notes/"
+        assert Path(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR).is_absolute()
+        assert Path(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR).name == "ha_release_notes"
 
     def test_update_release_notes_cache_dir_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -796,7 +801,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.CHROMADB_PATH == "./chromadb/"
+        assert Path(config.CHROMADB_PATH).is_absolute()
+        assert Path(config.CHROMADB_PATH).name == "chromadb"
 
     def test_chromadb_path_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -854,7 +860,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.RAG_HACS_CACHE_DIR == ".cache/hacs_changelogs/"
+        assert Path(config.RAG_HACS_CACHE_DIR).is_absolute()
+        assert Path(config.RAG_HACS_CACHE_DIR).name == "hacs_changelogs"
 
     def test_rag_hacs_cache_dir_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -869,7 +876,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.RAG_HA_DOCS_CACHE_DIR == ".cache/ha_docs/"
+        assert Path(config.RAG_HA_DOCS_CACHE_DIR).is_absolute()
+        assert Path(config.RAG_HA_DOCS_CACHE_DIR).name == "ha_docs"
 
     def test_rag_ha_docs_cache_dir_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -884,7 +892,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.HA_SOURCE_CACHE_DIR == ".cache/ha_source/"
+        assert Path(config.HA_SOURCE_CACHE_DIR).is_absolute()
+        assert Path(config.HA_SOURCE_CACHE_DIR).name == "ha_source"
 
     def test_ha_source_cache_dir_from_yaml(self, isolated_config):
         isolated_config.write_text(
@@ -1092,7 +1101,8 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.PUEO_ARCHIVE_DIR == "./archives/"
+        assert Path(config.PUEO_ARCHIVE_DIR).is_absolute()
+        assert Path(config.PUEO_ARCHIVE_DIR).name == "archives"
 
     def test_archive_ha_log_enabled_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
@@ -1230,7 +1240,8 @@ class TestFederatedCasesRepoConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.CASE_INGEST_CACHE_DIR == ".cache/case_ingest/"
+        assert Path(config.CASE_INGEST_CACHE_DIR).is_absolute()
+        assert Path(config.CASE_INGEST_CACHE_DIR).name == "case_ingest"
 
     def test_case_ingest_cache_dir_from_yaml(self, isolated_config):
         isolated_config.write_text(

@@ -180,8 +180,12 @@ async def check_backup_registry(
     return AuditResult("backup_registry", "OK", detail)
 
 
-def check_pending_hitl(watch_dir: str = "hitl/") -> AuditResult:
+def check_pending_hitl(watch_dir: Optional[str] = None) -> AuditResult:
     """Report approval cards in the watch dir that have no .approved or .rejected file."""
+    if watch_dir is None:
+        from paths import get_dirs
+
+        watch_dir = str(get_dirs().state_dir / "hitl")
     hitl_path = Path(watch_dir)
     if not hitl_path.exists():
         return AuditResult(
@@ -339,8 +343,12 @@ def check_state_history() -> AuditResult:
     return AuditResult("state_history", "OK", detail)
 
 
-def check_update_check(watch_dir: str = "hitl/") -> AuditResult:
+def check_update_check(watch_dir: Optional[str] = None) -> AuditResult:
     """Report update loop config, pending update cards, and approved-but-unexecuted updates."""
+    if watch_dir is None:
+        from paths import get_dirs
+
+        watch_dir = str(get_dirs().state_dir / "hitl")
     import config
 
     parts: list[str] = []
@@ -423,7 +431,7 @@ def check_update_check(watch_dir: str = "hitl/") -> AuditResult:
 async def run_audit(
     ssh_client: Optional["SSHClientProtocol"] = None,
     netalertx_client: Optional["NetAlertXAPIClient"] = None,
-    watch_dir: str = "hitl/",
+    watch_dir: Optional[str] = None,
 ) -> list[AuditResult]:
     """Run all audit checks; return results sorted CRITICAL → WARN → OK."""
     results: list[AuditResult] = []
@@ -492,8 +500,12 @@ def format_audit_report(results: list[AuditResult], now: float | None = None) ->
     return "\n".join(lines)
 
 
-def save_audit_report(report: str, audits_dir: str = "audits/") -> Path:
+def save_audit_report(report: str, audits_dir: Optional[str] = None) -> Path:
     """Write the report to audits/pueo-audit-<date>.md; return the path."""
+    if audits_dir is None:
+        from paths import get_dirs
+
+        audits_dir = str(get_dirs().state_dir / "audits")
     audit_path = Path(audits_dir)
     audit_path.mkdir(parents=True, exist_ok=True)
     date_str = time.strftime("%Y-%m-%d")
@@ -507,7 +519,9 @@ def save_audit_report(report: str, audits_dir: str = "audits/") -> Path:
 # ---------------------------------------------------------------------------
 
 
-async def main_audit(watch_dir: str = "hitl/", audits_dir: str = "audits/") -> None:
+async def main_audit(
+    watch_dir: Optional[str] = None, audits_dir: Optional[str] = None
+) -> None:
     """Run the audit and print a summary to stdout; save the full report to audits/."""
     results = await run_audit(watch_dir=watch_dir)
     report = format_audit_report(results)

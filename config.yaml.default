@@ -64,7 +64,7 @@ netalertx:
   severity_confidence_threshold: 0.9          # Minimum confidence score to classify as HIGH severity
 
 agent:
-  db_path: "ha_agent_state.db"       # Local SQLite file for state and backup history
+  # db_path: ""    # SQLite state file; default: ~/Library/Application Support/Pueo/ha_agent_state.db (macOS)
   log_confidence_threshold: 0.7      # Minimum AI confidence score to trigger autonomous repair
   self_healing_enabled: true         # Set to false to run in diagnostic-only mode
   ssh_retry_attempts: 3              # Max SSH connection retries before giving up (0 = infinite)
@@ -73,11 +73,11 @@ agent:
   repair_cooldown_seconds: 300       # Pause after a repair before re-arming the monitor
   max_repairs_per_hour: 10           # Hard cap on autonomous repair attempts per hour
   log_level: "INFO"                  # Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  log_file: "pueo.log"               # Path to the structured JSON log file
+  # log_file: ""                     # JSON log file; default: ~/Library/Logs/Pueo/pueo.log (macOS)
   max_prompt_tokens: 7000            # Maximum tokens sent to Ollama per request (8k context minus headroom)
   notifier: "file"                   # approval notification backend: "file", "ntfy", or "webhook"
   notify_url: ""                     # URL for ntfy topic or webhook endpoint (unused for "file" notifier)
-  notify_watch_dir: "hitl/"          # Directory watched by FileNotifier for .approved/.rejected signals
+  # notify_watch_dir: ""             # Approval-file watch dir; default: ~/Library/Application Support/Pueo/hitl (macOS)
   autonomy_level: 2                  # 1=report-only · 2=suggest(approve all) · 3=guided(auto-LOW) · 4=autonomous(auto-LOW/MED/HIGH)
   dashboard_port: 8080               # Port for the web dashboard (python main.py --mode dashboard)
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
@@ -92,20 +92,20 @@ agent:
                                      # HA backups are consistently larger than 2 GB.
   ha_mem_warn_mb: 256                # Send an approval card when HA memory available drops below this value (MB)
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
-  backup_local_dir: "./backups/"     # Local directory for offloaded backup files
+  # backup_local_dir: ""            # Offloaded backup dir; default: ~/Library/Application Support/Pueo/backups (macOS)
   backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
   backup_retain_local_days: 30       # Purge local .tar copies older than this many days
   disk_recovery_auto_enabled: true   # Run safe recovery steps automatically when disk is critical
   disk_recovery_recorder_keep_days: 30  # Days of history to keep when auto-purging the recorder DB
   disk_recovery_journal_max_mb: 200  # Target size (MB) for systemd journal after auto-vacuum
-  pueo_archive_dir: "./archives/"      # Root directory for Pueo-archived HA data (logs, journal dumps)
+  # pueo_archive_dir: ""             # Pueo archive root; default: ~/Library/Application Support/Pueo/archives (macOS)
   archive_ha_log_enabled: true         # Copy HA log to Pueo before truncating on disk-critical
   archive_journal_enabled: false       # Dump systemd journal to Pueo before vacuuming (off by default: noisy)
   pueo_archive_max_gb: 2.0             # Max local storage for archived HA logs and journal dumps (GB)
   pueo_local_max_gb: 20.0              # Soft-warn threshold for Pueo's total local storage footprint (GB)
   update_check_interval_hours: 6      # How often to poll for HA updates (0 = off; requires api_token)
   # update_notify_on_available: true  # Send an approval notification when any update entity flips to on
-  # update_release_notes_cache_dir: ".cache/ha_release_notes/"  # Local cache for fetched HA release notes
+  # update_release_notes_cache_dir: ""  # Release-notes cache; default: ~/Library/Caches/Pueo/ha_release_notes (macOS)
   notification_poll_interval_minutes: 5  # How often to poll for HA persistent notifications (requires api_token)
   ha_repair_poll_interval_minutes: 5   # How often to poll for HA repair issues (0 = off; requires api_token)
   lovelace_check_interval_minutes: 30  # How often to check Lovelace dashboards for missing entities (0 = off; requires api_token)
@@ -120,14 +120,14 @@ agent:
   # ha_profile_refresh_hours: 24       # How often to rebuild the HA environment profile (integrations, versions)
   # chat_memory_top_k: 10             # Max memory entries returned per recall() call
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
-  # chromadb_path: "./chromadb/"      # Local ChromaDB vector store directory (RAG knowledge layer)
-  # rag_top_k: 5                      # Number of knowledge chunks returned per query_knowledge call
-  # rag_ha_versions_to_fetch: 12      # How many recent HA releases to fetch from GitHub on rag-refresh
-  # rag_hacs_cache_dir: ".cache/hacs_changelogs/"  # Local cache for fetched HACS integration changelogs
-  # rag_ha_docs_cache_dir: ".cache/ha_docs/"       # Local cache for fetched HA integration documentation
-  # ha_source_cache_dir: ".cache/ha_source/"       # Local cache for HA component source files (fetch_ha_docs tool)
+  # chromadb_path: ""           # ChromaDB vector store; default: ~/Library/Application Support/Pueo/chromadb (macOS)
+  # rag_top_k: 5                # Number of knowledge chunks returned per query_knowledge call
+  # rag_ha_versions_to_fetch: 12  # How many recent HA releases to fetch from GitHub on rag-refresh
+  # rag_hacs_cache_dir: ""      # HACS changelog cache; default: ~/Library/Caches/Pueo/hacs_changelogs (macOS)
+  # rag_ha_docs_cache_dir: ""   # HA docs cache; default: ~/Library/Caches/Pueo/ha_docs (macOS)
+  # ha_source_cache_dir: ""     # HA source cache; default: ~/Library/Caches/Pueo/ha_source (macOS)
   # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
   # federated_cases_repo: ""  # GitHub repo for community case library (e.g. "owner/pueo-cases"); enables episode submission and ingest
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
   # diagnostic_wan_timeout_seconds: 60  # Timeout for fetch_url calls (seconds)
-  # case_ingest_cache_dir: ".cache/case_ingest/"  # Local cache for community case ingest state (last-ingest timestamp)
+  # case_ingest_cache_dir: ""  # Case ingest cache; default: ~/Library/Caches/Pueo/case_ingest (macOS)

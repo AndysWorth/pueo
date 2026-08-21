@@ -12,6 +12,10 @@ from pathlib import Path
 
 import yaml
 
+import paths as _paths
+
+_dirs = _paths.get_dirs()
+
 _config_path = Path(
     os.environ.get("PUEO_CONFIG", Path(__file__).parent / "config.yaml")
 )
@@ -38,7 +42,7 @@ OLLAMA_MODEL_AUTO: bool = bool(_ollama.get("model_auto", False))
 OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")
 RAG_EMBED_MODEL: str = _ollama.get("embed_model", "nomic-embed-text")
 
-DB_PATH: str = _agent.get("db_path", "ha_agent_state.db")
+DB_PATH: str = _agent.get("db_path", str(_dirs.state_dir / "ha_agent_state.db"))
 CONFIDENCE_THRESHOLD: float = float(_agent.get("log_confidence_threshold", 0.7))
 SELF_HEALING_ENABLED: bool = bool(_agent.get("self_healing_enabled", True))
 SSH_RETRY_ATTEMPTS: int = int(_agent.get("ssh_retry_attempts", 3))
@@ -47,11 +51,11 @@ DEBOUNCE_WINDOW_SECONDS: float = float(_agent.get("debounce_window_seconds", 30)
 REPAIR_COOLDOWN_SECONDS: float = float(_agent.get("repair_cooldown_seconds", 300))
 MAX_REPAIRS_PER_HOUR: int = int(_agent.get("max_repairs_per_hour", 10))
 LOG_LEVEL: str = _agent.get("log_level", "INFO")
-LOG_FILE: str = _agent.get("log_file", "pueo.log")
+LOG_FILE: str = _agent.get("log_file", str(_dirs.log_dir / "pueo.log"))
 MAX_PROMPT_TOKENS: int = int(_agent.get("max_prompt_tokens", 7000))
 NOTIFIER: str = _agent.get("notifier", "file")
 NOTIFY_URL: str = _agent.get("notify_url", "")
-NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", "hitl/")
+NOTIFY_WATCH_DIR: str = _agent.get("notify_watch_dir", str(_dirs.state_dir / "hitl"))
 DASHBOARD_PORT: int = int(_agent.get("dashboard_port", 8080))
 TIMELINE_PAGE_SIZE: int = int(_agent.get("timeline_page_size", 25))
 RESOURCE_POLL_INTERVAL_SECONDS: float = float(
@@ -64,7 +68,7 @@ HA_DISK_WARN_GB: float = float(_agent.get("ha_disk_warn_gb", 5.0))
 HA_DISK_CRITICAL_GB: float = float(_agent.get("ha_disk_critical_gb", 3.0))
 HA_MEM_WARN_MB: float = float(_agent.get("ha_mem_warn_mb", 256.0))
 BACKUP_OFFLOAD_ENABLED: bool = bool(_agent.get("backup_offload_enabled", True))
-BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", "./backups/")
+BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", str(_dirs.data_dir / "backups"))
 BACKUP_RETAIN_ON_HA: int = int(_agent.get("backup_retain_on_ha", 2))
 BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
 
@@ -76,7 +80,7 @@ DISK_RECOVERY_RECORDER_KEEP_DAYS: int = int(
 DISK_RECOVERY_JOURNAL_MAX_MB: int = int(_agent.get("disk_recovery_journal_max_mb", 200))
 
 # Local archive — copy HA data to Pueo before deletion
-PUEO_ARCHIVE_DIR: str = _agent.get("pueo_archive_dir", "./archives/")
+PUEO_ARCHIVE_DIR: str = _agent.get("pueo_archive_dir", str(_dirs.data_dir / "archives"))
 ARCHIVE_HA_LOG_ENABLED: bool = bool(_agent.get("archive_ha_log_enabled", True))
 ARCHIVE_JOURNAL_ENABLED: bool = bool(_agent.get("archive_journal_enabled", False))
 PUEO_ARCHIVE_MAX_GB: float = float(_agent.get("pueo_archive_max_gb", 2.0))
@@ -90,7 +94,7 @@ HA_UPDATE_NOTIFY_ON_AVAILABLE: bool = bool(
     _agent.get("update_notify_on_available", True)
 )
 HA_UPDATE_RELEASE_NOTES_CACHE_DIR: str = _agent.get(
-    "update_release_notes_cache_dir", ".cache/ha_release_notes/"
+    "update_release_notes_cache_dir", str(_dirs.cache_dir / "ha_release_notes")
 )
 
 # HA Notification Intelligence
@@ -116,12 +120,18 @@ REJECTION_COOLDOWN_HOURS: float = float(_agent.get("rejection_cooldown_hours", 2
 KNOWN_ISSUE_REMINDER_DAYS: int = int(_agent.get("known_issue_reminder_days", 7))
 
 # RAG knowledge layer
-CHROMADB_PATH: str = _agent.get("chromadb_path", "./chromadb/")
+CHROMADB_PATH: str = _agent.get("chromadb_path", str(_dirs.data_dir / "chromadb"))
 RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
 RAG_HA_VERSIONS_TO_FETCH: int = int(_agent.get("rag_ha_versions_to_fetch", 12))
-RAG_HACS_CACHE_DIR: str = _agent.get("rag_hacs_cache_dir", ".cache/hacs_changelogs/")
-RAG_HA_DOCS_CACHE_DIR: str = _agent.get("rag_ha_docs_cache_dir", ".cache/ha_docs/")
-HA_SOURCE_CACHE_DIR: str = _agent.get("ha_source_cache_dir", ".cache/ha_source/")
+RAG_HACS_CACHE_DIR: str = _agent.get(
+    "rag_hacs_cache_dir", str(_dirs.cache_dir / "hacs_changelogs")
+)
+RAG_HA_DOCS_CACHE_DIR: str = _agent.get(
+    "rag_ha_docs_cache_dir", str(_dirs.cache_dir / "ha_docs")
+)
+HA_SOURCE_CACHE_DIR: str = _agent.get(
+    "ha_source_cache_dir", str(_dirs.cache_dir / "ha_source")
+)
 RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 168))
 
 # Tool-calling agent loop
@@ -135,7 +145,9 @@ HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
 # Federated case library — community repair episode sharing
 FEDERATED_CASES_REPO: str = _agent.get("federated_cases_repo", "")
-CASE_INGEST_CACHE_DIR: str = _agent.get("case_ingest_cache_dir", ".cache/case_ingest/")
+CASE_INGEST_CACHE_DIR: str = _agent.get(
+    "case_ingest_cache_dir", str(_dirs.cache_dir / "case_ingest")
+)
 
 # LLM provider selection
 _llm_cfg = _cfg.get("llm", {})
