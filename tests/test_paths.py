@@ -139,12 +139,13 @@ class TestPackageInstallable:
 
     def test_entry_point_registered(self):
         """The 'pueo' console script entry point is declared."""
-        from importlib.metadata import entry_points, PackageNotFoundError
+        from importlib.metadata import metadata, entry_points, PackageNotFoundError
 
         try:
-            eps = entry_points(group="console_scripts")
-        except Exception:
-            pytest.skip("entry_points() not available")
+            metadata("pueo")
+        except PackageNotFoundError:
+            pytest.skip("pueo package not installed; run 'pip install -e .'")
+        eps = entry_points(group="console_scripts")
         names = {ep.name for ep in eps}
         assert "pueo" in names, f"'pueo' entry point not found in {names}"
 
