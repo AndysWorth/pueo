@@ -54,7 +54,7 @@ cd pueo
 ./setup.sh
 ```
 
-`setup.sh` is idempotent — safe to re-run at any time. It installs dependencies, detects your hardware and recommends an Ollama model, generates an SSH key if needed, writes `config.yaml`, and optionally installs Pueo as a macOS launchd service. For a detailed walkthrough of every prompt — credentials to gather, LLM provider options, autonomy levels, notifier setup, and NetAlertX configuration — see **[docs/setup-guide.md](docs/setup-guide.md)**.
+`setup.sh` is idempotent — safe to re-run at any time. It first asks how you want to run Pueo — macOS native, Docker, or both — and configures everything accordingly: installs dependencies, detects your hardware and recommends an Ollama model, generates an SSH key if needed, writes `config.yaml`, and for Docker generates a configured `docker-compose.yml` with the correct SSH key mount. For a detailed walkthrough of every prompt — credentials to gather, LLM provider options, autonomy levels, notifier setup, and NetAlertX configuration — see **[docs/setup-guide.md](docs/setup-guide.md)**.
 
 Run `./setup.sh --clean` to wipe all generated files and start from scratch. A reference template is in `config.yaml.default`.
 
@@ -208,10 +208,12 @@ session. Tools are stored in `~/Library/Application Support/Pueo/tools/` and loa
 **Prerequisites:** Docker with Compose. Ollama must be reachable from the container — on macOS with Docker Desktop use `http://host.docker.internal:11434`; on Linux with `network_mode: host` use `localhost:11434`. The container does not bundle Ollama.
 
 **Steps:**
-1. Create a `config/` directory alongside `docker-compose.yml`.
-2. Copy `config.yaml.default` → `config/config.yaml` and fill in HA credentials, Ollama endpoint, etc. (or run `setup.sh` first and copy the generated file in).
+1. Run `./setup.sh` and choose **docker** (or **both**) at the deployment mode prompt.
+2. setup.sh writes `config/config.yaml` and generates `docker-compose.yml` with your SSH key mount — no manual editing needed.
 3. `docker compose up -d`
-4. `docker compose logs -f`
+4. `docker compose logs -f pueo`
+
+To configure manually instead: copy `config.yaml.default` → `config/config.yaml`, fill in HA credentials and Ollama endpoint, then edit `docker-compose.yml` to add the SSH key volume mount (`<key-path>:/root/.ssh/id_ed25519:ro`).
 
 **Volume model:** the container uses five volumes:
 

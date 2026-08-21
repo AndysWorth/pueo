@@ -1,3 +1,13 @@
+# docker-compose.yml — reference template
+#
+# Run ./setup.sh (choose "docker" or "both") to generate a fully configured
+# docker-compose.yml with your SSH key mount and Ollama endpoint filled in.
+# Edit this file only if you are customising the deployment manually.
+#
+# Quick start (after setup.sh):
+#   docker compose up -d
+#   docker compose logs -f pueo
+
 services:
   pueo:
     build: .
@@ -9,6 +19,9 @@ services:
       #            host directory (e.g. ./config/) and point this mount there.
       #            The file must be at /config/config.yaml inside the container.
       - ./config:/config:ro
+      # SSH private key — mounted read-only so asyncssh can connect to HA.
+      # Replace the host path with your actual key path (setup.sh sets this).
+      - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
       # /data    — HA backups, archives, ChromaDB.  Named volume: survives
       #            container recreation.
       - pueo-data:/data
