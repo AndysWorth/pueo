@@ -5,8 +5,29 @@ services:
     restart: unless-stopped
     network_mode: "host" # Required if Pueo needs direct raw socket/ARP access like NetAlertX
     volumes:
-      # Mount config locally so edits don't require rebuilding the container
-      - ./config.yaml:/app/config.yaml:ro
-      - ./secrets.yaml:/app/secrets.yaml:ro
+      # /config  — bind-mount config.yaml read-only; place config.yaml in a
+      #            host directory (e.g. ./config/) and point this mount there.
+      #            The file must be at /config/config.yaml inside the container.
+      - ./config:/config:ro
+      # /data    — HA backups, archives, ChromaDB.  Named volume: survives
+      #            container recreation.
+      - pueo-data:/data
+      # /state   — SQLite DB, HITL cards, approved user tools, audit records.
+      - pueo-state:/state
+      # /cache   — HA release-notes, HACS changelogs, ha_source, case_ingest.
+      #            Ephemeral-safe: Pueo will re-scrape on next refresh if empty.
+      - pueo-cache:/cache
+      # /logs    — pueo.log and pueo-stderr.log.  Named volume so logs persist
+      #            across restarts without cluttering the image layer.
+      - pueo-logs:/logs
     environment:
       - TZ=America/New_York
+      # ANTHROPIC_API_KEY is required only when LLM_PROVIDER=cloud or both.
+      # Uncomment and set if you use cloud escalation:
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+volumes:
+  pueo-data:
+  pueo-state:
+  pueo-cache:
+  pueo-logs:
