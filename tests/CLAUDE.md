@@ -32,7 +32,8 @@ Tests verify logic that can be exercised without external services. SSH connecti
 
 | Fixture | What it provides |
 |---|---|
-| `isolated_config` | Writable temp `config.yaml` path; reloads all agent modules after the test to prevent state leakage. |
+| `pueo_dirs` | `PueoDirectories` backed by `tmp_path`; sets `PUEO_*` env vars so `paths.get_dirs()` and `config.py` defaults point to temp dirs — prevents writes to `~/Library/Application Support/Pueo/`. |
+| `isolated_config` | Writable temp `config.yaml` path; includes `pueo_dirs` so path defaults are also isolated; reloads all agent modules after the test to prevent state leakage. |
 | `fake_ssh_client` | `FakeSSHClient` pre-loaded with a minimal valid `configuration.yaml` and standard command results. |
 | `fake_llm_client` | `FakeLLMClient` returning a valid `DiagnosticsReport(is_valid=True)` JSON response. |
 
