@@ -207,10 +207,16 @@ else
 
     # Read model from existing config if present, else use hardware recommendation
     DEFAULT_MODEL="${RECOMMENDED_MODEL}"
+    # Extract model from the `ollama:` section only — avoid matching `cloud.model`
+    _extract_ollama_model() {
+        awk '/^ollama:/{in_ollama=1} in_ollama && /^[^ ]/{if(!/^ollama:/)in_ollama=0} in_ollama && /^ *model:/{gsub(/[" ]/,"",$2); print $2; exit}' "$1"
+    }
     if [[ -f "${NATIVE_CONFIG_DIR}/config.yaml" ]]; then
-        CONFIGURED_MODEL=$(grep "model:" "${NATIVE_CONFIG_DIR}/config.yaml" | head -1 | awk '{print $2}' | tr -d '"' || echo "$DEFAULT_MODEL")
+        CONFIGURED_MODEL=$(_extract_ollama_model "${NATIVE_CONFIG_DIR}/config.yaml")
+        [[ -z "$CONFIGURED_MODEL" ]] && CONFIGURED_MODEL="$DEFAULT_MODEL"
     elif [[ -f "config.yaml" ]]; then
-        CONFIGURED_MODEL=$(grep "model:" config.yaml | head -1 | awk '{print $2}' | tr -d '"' || echo "$DEFAULT_MODEL")
+        CONFIGURED_MODEL=$(_extract_ollama_model "config.yaml")
+        [[ -z "$CONFIGURED_MODEL" ]] && CONFIGURED_MODEL="$DEFAULT_MODEL"
     else
         CONFIGURED_MODEL="$DEFAULT_MODEL"
     fi
