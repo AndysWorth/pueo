@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  macOS launchd plist: Pueo supervisor daemon (item 63).
+  macOS launchd plist: Pueo supervisor daemon.
 
   Install via setup.sh (recommended), or use:
     python main.py, mode: install-service
@@ -10,7 +10,7 @@
   To remove:
     launchctl unload ~/Library/LaunchAgents/com.pueo.agent.plist
 
-  Placeholders PUEO_DIR and PYTHON_PATH are substituted at install time.
+  Placeholders ({{ NAME }}) are substituted at install time by service.py / setup.sh.
 -->
 <plist version="1.0">
 <dict>
@@ -26,6 +26,20 @@
   <key>WorkingDirectory</key>
   <string>{{ PUEO_DIR }}</string>
 
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PUEO_CONFIG_DIR</key>
+    <string>{{ PUEO_CONFIG_DIR }}</string>
+    <key>PUEO_DATA_DIR</key>
+    <string>{{ PUEO_DATA_DIR }}</string>
+    <key>PUEO_STATE_DIR</key>
+    <string>{{ PUEO_STATE_DIR }}</string>
+    <key>PUEO_CACHE_DIR</key>
+    <string>{{ PUEO_CACHE_DIR }}</string>
+    <key>PUEO_LOG_DIR</key>
+    <string>{{ PUEO_LOG_DIR }}</string>
+  </dict>
+
   <key>RunAtLoad</key>
   <true/>
 
@@ -33,9 +47,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>{{ PUEO_DIR }}/pueo.log</string>
+  <string>{{ PUEO_LOG_DIR }}/pueo.log</string>
 
   <key>StandardErrorPath</key>
-  <string>{{ PUEO_DIR }}/pueo-stderr.log</string>
+  <string>{{ PUEO_LOG_DIR }}/pueo-stderr.log</string>
 </dict>
 </plist>

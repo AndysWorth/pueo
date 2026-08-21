@@ -4,18 +4,33 @@ import subprocess  # nosec B404 — launchctl is a fixed macOS system binary, no
 import sys
 from pathlib import Path
 
-from paths import get_dirs as _get_dirs
+from paths import PueoDirectories, get_dirs as _get_dirs
 
 PLIST_LABEL = "com.pueo.agent"
 PLIST_TARGET = Path.home() / "Library/LaunchAgents/com.pueo.agent.plist"
 TEMPLATE_PATH = _get_dirs().resources_dir / "deploy/pueo.launchd.plist.template"
 
 
-def render_plist(pueo_dir: str, python_path: str) -> str:
-    """Return the plist template with {{ PUEO_DIR }} and {{ PYTHON_PATH }} substituted."""
+def render_plist(
+    pueo_dir: str,
+    python_path: str,
+    dirs: PueoDirectories | None = None,
+) -> str:
+    """Return the plist template with all {{ }} placeholders substituted."""
+    if dirs is None:
+        dirs = _get_dirs()
     content = TEMPLATE_PATH.read_text()
-    content = content.replace("{{ PUEO_DIR }}", pueo_dir)
-    content = content.replace("{{ PYTHON_PATH }}", python_path)
+    subs = {
+        "{{ PUEO_DIR }}": pueo_dir,
+        "{{ PYTHON_PATH }}": python_path,
+        "{{ PUEO_CONFIG_DIR }}": str(dirs.config_dir),
+        "{{ PUEO_DATA_DIR }}": str(dirs.data_dir),
+        "{{ PUEO_STATE_DIR }}": str(dirs.state_dir),
+        "{{ PUEO_CACHE_DIR }}": str(dirs.cache_dir),
+        "{{ PUEO_LOG_DIR }}": str(dirs.log_dir),
+    }
+    for placeholder, value in subs.items():
+        content = content.replace(placeholder, value)
     return content
 
 
@@ -70,12 +85,14 @@ def install_service(
     if sys.platform != "darwin":  # pragma: no cover
         raise RuntimeError("launchd service management is macOS only")
 
+    dirs = _get_dirs()
+    dirs.log_dir.mkdir(parents=True, exist_ok=True)
     if pueo_dir is None:
-        pueo_dir = str(TEMPLATE_PATH.parent.parent.resolve())
+        pueo_dir = str(dirs.resources_dir)
     if python_path is None:
         python_path = sys.executable
 
-    rendered = render_plist(pueo_dir, python_path)
+    rendered = render_plist(pueo_dir, python_path, dirs=dirs)
     PLIST_TARGET.parent.mkdir(parents=True, exist_ok=True)
     PLIST_TARGET.write_text(rendered)
 

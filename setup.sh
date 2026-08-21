@@ -99,8 +99,10 @@ info "Syncing requirements-dev.txt..."
 ok "Dependencies installed"
 
 # Resolve platform-appropriate directories now that platformdirs is installed
+PUEO_CONFIG_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.config_dir)" 2>/dev/null || echo "${HOME}/.config/pueo")
 PUEO_STATE_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.state_dir)" 2>/dev/null || echo "${HOME}/Library/Application Support/Pueo")
 PUEO_DATA_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.data_dir)" 2>/dev/null || echo "${HOME}/Library/Application Support/Pueo")
+PUEO_CACHE_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.cache_dir)" 2>/dev/null || echo "${HOME}/Library/Caches/Pueo")
 PUEO_LOG_DIR=$(.venv/bin/python -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import paths; d=paths.get_dirs(); print(d.log_dir)" 2>/dev/null || echo "${HOME}/Library/Logs/Pueo")
 
 # ── 2. Ollama ───────────────────────────────────────────────────────────────────
@@ -596,8 +598,14 @@ else
     if [[ "${install_svc:-Y}" =~ ^[Yy] ]]; then
         PUEO_DIR="$(pwd)"
         PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
+        mkdir -p "$PUEO_LOG_DIR"
         sed -e "s|{{ PUEO_DIR }}|${PUEO_DIR}|g" \
             -e "s|{{ PYTHON_PATH }}|${PYTHON_PATH}|g" \
+            -e "s|{{ PUEO_CONFIG_DIR }}|${PUEO_CONFIG_DIR}|g" \
+            -e "s|{{ PUEO_DATA_DIR }}|${PUEO_DATA_DIR}|g" \
+            -e "s|{{ PUEO_STATE_DIR }}|${PUEO_STATE_DIR}|g" \
+            -e "s|{{ PUEO_CACHE_DIR }}|${PUEO_CACHE_DIR}|g" \
+            -e "s|{{ PUEO_LOG_DIR }}|${PUEO_LOG_DIR}|g" \
             deploy/pueo.launchd.plist.template > "$PLIST_TARGET"
         launchctl load -w "$PLIST_TARGET"
         ok "Pueo service installed and started: ${PLIST_LABEL}"
@@ -629,8 +637,15 @@ else
     read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
     if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then
         PUEO_DIR="$(pwd)"
-        sed -e "s|/path/to/pueo|${PUEO_DIR}|g" \
-            -e "s|python3|${PUEO_DIR}/.venv/bin/python|g" \
+        PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
+        mkdir -p "$PUEO_LOG_DIR"
+        sed -e "s|{{ PUEO_DIR }}|${PUEO_DIR}|g" \
+            -e "s|{{ PYTHON_PATH }}|${PYTHON_PATH}|g" \
+            -e "s|{{ PUEO_CONFIG_DIR }}|${PUEO_CONFIG_DIR}|g" \
+            -e "s|{{ PUEO_DATA_DIR }}|${PUEO_DATA_DIR}|g" \
+            -e "s|{{ PUEO_STATE_DIR }}|${PUEO_STATE_DIR}|g" \
+            -e "s|{{ PUEO_CACHE_DIR }}|${PUEO_CACHE_DIR}|g" \
+            -e "s|{{ PUEO_LOG_DIR }}|${PUEO_LOG_DIR}|g" \
             deploy/pueo-rag-refresh.plist > "$RAG_PLIST_TARGET"
         launchctl load -w "$RAG_PLIST_TARGET"
         ok "RAG refresh job installed: ${RAG_PLIST_LABEL} (runs Sundays at 03:00)"
@@ -659,7 +674,7 @@ echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
 echo
 echo "  Start Pueo           : pueo"
-echo "  Live log              : tail -f pueo.log"
+echo "  Live log              : tail -f $PUEO_LOG_DIR/pueo.log"
 echo
 echo "  Other modes          :"
 echo "    pueo --mode monitor"
