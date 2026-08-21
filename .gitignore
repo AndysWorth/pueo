@@ -99,4 +99,4 @@ ha_agent_state.db
 /hitl/
 backups/
 chromadb/
-user_tools/*.py
+# user_tools/ is gone — dynamic tools now live in state_dir/tools/ (outside the repo)

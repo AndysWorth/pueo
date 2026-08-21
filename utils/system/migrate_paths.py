@@ -160,6 +160,31 @@ def migrate_paths(
         _set_nested(cfg, dotted_key, str(new_path))
         updated_keys.append(dotted_key)
 
+    # --- user_tools/ → state_dir/tools/ (no config key; hardcoded special case) ---
+    old_tools = resources_dir / "user_tools"
+    new_tools = dirs.state_dir / "tools"
+    old_tools_py = (
+        [p for p in old_tools.glob("*.py") if p.name != "__init__.py"]
+        if old_tools.exists()
+        else []
+    )
+    if old_tools_py:
+        if new_tools.exists() and any(new_tools.glob("*.py")):
+            print(
+                f"{prefix}⚠  user_tools/: both {old_tools} and {new_tools} have .py files — "
+                "leaving in place; resolve manually."
+            )
+            skipped_both_exist.append("user_tools")
+        else:
+            print(
+                f"{prefix}→  user_tools/ → {new_tools} ({len(old_tools_py)} tool file(s))"
+            )
+            if not dry_run:
+                new_tools.mkdir(parents=True, exist_ok=True)
+                for tool_py in old_tools_py:
+                    shutil.move(str(tool_py), str(new_tools / tool_py.name))
+            moved.append("user_tools")
+
     # Write updated config.yaml
     if updated_keys and not dry_run:
         with open(config_path, "w") as f:

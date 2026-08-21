@@ -5757,3 +5757,61 @@ class TestSanitizeArgsPreview:
 
     def test_empty_args(self):
         assert self._fn({}) == ""
+
+
+class TestExecuteCodeProposalPath:
+    """_execute_code_proposal writes tool files to state_dir/tools/, not user_tools/."""
+
+    def test_writes_tool_to_state_dir_tools(self, tmp_path, monkeypatch, pueo_dirs):
+        """Approved tool code lands in state_dir/tools/{name}.py."""
+        import asyncio
+        import json
+        import sqlite3
+        import unittest.mock
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                "CREATE TABLE registered_tools"
+                " (name TEXT PRIMARY KEY, description TEXT, parameters_json TEXT,"
+                "  code TEXT, created_at REAL);"
+            )
+
+        monkeypatch.setattr("web.dashboard.DB_PATH", db_path)
+
+        data = {
+            "card_type": "code_proposal",
+            "payload": {
+                "tool_name": "my_tool",
+                "tool_description": "Does something",
+                "parameters_schema": "{}",
+                "code": "def tool_implementation(): return 42",
+            },
+        }
+        json_path = watch_dir / "card-001.json"
+        json_path.write_text(json.dumps(data))
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.publish_event", return_value=None
+            ),
+        ):
+            from web.dashboard import _execute_code_proposal
+
+            asyncio.run(_execute_code_proposal("card-001", data, json_path, watch_dir))
+
+        tool_file = pueo_dirs.state_dir / "tools" / "my_tool.py"
+        assert tool_file.exists(), "Tool file must be written to state_dir/tools/"
+        assert "tool_implementation" in tool_file.read_text()
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT name FROM registered_tools WHERE name='my_tool'"
+            ).fetchone()
+        assert row is not None, "Tool must be recorded in registered_tools"
