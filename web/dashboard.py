@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from paths import get_dirs as _get_dirs
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
     HTMLResponse,
@@ -1128,7 +1130,7 @@ async def _execute_open_pr(
         (watch_dir / f"{nid}.rejected").touch()
         return
 
-    repo_root = Path(__file__).parent.parent
+    repo_root = _PUEO_DIR
     try:
         # Ensure we're on main before branching
         subprocess.run(  # nosec B603 B607 — fixed git args, no user input in cmd
@@ -2364,7 +2366,7 @@ _RUNNABLE_MODES: frozenset[str] = frozenset(
     {"audit", "update-check", "backup-status", "netalertx-diagnose", "rag-refresh"}
 )
 
-_PUEO_DIR = Path(__file__).parent.parent
+_PUEO_DIR = _get_dirs().resources_dir
 
 
 @app.get("/control", response_class=HTMLResponse)
