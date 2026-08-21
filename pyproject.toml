@@ -1,3 +1,39 @@
+[project]
+name = "pueo"
+version = "0.1.0"
+description = "Local, privacy-first agentic AI system that monitors and self-heals a Home Assistant instance"
+requires-python = ">=3.12"
+dependencies = [
+    "aiomqtt",
+    "anthropic",
+    "asyncssh",
+    "chromadb",
+    "fastapi",
+    "httpx",
+    "jinja2",
+    "manuf",
+    "ollama",
+    "platformdirs",
+    "pydantic",
+    "pyyaml",
+    "uvicorn",
+    "websockets",
+]
+
+[project.scripts]
+pueo = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "config", "interfaces", "paths"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "utils*", "netalertx*", "web*", "evals*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["prompts/*.md", "web/templates/*.html", "web/static/**/*"]
+
 [tool.pytest.ini_options]
 markers = [
     "live_ha: requires a live Home Assistant instance over SSH",

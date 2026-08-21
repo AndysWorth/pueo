@@ -5500,8 +5500,11 @@ class TestExecuteUpdate:
             called.append("core")
             return True
 
-        with patch("agents.ha_update_manager.execute_core_update", fake_core), patch(
-            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+        with (
+            patch("agents.ha_update_manager.execute_core_update", fake_core),
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ),
         ):
             asyncio.run(execute_update(self._make_update("core"), ssh, notifier, gate))
 
@@ -5523,8 +5526,11 @@ class TestExecuteUpdate:
             called.append("os")
             return True
 
-        with patch("agents.ha_update_manager.execute_os_update", fake_os), patch(
-            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+        with (
+            patch("agents.ha_update_manager.execute_os_update", fake_os),
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ),
         ):
             asyncio.run(execute_update(self._make_update("os"), ssh, notifier, gate))
 
@@ -5546,8 +5552,11 @@ class TestExecuteUpdate:
             called.append("addon")
             return True
 
-        with patch("agents.ha_update_manager.execute_addon_update", fake_addon), patch(
-            "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+        with (
+            patch("agents.ha_update_manager.execute_addon_update", fake_addon),
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=False
+            ),
         ):
             asyncio.run(
                 execute_update(self._make_update("my_addon"), ssh, notifier, gate)
@@ -11314,9 +11323,12 @@ class TestExecuteUpdatePreflight:
         gate = FakeAutonomyGate()
         notifier = FakeNotifier()
 
-        with patch(
-            "agents.ha_agent_advanced.is_reboot_required_active", return_value=True
-        ), patch("agents.ha_update_manager.execute_core_update") as mock_exec:
+        with (
+            patch(
+                "agents.ha_agent_advanced.is_reboot_required_active", return_value=True
+            ),
+            patch("agents.ha_update_manager.execute_core_update") as mock_exec,
+        ):
             result = asyncio.run(
                 execute_update(self._make_update("core"), ssh, notifier, gate)
             )

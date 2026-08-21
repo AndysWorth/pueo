@@ -123,3 +123,35 @@ class TestGetDirs:
         dirs = get_dirs()
         # resources_dir should still be the repo root (where paths.py lives)
         assert (dirs.resources_dir / "paths.py").exists()
+
+
+class TestPackageInstallable:
+    def test_package_metadata_available(self):
+        """Package is installed (editable or otherwise) and metadata is accessible."""
+        from importlib.metadata import metadata, PackageNotFoundError
+
+        try:
+            meta = metadata("pueo")
+        except PackageNotFoundError:
+            pytest.skip("pueo package not installed; run 'pip install -e .'")
+        assert meta["Name"] == "pueo"
+        assert meta["Version"] is not None
+
+    def test_entry_point_registered(self):
+        """The 'pueo' console script entry point is declared."""
+        from importlib.metadata import entry_points, PackageNotFoundError
+
+        try:
+            eps = entry_points(group="console_scripts")
+        except Exception:
+            pytest.skip("entry_points() not available")
+        names = {ep.name for ep in eps}
+        assert "pueo" in names, f"'pueo' entry point not found in {names}"
+
+    def test_key_packages_importable(self):
+        """Top-level modules and sub-packages that ship with the package are importable."""
+        import config  # noqa: F401
+        import interfaces  # noqa: F401
+        import paths  # noqa: F401
+        import agents  # noqa: F401
+        import utils  # noqa: F401

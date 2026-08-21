@@ -190,10 +190,13 @@ class TestFetchHaDocs:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(content)
 
-            with patch(
-                "utils.agent.tool_executor._config_mod.HA_SOURCE_CACHE_DIR",
-                str(cache_dir),
-            ), patch("utils.agent.tool_executor._config_mod.LLM_PROVIDER", provider):
+            with (
+                patch(
+                    "utils.agent.tool_executor._config_mod.HA_SOURCE_CACHE_DIR",
+                    str(cache_dir),
+                ),
+                patch("utils.agent.tool_executor._config_mod.LLM_PROVIDER", provider),
+            ):
                 executor = _make_executor()
                 return asyncio.run(executor._fetch_ha_docs(domain, filename))
 
@@ -248,10 +251,14 @@ class TestFetchUrl:
     """Tests for ToolExecutor._fetch_url."""
 
     def _run(self, url: str, *, allow_wan: bool = True):
-        with patch(
-            "utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
-        ), patch(
-            "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 10
+        with (
+            patch(
+                "utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
+            ),
+            patch(
+                "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
+                10,
+            ),
         ):
             executor = _make_executor()
             return asyncio.run(executor._fetch_url(url))
