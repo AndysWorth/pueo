@@ -401,12 +401,15 @@ class TestTextFormatter:
         assert "correlation_id" not in output
         assert "state='MQTT_RUNNING'" in output
 
-    def test_setup_logging_console_text_attaches_text_formatter(self, monkeypatch):
+    def test_setup_logging_console_text_attaches_text_formatter(
+        self, monkeypatch, tmp_path
+    ):
         import logging as logging_mod
         import utils.core.logging as logging_utils
         from utils.core.logging import _TextFormatter
 
         monkeypatch.setattr(logging_utils, "_configured", False)
+        monkeypatch.setattr(logging_utils, "LOG_FILE", str(tmp_path / "pueo.log"))
         pueo_logger = logging_mod.getLogger("pueo")
         original_handlers = pueo_logger.handlers[:]
         try:
@@ -424,12 +427,13 @@ class TestTextFormatter:
                     pueo_logger.removeHandler(h)
                     h.close()
 
-    def test_setup_logging_default_uses_json_formatter(self, monkeypatch):
+    def test_setup_logging_default_uses_json_formatter(self, monkeypatch, tmp_path):
         import logging as logging_mod
         import utils.core.logging as logging_utils
         from utils.core.logging import _JsonFormatter, _TextFormatter
 
         monkeypatch.setattr(logging_utils, "_configured", False)
+        monkeypatch.setattr(logging_utils, "LOG_FILE", str(tmp_path / "pueo.log"))
         pueo_logger = logging_mod.getLogger("pueo")
         original_handlers = pueo_logger.handlers[:]
         try:

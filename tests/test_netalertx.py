@@ -7210,10 +7210,10 @@ class TestStep8SlugWriteback:
 
         return FakeAutonomyGate(auto_execute_result=True, approval_result=True)
 
-    def _notifier(self):
+    def _notifier(self, watch_dir=None):
         from utils.hitl.notify import FileNotifier
 
-        return FileNotifier("/tmp/test_hitl")
+        return FileNotifier(str(watch_dir) if watch_dir else "/tmp/test_hitl_phase8")
 
     def _http_with_mqtt(self):
         import httpx
@@ -7272,7 +7272,7 @@ class TestStep8SlugWriteback:
             run_steps_5_to_8(
                 ssh,
                 self._gate_auto(),
-                self._notifier(),
+                self._notifier(tmp_path / "hitl"),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
             )
@@ -7314,7 +7314,7 @@ class TestStep8SlugWriteback:
             run_steps_5_to_8(
                 ssh,
                 self._gate_auto(),
-                self._notifier(),
+                self._notifier(tmp_path / "hitl"),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
             )
