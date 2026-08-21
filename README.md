@@ -68,10 +68,10 @@ pueo
 `setup.sh` installs a `pueo` command at `/usr/local/bin/pueo`. This is the recommended way
 to start the supervisor — it resolves its own path (works from anywhere, no `cd` required),
 checks for an already-running instance, and launches in the background so your terminal stays
-free. Logs go to `pueo.log` in the project directory.
+free. Logs go to `~/Library/Logs/Pueo/pueo.log`.
 
 ```bash
-tail -f pueo.log   # follow the live log
+tail -f ~/Library/Logs/Pueo/pueo.log   # follow the live log
 ```
 
 If the symlink install failed (check `setup.sh` output), you can start manually:
@@ -118,11 +118,31 @@ pueo --mode install-service     # install as macOS launchd service
 pueo --mode stop-service        # stop the launchd service (stays stopped until start-service)
 pueo --mode start-service       # re-enable and start the launchd service
 pueo --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
+pueo --mode migrate-paths       # move existing data from repo root to platform dirs
 ```
 
 > **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`, `audit`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts.
 
-Pass `--config /path/to/config.yaml` if your config file is not in the project directory:
+---
+
+## 🗂️ Runtime Data & Paths
+
+All mutable state lives outside the repo in macOS platform directories:
+
+| Directory | Contents |
+|---|---|
+| `~/Library/Application Support/Pueo/` | DB, HITL cards, backups, archives, ChromaDB, registered tools |
+| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, case_ingest |
+| `~/Library/Logs/Pueo/` | pueo.log, pueo-stderr.log |
+| `~/.config/pueo/` | config.yaml |
+
+Override any directory with environment variables: `PUEO_DATA_DIR`, `PUEO_STATE_DIR`, `PUEO_CACHE_DIR`, `PUEO_LOG_DIR`, `PUEO_CONFIG_DIR`.
+
+**Upgrading from an older checkout-based layout?** Run `pueo --mode migrate-paths` once to move existing data from the repo root into the platform directories.
+
+---
+
+Pass `--config /path/to/config.yaml` if your config file is not in the default location:
 ```bash
 pueo --mode diagnose --config /path/to/config.yaml
 pueo start --config /path/to/config.yaml   # supervisor with custom config, daemonized
@@ -155,7 +175,7 @@ To refresh on demand:
 pueo --mode rag-refresh
 ```
 
-Embedded data is stored in `chromadb/` in the project directory. The embeddings use
+Embedded data is stored in `~/Library/Application Support/Pueo/chromadb/`. The embeddings use
 `nomic-embed-text` running locally via Ollama — zero WAN traffic after the initial scrape.
 
 ---
@@ -179,7 +199,33 @@ a `finish_chat` termination signal instead of `finish_repair`.
 Set `CHAT_ALLOW_TOOL_REGISTRATION = true` in `config.yaml` to enable the code-sandbox flow.
 With it enabled, you can ask Pueo to write a new tool, review the proposed code in an
 approval card, and — once approved — have the tool registered and callable in the next
-session. Tools are stored in `user_tools/` and loaded automatically on startup.
+session. Tools are stored in `~/Library/Application Support/Pueo/tools/` and loaded automatically on startup.
+
+---
+
+## 🐳 Docker
+
+**Prerequisites:** Docker with Compose. Ollama must be reachable from the container — on macOS with Docker Desktop use `http://host.docker.internal:11434`; on Linux with `network_mode: host` use `localhost:11434`. The container does not bundle Ollama.
+
+**Steps:**
+1. Create a `config/` directory alongside `docker-compose.yml`.
+2. Copy `config.yaml.default` → `config/config.yaml` and fill in HA credentials, Ollama endpoint, etc. (or run `setup.sh` first and copy the generated file in).
+3. `docker compose up -d`
+4. `docker compose logs -f`
+
+**Volume model:** the container uses five volumes:
+
+| Mount | Named volume | Contents |
+|---|---|---|
+| `/config` | bind `./config:ro` | config.yaml (read-only) |
+| `/data` | `pueo-data` | backups, archives, ChromaDB |
+| `/state` | `pueo-state` | SQLite DB, HITL cards, registered tools |
+| `/cache` | `pueo-cache` | HA release notes, HACS changelogs, ha_source |
+| `/logs` | `pueo-logs` | pueo.log, pueo-stderr.log |
+
+Named volumes persist across container recreation. The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically.
+
+**Cloud escalation in Docker:** set `ANTHROPIC_API_KEY` in the `environment:` section of `docker-compose.yml` (the variable is already declared; just uncomment and set it), or supply it via a `.env` file alongside `docker-compose.yml`.
 
 ---
 

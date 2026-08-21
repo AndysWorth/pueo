@@ -30,15 +30,19 @@ Run from the `pueo/` directory:
 ```bash
 pip install -r requirements-dev.txt  # includes runtime deps + dev/test tooling
 
-# Entry points
-python ha_agent_core.py            # Read-only: SSH fetch + Ollama diagnosis
-python ha_agent_advanced.py        # + SQLite memory + backup triggering
-python ha_agent_sandbox_engine.py  # Full: sandbox-test-then-atomic-swap repair
-python ha_log_monitor.py           # Continuous: live SSH log tail + AI triage
+# Primary entry point (recommended)
+pueo                          # start supervisor (all loops + dashboard)
+python main.py                # same, without the background/PID wrapper
+
+# Individual agents (for debugging; live under agents/)
+python agents/ha_agent_core.py            # Read-only: SSH fetch + Ollama diagnosis
+python agents/ha_agent_advanced.py        # + SQLite memory + backup triggering
+python agents/ha_agent_sandbox_engine.py  # Full: sandbox-test-then-atomic-swap repair
+python agents/ha_log_monitor.py           # Continuous: live SSH log tail + AI triage
 
 # Tests
 pytest
-pytest tests/test_core.py::TestConfigDefaults::test_loads_values_from_yaml  # single test example
+pytest tests/test_config.py::TestConfigDefaults::test_loads_values_from_yaml  # single test example
 
 # Code quality (CI enforces all of these)
 black --check .
@@ -51,13 +55,13 @@ bandit -r . -x ./tests,./.venv
 
 Four layered scripts, each building on the previous:
 
-### Layer 1 — Sensing: `ha_agent_core.py`
+### Layer 1 — Sensing: `agents/ha_agent_core.py`
 Read-only. Fetches `/config/configuration.yaml` from HA over SSH/SFTP, runs it through local Ollama (model selected by `OLLAMA_MODEL` / `recommend_model()`; qwen3 family preferred for tool-call compliance) with structured JSON output enforced by the `DiagnosticsReport` Pydantic schema, then optionally cross-verifies by running `ha core check` on the remote host.
 
-### Layer 2 — Memory: `ha_agent_advanced.py`
+### Layer 2 — Memory: `agents/ha_agent_advanced.py`
 Extends core with a local SQLite database (`ha_agent_state.db`) persisting `state_history` and `backup_registry` tables. Before any remediation action, a native HA backup snapshot is triggered via `ha backup new` over SSH and its slug is recorded — hard safety gate, aborts on failure.
 
-### Layer 3 — Reasoning + Acting: `ha_agent_sandbox_engine.py`
+### Layer 3 — Reasoning + Acting: `agents/ha_agent_sandbox_engine.py`
 Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
 2. `AutonomyGate.require_approval()` — if CRITICAL severity or current autonomy level requires human approval, notify and wait
@@ -66,7 +70,7 @@ Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_f
 5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
 6. Only if the sandbox check passes: atomically write to production and call `ha core restart`
 
-### Layer 4 — Continuous Monitoring: `ha_log_monitor.py`
+### Layer 4 — Continuous Monitoring: `agents/ha_log_monitor.py`
 Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger `ha_agent_sandbox_engine.main()`. Reconnects automatically on stream failure.
 
 ## Key Patterns
@@ -81,37 +85,41 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **Config path resolution**: `config.py` loads at module import time. It checks the `PUEO_CONFIG` environment variable first, then falls back to `config.yaml` next to the script. `main.py` sets `PUEO_CONFIG` before importing any agent module so the right config file is used. Agent imports inside `main.py` must stay deferred (inside the `if args.mode` blocks) — moving them to the top of the file would break this.
 
-**Sandbox path derivation**: `SANDBOX_REMOTE_DIR` and `SANDBOX_REMOTE_FILE` in `ha_agent_sandbox_engine.py` are derived from `CONFIG_REMOTE_PATH`, not independently hardcoded, so changing the config path in `config.yaml` automatically keeps the sandbox path in sync.
+**Platform directory abstraction**: `paths.py` at the repo root provides `PueoDirectories` (frozen dataclass) and `get_dirs()` factory. `main.py` calls `get_dirs().create_all()` early in startup. All mutable paths (DB, logs, HITL, backups, ChromaDB, tools, caches) derive from `get_dirs()` — never from `config.py` defaults alone. Override any directory with `PUEO_DATA_DIR`, `PUEO_STATE_DIR`, `PUEO_CACHE_DIR`, `PUEO_LOG_DIR`, `PUEO_CONFIG_DIR` env vars; the `Dockerfile` sets these to `/data`, `/state`, etc. for Docker. `resources_dir` (prompts, web assets, deploy templates) is always `Path(__file__).parent` of `paths.py` — immutable, not overridable. Tests use the `pueo_dirs` fixture (in `tests/conftest.py`) which sets `PUEO_*` env vars to `tmp_path` subdirectories so no test writes to `~/Library/`.
 
-**Autonomy gate**: `AutonomyGate` in `utils/autonomy.py` is the single approval decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
+**Prompt loading via importlib.resources**: `prompts/` is a proper Python package (`__init__.py` present, declared in `pyproject.toml`). `utils/core/prompts.py::load_prompt()` uses `importlib.resources.files("prompts")` — works correctly in editable installs, wheels, and macOS `.app` bundles. `web/templates/` and `web/static/` still use `paths.get_dirs().resources_dir` because FastAPI's `StaticFiles`/`Jinja2Templates` require `Path` objects, not `Traversable`.
 
-**Rate limiter / debouncer**: `Debouncer` and `RateLimiter` in `utils/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
+**Sandbox path derivation**: `SANDBOX_REMOTE_DIR` and `SANDBOX_REMOTE_FILE` in `agents/ha_agent_sandbox_engine.py` are derived from `CONFIG_REMOTE_PATH`, not independently hardcoded, so changing the config path in `config.yaml` automatically keeps the sandbox path in sync.
 
-**Token budget management**: `estimate_tokens()` and `truncate_to_budget()` in `utils/context.py` enforce the 8,000-token evaluation matrix constraint. Every Ollama call site must trim content to `MAX_PROMPT_TOKENS` before dispatch — never pass unbounded YAML or log content.
+**Autonomy gate**: `AutonomyGate` in `utils/hitl/autonomy.py` is the single approval decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
+
+**Rate limiter / debouncer**: `Debouncer` and `RateLimiter` in `utils/core/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
+
+**Token budget management**: `estimate_tokens()` and `truncate_to_budget()` in `utils/core/context.py` enforce the 8,000-token evaluation matrix constraint. Every Ollama call site must trim content to `MAX_PROMPT_TOKENS` before dispatch — never pass unbounded YAML or log content.
 
 **Dependency injection via Protocol interfaces**: `interfaces.py` defines `SSHClientProtocol` and `LLMClientProtocol`. Agent functions accept these optional injected clients, falling back to real implementations when `None`. Tests pass `FakeSSHClient` / `FakeLLMClient`; SSH and Ollama are never called in the unit suite.
 
-**Plain-text console formatter**: `_TextFormatter` in `utils/logging.py` is used on `stderr` when `setup_logging(console_text=True)` is called. The file handler always stays JSON. `main.py` enables `console_text` for `--mode netalertx-setup` to produce human-readable installer output.
+**Plain-text console formatter**: `_TextFormatter` in `utils/core/logging.py` is used on `stderr` when `setup_logging(console_text=True)` is called. The file handler always stays JSON. `main.py` enables `console_text` for `--mode netalertx-setup` to produce human-readable installer output.
 
-**LLM-guided all actions**: Every significant Pueo action — repair, update, cleanup, notification triage, code proposals — flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
+**LLM-guided all actions**: Every significant Pueo action — repair, update, cleanup, notification triage, code proposals — flows through LLM tool-calling reasoning via `AgentLoop` (`utils/agent/agent_loop.py`). Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
 
-**Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`). The LLM can call `read_source("utils/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
+**Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`) in `utils/agent/tool_registry.py`. The LLM can call `read_source("utils/agent/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/hitl/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
 
-**HA live lookup**: `fetch_ha_docs(domain, filename)` fetches HA component source or docs from GitHub raw (`homeassistant/core/dev/homeassistant/components/{domain}/{filename}`). In `local` mode it serves from cache only — a cache miss raises `ToolError` and makes no network call. In `cloud`/`both` mode it fetches live and writes to cache. Cache lives at `HA_SOURCE_CACHE_DIR` (default `.cache/ha_source/`). The RAG refresh cycle pre-populates cache for all installed integrations. Allowed filenames: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file. See ADR 011.
+**HA live lookup**: `fetch_ha_docs(domain, filename)` in `utils/agent/tool_executor.py` fetches HA component source or docs from GitHub raw (`homeassistant/core/dev/homeassistant/components/{domain}/{filename}`). In `local` mode it serves from cache only — a cache miss raises `ToolError` and makes no network call. In `cloud`/`both` mode it fetches live and writes to cache. Cache lives at `HA_SOURCE_CACHE_DIR` (default `~/Library/Caches/Pueo/ha_source/`). The RAG refresh cycle pre-populates cache for all installed integrations. Allowed filenames: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file. See ADR 011.
 
-**Diagnostic WAN verification**: `fetch_url(url)` in `utils/tool_executor.py` is a read-only HTTP GET tool for verifying external service availability (e.g., confirming an API outage has resolved). Governed by `ALLOW_DIAGNOSTIC_WAN` (default true). Block list covers RFC-1918, loopback, and link-local ranges. Registered in all three agent registries. Never use it to POST data or call HA's own API — use `run_ha_command` or `HARestClientProtocol` for that. See ADR 016.
+**Diagnostic WAN verification**: `fetch_url(url)` in `utils/agent/tool_executor.py` is a read-only HTTP GET tool for verifying external service availability (e.g., confirming an API outage has resolved). Governed by `ALLOW_DIAGNOSTIC_WAN` (default true). Block list covers RFC-1918, loopback, and link-local ranges. Registered in all three agent registries. Never use it to POST data or call HA's own API — use `run_ha_command` or `HARestClientProtocol` for that. See ADR 016.
 
-**Chat tool parity**: Any enrichment or analysis function callable by an automated pipeline must be callable from chat with the same set of clients. `ToolExecutor` is the authority on which clients chat tools can access; adding a new client type means adding a parameter to `__init__` (and a `set_*` deferred-injection method if the value is only available after construction). When a shared function is imported inside a `ToolExecutor` method, it must receive the same arguments as the automated caller — never `ws_client=None` or similar stubs. Example: `enrich_http_login()` is called identically from the automated notification pipeline and from `_investigate_device` via `self._ws_client`. See ADR 017.
+**Chat tool parity**: Any enrichment or analysis function callable by an automated pipeline must be callable from chat with the same set of clients. `ToolExecutor` (`utils/agent/tool_executor.py`) is the authority on which clients chat tools can access; adding a new client type means adding a parameter to `__init__` (and a `set_*` deferred-injection method if the value is only available after construction). When a shared function is imported inside a `ToolExecutor` method, it must receive the same arguments as the automated caller — never `ws_client=None` or similar stubs. Example: `enrich_http_login()` is called identically from the automated notification pipeline and from `_investigate_device` via `self._ws_client`. See ADR 017.
 
 ## Configuration
 
-`config.py` loads `config.yaml` at import time and exposes all settings as typed module-level constants with fallback defaults. Agent scripts are run-able directly without a `config.yaml` (defaults kick in); `main.py` is needed to point at a non-default config path.
+`config.py` loads `config.yaml` at import time and exposes all settings as typed module-level constants with fallback defaults. Agent scripts are run-able directly without a `config.yaml` (defaults kick in); `main.py` is needed to point at a non-default config path. When no `config.yaml` is present, path defaults resolve to platform directories via `paths.get_dirs()` (e.g. `~/Library/Application Support/Pueo/ha_agent_state.db` on macOS). Pass `--config /path/to/config.yaml` or set `PUEO_CONFIG` to override the config file location.
 
 `config.yaml` is gitignored. `config.yaml.default` is the committed reference template. Run `setup.sh` to generate `config.yaml` interactively.
 
 ## Deployment
 
-`Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container expects `config.yaml` mounted read-only at `/app/config.yaml`. `main.py` is the unified entry point; it sets `PUEO_CONFIG`, then dispatches to the right agent module. Default mode is `monitor` (the live log daemon).
+`Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container uses five volumes: `/config` (bind-mount of `./config/`, read-only — place `config.yaml` here), `/data` (`pueo-data` named volume — backups, ChromaDB), `/state` (`pueo-state` named volume — SQLite DB, HITL cards, tools), `/cache` (`pueo-cache` named volume — scraped knowledge), `/logs` (`pueo-logs` named volume — log files). The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically so no code path references `/app`. `main.py` is the unified entry point; default mode is `monitor` (the live log daemon).
 
 ## Testing
 
