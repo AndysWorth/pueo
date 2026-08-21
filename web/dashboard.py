@@ -951,10 +951,11 @@ async def _execute_code_proposal(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Write approved tool code to user_tools/, import it, and register it dynamically."""
+    """Write approved tool code to state_dir/tools/, import it, and register it dynamically."""
     import importlib.util
     import sys
 
+    from paths import get_dirs
     from utils.agent.supervisor import get_supervisor_instance, publish_event
 
     payload = data.get("payload", {})
@@ -970,8 +971,8 @@ async def _execute_code_proposal(
         return
 
     try:
-        user_tools_dir = Path(__file__).parent.parent / "user_tools"
-        user_tools_dir.mkdir(exist_ok=True)
+        user_tools_dir = get_dirs().state_dir / "tools"
+        user_tools_dir.mkdir(parents=True, exist_ok=True)
         init_file = user_tools_dir / "__init__.py"
         if not init_file.exists():
             init_file.write_text("")
@@ -979,7 +980,7 @@ async def _execute_code_proposal(
         tool_file = user_tools_dir / f"{name}.py"
         tool_file.write_text(code)
 
-        module_name = f"user_tools.{name}"
+        module_name = f"pueo_tools.{name}"
         if module_name in sys.modules:
             del sys.modules[module_name]
         spec = importlib.util.spec_from_file_location(module_name, tool_file)

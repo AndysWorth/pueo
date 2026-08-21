@@ -207,3 +207,112 @@ class TestMigratePaths:
         assert new_db.exists()
         assert new_db.read_text() == "explicit-abs-old"
         assert not old_db.exists()
+
+    def test_moves_user_tools_to_state_dir_tools(self, tmp_path):
+        """user_tools/*.py in the checkout are moved to state_dir/tools/."""
+        from utils.system.migrate_paths import migrate_paths
+        import unittest.mock
+        import paths as _paths
+
+        resources_dir = tmp_path / "checkout"
+        resources_dir.mkdir()
+        state_dir = tmp_path / "state"
+
+        # Old user_tools/ with a registered tool file
+        old_tools = resources_dir / "user_tools"
+        old_tools.mkdir()
+        tool_py = old_tools / "my_tool.py"
+        tool_py.write_text("def my_tool(): pass")
+
+        config_path = resources_dir / "config.yaml"
+        config_path.write_text("{}")
+
+        fake_dirs = _paths.PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=state_dir,
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=resources_dir,
+        )
+        with unittest.mock.patch(
+            "utils.system.migrate_paths.get_dirs", return_value=fake_dirs
+        ):
+            migrate_paths(config_path, dry_run=False)
+
+        new_tool = state_dir / "tools" / "my_tool.py"
+        assert new_tool.exists(), "Tool file should be moved to state_dir/tools/"
+        assert new_tool.read_text() == "def my_tool(): pass"
+        assert not tool_py.exists(), "Old tool file should be gone"
+
+    def test_user_tools_dry_run_does_not_move(self, tmp_path, capsys):
+        """Dry-run does not move user_tools/*.py files."""
+        from utils.system.migrate_paths import migrate_paths
+        import unittest.mock
+        import paths as _paths
+
+        resources_dir = tmp_path / "checkout"
+        resources_dir.mkdir()
+        old_tools = resources_dir / "user_tools"
+        old_tools.mkdir()
+        tool_py = old_tools / "my_tool.py"
+        tool_py.write_text("def my_tool(): pass")
+        config_path = resources_dir / "config.yaml"
+        config_path.write_text("{}")
+
+        fake_dirs = _paths.PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=tmp_path / "state",
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=resources_dir,
+        )
+        with unittest.mock.patch(
+            "utils.system.migrate_paths.get_dirs", return_value=fake_dirs
+        ):
+            migrate_paths(config_path, dry_run=True)
+
+        assert tool_py.exists(), "Dry run must not move tool files"
+        out = capsys.readouterr().out
+        assert "user_tools" in out
+
+    def test_user_tools_skips_when_new_location_has_tools(self, tmp_path, capsys):
+        """When state_dir/tools/ already has .py files, warn and leave in place."""
+        from utils.system.migrate_paths import migrate_paths
+        import unittest.mock
+        import paths as _paths
+
+        resources_dir = tmp_path / "checkout"
+        resources_dir.mkdir()
+        state_dir = tmp_path / "state"
+        new_tools = state_dir / "tools"
+        new_tools.mkdir(parents=True)
+
+        old_tools = resources_dir / "user_tools"
+        old_tools.mkdir()
+        (old_tools / "my_tool.py").write_text("old")
+        (new_tools / "other_tool.py").write_text("new")
+
+        config_path = resources_dir / "config.yaml"
+        config_path.write_text("{}")
+
+        fake_dirs = _paths.PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=state_dir,
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=resources_dir,
+        )
+        with unittest.mock.patch(
+            "utils.system.migrate_paths.get_dirs", return_value=fake_dirs
+        ):
+            migrate_paths(config_path, dry_run=False)
+
+        assert (old_tools / "my_tool.py").exists(), "Old tool should be untouched"
+        out = capsys.readouterr().out
+        assert "⚠" in out or "both" in out.lower()

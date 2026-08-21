@@ -13310,3 +13310,66 @@ class TestCodeProposalPromptFile:
         text = load_prompt("code_proposal")
         assert "capability-gap" in text
         assert "finish_repair" in text
+
+
+class TestLoadRegisteredToolsPath:
+    """_load_registered_tools reads tool files from state_dir/tools/, not user_tools/."""
+
+    def test_loads_tool_from_state_dir_tools(self, tmp_path, pueo_dirs):
+        import sqlite3
+        import sys
+
+        # Create a minimal tool file in state_dir/tools/
+        tools_dir = pueo_dirs.state_dir / "tools"
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        tool_file = tools_dir / "greet.py"
+        tool_file.write_text("def tool_implementation(): return 'hello'")
+
+        # Populate registered_tools table
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE registered_tools (name TEXT, code TEXT)")
+            conn.execute("INSERT INTO registered_tools VALUES ('greet', 'x')")
+
+        class _FakeExecutor:
+            def __init__(self):
+                self.registered = []
+
+            def register_dynamic_tool(self, name, fn):
+                self.registered.append(name)
+
+        executor = _FakeExecutor()
+        sys.modules.pop("pueo_tools.greet", None)
+
+        from main import _load_registered_tools
+
+        _load_registered_tools(executor, db_path)
+
+        assert "greet" in executor.registered
+
+    def test_does_not_load_tool_when_file_missing(self, tmp_path, pueo_dirs):
+        """If a tool is in the DB but has no file, it is silently skipped."""
+        import sqlite3
+
+        # tools/ dir exists but no .py file
+        (pueo_dirs.state_dir / "tools").mkdir(parents=True, exist_ok=True)
+
+        db_path = str(tmp_path / "ha_agent_state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE registered_tools (name TEXT, code TEXT)")
+            conn.execute("INSERT INTO registered_tools VALUES ('missing', 'x')")
+
+        class _FakeExecutor:
+            def __init__(self):
+                self.registered = []
+
+            def register_dynamic_tool(self, name, fn):
+                self.registered.append(name)
+
+        executor = _FakeExecutor()
+
+        from main import _load_registered_tools
+
+        _load_registered_tools(executor, db_path)
+
+        assert executor.registered == []

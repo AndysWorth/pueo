@@ -158,13 +158,15 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
     except Exception:
         return
 
-    user_tools_dir = Path(__file__).parent / "user_tools"
+    from paths import get_dirs
+
+    user_tools_dir = get_dirs().state_dir / "tools"
     for tool_name, _code in rows:
         tool_file = user_tools_dir / f"{tool_name}.py"
         if not tool_file.exists():
             continue
         try:
-            module_name = f"user_tools.{tool_name}"
+            module_name = f"pueo_tools.{tool_name}"
             spec = importlib.util.spec_from_file_location(module_name, tool_file)
             if spec is None or spec.loader is None:
                 continue
@@ -178,9 +180,9 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
             )
             if fn is not None:
                 executor.register_dynamic_tool(tool_name, fn)
-                log.info("dynamic_tool_loaded", name=tool_name)
+                log.info("dynamic_tool_loaded", tool=tool_name)
         except Exception as exc:
-            log.warning("dynamic_tool_load_failed", name=tool_name, error=str(exc))
+            log.warning("dynamic_tool_load_failed", tool=tool_name, error=str(exc))
 
 
 async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
