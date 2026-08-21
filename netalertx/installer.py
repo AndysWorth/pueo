@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from paths import get_dirs as _get_dirs
+
 from config import (
     CONFIG_REMOTE_PATH,
     DB_PATH,
@@ -135,7 +137,7 @@ def _write_addon_slug_to_config(slug: str) -> bool:
     updated, False when config.yaml does not exist or the key was not found.
     """
     config_path = Path(
-        os.environ.get("PUEO_CONFIG", Path(__file__).parent.parent / "config.yaml")
+        os.environ.get("PUEO_CONFIG", str(_get_dirs().config_dir / "config.yaml"))
     )
     if not config_path.exists():
         return False

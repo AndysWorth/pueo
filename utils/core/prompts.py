@@ -1,6 +1,6 @@
-from pathlib import Path
+from paths import get_dirs as _get_dirs
 
-_PROMPT_DIR = Path(__file__).parent.parent.parent / "prompts"
+_PROMPT_DIR = _get_dirs().resources_dir / "prompts"
 _cache: dict[str, str] = {}
 
 

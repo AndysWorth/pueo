@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import config as _config_mod
 from config import CHAT_MEMORY_TOP_K, CONFIG_REMOTE_PATH, DB_PATH
+from paths import get_dirs as _get_dirs
 from utils.core.logging import get_correlation_id, get_logger
 from utils.agent.tool_registry import ToolCall, ToolResult
 
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
 
 log = get_logger("tool_executor")
 
-_REPO_ROOT = Path(__file__).parent.parent
+_REPO_ROOT = _get_dirs().resources_dir
 _SOURCE_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
     {".py", ".yaml", ".md", ".toml", ".txt"}
 )
@@ -537,7 +538,11 @@ class ToolExecutor:
             )
 
         cache_dir = Path(
-            getattr(_config_mod, "HA_SOURCE_CACHE_DIR", ".cache/ha_source/")
+            getattr(
+                _config_mod,
+                "HA_SOURCE_CACHE_DIR",
+                str(_get_dirs().cache_dir / "ha_source"),
+            )
         )
         cache_path = cache_dir / domain / filename
 

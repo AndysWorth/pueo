@@ -2221,3 +2221,33 @@ class TestChatDebugLog:
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.get("/chat/sessions/99999/debug-log")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# TestRepoRootRegression — verifies _REPO_ROOT points to the actual repo root
+# ---------------------------------------------------------------------------
+
+
+class TestRepoRootRegression:
+    """Regression guard: _REPO_ROOT must point to the repo root (not utils/).
+
+    Before the Phase-5 fix, tool_executor.py was moved from utils/ to
+    utils/agent/ without updating the __file__ hop count, so _REPO_ROOT
+    silently resolved to utils/ — blocking read_source on any file outside
+    that subtree (config.py, main.py, prompts/, etc.).
+    """
+
+    def test_repo_root_contains_config_py(self):
+        import utils.agent.tool_executor as te
+
+        assert (te._REPO_ROOT / "config.py").exists(), (
+            f"_REPO_ROOT={te._REPO_ROOT!r} does not contain config.py; "
+            "it is probably pointing at utils/ instead of the repo root"
+        )
+
+    def test_repo_root_contains_paths_py(self):
+        import utils.agent.tool_executor as te
+
+        assert (
+            te._REPO_ROOT / "paths.py"
+        ).exists(), f"_REPO_ROOT={te._REPO_ROOT!r} does not contain paths.py"

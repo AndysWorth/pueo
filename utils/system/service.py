@@ -4,11 +4,11 @@ import subprocess  # nosec B404 — launchctl is a fixed macOS system binary, no
 import sys
 from pathlib import Path
 
+from paths import get_dirs as _get_dirs
+
 PLIST_LABEL = "com.pueo.agent"
 PLIST_TARGET = Path.home() / "Library/LaunchAgents/com.pueo.agent.plist"
-TEMPLATE_PATH = (
-    Path(__file__).parent.parent.parent / "deploy/pueo.launchd.plist.template"
-)
+TEMPLATE_PATH = _get_dirs().resources_dir / "deploy/pueo.launchd.plist.template"
 
 
 def render_plist(pueo_dir: str, python_path: str) -> str:
