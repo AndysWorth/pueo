@@ -86,7 +86,7 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **SSH connections**: Each function opens its own `asyncssh.connect()` context. `known_hosts=None` is intentional for local-network HA hosts — flag in any security review.
 
-**Single config source**: `config.py` is the only place settings are defined. Agent scripts must import from it (`from config import ...`) and must never redeclare constants. Adding a new setting means adding it to `config.yaml.default`, `config.py`, and `setup.sh` — nowhere else. `setup.sh` also generates `docker-compose.yml` for Docker deployments — changes to the compose file structure belong in `setup.sh`'s heredoc, not in the static `docker-compose.yml` (which is now a reference template).
+**Single config source**: `config.py` is the only place settings are defined. Agent scripts must import from it (`from config import ...`) and must never redeclare constants. Adding a new setting means adding it to `config.yaml.default`, `config.py`, and `setup.sh` — nowhere else. `setup.sh` also generates `docker-compose.yml` for Docker deployments — changes to the compose file structure belong in `setup.sh`'s heredoc, not in `docker-compose.yml.example` (the committed placeholder template); `docker-compose.yml` is gitignored because setup.sh generates it with the user's SSH key path embedded.
 
 **Config path resolution**: `config.py` loads at module import time. It checks the `PUEO_CONFIG` environment variable first, then falls back to `config.yaml` next to the script. `main.py` sets `PUEO_CONFIG` before importing any agent module so the right config file is used. Agent imports inside `main.py` must stay deferred (inside the `if args.mode` blocks) — moving them to the top of the file would break this.
 
@@ -124,7 +124,7 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 ## Deployment
 
-`setup.sh` supports three deployment modes — `native`, `docker`, or `both` — chosen interactively at setup time. For Docker, `setup.sh` generates `docker-compose.yml` with the SSH key volume mount (`<host-key-path>:/root/.ssh/id_ed25519:ro`) and writes `config/config.yaml` (the bind-mount source). Run `./setup.sh` and choose the mode; no manual editing of `docker-compose.yml` is needed.
+`setup.sh` supports three deployment modes — `native`, `docker`, or `both` — chosen interactively at setup time. For Docker, `setup.sh` generates `docker-compose.yml` with the SSH key volume mount (`<host-key-path>:/root/.ssh/id_ed25519:ro`) and writes `config/config.yaml` (the bind-mount source). Run `./setup.sh` and choose the mode; no manual editing of `docker-compose.yml` is needed. `docker-compose.yml.example` is the committed reference template (with placeholders); `docker-compose.yml` is gitignored.
 
 `Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container uses five volumes: `/config` (bind-mount of `./config/`, read-only — place `config.yaml` here), `/data` (`pueo-data` named volume — backups, ChromaDB), `/state` (`pueo-state` named volume — SQLite DB, HITL cards, tools), `/cache` (`pueo-cache` named volume — scraped knowledge), `/logs` (`pueo-logs` named volume — log files). The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically so no code path references `/app`. `main.py` is the unified entry point; default mode is `monitor` (the live log daemon).
 

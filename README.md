@@ -213,7 +213,7 @@ session. Tools are stored in `~/Library/Application Support/Pueo/tools/` and loa
 3. `docker compose up -d`
 4. `docker compose logs -f pueo`
 
-To configure manually instead: copy `config.yaml.default` → `config/config.yaml`, fill in HA credentials and Ollama endpoint, then edit `docker-compose.yml` to add the SSH key volume mount (`<key-path>:/root/.ssh/id_ed25519:ro`).
+To configure manually instead: copy `config.yaml.default` → `config/config.yaml`, fill in HA credentials and Ollama endpoint, then copy `docker-compose.yml.example` → `docker-compose.yml` and set the SSH key volume mount (`<key-path>:/root/.ssh/id_ed25519:ro`). `docker-compose.yml` is gitignored because it contains your SSH key path; `docker-compose.yml.example` is the committed reference template.
 
 **Volume model:** the container uses five volumes:
 

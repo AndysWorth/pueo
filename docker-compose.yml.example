@@ -1,8 +1,9 @@
-# docker-compose.yml — reference template
+# docker-compose.yml.example — reference template with placeholder values
 #
 # Run ./setup.sh (choose "docker" or "both") to generate a fully configured
-# docker-compose.yml with your SSH key mount and Ollama endpoint filled in.
-# Edit this file only if you are customising the deployment manually.
+# docker-compose.yml with your SSH key path and timezone filled in.
+# To configure manually: copy this file to docker-compose.yml and set
+# SSH_KEY_PATH and TZ (or edit the values inline).
 #
 # Quick start (after setup.sh):
 #   docker compose up -d
@@ -13,15 +14,15 @@ services:
     build: .
     container_name: pueo-agent
     restart: unless-stopped
-    network_mode: "host" # Required if Pueo needs direct raw socket/ARP access like NetAlertX
+    network_mode: "host"
     volumes:
       # /config  — bind-mount config.yaml read-only; place config.yaml in a
       #            host directory (e.g. ./config/) and point this mount there.
       #            The file must be at /config/config.yaml inside the container.
       - ./config:/config:ro
       # SSH private key — mounted read-only so asyncssh can connect to HA.
-      # Replace the host path with your actual key path (setup.sh sets this).
-      - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      # Set SSH_KEY_PATH to your actual key path, or edit the path inline.
+      - ${SSH_KEY_PATH:-~/.ssh/id_ed25519}:/root/.ssh/id_ed25519:ro
       # /data    — HA backups, archives, ChromaDB.  Named volume: survives
       #            container recreation.
       - pueo-data:/data
@@ -34,7 +35,7 @@ services:
       #            across restarts without cluttering the image layer.
       - pueo-logs:/logs
     environment:
-      - TZ=America/New_York
+      - TZ=${TZ:-America/New_York}
       # ANTHROPIC_API_KEY is required only when LLM_PROVIDER=cloud or both.
       # Uncomment and set if you use cloud escalation:
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
