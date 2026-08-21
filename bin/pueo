@@ -7,9 +7,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
-LOG="$PROJECT_DIR/pueo.log"
-ERRLOG="$PROJECT_DIR/pueo-stderr.log"
-PID_FILE="$PROJECT_DIR/pueo.pid"
+
+# Resolve platform-appropriate directories via paths.py; fall back if venv is absent.
+PUEO_LOG_DIR=$("$PYTHON" -c "import sys; sys.path.insert(0,'$PROJECT_DIR'); import paths; print(paths.get_dirs().log_dir)" 2>/dev/null || echo "${HOME}/Library/Logs/Pueo")
+PUEO_STATE_DIR=$("$PYTHON" -c "import sys; sys.path.insert(0,'$PROJECT_DIR'); import paths; print(paths.get_dirs().state_dir)" 2>/dev/null || echo "${HOME}/Library/Application Support/Pueo")
+mkdir -p "$PUEO_LOG_DIR" "$PUEO_STATE_DIR"
+
+LOG="$PUEO_LOG_DIR/pueo.log"
+ERRLOG="$PUEO_LOG_DIR/pueo-stderr.log"
+PID_FILE="$PUEO_STATE_DIR/pueo.pid"
 
 CMD="${1:-start}"
 
@@ -38,8 +44,7 @@ case "$CMD" in
                 exit 1
             fi
         fi
-        cd "$PROJECT_DIR"
-        "$PYTHON" main.py "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>> "$ERRLOG" &
+        "$PYTHON" "$PROJECT_DIR/main.py" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>> "$ERRLOG" &
         echo $! > "$PID_FILE"
         echo "Pueo started (PID $!). Log: $LOG  Stderr: $ERRLOG"
         ;;
@@ -70,7 +75,6 @@ case "$CMD" in
         fi
         # shellcheck disable=SC1091
         [ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
-        cd "$PROJECT_DIR"
-        exec "$PYTHON" main.py "$@"
+        exec "$PYTHON" "$PROJECT_DIR/main.py" "$@"
         ;;
 esac

@@ -2,18 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  macOS launchd plist — weekly RAG knowledge-base refresh (item 52).
+  macOS launchd plist — weekly RAG knowledge-base refresh.
 
-  Install:
-    cp deploy/pueo-rag-refresh.plist ~/Library/LaunchAgents/io.pueo.rag-refresh.plist
-    launchctl load ~/Library/LaunchAgents/io.pueo.rag-refresh.plist
+  Install via setup.sh (recommended).
 
   To run immediately:
     launchctl start io.pueo.rag-refresh
 
   Runs every Sunday at 03:00 local time.
   Reads cached HA release notes and HACS changelogs and upserts them to ChromaDB.
-  Adjust WorkingDirectory and ProgramArguments to match your installation path.
+  Placeholders ({{ NAME }}) are substituted at install time by setup.sh.
 -->
 <plist version="1.0">
 <dict>
@@ -22,15 +20,28 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>python3</string>
-    <string>main.py</string>
+    <string>{{ PYTHON_PATH }}</string>
+    <string>{{ PUEO_DIR }}/main.py</string>
     <string>--mode</string>
     <string>rag-refresh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/path/to/pueo</string>
+  <string>{{ PUEO_DIR }}</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PUEO_CONFIG_DIR</key>
+    <string>{{ PUEO_CONFIG_DIR }}</string>
+    <key>PUEO_DATA_DIR</key>
+    <string>{{ PUEO_DATA_DIR }}</string>
+    <key>PUEO_STATE_DIR</key>
+    <string>{{ PUEO_STATE_DIR }}</string>
+    <key>PUEO_CACHE_DIR</key>
+    <string>{{ PUEO_CACHE_DIR }}</string>
+    <key>PUEO_LOG_DIR</key>
+    <string>{{ PUEO_LOG_DIR }}</string>
+  </dict>
 
   <key>StartCalendarInterval</key>
   <dict>
@@ -43,10 +54,10 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/tmp/pueo-rag-refresh.log</string>
+  <string>{{ PUEO_LOG_DIR }}/pueo-rag-refresh.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/tmp/pueo-rag-refresh.err</string>
+  <string>{{ PUEO_LOG_DIR }}/pueo-rag-refresh.err</string>
 
   <key>RunAtLoad</key>
   <false/>

@@ -4376,67 +4376,143 @@ class TestConfigEditor:
 
 
 class TestLaunchdPlistTemplate:
-    def test_render_plist_substitutes_all_placeholders(self, tmp_path):
+    @pytest.fixture()
+    def _test_dirs(self, tmp_path):
+        from paths import PueoDirectories
+
+        dirs = PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=tmp_path / "state",
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=tmp_path / "resources",
+        )
+        dirs.create_all()
+        return dirs
+
+    def test_render_plist_substitutes_all_placeholders(self, _test_dirs):
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
-        assert "{{ PUEO_DIR }}" not in rendered
-        assert "{{ PYTHON_PATH }}" not in rendered
+        rendered = render_plist(
+            "/opt/pueo", "/opt/pueo/.venv/bin/python", dirs=_test_dirs
+        )
+        for placeholder in (
+            "{{ PUEO_DIR }}",
+            "{{ PYTHON_PATH }}",
+            "{{ PUEO_CONFIG_DIR }}",
+            "{{ PUEO_DATA_DIR }}",
+            "{{ PUEO_STATE_DIR }}",
+            "{{ PUEO_CACHE_DIR }}",
+            "{{ PUEO_LOG_DIR }}",
+        ):
+            assert placeholder not in rendered
 
-    def test_render_plist_inserts_correct_paths(self, tmp_path):
+    def test_render_plist_inserts_correct_paths(self, _test_dirs):
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python3")
+        rendered = render_plist(
+            "/opt/pueo", "/opt/pueo/.venv/bin/python3", dirs=_test_dirs
+        )
         assert "/opt/pueo" in rendered
         assert "/opt/pueo/.venv/bin/python3" in rendered
 
-    def test_render_plist_produces_valid_plist(self):
+    def test_render_plist_produces_valid_plist(self, _test_dirs):
         import plistlib
 
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3", dirs=_test_dirs)
         # plistlib.loads handles the DOCTYPE declaration that ElementTree cannot
         parsed = plistlib.loads(rendered.encode())
         assert isinstance(parsed, dict)
 
-    def test_render_plist_has_correct_label(self):
+    def test_render_plist_has_correct_label(self, _test_dirs):
         import plistlib
 
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3", dirs=_test_dirs)
         plist = plistlib.loads(rendered.encode())
         assert plist["Label"] == "com.pueo.agent"
 
-    def test_render_plist_has_keep_alive(self):
+    def test_render_plist_has_keep_alive(self, _test_dirs):
         import plistlib
 
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/usr/bin/python3")
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3", dirs=_test_dirs)
         plist = plistlib.loads(rendered.encode())
         assert plist.get("KeepAlive") is True
 
-    def test_render_plist_working_directory_matches_pueo_dir(self):
+    def test_render_plist_working_directory_matches_pueo_dir(self, _test_dirs):
         import plistlib
 
         from utils.system.service import render_plist
 
-        rendered = render_plist("/my/pueo/dir", "/usr/bin/python3")
+        rendered = render_plist("/my/pueo/dir", "/usr/bin/python3", dirs=_test_dirs)
         plist = plistlib.loads(rendered.encode())
         assert plist["WorkingDirectory"] == "/my/pueo/dir"
 
-    def test_render_plist_program_arguments_include_main_py(self):
+    def test_render_plist_program_arguments_include_main_py(self, _test_dirs):
         import plistlib
 
         from utils.system.service import render_plist
 
-        rendered = render_plist("/opt/pueo", "/opt/pueo/.venv/bin/python")
+        rendered = render_plist(
+            "/opt/pueo", "/opt/pueo/.venv/bin/python", dirs=_test_dirs
+        )
         plist = plistlib.loads(rendered.encode())
         args = plist["ProgramArguments"]
         assert args[0] == "/opt/pueo/.venv/bin/python"
         assert args[1] == "/opt/pueo/main.py"
+
+    def test_render_plist_has_environment_variables_with_pueo_dirs(self, tmp_path):
+        import plistlib
+
+        from paths import PueoDirectories
+        from utils.system.service import render_plist
+
+        dirs = PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=tmp_path / "state",
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=tmp_path / "resources",
+        )
+        dirs.create_all()
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3", dirs=dirs)
+        plist = plistlib.loads(rendered.encode())
+        env = plist["EnvironmentVariables"]
+        assert env["PUEO_CONFIG_DIR"] == str(tmp_path / "config")
+        assert env["PUEO_DATA_DIR"] == str(tmp_path / "data")
+        assert env["PUEO_STATE_DIR"] == str(tmp_path / "state")
+        assert env["PUEO_CACHE_DIR"] == str(tmp_path / "cache")
+        assert env["PUEO_LOG_DIR"] == str(tmp_path / "logs")
+
+    def test_render_plist_log_paths_use_log_dir(self, tmp_path):
+        import plistlib
+
+        from paths import PueoDirectories
+        from utils.system.service import render_plist
+
+        dirs = PueoDirectories(
+            config_dir=tmp_path / "config",
+            data_dir=tmp_path / "data",
+            state_dir=tmp_path / "state",
+            cache_dir=tmp_path / "cache",
+            log_dir=tmp_path / "logs",
+            runtime_dir=tmp_path / "run",
+            resources_dir=tmp_path / "resources",
+        )
+        dirs.create_all()
+        rendered = render_plist("/opt/pueo", "/usr/bin/python3", dirs=dirs)
+        plist = plistlib.loads(rendered.encode())
+        assert plist["StandardOutPath"] == str(tmp_path / "logs" / "pueo.log")
+        assert plist["StandardErrorPath"] == str(tmp_path / "logs" / "pueo-stderr.log")
 
 
 class TestServiceStatus:
