@@ -2216,7 +2216,7 @@ class TestLoadPrompt:
         (prompt_dir / "test_template.md").write_text(
             "Hello {name}, you have {count} items."
         )
-        monkeypatch.setattr(prompts, "_PROMPT_DIR", prompt_dir)
+        monkeypatch.setattr(prompts, "_prompt_ref", prompt_dir)
         prompts._cache.clear()
 
         result = prompts.load_prompt("test_template", name="Alice", count="3")
@@ -2228,11 +2228,18 @@ class TestLoadPrompt:
         prompt_dir = tmp_path / "prompts"
         prompt_dir.mkdir()
         (prompt_dir / "raw.md").write_text("No {placeholders} here... wait.")
-        monkeypatch.setattr(prompts, "_PROMPT_DIR", prompt_dir)
+        monkeypatch.setattr(prompts, "_prompt_ref", prompt_dir)
         prompts._cache.clear()
 
         result = prompts.load_prompt("raw")
         assert "{placeholders}" in result
+
+    def test_importlib_resources_resolves(self):
+        import importlib.resources
+
+        ref = importlib.resources.files("prompts")
+        md_file = ref.joinpath("agent_loop_ha.md")
+        assert md_file.read_text(encoding="utf-8")
 
     def test_missing_prompt_raises(self):
         from utils.core.prompts import load_prompt

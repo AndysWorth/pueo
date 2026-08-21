@@ -28,11 +28,12 @@ py-modules = ["main", "config", "interfaces", "paths"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agents*", "utils*", "netalertx*", "web*", "evals*"]
+include = ["agents*", "utils*", "netalertx*", "web*", "evals*", "prompts*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-"*" = ["prompts/*.md", "web/templates/*.html", "web/static/**/*"]
+"prompts" = ["*.md"]
+"web" = ["templates/*.html", "static/**/*"]
 
 [tool.pytest.ini_options]
 markers = [
