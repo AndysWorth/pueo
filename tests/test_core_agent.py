@@ -448,7 +448,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 22
+        assert version == 23
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -458,7 +458,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 22
+        assert rows[0][0] == 23
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -487,7 +487,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 22
+        assert version == 23
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1354,7 +1354,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 22
+        assert version == 23
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1364,7 +1364,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 22
+        assert rows[0][0] == 23
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1392,7 +1392,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 22
+        assert version == 23
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1446,9 +1446,7 @@ class TestSandboxDB:
 # ── Backup slug extraction ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "module_name", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
-)
+@pytest.mark.parametrize("module_name", ["agents.ha_agent_advanced"])
 class TestBackupSlugExtraction:
     def test_extract_standard_slug_line(self, module_name):
         mod = importlib.import_module(module_name)
@@ -1463,13 +1461,124 @@ class TestBackupSlugExtraction:
         output = "Creating backup...\nSlug: myslug42\nDone."
         assert mod._extract_backup_slug(output) == "myslug42"
 
-    def test_extract_falls_back_to_unknown_slug(self, module_name):
+    def test_extract_returns_none_on_missing_slug(self, module_name):
         mod = importlib.import_module(module_name)
-        assert mod._extract_backup_slug("No slug info here") == "unknown_slug"
+        assert mod._extract_backup_slug("No slug info here") is None
 
     def test_extract_strips_surrounding_quotes(self, module_name):
         mod = importlib.import_module(module_name)
         assert mod._extract_backup_slug('slug: "14702116"') == "14702116"
+
+
+class TestExecuteRemoteBackupSlugError:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_raises_when_stdout_has_no_slug_line(self, db_path, monkeypatch):
+        """ha backup new succeeds (exit 0) but output lacks a slug: line → RuntimeError."""
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "check_disk_not_critical", lambda _: None
+        )
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, "Backup already in progress.\n", "")}
+        )
+        with pytest.raises(RuntimeError, match="no slug line"):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+
+
+class TestRecordBackupSlugGuard:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_skips_unknown_slug(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.record_backup_slug("unknown_slug")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
+        assert count == 0
+
+    def test_skips_empty_slug(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.record_backup_slug("")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM backup_registry").fetchone()[0]
+        assert count == 0
+
+
+class TestMigrationV23:
+    @pytest.fixture
+    def db_path(self, monkeypatch, tmp_path):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        return path
+
+    def test_deletes_unknown_slug_rows(self, db_path):
+        from agents import ha_agent_advanced
+
+        # Seed a v1-schema DB, insert dupes, then run full migration chain.
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE state_history"
+                " (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " timestamp INTEGER, config_hash TEXT,"
+                " is_valid INTEGER, issues_found TEXT, action_taken TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE backup_registry"
+                " (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " timestamp INTEGER, backup_slug TEXT, status TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, status) VALUES"
+                " ('unknown_slug', 'ACTIVE'), ('unknown_slug', 'ACTIVE'),"
+                " ('real-slug-abc', 'ACTIVE')"
+            )
+            conn.commit()
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            slugs = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT backup_slug FROM backup_registry"
+                ).fetchall()
+            ]
+        assert "unknown_slug" not in slugs
+        assert "real-slug-abc" in slugs
+
+    def test_adds_unique_index_on_slug(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            indexes = [
+                r[1]
+                for r in conn.execute(
+                    "SELECT type, name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            ]
+        assert "idx_backup_registry_slug" in indexes
 
 
 # ── main.py CLI ───────────────────────────────────────────────────────────────────

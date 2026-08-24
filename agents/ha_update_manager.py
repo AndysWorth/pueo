@@ -819,7 +819,7 @@ async def run_pueo_self_check(
                 'ha backup new --name "pueo_selfcheck_DELETE_ME"', check=False
             )
             slug = _extract_backup_slug(bk_out.strip())
-            if slug and slug != "unknown_slug":
+            if slug:
                 await ssh_client.run(f"ha backup remove {slug}", check=False)
                 backup_smoke_ok = True
             else:
