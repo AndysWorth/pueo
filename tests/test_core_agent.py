@@ -6948,6 +6948,87 @@ class TestPollForUpdates:
         assert payload["card_type"] == "update"
         assert payload["risk"] == "MEDIUM"
 
+    def test_disk_headroom_warning_added_when_space_tight(self, monkeypatch):
+        """Core update card includes a disk warning when free space is within 1 GB of critical."""
+        import asyncio as asyncio_mod
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.disk.resource import ResourceStatus, update_resource_status
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.notify import FakeNotifier
+
+        # Simulate 2.5 GB free with a 2.0 GB critical threshold — 0.5 GB margin.
+        update_resource_status(
+            ResourceStatus(
+                disk_free_gb=2.5,
+                disk_total_gb=13.6,
+                disk_used_gb=11.1,
+                mem_available_mb=600.0,
+                mem_total_mb=1886.0,
+                disk_warn=True,
+                disk_critical=False,
+                mem_warn=False,
+            )
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.HA_DISK_CRITICAL_GB", 2.0)
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.8.2",
+            latest="2026.8.3",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["disk_headroom_warning"] is not None
+        assert "2.5" in payload["disk_headroom_warning"]
+        assert "⚠️" in notifier.sent[0]["body"]
+
+    def test_disk_headroom_warning_absent_when_space_ample(self, monkeypatch):
+        """Core update card has no disk warning when free space is well above critical + 1 GB."""
+        import asyncio as asyncio_mod
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.disk.resource import ResourceStatus, update_resource_status
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.notify import FakeNotifier
+
+        update_resource_status(
+            ResourceStatus(
+                disk_free_gb=6.0,
+                disk_total_gb=13.6,
+                disk_used_gb=7.6,
+                mem_available_mb=600.0,
+                mem_total_mb=1886.0,
+                disk_warn=False,
+                disk_critical=False,
+                mem_warn=False,
+            )
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.HA_DISK_CRITICAL_GB", 2.0)
+
+        entity = self._make_update_entity(
+            "update.home_assistant_core_update",
+            installed="2026.8.2",
+            latest="2026.8.3",
+        )
+        client = FakeHARestClient(states=[entity])
+        notifier = FakeNotifier()
+        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["disk_headroom_warning"] is None
+
     def test_update_card_not_resolved_when_pending(self, monkeypatch):
         """Bug 1: update entity goes away while card is still unapproved — must not resolve."""
         import asyncio as asyncio_mod

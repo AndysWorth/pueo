@@ -1987,6 +1987,34 @@ class TestDeferredStatusRecognition:
         )
         assert r.status == "DEFERRED"
 
+    def test_resolved_file_yields_resolved_status(self, tmp_path):
+        from web.dashboard import _status
+
+        self._write_request(tmp_path, "eee")
+        (tmp_path / "eee.resolved").touch()
+        assert _status("eee", tmp_path) == "RESOLVED"
+
+    def test_resolved_card_excluded_from_load_requests(self, tmp_path):
+        from web.dashboard import _load_requests
+
+        self._write_request(tmp_path, "eee")
+        (tmp_path / "eee.resolved").touch()
+        assert _load_requests(tmp_path) == []
+
+    def test_resolved_is_valid_hitl_request_status(self):
+        from web.dashboard import HITLRequest
+
+        r = HITLRequest(
+            notification_id="x",
+            subject="s",
+            body="b",
+            payload={},
+            sent_at=0,
+            status="RESOLVED",
+            elapsed_seconds=0,
+        )
+        assert r.status == "RESOLVED"
+
 
 # ── Notifications tab ────────────────────────────────────────────────────────
 

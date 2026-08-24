@@ -549,6 +549,25 @@ async def poll_for_updates(
                             f"Advisory: {advisory} — {readiness.recommendation}"
                         )
 
+                    # Warn when free space is tight for components that download
+                    # new files during install (core and os).
+                    disk_headroom_warning: Optional[str] = None
+                    if u.component in ("core", "os"):
+                        from utils.disk.resource import get_resource_status
+
+                        _rs = get_resource_status()
+                        if (
+                            _rs is not None
+                            and _rs.disk_free_gb < HA_DISK_CRITICAL_GB + 1.0
+                        ):
+                            disk_headroom_warning = (
+                                f"⚠️ Disk free is {_rs.disk_free_gb:.1f} GB — only "
+                                f"{_rs.disk_free_gb - HA_DISK_CRITICAL_GB:.1f} GB above "
+                                f"the critical threshold. Updates temporarily require extra "
+                                f"space. Consider running disk recovery before approving."
+                            )
+                            body_parts.append(disk_headroom_warning)
+
                     from utils.hitl.hitl_tracker import stable_nid
 
                     # Mark sent in DB before writing file — if Pueo restarts between
@@ -592,6 +611,7 @@ async def poll_for_updates(
                             "safe_to_update": (
                                 readiness.safe_to_update if readiness else None
                             ),
+                            "disk_headroom_warning": disk_headroom_warning,
                         },
                     )
                 try:  # pragma: no cover
