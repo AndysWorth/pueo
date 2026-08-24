@@ -1152,6 +1152,21 @@ class TestResourcePollerAlerts:
         asyncio.run(poller._check_and_alert(critical))
         assert len(notifier.sent) == 2
 
+    def test_disk_clear_writes_resolved_marker(self, monkeypatch, tmp_path):
+        """When disk_critical clears, a .resolved file is written for the card."""
+        from utils.hitl.hitl_tracker import stable_nid
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr("config.NOTIFY_WATCH_DIR", str(tmp_path))
+        notifier = FakeNotifier()
+        poller = self._make_poller(notifier)
+        critical = self._make_status(disk_free=1.5, disk_warn=True, disk_critical=True)
+        ok = self._make_status(disk_free=6.0)
+        asyncio.run(poller._check_and_alert(critical))
+        asyncio.run(poller._check_and_alert(ok))
+        nid = stable_nid("resource:disk_critical")
+        assert (tmp_path / f"{nid}.resolved").exists()
+
     def test_sends_disk_warn_alert_when_warn_only(self):
         from utils.hitl.notify import FakeNotifier
 

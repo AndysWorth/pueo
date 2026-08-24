@@ -297,7 +297,7 @@ class HITLRequest(BaseModel):
     @field_validator("status")
     @classmethod
     def _status_must_be_known(cls, v: str) -> str:
-        if v not in {"PENDING", "APPROVED", "REJECTED", "DEFERRED"}:
+        if v not in {"PENDING", "APPROVED", "REJECTED", "DEFERRED", "RESOLVED"}:
             raise ValueError(f"unknown status: {v}")
         return v
 
@@ -309,6 +309,8 @@ def _status(nid: str, watch_dir: Path) -> str:
         return "DEFERRED"
     if (watch_dir / f"{nid}.rejected").exists():
         return "REJECTED"
+    if (watch_dir / f"{nid}.resolved").exists():
+        return "RESOLVED"
     return "PENDING"
 
 

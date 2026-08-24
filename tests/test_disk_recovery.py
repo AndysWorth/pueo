@@ -229,12 +229,12 @@ class TestVacuumJournal:
         calls = [c.args[0] for c in ssh.run.call_args_list]
         assert any("--vacuum-size=512M" in c for c in calls)
 
-    def test_journalctl_not_available_returns_failure(self):
+    def test_journalctl_not_available_is_noop(self):
         ssh = MagicMock()
         ssh.run = AsyncMock(side_effect=[(0, "", "")])  # which journalctl returns empty
         with patch("config.ARCHIVE_JOURNAL_ENABLED", False):
             result = asyncio.run(vacuum_journal(ssh))
-        assert result.success is False
+        assert result.success is True
         assert "not available" in result.message
 
     def test_ssh_exception_returns_failure(self):

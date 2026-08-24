@@ -142,7 +142,7 @@ async def vacuum_journal(
                 name=name,
                 bytes_freed=0,
                 message="Journal vacuum skipped (journalctl not available on this host)",
-                success=False,
+                success=True,
             )
 
         _, before_out, _ = await ssh_client.run(
