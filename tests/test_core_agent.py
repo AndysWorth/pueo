@@ -13473,3 +13473,527 @@ class TestLoadRegisteredToolsPath:
         _load_registered_tools(executor, db_path)
 
         assert executor.registered == []
+
+
+# ── AffectedChange + InstanceImpactReport schemas ────────────────────────────────
+class TestAffectedChangeSchema:
+    def test_valid_construction(self):
+        from agents.ha_update_manager import AffectedChange
+
+        ac = AffectedChange(
+            description="Template syntax changed",
+            applies=True,
+            reason="config uses old template syntax",
+            config_fix_yaml="template: ...",
+            fix_description="Update template syntax",
+        )
+        assert ac.applies is True
+        assert ac.config_fix_yaml == "template: ..."
+
+    def test_optional_fields_default_none(self):
+        from agents.ha_update_manager import AffectedChange
+
+        ac = AffectedChange(
+            description="Some change",
+            applies=False,
+            reason="not used",
+        )
+        assert ac.config_fix_yaml is None
+        assert ac.fix_description is None
+
+    def test_json_round_trip(self):
+        from agents.ha_update_manager import AffectedChange
+
+        ac = AffectedChange(
+            description="Breaking API",
+            applies=True,
+            reason="uses it",
+            config_fix_yaml="key: value",
+            fix_description="Set key to value",
+        )
+        restored = AffectedChange.model_validate_json(ac.model_dump_json())
+        assert restored.description == ac.description
+        assert restored.config_fix_yaml == ac.config_fix_yaml
+
+
+class TestInstanceImpactReportSchema:
+    def test_valid_none_impact(self):
+        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
+
+        report = InstanceImpactReport(
+            affected_changes=[
+                AffectedChange(
+                    description="Old API",
+                    applies=False,
+                    reason="not used",
+                )
+            ],
+            instance_impact="none",
+            effective_safe_to_update=True,
+            summary="No changes apply.",
+        )
+        assert report.instance_impact == "none"
+        assert report.effective_safe_to_update is True
+
+    def test_valid_high_impact(self):
+        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
+
+        report = InstanceImpactReport(
+            affected_changes=[
+                AffectedChange(
+                    description="Breaking config key removed",
+                    applies=True,
+                    reason="key present in config",
+                    config_fix_yaml="key: new_value",
+                    fix_description="Replace deprecated key",
+                )
+            ],
+            instance_impact="high",
+            effective_safe_to_update=False,
+            summary="Must fix config before updating.",
+        )
+        assert report.instance_impact == "high"
+        assert report.effective_safe_to_update is False
+        assert report.affected_changes[0].applies is True
+
+    def test_json_round_trip(self):
+        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
+
+        report = InstanceImpactReport(
+            affected_changes=[],
+            instance_impact="low",
+            effective_safe_to_update=True,
+            summary="Minor.",
+        )
+        restored = InstanceImpactReport.model_validate_json(report.model_dump_json())
+        assert restored.instance_impact == "low"
+        assert restored.summary == report.summary
+
+
+# ── personalize_breaking_changes ─────────────────────────────────────────────────
+class TestPersonalizeBreakingChanges:
+    @staticmethod
+    def _make_impact_llm(instance_impact: str = "none", applies: bool = False):
+        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
+        from utils.llm.ollama_client import FakeLLMClient
+
+        report = InstanceImpactReport(
+            affected_changes=[
+                AffectedChange(
+                    description="Template syntax changed",
+                    applies=applies,
+                    reason="not present in config" if not applies else "used in config",
+                    config_fix_yaml="template: new" if applies else None,
+                    fix_description="Update template" if applies else None,
+                )
+            ],
+            instance_impact=instance_impact,
+            effective_safe_to_update=(instance_impact != "high"),
+            summary=f"Impact is {instance_impact}.",
+        )
+        return FakeLLMClient(report.model_dump_json())
+
+    def test_returns_none_impact_when_no_changes_apply(self):
+        from agents.ha_update_manager import personalize_breaking_changes
+
+        llm = self._make_impact_llm("none", applies=False)
+        result = asyncio.run(
+            personalize_breaking_changes(
+                ["Template syntax changed"],
+                "homeassistant:\n  name: Home",
+                ["mqtt"],
+                llm,
+            )
+        )
+        assert result.instance_impact == "none"
+        assert result.effective_safe_to_update is True
+
+    def test_returns_high_impact_when_changes_apply(self):
+        from agents.ha_update_manager import personalize_breaking_changes
+
+        llm = self._make_impact_llm("high", applies=True)
+        result = asyncio.run(
+            personalize_breaking_changes(
+                ["Template syntax changed"],
+                "template:\n  - trigger: ...",
+                ["template"],
+                llm,
+            )
+        )
+        assert result.instance_impact == "high"
+        assert result.effective_safe_to_update is False
+        assert result.affected_changes[0].applies is True
+        assert result.affected_changes[0].config_fix_yaml is not None
+
+    def test_empty_breaking_changes_returns_safe_default(self):
+        from agents.ha_update_manager import personalize_breaking_changes
+        from utils.llm.ollama_client import FakeLLMClient
+
+        # LLM should not be called when there are no breaking changes
+        llm = FakeLLMClient("")
+        result = asyncio.run(
+            personalize_breaking_changes([], "ha:\n  name: Home", [], llm)
+        )
+        assert result.instance_impact == "none"
+        assert result.effective_safe_to_update is True
+        assert llm.calls == []
+
+    def test_llm_error_returns_safe_default(self):
+        from agents.ha_update_manager import personalize_breaking_changes
+
+        class _ErrorLLM:
+            calls: list = []
+
+            async def chat(self, **kwargs):
+                raise RuntimeError("LLM unavailable")
+
+        result = asyncio.run(
+            personalize_breaking_changes(
+                ["Breaking change"], "ha:\n  name: Home", [], _ErrorLLM()
+            )
+        )
+        assert result.instance_impact == "none"
+        assert result.effective_safe_to_update is True
+
+    def test_invalid_impact_value_coerced_to_low(self):
+        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
+        from agents.ha_update_manager import personalize_breaking_changes
+        from utils.llm.ollama_client import FakeLLMClient
+
+        # Model returns an unrecognized impact value
+        bad_report = InstanceImpactReport(
+            affected_changes=[
+                AffectedChange(description="x", applies=False, reason="no")
+            ],
+            instance_impact="unknown_value",
+            effective_safe_to_update=True,
+            summary="bad",
+        )
+        llm = FakeLLMClient(bad_report.model_dump_json())
+        result = asyncio.run(personalize_breaking_changes(["x"], "ha:", [], llm))
+        assert result.instance_impact == "low"
+
+
+# ── poll_for_updates — disk headroom warning ─────────────────────────────────────
+class TestPollForUpdatesDiskHeadroomWarning:
+    @pytest.fixture(autouse=True)
+    def _patch_hitl_tracker(self, monkeypatch):
+        import sqlite3 as _sq3
+
+        _DDL = (
+            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+            "description TEXT NOT NULL DEFAULT '', "
+            "first_sent_at REAL NOT NULL DEFAULT 0, "
+            "last_sent_at REAL NOT NULL DEFAULT 0, "
+            "send_count INTEGER NOT NULL DEFAULT 1, "
+            "last_action TEXT, last_action_at REAL, "
+            "rejection_count INTEGER NOT NULL DEFAULT 0, "
+            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+            "known_issue_note TEXT, resolved_at REAL)"
+        )
+        _mem = _sq3.connect(":memory:")
+        _mem.execute(_DDL)
+        _mem.commit()
+        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
+
+    @staticmethod
+    def _make_update_entity(component: str = "core") -> dict:
+        return {
+            "entity_id": f"update.home_assistant_{component}_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "2026.7.0",
+                "latest_version": "2026.8.0",
+                "release_url": "https://github.com/home-assistant/core/releases",
+                "release_summary": "Improvements",
+                "in_progress": False,
+                "friendly_name": f"HA {component.title()} Update",
+            },
+        }
+
+    def _run_one_poll(
+        self,
+        monkeypatch,
+        tmp_path,
+        disk_free_gb: float,
+        disk_critical_gb: float = 2.0,
+        component: str = "core",
+    ):
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.disk.resource import ResourceStatus
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        monkeypatch.setattr("config.HA_DISK_CRITICAL_GB", disk_critical_gb)
+        monkeypatch.setattr("config.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("config.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_DISK_CRITICAL_GB", disk_critical_gb
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.DB_PATH", str(tmp_path / "db.sqlite")
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+
+        _status = ResourceStatus(
+            disk_free_gb=disk_free_gb,
+            disk_total_gb=32.0,
+            disk_used_gb=32.0 - disk_free_gb,
+            mem_available_mb=2048.0,
+            mem_total_mb=4096.0,
+            disk_warn=disk_free_gb < 4.0,
+            disk_critical=disk_free_gb < disk_critical_gb,
+            mem_warn=False,
+        )
+        monkeypatch.setattr("utils.disk.resource._last_resource_status", _status)
+
+        _rest = FakeHARestClient([self._make_update_entity(component)])
+        _sent = []
+
+        class _FakeNotifier:
+            async def send(self, *, subject, body, payload=None):
+                _sent.append({"subject": subject, "body": body, "payload": payload})
+
+        # Patch analyze_breaking_changes to return no breaking changes (fast path)
+        from agents.ha_update_manager import UpdateReadinessReport
+
+        _readiness = UpdateReadinessReport(
+            target_version="2026.8.0",
+            safe_to_update=True,
+            breaking_changes=[],
+            affected_config_keys=[],
+            pueo_command_risks=[],
+            recommendation="Safe.",
+        )
+
+        async def _fake_analyze(*a, **kw):
+            return _readiness
+
+        async def _fake_notes(*a, **kw):
+            return "x" * 600
+
+        monkeypatch.setattr(
+            "agents.ha_update_manager.analyze_breaking_changes", _fake_analyze
+        )
+        monkeypatch.setattr(
+            "agents.ha_update_manager.fetch_release_notes_cached", _fake_notes
+        )
+
+        async def _run():
+            import asyncio
+
+            task = asyncio.create_task(
+                poll_for_updates(
+                    ha_rest_client=_rest,
+                    notifier=_FakeNotifier(),
+                    cache_dir=str(tmp_path),
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        return _sent
+
+    def test_disk_headroom_warning_added_when_space_tight(self, monkeypatch, tmp_path):
+        sent = self._run_one_poll(
+            monkeypatch, tmp_path, disk_free_gb=2.5, disk_critical_gb=2.0
+        )
+        assert len(sent) == 1
+        payload = sent[0]["payload"]
+        assert payload["disk_headroom_warning"] is not None
+        assert "2.5" in payload["disk_headroom_warning"]
+        assert "⚠️" in payload["disk_headroom_warning"]
+
+    def test_disk_headroom_warning_absent_when_space_ample(self, monkeypatch, tmp_path):
+        sent = self._run_one_poll(
+            monkeypatch, tmp_path, disk_free_gb=6.0, disk_critical_gb=2.0
+        )
+        assert len(sent) == 1
+        assert sent[0]["payload"]["disk_headroom_warning"] is None
+
+    def test_disk_headroom_warning_absent_for_addon_update(self, monkeypatch, tmp_path):
+        """Disk warning is only added for core/os updates, not add-on updates."""
+        sent = self._run_one_poll(
+            monkeypatch,
+            tmp_path,
+            disk_free_gb=2.1,
+            disk_critical_gb=2.0,
+            component="addon",
+        )
+        # Add-on update cards may not fire (depends on notify flag), but if they do,
+        # disk_headroom_warning should not be in payload for non-core components.
+        if sent:
+            assert sent[0]["payload"].get("disk_headroom_warning") is None
+
+
+# ── poll_for_updates — personalized breaking changes wired ───────────────────────
+class TestPollForUpdatesPersonalization:
+    @pytest.fixture(autouse=True)
+    def _patch_hitl_tracker(self, monkeypatch):
+        import sqlite3 as _sq3
+
+        _DDL = (
+            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+            "description TEXT NOT NULL DEFAULT '', "
+            "first_sent_at REAL NOT NULL DEFAULT 0, "
+            "last_sent_at REAL NOT NULL DEFAULT 0, "
+            "send_count INTEGER NOT NULL DEFAULT 1, "
+            "last_action TEXT, last_action_at REAL, "
+            "rejection_count INTEGER NOT NULL DEFAULT 0, "
+            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+            "known_issue_note TEXT, resolved_at REAL)"
+        )
+        _mem = _sq3.connect(":memory:")
+        _mem.execute(_DDL)
+        _mem.commit()
+        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
+
+    def _run_poll_with_personalization(self, monkeypatch, tmp_path, impact: str):
+        from agents.ha_log_monitor import poll_for_updates
+        from agents.ha_update_manager import (
+            AffectedChange,
+            InstanceImpactReport,
+            UpdateReadinessReport,
+        )
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr("config.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("config.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
+        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.DB_PATH", str(tmp_path / "db.sqlite")
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr("utils.disk.resource._last_resource_status", None)
+
+        _update_entity = {
+            "entity_id": "update.home_assistant_core_update",
+            "state": "on",
+            "attributes": {
+                "installed_version": "2026.7.0",
+                "latest_version": "2026.8.0",
+                "release_url": "https://github.com/home-assistant/core/releases",
+                "release_summary": "Improvements",
+                "in_progress": False,
+                "friendly_name": "HA Core Update",
+            },
+        }
+        _rest = FakeHARestClient([_update_entity])
+
+        _readiness = UpdateReadinessReport(
+            target_version="2026.8.0",
+            safe_to_update=True,
+            breaking_changes=["Template syntax changed"],
+            affected_config_keys=["template"],
+            pueo_command_risks=[],
+            recommendation="Review template usage.",
+        )
+
+        _impact_report = InstanceImpactReport(
+            affected_changes=[
+                AffectedChange(
+                    description="Template syntax changed",
+                    applies=(impact != "none"),
+                    reason="present in config" if impact != "none" else "not used",
+                    config_fix_yaml="template: new" if impact == "high" else None,
+                    fix_description="Fix template" if impact == "high" else None,
+                )
+            ],
+            instance_impact=impact,
+            effective_safe_to_update=(impact != "high"),
+            summary=f"Impact is {impact}.",
+        )
+
+        async def _fake_analyze(*a, **kw):
+            return _readiness
+
+        async def _fake_personalize(*a, **kw):
+            return _impact_report
+
+        async def _fake_notes(*a, **kw):
+            return "x" * 600
+
+        # SSH client that returns dummy config YAML for /config/configuration.yaml
+        _ssh = FakeSSHClient(
+            command_results={
+                "cat /config/configuration.yaml": (0, "ha:\n  name: Home", "")
+            }
+        )
+
+        monkeypatch.setattr(
+            "agents.ha_update_manager.analyze_breaking_changes", _fake_analyze
+        )
+        monkeypatch.setattr(
+            "agents.ha_update_manager.personalize_breaking_changes", _fake_personalize
+        )
+        monkeypatch.setattr(
+            "agents.ha_update_manager.fetch_release_notes_cached", _fake_notes
+        )
+        monkeypatch.setattr(
+            "utils.ha.ha_environment.load_environment_profile", lambda *a, **kw: None
+        )
+
+        _sent = []
+
+        class _FakeNotifier:
+            async def send(self, *, subject, body, payload=None):
+                _sent.append({"subject": subject, "body": body, "payload": payload})
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_updates(
+                    ha_rest_client=_rest,
+                    notifier=_FakeNotifier(),
+                    ssh_client=_ssh,
+                    cache_dir=str(tmp_path),
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        return _sent
+
+    def test_none_impact_included_in_payload(self, monkeypatch, tmp_path):
+        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="none")
+        assert len(sent) == 1
+        payload = sent[0]["payload"]
+        assert payload["instance_impact"] == "none"
+        assert payload["effective_safe_to_update"] is True
+        assert payload["proposed_config_fixes"] == []
+
+    def test_high_impact_sets_safe_to_update_false(self, monkeypatch, tmp_path):
+        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="high")
+        assert len(sent) == 1
+        payload = sent[0]["payload"]
+        assert payload["instance_impact"] == "high"
+        assert payload["effective_safe_to_update"] is False
+        assert len(payload["proposed_config_fixes"]) == 1
+        assert payload["proposed_config_fixes"][0]["config_fix_yaml"] == "template: new"
+
+    def test_none_impact_risk_downgraded_from_critical(self, monkeypatch, tmp_path):
+        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="none")
+        assert len(sent) == 1
+        # When instance_impact is "none", CRITICAL is downgraded to HIGH
+        assert sent[0]["payload"]["risk"] == "HIGH"
+
+    def test_personalize_prompt_loads_without_error(self):
+        from utils.core.prompts import load_prompt
+
+        text = load_prompt("personalize_breaking_changes")
+        assert "breaking changes" in text.lower()
+        assert "instance_impact" in text

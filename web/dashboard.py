@@ -1545,6 +1545,102 @@ async def reject(nid: str) -> RedirectResponse:
     return RedirectResponse(url="/queue", status_code=303)
 
 
+@app.post("/apply-fixes/{nid}")
+async def apply_fixes(nid: str) -> RedirectResponse:
+    """Run sandbox repair for each proposed config fix on an update card, then keep card PENDING."""
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if not json_path.exists() or _status(nid, watch_dir) != "PENDING":
+        return RedirectResponse(url="/queue", status_code=303)
+
+    data = json.loads(json_path.read_text())
+    payload = data.get("payload", {})
+    fixes = payload.get("proposed_config_fixes", [])
+
+    if not fixes:
+        return RedirectResponse(url="/queue", status_code=303)
+
+    asyncio.create_task(_execute_config_fixes(nid, fixes, data, json_path, watch_dir))
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+async def _execute_config_fixes(
+    nid: str,
+    fixes: list[dict],
+    data: dict,
+    json_path: "Path",
+    watch_dir: "Path",
+) -> None:
+    """Apply each proposed config fix through the sandbox pipeline sequentially."""
+    from agents.ha_agent_sandbox_engine import (
+        commit_atomic_swap,
+        deploy_and_test_in_sandbox,
+        execute_remote_backup,
+        record_backup_slug,
+    )
+    from utils.ha.ssh_client import AsyncSSHClient
+    from utils.core.timeline import write_timeline_event
+
+    ssh = AsyncSSHClient()
+    in_progress = watch_dir / f"{nid}.in_progress"
+    in_progress.touch()
+    applied: list[str] = []
+    failed: list[str] = []
+
+    try:
+        slug = await execute_remote_backup(ssh)
+        record_backup_slug(slug, name="pre-fix-application")
+
+        for fix in fixes:
+            yaml_content = fix.get("config_fix_yaml", "")
+            fix_desc = fix.get("fix_description") or fix.get(
+                "description", "config fix"
+            )
+            if not yaml_content:
+                continue
+            try:
+                sandbox_ok = await deploy_and_test_in_sandbox(
+                    yaml_content, ssh_client=ssh
+                )
+                if sandbox_ok:
+                    await commit_atomic_swap(yaml_content, ssh_client=ssh)
+                    applied.append(fix_desc)
+                else:
+                    failed.append(f"{fix_desc}: sandbox check failed")
+            except Exception as exc:
+                failed.append(f"{fix_desc}: {exc}")
+
+        outcome = (
+            f"Applied {len(applied)} fix(es); {len(failed)} failed."
+            if applied or failed
+            else "No fixable changes."
+        )
+        try:
+            write_timeline_event(
+                "INFO",
+                "update_fix_applied",
+                outcome,
+                {"applied": applied, "failed": failed, "nid": nid},
+            )
+        except Exception:  # nosec B110
+            pass
+
+        # Update card payload to reflect applied fixes so the user can see what happened.
+        try:
+            updated_payload = data.get("payload", {})
+            updated_payload["fix_application_result"] = outcome
+            updated_payload["fixes_applied"] = applied
+            updated_payload["fixes_failed"] = failed
+            data["payload"] = updated_payload
+            json_path.write_text(json.dumps(data, indent=2))
+        except Exception:  # nosec B110
+            pass
+    except Exception as exc:
+        log.error("apply_fixes_pipeline_failed", nid=nid, error=str(exc))
+    finally:
+        in_progress.unlink(missing_ok=True)
+
+
 @app.post("/defer/{nid}")
 async def defer(nid: str) -> RedirectResponse:
     from utils.hitl.hitl_tracker import mark_card_deferred

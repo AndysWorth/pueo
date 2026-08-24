@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import config as _config
 from config import (
@@ -72,6 +72,41 @@ class UpdateReadinessReport(BaseModel):
     affected_config_keys: list[str]
     pueo_command_risks: list[str]
     recommendation: str
+
+
+class AffectedChange(BaseModel):
+    description: str = Field(description="The breaking change from the release notes")
+    applies: bool = Field(
+        description="True if this change applies to the current install"
+    )
+    reason: str = Field(
+        description="Explanation of why it applies or does not apply to this install"
+    )
+    config_fix_yaml: Optional[str] = Field(
+        default=None,
+        description="YAML snippet to fix this breaking change in the HA config, or null",
+    )
+    fix_description: Optional[str] = Field(
+        default=None,
+        description="Plain-English description of what the fix does, or null if no fix",
+    )
+
+
+class InstanceImpactReport(BaseModel):
+    affected_changes: list[AffectedChange]
+    instance_impact: str = Field(
+        description=(
+            "'none' if no breaking changes apply to this install, "
+            "'low' if minor/optional changes apply, "
+            "'high' if critical changes that must be addressed before updating"
+        )
+    )
+    effective_safe_to_update: bool = Field(
+        description="True if the update is safe to proceed given this instance's current config"
+    )
+    summary: str = Field(
+        description="One paragraph plain-English summary of the impact on this specific install"
+    )
 
 
 async def _fetch_github_release_notes(version: str) -> str:  # pragma: no cover
@@ -200,6 +235,71 @@ async def analyze_breaking_changes(
     )
     raw = response["message"]["content"]
     return UpdateReadinessReport.model_validate_json(raw)
+
+
+async def personalize_breaking_changes(
+    breaking_changes: list[str],
+    ha_config_yaml: str,
+    installed_integrations: list[str],
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> InstanceImpactReport:
+    """Second LLM pass: determine which general breaking changes actually affect this install.
+
+    Returns an InstanceImpactReport classifying impact and proposing YAML fixes for any
+    breaking changes that do apply.  Falls back to a safe default on LLM error.
+    """
+    from utils.llm.llm_factory import make_llm_client
+
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
+
+    _safe_default = InstanceImpactReport(
+        affected_changes=[],
+        instance_impact="none",
+        effective_safe_to_update=True,
+        summary="Could not determine personalized impact; proceeding with general advisory.",
+    )
+
+    if not breaking_changes:
+        return InstanceImpactReport(
+            affected_changes=[],
+            instance_impact="none",
+            effective_safe_to_update=True,
+            summary="No breaking changes found in the release notes for this version.",
+        )
+
+    changes_text = "\n".join(f"- {c}" for c in breaking_changes)
+    integrations_text = ", ".join(installed_integrations) or "unknown"
+    config_snippet = truncate_to_budget(ha_config_yaml, MAX_PROMPT_TOKENS - 800)
+
+    user_content = (
+        f"=== Breaking changes from release notes ===\n{changes_text}\n\n"
+        f"=== Installed integrations ===\n{integrations_text}\n\n"
+        f"=== Current configuration.yaml ===\n{config_snippet}\n\n"
+        "For each breaking change, determine if it applies to this install. "
+        "Propose YAML config fixes where applicable."
+    )
+
+    try:
+        response = await client.chat(
+            model=_config.OLLAMA_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": load_prompt("personalize_breaking_changes"),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            options={"temperature": 0.0},
+            format=InstanceImpactReport.model_json_schema(),
+        )
+        raw = response["message"]["content"]
+        report = InstanceImpactReport.model_validate_json(raw)
+        if report.instance_impact not in ("none", "low", "high"):
+            report = report.model_copy(update={"instance_impact": "low"})
+        return report
+    except Exception as exc:
+        log.warning("personalize_breaking_changes_failed", error=str(exc))
+        return _safe_default
 
 
 def _format_update_table(updates: list[UpdateStatus]) -> str:

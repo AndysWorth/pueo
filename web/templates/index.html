@@ -48,6 +48,17 @@
     {% if r.payload.get("breaking_changes") %}
     <details open>
       <summary><span class="section-label label-diagnosis">Breaking Changes</span>Advisory — review before updating</summary>
+      {% set _impact = r.payload.get("instance_impact") %}
+      {% if _impact == "none" %}
+      <p style="color:var(--green,#2a9d4e);font-weight:600;">✅ None of the breaking changes affect your install.</p>
+      {% elif _impact in ("low", "high") %}
+      <p style="color:{% if _impact == 'high' %}var(--red){% else %}var(--orange){% endif %};font-weight:600;">
+        ⚠️ Instance impact: {{ _impact | upper }} — {{ r.payload.get("instance_impact_summary", "") }}
+      </p>
+      {% if not r.payload.get("effective_safe_to_update") %}
+      <p style="color:var(--red);font-weight:600;">🚫 Config fixes required before updating safely.</p>
+      {% endif %}
+      {% endif %}
       <ul>{% for bc in r.payload.breaking_changes %}<li>{{ bc }}</li>{% endfor %}</ul>
       {% if r.payload.get("affected_config_keys") %}
       <p><strong>Affected config keys:</strong> {{ r.payload.affected_config_keys | join(", ") }}</p>
@@ -58,6 +69,21 @@
       {% endif %}
       {% if r.payload.get("advisory") %}
       <p><em>{{ r.payload.advisory }}</em></p>
+      {% endif %}
+      {% if r.payload.get("proposed_config_fixes") %}
+      <details>
+        <summary><strong>Proposed config fixes</strong> ({{ r.payload.proposed_config_fixes | length }} fix(es) available)</summary>
+        {% for fix in r.payload.proposed_config_fixes %}
+        <div style="margin:0.5rem 0;padding:0.5rem;background:var(--bg-alt,#f5f5f5);border-radius:4px;">
+          <strong>{{ fix.description }}</strong><br>
+          {% if fix.fix_description %}<em>{{ fix.fix_description }}</em><br>{% endif %}
+          <pre style="margin-top:0.4rem;">{{ fix.config_fix_yaml }}</pre>
+        </div>
+        {% endfor %}
+      </details>
+      {% endif %}
+      {% if r.payload.get("fix_application_result") %}
+      <p style="color:var(--green,#2a9d4e);font-weight:600;">{{ r.payload.fix_application_result }}</p>
       {% endif %}
     </details>
     {% endif %}
@@ -372,6 +398,11 @@
       <form method="POST" action="/defer/{{ r.notification_id }}">
         <button class="btn btn-defer" type="submit">Defer (24h)</button>
       </form>
+      {% if ct == "update" and r.payload.get("proposed_config_fixes") and not r.payload.get("fix_application_result") %}
+      <form method="POST" action="/apply-fixes/{{ r.notification_id }}">
+        <button class="btn" style="background:#e07b00;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Apply fixes</button>
+      </form>
+      {% endif %}
       {% if _sk %}
       <form method="POST" action="/suppress/{{ r.notification_id }}">
         <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Suppress (Known Issue)</button>
