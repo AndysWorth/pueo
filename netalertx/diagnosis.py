@@ -18,9 +18,10 @@ from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
-    from interfaces import LLMClientProtocol
+    from interfaces import LLMClientProtocol, SSHClientProtocol
     from netalertx.config_validator import ConfigIssue
     from netalertx.health import HealthReport
+    from utils.agent.tool_registry import AgentLoopResult
 
 log = get_logger("netalertx.diagnosis")
 
@@ -65,25 +66,122 @@ def _build_context(
     return "\n\n".join(parts)
 
 
+def _extract_health_diagnostic(
+    loop_result: "AgentLoopResult",
+) -> Optional[NetAlertXDiagnostic]:
+    """Extract NetAlertXDiagnostic from the terminal tool step in an AgentLoopResult."""
+    for step in loop_result.steps:
+        if step.tool_call.name == "finish_health_diagnosis":
+            args = step.tool_call.arguments
+            try:
+                return NetAlertXDiagnostic(
+                    issue=args.get("issue", ""),
+                    severity=args.get("severity", "MEDIUM"),
+                    category=args.get("category", "networking"),
+                    recommended_fix=args.get("recommended_fix", ""),
+                    affected_netalertx_version=args.get(
+                        "affected_netalertx_version", "unknown"
+                    ),
+                )
+            except Exception:
+                return None
+    return None
+
+
 async def diagnose_health_report(
     report: "HealthReport",
     config_issues: Optional[list["ConfigIssue"]] = None,
     llm_client: Optional["LLMClientProtocol"] = None,
+    ssh_client: Optional["SSHClientProtocol"] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
-    """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose."""
+    """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose.
+
+    When ssh_client is provided, runs an AgentLoop that can gather additional log
+    evidence adaptively. Without ssh_client, falls back to a direct one-shot LLM call.
+    """
     all_issues = list(config_issues or [])
 
     if not report.anomalies and not all_issues:
         return None, None
 
     client = llm_client or make_llm_client()
-    system_prompt = load_prompt("diagnose_netalertx")
-    context = _build_context(report, all_issues)
-    user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
-
-    _ = estimate_tokens(system_prompt) + estimate_tokens(user_prompt)
-
     model = _default_model_for_provider()
+    context = _build_context(report, all_issues)
+
+    if ssh_client is not None:
+        return await _diagnose_with_agent_loop(context, client, model, ssh_client)
+    return await _diagnose_one_shot(context, client, model)
+
+
+async def _diagnose_with_agent_loop(
+    context: str,
+    client: "LLMClientProtocol",
+    model: str,
+    ssh_client: "SSHClientProtocol",
+) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
+    """Run an AgentLoop to diagnose NetAlertX health anomalies adaptively."""
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_health_diagnosis_registry
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.hitl.notify import FakeNotifier
+
+    base_prompt = load_prompt("agent_loop_base").replace(
+        "{terminal_tool}", "finish_health_diagnosis"
+    )
+    initial_message = (
+        "Diagnose the following NetAlertX health issues:\n\n"
+        + context
+        + "\n\nCall query_knowledge for known patterns, use search_log if you need "
+        "additional log context, then call finish_health_diagnosis with your diagnosis."
+    )
+
+    executor = ToolExecutor(
+        ha_ssh_client=ssh_client,
+        gate=FakeAutonomyGate(),  # type: ignore[arg-type]
+        notifier=FakeNotifier(),
+    )
+    registry = build_health_diagnosis_registry()
+    loop = AgentLoop(
+        llm_client=client,
+        tool_executor=executor,
+        tool_registry=registry,
+        model=model,
+        system_prompt=base_prompt,
+        terminal_tool_name="finish_health_diagnosis",
+        trigger="health_diagnosis",
+    )
+
+    try:
+        loop_result = await loop.run(initial_message)
+        result = _extract_health_diagnostic(loop_result)
+        if result is not None:
+            log.info(
+                "netalertx_diagnosis_complete",
+                category=result.category,
+                severity=result.severity,
+                outcome=loop_result.outcome,
+            )
+        trace = LLMTrace(
+            model=model,
+            system_prompt=base_prompt,
+            user_prompt=initial_message,
+            raw_response=result.model_dump_json() if result else "",
+        )
+        return result, trace
+    except Exception as exc:
+        log.error("netalertx_diagnosis_agent_loop_failed", error=str(exc))
+        return None, None
+
+
+async def _diagnose_one_shot(
+    context: str,
+    client: "LLMClientProtocol",
+    model: str,
+) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
+    """One-shot LLM call for NetAlertX health diagnosis (fallback without ssh_client)."""
+    system_prompt = load_prompt("diagnose_netalertx")
+    user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
     try:
         response = await client.chat(
             model=model,

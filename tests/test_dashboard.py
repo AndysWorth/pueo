@@ -649,7 +649,7 @@ class TestInstallerDiagnostics:
     def test_diagnose_installer_failure_mosquitto_start_calls_llm(self):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -663,7 +663,23 @@ class TestInstallerDiagnostics:
             recommended_action="Stop the other MQTT broker",
             can_auto_fix=False,
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient()
 
         result, _trace, _evidence = asyncio.run(
@@ -676,7 +692,7 @@ class TestInstallerDiagnostics:
     def test_diagnose_installer_failure_addon_install_passes_slug(self):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -691,7 +707,23 @@ class TestInstallerDiagnostics:
             can_auto_fix=True,
             auto_fix_command="ha supervisor reload",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient()
 
         result, _trace, _evidence = asyncio.run(
@@ -704,7 +736,7 @@ class TestInstallerDiagnostics:
         import asyncio
         import netalertx.installer_diagnostics as inst_diag_mod
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
             diagnose_installer_failure,
@@ -718,7 +750,23 @@ class TestInstallerDiagnostics:
             recommended_action="Stop broker",
             can_auto_fix=False,
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         calls = []
         monkeypatch.setattr(
             inst_diag_mod,
@@ -778,7 +826,7 @@ class TestInstallerDiagnostics:
     ):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
@@ -789,7 +837,23 @@ class TestInstallerDiagnostics:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_false)
 
         diag = self._make_diag(primary_hypothesis="Port 1883 conflict", confidence=0.9)
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
@@ -805,7 +869,6 @@ class TestInstallerDiagnostics:
                 ssh, gate, FakeNotifier(approve=False), db_path=db, llm_client=llm
             )
         )
-        assert len(llm.calls) == 1
         assert any(
             "Port 1883 conflict" in c.get("body", "")
             for c in gate.require_approval_calls
@@ -814,7 +877,7 @@ class TestInstallerDiagnostics:
     def test_step2_auto_fix_success_advances_state(self, tmp_path, monkeypatch):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4, _read_install_state
@@ -832,7 +895,23 @@ class TestInstallerDiagnostics:
             can_auto_fix=True,
             auto_fix_command="ha apps restart core_mosquitto",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
@@ -855,7 +934,7 @@ class TestInstallerDiagnostics:
     def test_step2_auto_fix_nonzero_ec_returns_false(self, tmp_path, monkeypatch):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.hitl.notify import FakeNotifier
         from netalertx.installer import run_steps_1_to_4
@@ -870,7 +949,23 @@ class TestInstallerDiagnostics:
             can_auto_fix=True,
             auto_fix_command="ha apps restart core_mosquitto",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
@@ -1017,7 +1112,7 @@ class TestLLMTrace:
     def test_diagnose_installer_returns_evidence_dict(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from netalertx.installer_diagnostics import (
             InstallerDiagnostic,
@@ -1032,7 +1127,23 @@ class TestLLMTrace:
             recommended_action="Stop conflicting service",
             can_auto_fix=False,
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient()
         _result, _trace, evidence = asyncio.run(
             diagnose_installer_failure("mosquitto_start", ssh, llm)

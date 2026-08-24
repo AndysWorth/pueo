@@ -19,6 +19,7 @@ from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol
+    from utils.agent.tool_registry import AgentLoopResult
 
 log = get_logger("netalertx.installer_diagnostics")
 
@@ -107,18 +108,61 @@ def _build_evidence_context(failure_type: str, evidence: dict[str, str]) -> str:
     return "\n\n".join(parts)
 
 
+def _fallback_diagnostic() -> InstallerDiagnostic:
+    return InstallerDiagnostic(
+        primary_hypothesis="Diagnosis unavailable — agent loop did not complete.",
+        confidence=0.0,
+        supporting_evidence=[],
+        alternative_hypotheses=[],
+        recommended_action="Review the logs manually and re-run setup.",
+        can_auto_fix=False,
+    )
+
+
+def _extract_installer_diagnostic(
+    loop_result: "AgentLoopResult",
+) -> InstallerDiagnostic:
+    """Extract InstallerDiagnostic from the terminal tool step in an AgentLoopResult."""
+    for step in loop_result.steps:
+        if step.tool_call.name == "finish_installer_diagnosis":
+            args = step.tool_call.arguments
+            try:
+                return InstallerDiagnostic(
+                    primary_hypothesis=args.get("primary_hypothesis", ""),
+                    confidence=float(args.get("confidence", 0.0)),
+                    supporting_evidence=args.get("supporting_evidence", []),
+                    alternative_hypotheses=args.get("alternative_hypotheses", []),
+                    recommended_action=args.get("recommended_action", ""),
+                    can_auto_fix=bool(args.get("can_auto_fix", False)),
+                    auto_fix_command=args.get("auto_fix_command"),
+                    verification_command=args.get("verification_command"),
+                )
+            except Exception:
+                return _fallback_diagnostic()
+    return _fallback_diagnostic()
+
+
 async def diagnose_installer_failure(
     failure_type: str,
     ssh_client: "SSHClientProtocol",
     llm_client: Optional["LLMClientProtocol"] = None,
     slug: str = "",
 ) -> tuple[InstallerDiagnostic, LLMTrace, dict[str, str]]:
-    """Gather evidence and return a structured LLM diagnosis for an installer failure.
+    """Gather evidence then run an AgentLoop to produce a structured diagnosis.
 
     failure_type: "mosquitto_start" | "addon_install" | "addon_start"
     slug: required for "addon_install" and "addon_start" failure types.
     Returns a 3-tuple: (diagnostic, llm_trace, evidence_dict).
     """
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import (
+        AgentLoopResult,
+        build_installer_diagnosis_registry,
+    )
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.hitl.notify import FakeNotifier
+
     if failure_type == "mosquitto_start":
         evidence = await gather_mosquitto_evidence(ssh_client)
     elif failure_type == "addon_install":
@@ -127,8 +171,6 @@ async def diagnose_installer_failure(
         evidence = await gather_addon_start_evidence(ssh_client, slug)
 
     context = _build_evidence_context(failure_type, evidence)
-    system_prompt = load_prompt("diagnose_installer")
-    user_prompt = f"Diagnose the following installer failure:\n\n{context}"
 
     log.info(
         "installer_diagnosis_start",
@@ -139,51 +181,56 @@ async def diagnose_installer_failure(
 
     client = llm_client or make_llm_client()
     model = _default_model_for_provider()
+    base_prompt = load_prompt("agent_loop_base").replace(
+        "{terminal_tool}", "finish_installer_diagnosis"
+    )
+    initial_message = (
+        f"Diagnose this installer failure: {failure_type}"
+        + (f" (add-on: {slug})" if slug else "")
+        + ".\n\n"
+        "Here is the gathered evidence:\n\n"
+        + context
+        + "\n\nCall query_knowledge for known patterns, then call "
+        "finish_installer_diagnosis with your structured diagnosis."
+    )
+
+    executor = ToolExecutor(
+        ha_ssh_client=ssh_client,
+        gate=FakeAutonomyGate(),  # type: ignore[arg-type]
+        notifier=FakeNotifier(),
+    )
+    registry = build_installer_diagnosis_registry()
+    loop = AgentLoop(
+        llm_client=client,
+        tool_executor=executor,
+        tool_registry=registry,
+        model=model,
+        system_prompt=base_prompt,
+        terminal_tool_name="finish_installer_diagnosis",
+        trigger="installer_diagnosis",
+    )
+
     try:
-        response = await client.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.0},
-            format=InstallerDiagnostic.model_json_schema(),
-        )
-        raw_output = response["message"]["content"]
-        result = InstallerDiagnostic.model_validate_json(raw_output)
+        loop_result: AgentLoopResult = await loop.run(initial_message)
+        diagnostic = _extract_installer_diagnostic(loop_result)
         log.info(
             "installer_diagnosis_complete",
             failure_type=failure_type,
-            confidence=result.confidence,
-            can_auto_fix=result.can_auto_fix,
+            confidence=diagnostic.confidence,
+            can_auto_fix=diagnostic.can_auto_fix,
+            outcome=loop_result.outcome,
         )
-        trace = LLMTrace(
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            raw_response=raw_output,
-        )
-        return result, trace, evidence
     except Exception as exc:
         log.error("installer_diagnosis_failed", error=str(exc))
-        sentinel = LLMTrace(
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            raw_response="",
-        )
-        return (
-            InstallerDiagnostic(
-                primary_hypothesis="Diagnosis unavailable — LLM inference failed.",
-                confidence=0.0,
-                supporting_evidence=[],
-                alternative_hypotheses=[],
-                recommended_action="Review the logs manually and re-run setup.",
-                can_auto_fix=False,
-            ),
-            sentinel,
-            evidence,
-        )
+        diagnostic = _fallback_diagnostic()
+
+    trace = LLMTrace(
+        model=model,
+        system_prompt=base_prompt,
+        user_prompt=initial_message,
+        raw_response=diagnostic.model_dump_json(),
+    )
+    return diagnostic, trace, evidence
 
 
 def format_diagnostic_for_hitl(diagnostic: InstallerDiagnostic) -> str:
