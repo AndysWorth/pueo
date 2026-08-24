@@ -678,8 +678,8 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.agent.investigation_loop.investigate_with_fallback",
-                new=AsyncMock(return_value=(report, False)),
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
             ),
         ):
             summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))
@@ -694,7 +694,7 @@ class TestRunSafeDiskRecoveryLLMGuided:
         rest.call_service.assert_not_called()
 
     def test_falls_back_to_heuristic_when_investigation_raises(self):
-        """investigate_with_fallback raising causes the heuristic 3-step path to run."""
+        """run_investigation raising causes the heuristic 3-step path to run."""
         ssh = self._make_ssh()
         rest = MagicMock()
         rest.call_service = AsyncMock(return_value=None)
@@ -704,8 +704,8 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.agent.investigation_loop.investigate_with_fallback",
-                new=AsyncMock(return_value=(None, True)),  # is_fallback=True
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(side_effect=RuntimeError("ollama down")),
             ),
         ):
             summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))
@@ -728,8 +728,8 @@ class TestRunSafeDiskRecoveryLLMGuided:
             patch("config.ARCHIVE_HA_LOG_ENABLED", False),
             patch("config.ARCHIVE_JOURNAL_ENABLED", False),
             patch(
-                "utils.agent.investigation_loop.investigate_with_fallback",
-                new=AsyncMock(return_value=(report, False)),
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
             ),
         ):
             summary = asyncio.run(run_safe_disk_recovery(ssh, rest, llm_client=llm))

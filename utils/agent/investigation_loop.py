@@ -21,7 +21,6 @@ any future domain without bespoke code.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -312,37 +311,3 @@ async def run_investigation(
         confidence=report.confidence,
     )
     return report
-
-
-async def investigate_with_fallback(
-    topic: str,
-    goal: str,
-    context: str,
-    llm_client: LLMClientProtocol,
-    ssh_client: SSHClientProtocol,
-    notifier: Any = None,
-    knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
-    timeout: float = 180.0,
-) -> tuple[Optional[InvestigationReport], bool]:
-    """Run a read-only investigation with a timeout. Returns (report, is_fallback).
-
-    is_fallback=True when the investigation timed out or raised — the caller should
-    fall back to its heuristic analysis. The card is always sent regardless.
-    """
-    try:
-        report = await asyncio.wait_for(
-            run_investigation(
-                topic=topic,
-                investigation_goal=goal,
-                context=context,
-                llm_client=llm_client,
-                ha_ssh_client=ssh_client,
-                notifier=notifier,
-                knowledge_store=knowledge_store,
-            ),
-            timeout=timeout,
-        )
-        return report, False
-    except Exception:
-        log.warning("investigation_fallback", topic=topic)
-        return None, True

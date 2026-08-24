@@ -454,10 +454,10 @@ async def run_safe_disk_recovery(
 ) -> RecoverySummary:
     """Run disk recovery, optionally guided by an LLM investigation.
 
-    When llm_client is provided, the function runs investigate_with_fallback before
-    any SSH commands. If the investigation returns recognized auto_action keys, only
-    those steps are executed (in the LLM-recommended order). If the investigation
-    fails or returns no recognized keys, the fixed 3-step heuristic runs instead.
+    When llm_client is provided, the function runs run_investigation before any SSH
+    commands. If the investigation returns recognized auto_action keys, only those steps
+    are executed (in the LLM-recommended order). If the investigation raises or returns
+    no recognized keys, the fixed 3-step heuristic runs instead.
 
     Steps (all non-destructive of user data):
       1. Truncate HA log file
@@ -481,7 +481,7 @@ async def run_safe_disk_recovery(
 
     # --- LLM-guided path ---
     if llm_client is not None:
-        from utils.agent.investigation_loop import investigate_with_fallback
+        from utils.agent.investigation_loop import run_investigation
 
         keys_doc = ", ".join(sorted(DISK_AUTO_ACTION_KEYS))
         inv_context = (
@@ -489,19 +489,25 @@ async def run_safe_disk_recovery(
             f"Available auto_action keys (use exactly): {keys_doc}."
         ).strip()
 
-        report, is_fallback = await investigate_with_fallback(
-            topic="HA disk space critically low",
-            goal=(
-                "Identify the root cause of the disk shortage. "
-                "Recommend which auto-safe recovery steps to execute immediately, "
-                "ranked by expected impact. Use only the provided action_key values."
-            ),
-            context=inv_context,
-            llm_client=llm_client,
-            ssh_client=ssh_client,
-            knowledge_store=knowledge_store,
-            timeout=60.0,
-        )
+        try:
+            report = await run_investigation(
+                topic="HA disk space critically low",
+                investigation_goal=(
+                    "Identify the root cause of the disk shortage. "
+                    "Recommend which auto-safe recovery steps to execute immediately, "
+                    "ranked by expected impact. Use only the provided action_key values."
+                ),
+                context=inv_context,
+                llm_client=llm_client,
+                ha_ssh_client=ssh_client,
+                knowledge_store=knowledge_store,
+                max_wall_seconds=60.0,
+            )
+            is_fallback = False
+        except Exception:
+            log.warning("disk_recovery_investigation_fallback")
+            report = None
+            is_fallback = True
 
         if not is_fallback and report is not None:
             summary = RecoverySummary(
