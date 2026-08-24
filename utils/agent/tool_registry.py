@@ -711,6 +711,111 @@ SEARCH_LOG = ToolDefinition(
     },
 )
 
+FINISH_INSTALLER_DIAGNOSIS = ToolDefinition(
+    name="finish_installer_diagnosis",
+    description=(
+        "Call this when the installer failure diagnosis is complete. "
+        "Provide a structured analysis of the root cause and recommended action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "primary_hypothesis": {
+                "type": "string",
+                "description": "Most likely cause in plain English",
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Certainty 0.0–1.0. Below 0.6 means evidence is insufficient.",
+            },
+            "supporting_evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Specific observations that support the hypothesis. Cite exact output.",
+            },
+            "alternative_hypotheses": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Other possible causes not ruled out by the evidence.",
+            },
+            "recommended_action": {
+                "type": "string",
+                "description": "Concrete, specific action to resolve the issue.",
+            },
+            "can_auto_fix": {
+                "type": "boolean",
+                "description": "True only if the fix is a single SSH command with no side effects.",
+            },
+            "auto_fix_command": {
+                "type": "string",
+                "description": "The exact SSH command to run if can_auto_fix is True.",
+            },
+            "verification_command": {
+                "type": "string",
+                "description": "SSH command to run after the fix to confirm it worked.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence summary of what was found.",
+            },
+        },
+        "required": [
+            "primary_hypothesis",
+            "confidence",
+            "supporting_evidence",
+            "alternative_hypotheses",
+            "recommended_action",
+            "can_auto_fix",
+            "summary",
+        ],
+    },
+)
+
+FINISH_HEALTH_DIAGNOSIS = ToolDefinition(
+    name="finish_health_diagnosis",
+    description=(
+        "Call this when the NetAlertX health diagnosis is complete. "
+        "Provide a structured analysis of the identified problem."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "issue": {
+                "type": "string",
+                "description": "Short description of the identified problem.",
+            },
+            "severity": {
+                "type": "string",
+                "description": "LOW | MEDIUM | HIGH | CRITICAL",
+            },
+            "category": {
+                "type": "string",
+                "description": "networking | mqtt | database | version | ha_integration",
+            },
+            "recommended_fix": {
+                "type": "string",
+                "description": "Concrete remediation steps, including relevant commands or config changes.",
+            },
+            "affected_netalertx_version": {
+                "type": "string",
+                "description": "NetAlertX version from the health report, or 'unknown'.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence summary of the diagnosis.",
+            },
+        },
+        "required": [
+            "issue",
+            "severity",
+            "category",
+            "recommended_fix",
+            "affected_netalertx_version",
+            "summary",
+        ],
+    },
+)
+
 
 def build_ha_tool_registry() -> ToolRegistry:
     """HA repair registry.
@@ -818,6 +923,43 @@ def build_chat_tool_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SEARCH_LOG,
         FINISH_CHAT,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_installer_diagnosis_registry() -> ToolRegistry:
+    """Focused registry for NetAlertX installer failure diagnosis.
+
+    Contains only knowledge retrieval, log reading, strategy saving, and the
+    terminal tool. SSH evidence is gathered by the caller before the loop starts
+    and passed as initial context; the loop uses these tools to reason adaptively.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        QUERY_KNOWLEDGE,
+        SEARCH_LOG,
+        READ_PUEO_LOG,
+        SAVE_STRATEGY,
+        FINISH_INSTALLER_DIAGNOSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_health_diagnosis_registry() -> ToolRegistry:
+    """Focused registry for NetAlertX health diagnosis.
+
+    The caller passes pre-assembled HealthReport context; the loop can search
+    logs for additional evidence before calling finish_health_diagnosis.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        QUERY_KNOWLEDGE,
+        SEARCH_LOG,
+        READ_PUEO_LOG,
+        SAVE_STRATEGY,
+        FINISH_HEALTH_DIAGNOSIS,
     ):
         reg.register(tool)
     return reg

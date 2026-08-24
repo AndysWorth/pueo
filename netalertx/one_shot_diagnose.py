@@ -283,9 +283,9 @@ async def run_diagnose(
             )
         )
 
-    # 5. AI synthesis
+    # 5. AI synthesis — pass _ha_ssh to enable adaptive AgentLoop evidence gathering
     diagnostic, _llm_trace = await diagnose_health_report(
-        report, config_issues, llm_client
+        report, config_issues, llm_client, ssh_client=_ha_ssh
     )
 
     # 6. Print summary

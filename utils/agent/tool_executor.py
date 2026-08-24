@@ -280,6 +280,18 @@ class ToolExecutor:
                     int(args.get("context_lines", 2)),
                     int(args.get("max_matches", 20)),
                 )
+            if name == "finish_installer_diagnosis":
+                return ToolResult(
+                    tool_name="finish_installer_diagnosis",
+                    success=True,
+                    output=args.get("summary", "Installer diagnosis complete"),
+                )
+            if name == "finish_health_diagnosis":
+                return ToolResult(
+                    tool_name="finish_health_diagnosis",
+                    success=True,
+                    output=args.get("summary", "Health diagnosis complete"),
+                )
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):

@@ -1082,7 +1082,7 @@ class TestNetAlertXInstallerSteps1to4:
     def test_step2_mosquitto_start_poll_fails_aborts(self, tmp_path, monkeypatch):
         import asyncio
         from utils.ha.ssh_client import FakeSSHClient
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from netalertx.installer import run_steps_1_to_4
         from netalertx.installer_diagnostics import InstallerDiagnostic
 
@@ -1101,6 +1101,23 @@ class TestNetAlertXInstallerSteps1to4:
             recommended_action="Stop the conflicting process",
             can_auto_fix=False,
         )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient(
             command_results={
                 "ha supervisor info": (0, "ok", ""),
@@ -1115,7 +1132,7 @@ class TestNetAlertXInstallerSteps1to4:
                 gate,
                 self._notifier(approve=False),
                 db_path=db,
-                llm_client=FakeLLMClient(diag.model_dump_json()),
+                llm_client=llm,
             )
         )
         assert state == "MQTT_INSTALLED"
@@ -1657,7 +1674,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         from netalertx.installer import run_steps_5_to_8
         from netalertx.installer_diagnostics import InstallerDiagnostic
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         async def poll_false(*a, **k):
             return False
@@ -1674,6 +1691,23 @@ class TestNetAlertXInstallerSteps5to8:
             alternative_hypotheses=["Supervisor not yet indexed the repo"],
             recommended_action="Wait and re-run setup",
             can_auto_fix=False,
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
         ssh = FakeSSHClient(
             command_results={
@@ -1696,7 +1730,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
-                llm_client=FakeLLMClient(diag.model_dump_json()),
+                llm_client=llm,
             )
         )
         assert state == "ADDON_REPO_ADDED"
@@ -1709,7 +1743,7 @@ class TestNetAlertXInstallerSteps5to8:
 
         from netalertx.installer import run_steps_5_to_8
         from netalertx.installer_diagnostics import InstallerDiagnostic
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         async def poll_not_state_true(*a, **k):
             return True
@@ -1733,6 +1767,23 @@ class TestNetAlertXInstallerSteps5to8:
             recommended_action="Check add-on logs for specific error",
             can_auto_fix=False,
         )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_installer_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.primary_hypothesis,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ssh = FakeSSHClient(
             command_results={
                 f"ha apps info {_SLUG}": (0, "state: unknown\n", ""),
@@ -1755,7 +1806,7 @@ class TestNetAlertXInstallerSteps5to8:
                 self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
-                llm_client=FakeLLMClient(diag.model_dump_json()),
+                llm_client=llm,
             )
         )
         assert state == "ADDON_INSTALLED"
@@ -5199,7 +5250,7 @@ class TestNetAlertXDiagnostic:
     def test_llm_called_with_anomaly_context(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
 
@@ -5210,7 +5261,23 @@ class TestNetAlertXDiagnostic:
             recommended_fix="none",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
         assert len(llm.calls) == 1
         user_msg = llm.calls[0]["messages"][1]["content"]
@@ -5219,7 +5286,7 @@ class TestNetAlertXDiagnostic:
     def test_diagnose_health_report_uses_model_factory(self, monkeypatch):
         import asyncio
         import netalertx.diagnosis as diag_mod
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
 
         diag = NetAlertXDiagnostic(
@@ -5229,7 +5296,23 @@ class TestNetAlertXDiagnostic:
             recommended_fix="none",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         calls = []
         monkeypatch.setattr(
             diag_mod,
@@ -5239,6 +5322,69 @@ class TestNetAlertXDiagnostic:
         asyncio.run(diagnose_health_report(self._zero_devices_report(), llm_client=llm))
         assert calls, "_default_model_for_provider was not called"
         assert llm.calls[0]["model"] == "sentinel-model"
+
+    def test_diagnose_health_report_agent_loop_path(self):
+        """When ssh_client is provided, diagnose_health_report uses AgentLoop."""
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
+
+        diag = NetAlertXDiagnostic(
+            issue="No devices discovered",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Add --network=host",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ssh = FakeSSHClient()
+        result, _trace = asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(),
+                llm_client=llm,
+                ssh_client=ssh,
+            )
+        )
+        assert result is not None
+        assert result.category == "networking"
+        assert result.severity == "HIGH"
+
+    def test_installer_diagnosis_registry_has_terminal_tool(self):
+        from utils.agent.tool_registry import build_installer_diagnosis_registry
+
+        reg = build_installer_diagnosis_registry()
+        names = {t["function"]["name"] for t in reg.get_ollama_tools()}
+        assert "finish_installer_diagnosis" in names
+        assert "query_knowledge" in names
+        assert "search_log" in names
+        assert "save_strategy" in names
+
+    def test_health_diagnosis_registry_has_terminal_tool(self):
+        from utils.agent.tool_registry import build_health_diagnosis_registry
+
+        reg = build_health_diagnosis_registry()
+        names = {t["function"]["name"] for t in reg.get_ollama_tools()}
+        assert "finish_health_diagnosis" in names
+        assert "query_knowledge" in names
+        assert "search_log" in names
 
 
 # ===========================================================================
@@ -6569,7 +6715,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_stale_scan_triggers_diagnosis_and_heal(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6582,7 +6728,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart NetAlertX and trigger a new scan.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         healer = self._FakeHealer()
         # Devices with a timestamp far in the past → scan_age >> threshold
         stale_devices = [
@@ -6612,7 +6774,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_config_issues_trigger_diagnosis(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6625,7 +6787,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Add MQTT_BROKER to app.conf.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         healer = self._FakeHealer()
         # app.conf with only TIMEZONE → MQTT_BROKER and other required keys missing
 
@@ -6641,7 +6819,7 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(llm.calls) == 1, "LLM should be called when config issues are found"
-        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        call_prompt = llm.calls[0]["messages"][1]["content"]
         assert "MQTT_BROKER" in call_prompt, "Config issue should appear in LLM prompt"
 
     def test_critical_log_line_triggers_triage(self):
@@ -6679,7 +6857,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_mosquitto_not_running_triggers_diagnosis(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6692,7 +6870,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Run 'ha apps start core_mosquitto'.",
             affected_netalertx_version="unknown",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         healer = self._FakeHealer()
 
         asyncio.run(
@@ -6707,7 +6901,7 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(llm.calls) == 1, "LLM should be called when Mosquitto is not running"
-        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        call_prompt = llm.calls[0]["messages"][1]["content"]
         assert (
             "core_mosquitto" in call_prompt
         ), "Mosquitto issue should appear in prompt"
@@ -6715,7 +6909,7 @@ class TestNetAlertXOneShotDiagnose:
     def test_app_conf_missing_triggers_diagnosis(self):
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6728,7 +6922,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Re-run netalertx-setup.",
             affected_netalertx_version="unknown",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         healer = self._FakeHealer()
         # No file_contents → FakeSSHClient.read_file raises FileNotFoundError
         # → _fetch_app_conf returns None → ConfigIssue generated
@@ -6751,7 +6961,7 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(llm.calls) == 1, "LLM should be called when app.conf is missing"
-        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        call_prompt = llm.calls[0]["messages"][1]["content"]
         assert "app.conf" in call_prompt, "Missing app.conf should appear in LLM prompt"
 
     def test_check_mosquitto_running_started(self):
@@ -6851,7 +7061,7 @@ class TestNetAlertXOneShotDiagnose:
         """Empty addon_slug triggers the 'if not _slug:' ConfigIssue branch."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6864,7 +7074,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Set netalertx.addon_slug in config.yaml.",
             affected_netalertx_version="unknown",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         ha_ssh = FakeSSHClient(
             command_results={"ha apps info core_mosquitto": (0, "state: started\n", "")}
         )
@@ -6881,7 +7107,7 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(llm.calls) == 1, "LLM should be called when addon_slug is empty"
-        call_prompt = llm.calls[0]["messages"][-1]["content"]
+        call_prompt = llm.calls[0]["messages"][1]["content"]
         assert "addon_slug" in call_prompt
 
     def test_constructs_healer_when_none_auto_execute(self):
@@ -6889,7 +7115,7 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
         from unittest.mock import patch
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6903,7 +7129,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart NetAlertX.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         gate = FakeAutonomyGate(auto_execute_result=True)
         stale_devices = [
             {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
@@ -6932,7 +7174,7 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
         from unittest.mock import patch
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6946,7 +7188,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart NetAlertX.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         stale_devices = [
             {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
@@ -6974,7 +7232,7 @@ class TestNetAlertXOneShotDiagnose:
         """mqtt_probe_fn returning True → mqtt_active=True in LLM diagnosis prompt."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -6987,7 +7245,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart scan.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         stale_devices = [
             {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
@@ -7010,14 +7284,14 @@ class TestNetAlertXOneShotDiagnose:
         )
 
         assert len(probe_calls) == 1, "mqtt_probe_fn must be called exactly once"
-        prompt = llm.calls[0]["messages"][-1]["content"]
+        prompt = llm.calls[0]["messages"][1]["content"]
         assert "MQTT active: True" in prompt, "Probe True must propagate to LLM prompt"
 
     def test_mqtt_probe_fn_false_sets_mqtt_inactive(self):
         """mqtt_probe_fn returning False → mqtt_active=False in LLM diagnosis prompt."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -7030,7 +7304,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart scan.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         stale_devices = [
             {"devLastConnection": "2020-01-01 00:00:00", "devMac": "AA:BB:CC:DD:EE:FF"}
         ]
@@ -7050,7 +7340,7 @@ class TestNetAlertXOneShotDiagnose:
             )
         )
 
-        prompt = llm.calls[0]["messages"][-1]["content"]
+        prompt = llm.calls[0]["messages"][1]["content"]
         assert (
             "MQTT active: False" in prompt
         ), "Probe False must propagate to LLM prompt"
@@ -7059,7 +7349,7 @@ class TestNetAlertXOneShotDiagnose:
         """mqtt_active=False + mosquitto running → ConfigIssue added → LLM called."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -7072,7 +7362,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Check MQTT_BROKER in app.conf.",
             affected_netalertx_version="unknown",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
 
         async def false_probe(_: str) -> bool:
             return False
@@ -7093,7 +7399,7 @@ class TestNetAlertXOneShotDiagnose:
         assert (
             len(llm.calls) == 1
         ), "LLM should be called when MQTT is silent but broker is up"
-        prompt = llm.calls[0]["messages"][-1]["content"]
+        prompt = llm.calls[0]["messages"][1]["content"]
         assert (
             "mqtt_traffic" in prompt
         ), "mqtt_traffic ConfigIssue must appear in LLM prompt"
@@ -7103,7 +7409,7 @@ class TestNetAlertXOneShotDiagnose:
         import asyncio
 
         from utils.agent.autonomy import FakeAutonomyGate
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
 
         from netalertx.diagnosis import NetAlertXDiagnostic
@@ -7116,7 +7422,23 @@ class TestNetAlertXOneShotDiagnose:
             recommended_fix="Restart NetAlertX and trigger a new scan.",
             affected_netalertx_version="v26.7.1",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
         gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
         healer = self._FakeHealer()
         stale_devices = [
@@ -7421,7 +7743,7 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         """When ha store addons returns no slug, HIGH config issue is flagged."""
         import asyncio
 
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.ha.ssh_client import FakeSSHClient
         from netalertx.diagnosis import NetAlertXDiagnostic
         from netalertx.one_shot_diagnose import run_diagnose
@@ -7433,7 +7755,23 @@ class TestOneShotDiagnoseSlugAutoRecovery:
             recommended_fix="Set netalertx.addon_slug in config.yaml.",
             affected_netalertx_version="unknown",
         )
-        llm = FakeLLMClient(diag.model_dump_json())
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
 
         monkeypatch.setattr(
             "netalertx.one_shot_diagnose._parse_slug_from_store",
@@ -7460,7 +7798,7 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         )
 
         assert len(llm.calls) == 1
-        assert "addon_slug" in llm.calls[0]["messages"][-1]["content"]
+        assert "addon_slug" in llm.calls[0]["messages"][1]["content"]
 
 
 # ── FA-only enforcement ───────────────────────────────────────────────────────
