@@ -137,10 +137,17 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
             "(set federated_cases_repo in config.yaml to enable)"
         )
 
-    total = n_ha + n_hacs + n_docs + n_cases
+    # ── 5. Strategy seeding ──────────────────────────────────────────────────
+    print("[rag-refresh] Seeding strategy knowledge base from prompt files…")
+    from utils.knowledge.strategy_seeder import seed_strategies
+
+    n_strategies = seed_strategies(store)
+    print(f"[rag-refresh]   → seeded {n_strategies} strategy document(s)")
+
+    total = n_ha + n_hacs + n_docs + n_cases + n_strategies
     print(
         f"[rag-refresh] Done. Embedded content from {total} file(s) "
-        f"across 4 collections."
+        f"across 5 collections."
     )
 
 

@@ -6286,3 +6286,33 @@ class TestIngestWithScenariosDir:
         # Only state.json may appear, no scenario YAML
         new_files = {f for f in (after - before) if f.suffix == ".yaml"}
         assert len(new_files) == 0
+
+
+class TestStrategySeeder:
+    def test_seeds_known_prompt_files(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        store = FakeKnowledgeStore()
+        n = seed_strategies(store)
+        assert n > 0
+        chunks = store.query("NetAlertX", top_k=10, collections=["strategies"])
+        assert len(chunks) > 0
+
+    def test_seeding_is_idempotent(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        store = FakeKnowledgeStore()
+        n1 = seed_strategies(store)
+        n2 = seed_strategies(store)
+        assert n1 == n2
+        chunks_first = store.query("strategy", top_k=50, collections=["strategies"])
+        seed_strategies(store)
+        chunks_second = store.query("strategy", top_k=50, collections=["strategies"])
+        assert len(chunks_first) == len(chunks_second)
+
+    def test_strategies_collection_in_collections_tuple(self):
+        from utils.knowledge.knowledge_store import COLLECTIONS
+
+        assert "strategies" in COLLECTIONS

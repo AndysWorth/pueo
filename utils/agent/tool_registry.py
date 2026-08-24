@@ -627,6 +627,91 @@ REWRITE_NETALERTX_CONF = ToolDefinition(
 )
 
 
+SAVE_STRATEGY = ToolDefinition(
+    name="save_strategy",
+    description=(
+        "Record a novel investigation or repair approach in the strategies knowledge base "
+        "so future sessions can retrieve it via query_knowledge. "
+        "Call when you used an approach that worked and was not already in the knowledge base."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short descriptive title (e.g. 'Diagnosing ZHA coordinator crash')",
+            },
+            "trigger_pattern": {
+                "type": "string",
+                "description": (
+                    "Pattern or symptom that triggers this strategy "
+                    "(e.g. 'ZHA integration unavailable after HA restart')"
+                ),
+            },
+            "approach": {
+                "type": "string",
+                "description": "Step-by-step description of what worked and why",
+            },
+        },
+        "required": ["title", "trigger_pattern", "approach"],
+    },
+)
+
+READ_PUEO_LOG = ToolDefinition(
+    name="read_pueo_log",
+    description=(
+        "Read recent lines from Pueo's own structured JSON log. "
+        "Use to investigate errors or warnings in Pueo itself (loop crashes, stream resets, etc.)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "lines": {
+                "type": "integer",
+                "description": "Number of recent lines to return (default 100, max 500)",
+            },
+            "level": {
+                "type": "string",
+                "enum": ["ERROR", "WARNING", "INFO"],
+                "description": "Filter to only lines at this log level or above",
+            },
+        },
+        "required": [],
+    },
+)
+
+SEARCH_LOG = ToolDefinition(
+    name="search_log",
+    description=(
+        "Search a named log for lines matching a regex pattern or timestamp range. "
+        "Returns matching lines with surrounding context."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "log_name": {
+                "type": "string",
+                "enum": ["pueo", "ha_core"],
+                "description": "Which log to search: 'pueo' for Pueo's own log, 'ha_core' for the HA supervisor journal",
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Regex pattern to match (case-insensitive)",
+            },
+            "context_lines": {
+                "type": "integer",
+                "description": "Number of surrounding lines to include with each match (default 2)",
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": "Maximum number of matching lines to return (default 20)",
+            },
+        },
+        "required": ["log_name", "pattern"],
+    },
+)
+
+
 def build_ha_tool_registry() -> ToolRegistry:
     """HA repair registry.
 
@@ -650,6 +735,9 @@ def build_ha_tool_registry() -> ToolRegistry:
         FETCH_HA_DOCS,
         FETCH_URL,
         INVESTIGATE_DEVICE,
+        SAVE_STRATEGY,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
     ):
         reg.register(tool)
     return reg
@@ -688,6 +776,9 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         READ_SOURCE,
         FETCH_URL,
         INVESTIGATE_DEVICE,
+        SAVE_STRATEGY,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
     ):
         reg.register(tool)
     return reg
@@ -723,6 +814,9 @@ def build_chat_tool_registry() -> ToolRegistry:
         INVESTIGATE_DEVICE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
+        SAVE_STRATEGY,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
         FINISH_CHAT,
     ):
         reg.register(tool)
