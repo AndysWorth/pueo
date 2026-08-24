@@ -262,6 +262,24 @@ class ToolExecutor:
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
                 return await self._rewrite_netalertx_conf(args.get("overrides", {}))
+            if name == "save_strategy":
+                return await self._save_strategy(
+                    args.get("title", ""),
+                    args.get("trigger_pattern", ""),
+                    args.get("approach", ""),
+                )
+            if name == "read_pueo_log":
+                return await self._read_pueo_log(
+                    int(args.get("lines", 100)),
+                    args.get("level"),
+                )
+            if name == "search_log":
+                return await self._search_log(
+                    args.get("log_name", "pueo"),
+                    args.get("pattern", ""),
+                    int(args.get("context_lines", 2)),
+                    int(args.get("max_matches", 20)),
+                )
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):
@@ -1303,3 +1321,193 @@ class ToolExecutor:
                 output="",
                 error=str(exc),
             )
+
+    async def _save_strategy(
+        self, title: str, trigger_pattern: str, approach: str
+    ) -> ToolResult:
+        if not title or not approach:
+            return ToolResult(
+                tool_name="save_strategy",
+                success=False,
+                output="",
+                error="title and approach are required",
+            )
+        strategy_id = str(uuid.uuid4())
+        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\n{approach}"
+        meta = {
+            "source": "agent_learned",
+            "title": title,
+            "trigger_pattern": trigger_pattern,
+            "strategy_id": strategy_id,
+        }
+        if self._knowledge_store is not None:
+            try:
+                await asyncio.to_thread(
+                    self._knowledge_store.upsert,
+                    "strategies",
+                    [strategy_id],
+                    [text],
+                    [meta],
+                )
+            except Exception as exc:
+                log.warning("save_strategy_chroma_failed", error=str(exc))
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO agent_strategies"
+                    " (id, title, trigger_pattern, approach, created_at)"
+                    " VALUES (?, ?, ?, ?, datetime('now'))",
+                    (strategy_id, title, trigger_pattern, approach),
+                )
+                conn.commit()
+        except Exception as exc:
+            log.warning("save_strategy_sqlite_failed", error=str(exc))
+        return ToolResult(
+            tool_name="save_strategy",
+            success=True,
+            output=f"Strategy '{title}' saved (id={strategy_id})",
+        )
+
+    async def _read_pueo_log(
+        self, lines: int = 100, level: Optional[str] = None
+    ) -> ToolResult:
+        import re as _re
+
+        lines = max(1, min(lines, 500))
+        log_path = _get_dirs().log_dir / "pueo.log"
+        if not log_path.exists():
+            return ToolResult(
+                tool_name="read_pueo_log",
+                success=False,
+                output="",
+                error=f"Log file not found: {log_path}",
+            )
+        try:
+            raw = await asyncio.to_thread(log_path.read_text, "utf-8", "replace")
+            all_lines = raw.splitlines()[-lines:]
+            if level:
+                level_upper = level.upper()
+                _LEVELS = {"ERROR": 3, "WARNING": 2, "INFO": 1}
+                min_rank = _LEVELS.get(level_upper, 1)
+                filtered = []
+                for line in all_lines:
+                    for lvl, rank in _LEVELS.items():
+                        if rank >= min_rank and (
+                            f'"level":"{lvl}"' in line
+                            or f'"level": "{lvl}"' in line
+                            or _re.search(rf"\b{lvl}\b", line)
+                        ):
+                            filtered.append(line)
+                            break
+                all_lines = filtered
+            if not all_lines:
+                return ToolResult(
+                    tool_name="read_pueo_log",
+                    success=True,
+                    output=f"No log lines matching level={level}",
+                )
+            return ToolResult(
+                tool_name="read_pueo_log",
+                success=True,
+                output="\n".join(all_lines),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="read_pueo_log",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _search_log(
+        self,
+        log_name: str,
+        pattern: str,
+        context_lines: int = 2,
+        max_matches: int = 20,
+    ) -> ToolResult:
+        import re as _re
+
+        context_lines = max(0, min(context_lines, 10))
+        max_matches = max(1, min(max_matches, 100))
+
+        if log_name == "pueo":
+            log_path = _get_dirs().log_dir / "pueo.log"
+            if not log_path.exists():
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error=f"Log file not found: {log_path}",
+                )
+            try:
+                raw = await asyncio.to_thread(log_path.read_text, "utf-8", "replace")
+                all_lines = raw.splitlines()
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+        elif log_name == "ha_core":
+            if self._ha_ssh is None:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error="No SSH client available for ha_core log search",
+                )
+            try:
+                _, stdout, _ = await self._ha_ssh.run("ha core logs --no-follow")
+                all_lines = stdout.splitlines()
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+        else:
+            return ToolResult(
+                tool_name="search_log",
+                success=False,
+                output="",
+                error=f"Unknown log_name: {log_name!r}. Use 'pueo' or 'ha_core'.",
+            )
+
+        try:
+            regex = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as exc:
+            return ToolResult(
+                tool_name="search_log",
+                success=False,
+                output="",
+                error=f"Invalid regex pattern: {exc}",
+            )
+
+        results: list[str] = []
+        match_count = 0
+        for i, line in enumerate(all_lines):
+            if regex.search(line):
+                start = max(0, i - context_lines)
+                end = min(len(all_lines), i + context_lines + 1)
+                block = all_lines[start:end]
+                results.append("\n".join(f"  {l}" for l in block))
+                match_count += 1
+                if match_count >= max_matches:
+                    break
+
+        if not results:
+            return ToolResult(
+                tool_name="search_log",
+                success=True,
+                output=f"No matches for pattern {pattern!r} in {log_name} log",
+            )
+        sep = "\n---\n"
+        summary = f"{match_count} match(es) for {pattern!r} in {log_name} log:\n\n"
+        return ToolResult(
+            tool_name="search_log",
+            success=True,
+            output=summary + sep.join(results),
+        )

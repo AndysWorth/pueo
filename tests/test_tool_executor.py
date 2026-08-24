@@ -481,3 +481,254 @@ class TestInvestigateDevice:
 
         _, kwargs = mock_enrich.call_args
         assert kwargs["netalertx_client"] is nax_api
+
+
+class TestSaveStrategy:
+    """Tests for _save_strategy executor."""
+
+    def _make_executor_with_store(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "created_at TEXT NOT NULL)"
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        return executor, store, db_path
+
+    def test_saves_to_chroma_and_sqlite(self, tmp_path):
+        executor, store, db_path = self._make_executor_with_store(tmp_path)
+        result = asyncio.run(
+            executor._save_strategy(
+                "ZHA crash", "ZHA unavailable", "Read logs, check USB"
+            )
+        )
+        assert result.success is True
+        assert "ZHA crash" in result.output
+        chunks = store.query("ZHA", top_k=5, collections=["strategies"])
+        assert len(chunks) == 1
+        assert "ZHA crash" in chunks[0].text
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT title FROM agent_strategies").fetchone()
+        assert row[0] == "ZHA crash"
+
+    def test_missing_title_returns_error(self, tmp_path):
+        executor, _, _ = self._make_executor_with_store(tmp_path)
+        result = asyncio.run(executor._save_strategy("", "trigger", "approach"))
+        assert result.success is False
+
+    def test_no_knowledge_store_still_writes_sqlite(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        db_path = str(tmp_path / "test2.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "created_at TEXT NOT NULL)"
+            )
+            conn.commit()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=None,
+            db_path=db_path,
+        )
+        result = asyncio.run(executor._save_strategy("title", "trigger", "approach"))
+        assert result.success is True
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT title FROM agent_strategies").fetchone()
+        assert row[0] == "title"
+
+
+class TestReadPueoLog:
+    """Tests for _read_pueo_log executor."""
+
+    def test_reads_log_file(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "pueo.log"
+        log_file.write_text("line1\nline2\nline3\n")
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(executor._read_pueo_log(lines=10))
+        assert result.success is True
+        assert "line1" in result.output
+        assert "line3" in result.output
+
+    def test_missing_log_returns_error(self, tmp_path):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = tmp_path / "nonexistent"
+            result = asyncio.run(executor._read_pueo_log())
+        assert result.success is False
+        assert "not found" in result.error
+
+    def test_level_filter_error_only(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "pueo.log"
+        log_file.write_text(
+            '{"level":"INFO","msg":"info line"}\n'
+            '{"level":"ERROR","msg":"err line"}\n'
+            '{"level":"WARNING","msg":"warn line"}\n'
+        )
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(executor._read_pueo_log(lines=100, level="ERROR"))
+        assert result.success is True
+        assert "err line" in result.output
+        assert "info line" not in result.output
+
+
+class TestSearchLog:
+    """Tests for _search_log executor."""
+
+    def test_pattern_match_returns_results(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "pueo.log"
+        log_file.write_text("line1\nstream_reset detected\nline3\nline4\n")
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(
+                executor._search_log("pueo", "stream_reset", context_lines=0)
+            )
+        assert result.success is True
+        assert "stream_reset" in result.output
+
+    def test_no_match_returns_success_with_message(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "pueo.log").write_text("line1\nline2\n")
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(executor._search_log("pueo", "xyz_not_present"))
+        assert result.success is True
+        assert "No matches" in result.output
+
+    def test_invalid_regex_returns_error(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "pueo.log").write_text("x\n")
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(executor._search_log("pueo", "[invalid"))
+        assert result.success is False
+        assert "Invalid regex" in result.error
+
+    def test_unknown_log_name_returns_error(self, tmp_path):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(executor._search_log("unknown_log", "pattern"))
+        assert result.success is False
+        assert "Unknown log_name" in result.error

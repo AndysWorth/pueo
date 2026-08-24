@@ -385,6 +385,18 @@ def _migrate_v23(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v24(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS agent_strategies ("
+        "id TEXT PRIMARY KEY, "
+        "title TEXT NOT NULL, "
+        "trigger_pattern TEXT NOT NULL, "
+        "approach TEXT NOT NULL, "
+        "created_at TEXT NOT NULL"
+        ")"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -409,6 +421,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (21, _migrate_v21),
     (22, _migrate_v22),
     (23, _migrate_v23),
+    (24, _migrate_v24),
 ]
 
 

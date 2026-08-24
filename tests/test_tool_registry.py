@@ -92,3 +92,24 @@ class TestRegistryMembership:
         # Sandbox engine executor has no NAX client; the tool would always error.
         reg = build_ha_tool_registry()
         assert "query_netalertx" not in reg
+
+    def test_all_registries_include_save_strategy(self):
+        from utils.agent.tool_registry import build_netalertx_tool_registry
+
+        for reg in (
+            build_ha_tool_registry(),
+            build_netalertx_tool_registry(),
+            build_chat_tool_registry(),
+        ):
+            assert "save_strategy" in reg
+
+    def test_all_registries_include_log_reading_tools(self):
+        from utils.agent.tool_registry import build_netalertx_tool_registry
+
+        for reg in (
+            build_ha_tool_registry(),
+            build_netalertx_tool_registry(),
+            build_chat_tool_registry(),
+        ):
+            assert "read_pueo_log" in reg
+            assert "search_log" in reg
