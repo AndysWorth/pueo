@@ -292,6 +292,18 @@ class ToolExecutor:
                     success=True,
                     output=args.get("summary", "Health diagnosis complete"),
                 )
+            if name == "finish_diagnosis":
+                return ToolResult(
+                    tool_name="finish_diagnosis",
+                    success=True,
+                    output="Config diagnosis complete",
+                )
+            if name == "finish_impact_analysis":
+                return ToolResult(
+                    tool_name="finish_impact_analysis",
+                    success=True,
+                    output=args.get("summary", "Impact analysis complete"),
+                )
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):
@@ -983,16 +995,16 @@ class ToolExecutor:
 
         from utils.agent.tool_registry import FixEnrichment
 
+        from utils.core.prompts import load_prompt as _load_prompt
+
+        base = _load_prompt("fix_enrichment")
         prompt = (
-            "You are reviewing a proposed Home Assistant configuration fix.\n\n"
+            f"{base}\n\n"
             f"Agent description: {description}\n\n"
             "Current configuration.yaml (excerpt):\n"
             f"```yaml\n{original_config[:3000]}\n```\n\n"
             "Proposed replacement:\n"
-            f"```yaml\n{proposed_yaml[:3000]}\n```\n\n"
-            "Identify the specific lines being changed, explain in plain English "
-            "why the current configuration is wrong and how the fix addresses it, "
-            "rate your confidence, and summarise the fix only if confidence is high."
+            f"```yaml\n{proposed_yaml[:3000]}\n```"
         )
         try:
             import config as _cfg

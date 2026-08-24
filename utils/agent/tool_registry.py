@@ -711,6 +711,85 @@ SEARCH_LOG = ToolDefinition(
     },
 )
 
+FINISH_DIAGNOSIS = ToolDefinition(
+    name="finish_diagnosis",
+    description=(
+        "Call when the configuration analysis is complete. "
+        "Provide a structured assessment of the configuration validity and issues found."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "is_valid": {
+                "type": "boolean",
+                "description": "True if the config has no structural or deprecated flaws",
+            },
+            "severity": {
+                "type": "string",
+                "enum": ["NONE", "LOW", "MEDIUM", "CRITICAL"],
+                "description": "Overall severity: NONE, LOW, MEDIUM, or CRITICAL",
+            },
+            "identified_issues": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of specific flaws, deprecated formats, or risks found",
+            },
+            "recommended_fix_yaml": {
+                "type": "string",
+                "description": "Corrected YAML snippet if applicable, or null",
+            },
+        },
+        "required": ["is_valid", "severity", "identified_issues"],
+    },
+)
+
+FINISH_IMPACT_ANALYSIS = ToolDefinition(
+    name="finish_impact_analysis",
+    description=(
+        "Call when the breaking-change impact analysis is complete. "
+        "Provide a structured assessment of which breaking changes affect this installation."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "affected_changes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "applies": {"type": "boolean"},
+                        "reason": {"type": "string"},
+                        "config_fix_yaml": {"type": "string"},
+                        "fix_description": {"type": "string"},
+                    },
+                    "required": ["description", "applies", "reason"],
+                },
+                "description": "Breaking changes with their applicability assessment",
+            },
+            "instance_impact": {
+                "type": "string",
+                "enum": ["none", "low", "high"],
+                "description": "'none', 'low', or 'high'",
+            },
+            "effective_safe_to_update": {
+                "type": "boolean",
+                "description": "True if the update can proceed safely given this config",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-paragraph summary of impact on this installation",
+            },
+        },
+        "required": [
+            "affected_changes",
+            "instance_impact",
+            "effective_safe_to_update",
+            "summary",
+        ],
+    },
+)
+
 FINISH_INSTALLER_DIAGNOSIS = ToolDefinition(
     name="finish_installer_diagnosis",
     description=(
@@ -960,6 +1039,46 @@ def build_health_diagnosis_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SAVE_STRATEGY,
         FINISH_HEALTH_DIAGNOSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_config_analysis_registry() -> ToolRegistry:
+    """Focused registry for HA configuration analysis.
+
+    The caller passes the main config YAML as initial context; the loop can
+    follow !include directives with read_file, validate with ha core check,
+    and query the knowledge base before calling finish_diagnosis.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_FILE,
+        RUN_HA_COMMAND,
+        QUERY_KNOWLEDGE,
+        SAVE_STRATEGY,
+        FINISH_DIAGNOSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_impact_analysis_registry() -> ToolRegistry:
+    """Focused registry for HA breaking-change impact analysis.
+
+    The caller passes breaking changes, installed integrations, and a config
+    snippet as initial context; the loop can read config files, query HA docs,
+    verify installed apps, and search the knowledge base before calling
+    finish_impact_analysis.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        READ_FILE,
+        RUN_HA_COMMAND,
+        FETCH_HA_DOCS,
+        QUERY_KNOWLEDGE,
+        SAVE_STRATEGY,
+        FINISH_IMPACT_ANALYSIS,
     ):
         reg.register(tool)
     return reg

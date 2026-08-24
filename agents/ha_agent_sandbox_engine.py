@@ -17,7 +17,6 @@ from config import (
     DB_PATH,
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
-    MAX_PROMPT_TOKENS,
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
@@ -34,8 +33,7 @@ from interfaces import (
     LLMClientProtocol,
     SSHClientProtocol,
 )
-from utils.core.context import estimate_tokens, truncate_to_budget
-from utils.hitl.llm_trace import LLMTrace
+from utils.core.context import truncate_to_budget
 from utils.core.logging import (
     get_logger,
     get_correlation_id,
@@ -547,57 +545,6 @@ async def commit_atomic_swap(
     await client.write_file(CONFIG_REMOTE_PATH, fixed_yaml)
     await client.run("ha core restart", check=False)
     log.info("atomic_swap_complete")
-
-
-# ==========================================
-# OLLAMA INFERENCE LAYER
-# ==========================================
-@async_retry(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(ConnectionRefusedError,),
-)
-async def analyze_config_locally(
-    yaml_content: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-) -> tuple[DiagnosticsReport, LLMTrace]:
-    client = llm_client or make_llm_client()
-
-    system_prompt = load_prompt("diagnose_config_repair")
-    user_prefix = "Analyze this configuration data:\n\n```yaml\n"
-    user_suffix = "\n```"
-    overhead = estimate_tokens(system_prompt) + estimate_tokens(
-        user_prefix + user_suffix
-    )
-    content_budget = MAX_PROMPT_TOKENS - overhead
-    original_tokens = estimate_tokens(yaml_content)
-    if original_tokens > content_budget:
-        yaml_content = truncate_to_budget(yaml_content, content_budget, "smart")
-        log.warning(
-            "content_truncated",
-            original_tokens=original_tokens,
-            truncated_tokens=estimate_tokens(yaml_content),
-        )
-    user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
-
-    log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
-    response = await client.chat(
-        model=_config.OLLAMA_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        options={"temperature": 0.0},
-        format=DiagnosticsReport.model_json_schema(),
-    )
-    raw_output = response["message"]["content"]
-    trace = LLMTrace(
-        model=_config.OLLAMA_MODEL,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        raw_response=raw_output,
-    )
-    return DiagnosticsReport.model_validate_json(raw_output), trace
 
 
 _CODE_PROPOSAL_SYSTEM_PROMPT = load_prompt("code_proposal")

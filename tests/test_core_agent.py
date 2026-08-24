@@ -2429,16 +2429,26 @@ class TestCorePipeline:
 
     @pytest.fixture
     def llm_valid(self):
-        from utils.llm.ollama_client import FakeLLMClient
-        from agents.ha_agent_core import DiagnosticsReport
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        r = DiagnosticsReport(
-            is_valid=True,
-            severity="NONE",
-            identified_issues=[],
-            recommended_fix_yaml=None,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_diagnosis",
+                                "arguments": {
+                                    "is_valid": True,
+                                    "severity": "NONE",
+                                    "identified_issues": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        return FakeLLMClient(r.model_dump_json())
 
     def test_main_valid_config_completes(self, ssh, llm_valid):
         from agents import ha_agent_core
@@ -2455,7 +2465,7 @@ class TestCorePipeline:
         from agents import ha_agent_core
 
         asyncio.run(ha_agent_core.main(ssh_client=ssh, llm_client=llm_valid))
-        assert len(llm_valid.calls) == 1
+        assert len(llm_valid.calls) >= 1
 
 
 # ── ha_agent_advanced pipeline ────────────────────────────────────────────────────
@@ -2487,29 +2497,49 @@ class TestAdvancedPipeline:
 
     @pytest.fixture
     def llm_valid(self):
-        from utils.llm.ollama_client import FakeLLMClient
-        from agents.ha_agent_advanced import DiagnosticsReport
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        r = DiagnosticsReport(
-            is_valid=True,
-            severity="NONE",
-            identified_issues=[],
-            recommended_fix_yaml=None,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_diagnosis",
+                                "arguments": {
+                                    "is_valid": True,
+                                    "severity": "NONE",
+                                    "identified_issues": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        return FakeLLMClient(r.model_dump_json())
 
     @pytest.fixture
     def llm_invalid(self):
-        from utils.llm.ollama_client import FakeLLMClient
-        from agents.ha_agent_advanced import DiagnosticsReport
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        r = DiagnosticsReport(
-            is_valid=False,
-            severity="LOW",
-            identified_issues=["missing key"],
-            recommended_fix_yaml=None,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_diagnosis",
+                                "arguments": {
+                                    "is_valid": False,
+                                    "severity": "LOW",
+                                    "identified_issues": ["missing key"],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
         )
-        return FakeLLMClient(r.model_dump_json())
 
     def test_valid_config_records_state(self, ssh, llm_valid, db_path):
         from agents import ha_agent_advanced
@@ -14129,3 +14159,209 @@ class TestPollForUpdatesPersonalization:
         text = load_prompt("personalize_breaking_changes")
         assert "breaking changes" in text.lower()
         assert "instance_impact" in text
+
+
+class TestFinishDiagnosisDispatch:
+    """Terminal tool dispatch cases added by Issue #381."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+        )
+
+    def test_finish_diagnosis_returns_success(self):
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_diagnosis",
+                    arguments={
+                        "is_valid": True,
+                        "severity": "NONE",
+                        "identified_issues": [],
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert result.tool_name == "finish_diagnosis"
+
+    def test_finish_impact_analysis_returns_success(self):
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="finish_impact_analysis",
+                    arguments={
+                        "affected_changes": [],
+                        "instance_impact": "none",
+                        "effective_safe_to_update": True,
+                        "summary": "No breaking changes affect this instance.",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert result.tool_name == "finish_impact_analysis"
+        assert "No breaking changes" in result.output
+
+    def test_fix_enrichment_prompt_loads(self):
+        from utils.core.prompts import load_prompt
+
+        text = load_prompt("fix_enrichment")
+        assert len(text) > 0
+        assert "configuration" in text.lower()
+
+
+class TestAnalyzeConfigLocallyAgentLoop:
+    """AgentLoop path for analyze_config_locally (Issue #381)."""
+
+    VALID_YAML = "homeassistant:\n  name: Home\n  unit_system: metric\n"
+
+    def test_agent_loop_path_returns_valid_report(self, fake_ssh_client):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.agent.config_analysis import analyze_config_locally
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_diagnosis",
+                                "arguments": {
+                                    "is_valid": True,
+                                    "severity": "NONE",
+                                    "identified_issues": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        report, trace = asyncio.run(
+            analyze_config_locally(
+                self.VALID_YAML,
+                ssh_client=fake_ssh_client,
+                llm_client=llm,
+            )
+        )
+        assert report.is_valid is True
+        assert report.severity == "NONE"
+        assert trace is None  # AgentLoop path returns None for trace
+
+    def test_agent_loop_path_extracts_issues(self, fake_ssh_client):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.agent.config_analysis import analyze_config_locally
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_diagnosis",
+                                "arguments": {
+                                    "is_valid": False,
+                                    "severity": "MEDIUM",
+                                    "identified_issues": ["deprecated key: tts"],
+                                    "recommended_fix_yaml": "tts:\n  - platform: google_translate\n",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        report, trace = asyncio.run(
+            analyze_config_locally(
+                self.VALID_YAML,
+                ssh_client=fake_ssh_client,
+                llm_client=llm,
+            )
+        )
+        assert report.is_valid is False
+        assert report.severity == "MEDIUM"
+        assert "deprecated key: tts" in report.identified_issues
+        assert report.recommended_fix_yaml is not None
+
+    def test_no_ssh_client_uses_one_shot_path(self, fake_llm_client):
+        from utils.agent.config_analysis import analyze_config_locally
+
+        report, trace = asyncio.run(
+            analyze_config_locally(self.VALID_YAML, llm_client=fake_llm_client)
+        )
+        assert report is not None
+        assert trace is not None  # one-shot path returns LLMTrace
+
+
+class TestPersonalizeBreakingChangesAgentLoop:
+    """AgentLoop path for personalize_breaking_changes (Issue #381)."""
+
+    def _make_llm(self, impact: str = "none"):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_impact_analysis",
+                                "arguments": {
+                                    "affected_changes": [],
+                                    "instance_impact": impact,
+                                    "effective_safe_to_update": impact != "high",
+                                    "summary": f"Impact is {impact}.",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+    def test_agent_loop_path_returns_report(self, fake_ssh_client):
+        from agents.ha_update_manager import personalize_breaking_changes
+
+        changes = ["template syntax changed: old syntax no longer supported"]
+        report = asyncio.run(
+            personalize_breaking_changes(
+                breaking_changes=changes,
+                installed_integrations=["template"],
+                ha_config_yaml="template:\n  - sensor:\n",
+                llm_client=self._make_llm("low"),
+                ssh_client=fake_ssh_client,
+            )
+        )
+        assert report is not None
+        assert report.instance_impact == "low"
+        assert report.effective_safe_to_update is True
+
+    def test_agent_loop_high_impact(self, fake_ssh_client):
+        from agents.ha_update_manager import personalize_breaking_changes
+
+        changes = ["zha: config key renamed; database_path is now db_path"]
+        report = asyncio.run(
+            personalize_breaking_changes(
+                breaking_changes=changes,
+                installed_integrations=["zha"],
+                ha_config_yaml="zha:\n  database_path: /config/zigbee.db\n",
+                llm_client=self._make_llm("high"),
+                ssh_client=fake_ssh_client,
+            )
+        )
+        assert report.instance_impact == "high"
+        assert report.effective_safe_to_update is False
