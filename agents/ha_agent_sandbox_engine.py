@@ -371,6 +371,20 @@ def _migrate_v22(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v23(cursor: sqlite3.Cursor) -> None:
+    # Remove placeholder rows that were never backed by a real HA backup.
+    cursor.execute("DELETE FROM backup_registry WHERE backup_slug = 'unknown_slug'")
+    # Deduplicate any remaining slugs (keep highest id = most recent insert per slug).
+    cursor.execute(
+        "DELETE FROM backup_registry"
+        " WHERE id NOT IN (SELECT MAX(id) FROM backup_registry GROUP BY backup_slug)"
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_registry_slug"
+        " ON backup_registry (backup_slug)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -394,6 +408,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (20, _migrate_v20),
     (21, _migrate_v21),
     (22, _migrate_v22),
+    (23, _migrate_v23),
 ]
 
 
@@ -455,13 +470,6 @@ async def fetch_remote_config(
     except Exception as e:
         log.error("ssh_fetch_failed", host=HA_HOST, error=str(e))
         raise
-
-
-def _extract_backup_slug(output: str) -> str:
-    for line in output.split("\n"):
-        if "slug:" in line.lower():
-            return line.split(":")[-1].strip().strip('"')
-    return "unknown_slug"
 
 
 @async_retry(**SSH_RETRY_KWARGS)

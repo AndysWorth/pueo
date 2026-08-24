@@ -138,7 +138,7 @@ class TestPackageInstallable:
         assert meta["Version"] is not None
 
     def test_entry_point_registered(self):
-        """The 'pueo' console script entry point is declared."""
+        """The 'pueo-py' console script entry point is declared."""
         from importlib.metadata import metadata, entry_points, PackageNotFoundError
 
         try:
@@ -147,7 +147,7 @@ class TestPackageInstallable:
             pytest.skip("pueo package not installed; run 'pip install -e .'")
         eps = entry_points(group="console_scripts")
         names = {ep.name for ep in eps}
-        assert "pueo" in names, f"'pueo' entry point not found in {names}"
+        assert "pueo-py" in names, f"'pueo-py' entry point not found in {names}"
 
     def test_key_packages_importable(self):
         """Top-level modules and sub-packages that ship with the package are importable."""

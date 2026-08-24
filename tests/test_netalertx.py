@@ -407,7 +407,7 @@ class TestNetAlertXMigration:
 
         with sqlite3.connect(db) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 22
+        assert version == 23
 
 
 # ── netalertx/installer.py (steps 1–4) ───────────────────────────────────────
@@ -5249,16 +5249,17 @@ class TestNetAlertXHealer:
 
     @pytest.fixture(autouse=True)
     def _patch_sandbox_db_path(self, tmp_path, monkeypatch):
-        """Redirect ha_agent_sandbox_engine.DB_PATH to a temp file.
+        """Redirect agent DB_PATH variables to temp files.
 
-        record_backup_slug() in ha_agent_sandbox_engine uses the module-level
-        DB_PATH directly, so without this patch it writes to the real
-        ha_agent_state.db during test runs.
+        record_backup_slug() resolves DB_PATH from ha_agent_advanced at call
+        time, so both modules must be patched to avoid writing to the real DB
+        and triggering the UNIQUE constraint across tests.
         """
-        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced, ha_agent_sandbox_engine
 
         db = str(tmp_path / "sandbox_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
         ha_agent_sandbox_engine.init_local_database()
 
     # -----------------------------------------------------------------------
@@ -5456,7 +5457,8 @@ class TestNetAlertXHealer:
         ha_ssh = FakeSSHClient(
             file_contents={
                 "/config/configuration.yaml": "mqtt:\n  broker: homeassistant.local\nhomeassistant:\n  name: Home\n"
-            }
+            },
+            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
         )
         healer = self._make_healer(
             gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
@@ -5779,7 +5781,8 @@ class TestNetAlertXHealer:
             file_contents={
                 "/config/automations.yaml": old_yaml,
                 "/config/configuration.yaml": "homeassistant:\n  name: Home\n",
-            }
+            },
+            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
         )
         healer = self._make_healer(
             gate=gate, ssh_client=ssh, ha_ssh_client=ha_ssh, notifier=notifier
@@ -6140,16 +6143,17 @@ class TestNetAlertXMaintenanceHealer:
 
     @pytest.fixture(autouse=True)
     def _patch_sandbox_db_path(self, tmp_path, monkeypatch):
-        """Redirect ha_agent_sandbox_engine.DB_PATH to a temp file.
+        """Redirect agent DB_PATH variables to temp files.
 
-        record_backup_slug() in ha_agent_sandbox_engine uses the module-level
-        DB_PATH directly, so without this patch it writes to the real
-        ha_agent_state.db during test runs.
+        record_backup_slug() resolves DB_PATH from ha_agent_advanced at call
+        time, so both modules must be patched to avoid writing to the real DB
+        and triggering the UNIQUE constraint across tests.
         """
-        from agents import ha_agent_sandbox_engine
+        from agents import ha_agent_advanced, ha_agent_sandbox_engine
 
         db = str(tmp_path / "sandbox_test.db")
         monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
         ha_agent_sandbox_engine.init_local_database()
 
     def _make_issue(self, field: str, message: str = "test", severity: str = "MEDIUM"):
@@ -6217,7 +6221,8 @@ class TestNetAlertXMaintenanceHealer:
                     "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
                     "  action:\n  - data:\n      mac: eve_mac\n"
                 )
-            }
+            },
+            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
         )
         healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh)
         issue = self._make_issue("eve_mac", severity="MEDIUM")
@@ -6265,7 +6270,8 @@ class TestNetAlertXMaintenanceHealer:
                     "- trigger:\n  - platform: webhook\n    webhook_id: netalertx_event\n"
                     "  action:\n  - data:\n      mac: eve_mac\n"
                 )
-            }
+            },
+            command_results={"ha backup new": (0, "Slug: test-slug-nax\n", "")},
         )
         healer = self._make_healer(gate=gate, ha_ssh_client=ha_ssh, notifier=notifier)
         issue = self._make_issue("eve_mac", severity="MEDIUM")

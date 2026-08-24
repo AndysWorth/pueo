@@ -348,6 +348,20 @@ def _migrate_v22(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v23(cursor: sqlite3.Cursor) -> None:
+    # Remove placeholder rows that were never backed by a real HA backup.
+    cursor.execute("DELETE FROM backup_registry WHERE backup_slug = 'unknown_slug'")
+    # Deduplicate any remaining slugs (keep highest id = most recent insert per slug).
+    cursor.execute(
+        "DELETE FROM backup_registry"
+        " WHERE id NOT IN (SELECT MAX(id) FROM backup_registry GROUP BY backup_slug)"
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_registry_slug"
+        " ON backup_registry (backup_slug)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -371,6 +385,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (20, _migrate_v20),
     (21, _migrate_v21),
     (22, _migrate_v22),
+    (23, _migrate_v23),
 ]
 
 
@@ -488,6 +503,9 @@ def record_state_memory(
 
 def record_backup_slug(slug: str, name: str = "") -> None:
     """Registers an active backup point locally before executing a repair strategy."""
+    if not slug or slug == "unknown_slug":
+        log.warning("record_backup_slug_skipped_invalid", slug=slug)
+        return
     backup_name = name or f"Pueo_{time.strftime('%Y-%m-%d_%H%M')}"
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -782,11 +800,11 @@ async def fetch_remote_config(
         raise
 
 
-def _extract_backup_slug(output: str) -> str:
+def _extract_backup_slug(output: str) -> Optional[str]:
     for line in output.split("\n"):
         if "slug:" in line.lower():
             return line.split(":")[-1].strip().strip('"')
-    return "unknown_slug"
+    return None
 
 
 @async_retry(**SSH_RETRY_KWARGS)
@@ -803,6 +821,11 @@ async def execute_remote_backup(
             f'ha backup new --name "Pueo_{ts}"', check=True
         )
         slug = _extract_backup_slug(stdout.strip())
+        if slug is None:
+            raise RuntimeError(
+                f"ha backup new succeeded (exit 0) but output contained no slug line. "
+                f"stdout={stdout!r}"
+            )
         log.info("backup_created", slug=slug)
         return slug
     except Exception as e:
