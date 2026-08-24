@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pueo = "main:main"
+pueo-py = "main:main"
 
 [tool.setuptools]
 py-modules = ["main", "config", "interfaces", "paths"]
