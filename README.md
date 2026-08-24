@@ -16,18 +16,19 @@ Pueo is built around four design principles:
 - **Safety first** — no write touches your live HA configuration without a confirmed backup snapshot. Every repair is sandbox-tested before it goes to production.
 - **Privacy by default** — all inference runs locally via Ollama. Zero cloud API calls during active monitoring or repair cycles unless you explicitly opt in to cloud escalation.
 - **Autonomous healing** — Pueo monitors, diagnoses, and repairs HA incidents without requiring your attention for routine issues.
-- **Transparent operation** — you can always see what Pueo has done and what it is currently thinking. The event timeline is a complete audit log; the Chat tab shows Pueo's reasoning step-by-step so you can follow along, spot mistakes, and give additional guidance before Pueo acts.
+- **Transparent operation** — you can always see what Pueo has done and what it is currently thinking. The event timeline is a complete audit log; the Chat tab shows Pueo's reasoning step-by-step — including a live trace of every tool call — so you can follow along, spot mistakes, and give additional guidance before Pueo acts. All diagnostic and repair sessions follow a structured 6-phase investigation cycle: retrieve context → form hypothesis → gather evidence → confirm root cause → act → report.
 
 ---
 
 ## 🚀 Core Features
 
 *   **Vigilant Monitoring:** Streams live HA logs via `ha core logs --follow` over SSH and triages entries with a local AI model.
-*   **Automated Diagnostics:** Fetches and analyses `configuration.yaml` for syntax errors, deprecated keys, and missing required blocks.
+*   **Adaptive Diagnostics:** Fetches and analyses `configuration.yaml` using an iterative tool-calling agent loop — the model reads config sections, follows `!include` directives, runs `ha core check`, and queries the local knowledge base until it has enough evidence to form a confident diagnosis. All diagnostic modes (`diagnose`, `repair`, `netalertx-diagnose`, `netalertx-setup`, `update-check`) use the same adaptive loop.
 *   **Self-Healing Actions:** Sandbox-tests proposed fixes before writing to production; always creates a native HA backup snapshot first.
 *   **Active Dashboard:** Review and approve pending repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
-*   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
-*   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS component changelogs, and installed integration docs are embedded locally via ChromaDB and `nomic-embed-text`. The agent queries this knowledge automatically during repair cycles — no internet access required.
+*   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, read Pueo's own logs, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
+*   **Personalized Update Analysis:** When HA Core, OS, or Apps updates are available, Pueo reads your actual `configuration.yaml` and integration list to identify which breaking changes affect *your* installation — not just what changed in general.
+*   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS changelogs, integration docs, and a growing `strategies` collection are embedded locally via ChromaDB and `nomic-embed-text`. Every agent session begins by querying this knowledge base before forming a hypothesis — no internet access required.
 *   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
 
 ---
@@ -161,11 +162,15 @@ query during active sessions — no internet access needed during monitoring or 
 - **HACS component changelogs** — fetched for each HACS integration installed on your HA instance
 - **HA integration docs** — official documentation pages for your active integrations, scraped
   from the Home Assistant docs site
+- **Investigation strategies** — novel investigation approaches discovered during repair and chat
+  sessions are saved to a `strategies` collection (via the `save_strategy` tool) and recalled
+  automatically in future sessions, so Pueo improves as it encounters more failure patterns
 
 **How the agent uses it:**
-The `query_knowledge` tool is registered alongside the repair tools. During a fix cycle the
-model decides when to call it — surfacing relevant context only when it judges it useful,
-rather than prepending every prompt with the full knowledge base.
+`query_knowledge` is the first tool called in every repair, diagnostic, and chat session —
+surfacing relevant breaking changes, integration notes, and past strategies before the model
+forms its first hypothesis. Context is retrieved on-demand rather than prepended wholesale,
+so the token budget is spent on useful evidence rather than noise.
 
 **Refreshing the knowledge base:**
 `setup.sh` installs a weekly `launchd` job that runs `--mode rag-refresh` automatically.
@@ -190,6 +195,9 @@ a `finish_chat` termination signal instead of `finish_repair`.
 **What you can do:**
 - **Query live HA state** — "What's the disk usage on HA right now?" triggers
   `run_ha_command` and returns a plain-English answer
+- **Read Pueo's own logs** — "Why did Pueo restart last night?" or "Show me recent errors"
+  triggers `read_pueo_log` or `search_log` to scan Pueo's structured JSON log and
+  summarise what happened — no more grepping the log file manually
 - **Store persistent notes** — "Remember that the NAS is at 192.168.1.100" saves a memory
   entry that survives restarts and is recalled automatically in future sessions
 - **Browse session history** — past conversations are listed in the left panel; click any to
