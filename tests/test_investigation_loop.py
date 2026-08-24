@@ -1,94 +1,9 @@
-"""Tests for utils/investigation_loop.py — investigate_with_fallback and gate defaulting."""
+"""Tests for utils/investigation_loop.py — run_investigation gate defaulting."""
 
 import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-
-class TestInvestigateWithFallback:
-    """Tests for the investigate_with_fallback() convenience wrapper."""
-
-    def _make_report(self):
-        from utils.agent.investigation_loop import InvestigationReport
-
-        return InvestigationReport(
-            topic="test",
-            summary="Disk is full because of NetAlertX",
-            root_causes=["NetAlertX data directory grew to 8 GB"],
-            manual_only=[],
-            confidence=0.85,
-        )
-
-    def test_returns_report_and_false_on_success(self):
-        from utils.agent.investigation_loop import investigate_with_fallback
-        from utils.ha.ssh_client import FakeSSHClient
-
-        report = self._make_report()
-
-        async def _fake_run(**_):
-            return report
-
-        with patch(
-            "utils.agent.investigation_loop.run_investigation",
-            new=AsyncMock(return_value=report),
-        ):
-            result_report, is_fallback = asyncio.run(
-                investigate_with_fallback(
-                    topic="HA disk CRITICAL",
-                    goal="Find root cause",
-                    context="Disk is at 1.9 GB",
-                    llm_client=object(),
-                    ssh_client=FakeSSHClient(),
-                )
-            )
-        assert result_report is report
-        assert is_fallback is False
-
-    def test_returns_none_and_true_on_timeout(self):
-        from utils.agent.investigation_loop import investigate_with_fallback
-        from utils.ha.ssh_client import FakeSSHClient
-
-        async def _slow():
-            await asyncio.sleep(999)
-            raise AssertionError("should not reach here")
-
-        with patch(
-            "utils.agent.investigation_loop.run_investigation",
-            new=AsyncMock(side_effect=asyncio.TimeoutError),
-        ):
-            result_report, is_fallback = asyncio.run(
-                investigate_with_fallback(
-                    topic="HA disk CRITICAL",
-                    goal="Find root cause",
-                    context="Disk is at 1.9 GB",
-                    llm_client=object(),
-                    ssh_client=FakeSSHClient(),
-                    timeout=0.01,
-                )
-            )
-        assert result_report is None
-        assert is_fallback is True
-
-    def test_returns_none_and_true_on_exception(self):
-        from utils.agent.investigation_loop import investigate_with_fallback
-        from utils.ha.ssh_client import FakeSSHClient
-
-        with patch(
-            "utils.agent.investigation_loop.run_investigation",
-            new=AsyncMock(side_effect=RuntimeError("ollama down")),
-        ):
-            result_report, is_fallback = asyncio.run(
-                investigate_with_fallback(
-                    topic="HA disk CRITICAL",
-                    goal="Find root cause",
-                    context="Disk is at 1.9 GB",
-                    llm_client=object(),
-                    ssh_client=FakeSSHClient(),
-                )
-            )
-        assert result_report is None
-        assert is_fallback is True
 
 
 class TestRunInvestigationGateDefault:
@@ -339,8 +254,8 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.agent.investigation_loop.investigate_with_fallback",
-            new=AsyncMock(return_value=(report, False)),
+            "utils.agent.investigation_loop.run_investigation",
+            new=AsyncMock(return_value=report),
         ) as mock_inv:
             with patch(
                 "utils.disk.resource._build_disk_investigation_context",
@@ -348,7 +263,7 @@ class TestResourcePollerInvestigationIntegration:
             ):
                 asyncio.run(poller._check_and_alert(self._make_status()))
 
-        # investigate_with_fallback should have been called
+        # run_investigation should have been called
         mock_inv.assert_called_once()
         assert len(notifier.sent) == 1
         da = notifier.sent[0]["payload"]["disk_analysis"]
@@ -372,8 +287,8 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.agent.investigation_loop.investigate_with_fallback",
-            new=AsyncMock(return_value=(None, True)),
+            "utils.agent.investigation_loop.run_investigation",
+            new=AsyncMock(side_effect=RuntimeError("ollama down")),
         ):
             with patch(
                 "utils.disk.resource._build_disk_investigation_context",
@@ -402,7 +317,7 @@ class TestResourcePollerInvestigationIntegration:
         )
 
         with patch(
-            "utils.agent.investigation_loop.investigate_with_fallback", new=AsyncMock()
+            "utils.agent.investigation_loop.run_investigation", new=AsyncMock()
         ) as mock_inv:
             asyncio.run(poller._check_and_alert(self._make_status()))
 
