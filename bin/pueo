@@ -4,7 +4,10 @@
 #        pueo --mode MODE [--config FILE] [--since DATE]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlink so this works whether invoked directly or via /usr/local/bin symlink.
+_self="${BASH_SOURCE[0]}"
+[ -L "$_self" ] && _self="$(readlink "$_self")"
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 
