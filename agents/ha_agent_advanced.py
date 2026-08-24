@@ -19,7 +19,6 @@ from config import (
     DB_PATH,
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
-    MAX_PROMPT_TOKENS,
     HA_DISK_CRITICAL_GB,
     BACKUP_OFFLOAD_ENABLED,
     BACKUP_LOCAL_DIR,
@@ -27,16 +26,14 @@ from config import (
     BACKUP_RETAIN_LOCAL_DAYS,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
-from utils.core.context import estimate_tokens, truncate_to_budget
 from utils.core.logging import (
     get_logger,
     get_correlation_id,
     setup_logging,
     set_correlation_id,
 )
-from utils.llm.llm_factory import make_llm_client
-from utils.core.prompts import load_prompt
 from .ha_agent_core import DiagnosticsReport
+from utils.agent.config_analysis import analyze_config_locally
 from utils.disk.resource import DiskCriticalError, check_disk_not_critical
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
@@ -1113,55 +1110,6 @@ async def execute_remote_preflight_check(
 
 
 # ==========================================
-# OLLAMA INFERENCE LAYER
-# ==========================================
-@async_retry(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(ConnectionRefusedError,),
-)
-async def analyze_config_locally(
-    yaml_content: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-) -> DiagnosticsReport:
-    """Runs zero-latency local analysis via macOS Ollama environment."""
-    client = llm_client or make_llm_client()
-
-    system_prompt = load_prompt("diagnose_config")
-    user_prefix = "Analyze this configuration data:\n\n```yaml\n"
-    user_suffix = "\n```"
-    overhead = estimate_tokens(system_prompt) + estimate_tokens(
-        user_prefix + user_suffix
-    )
-    content_budget = MAX_PROMPT_TOKENS - overhead
-    original_tokens = estimate_tokens(yaml_content)
-    if original_tokens > content_budget:
-        yaml_content = truncate_to_budget(yaml_content, content_budget, "smart")
-        log.warning(
-            "content_truncated",
-            original_tokens=original_tokens,
-            truncated_tokens=estimate_tokens(yaml_content),
-        )
-    user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
-
-    try:
-        log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
-        response = await client.chat(
-            model=_config.OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.0},
-            format=DiagnosticsReport.model_json_schema(),
-        )
-        return DiagnosticsReport.model_validate_json(response["message"]["content"])
-    except Exception as e:
-        log.error("ollama_inference_failed", error=str(e))
-        raise
-
-
-# ==========================================
 # TRANSACTUAL STATE ORCHESTRATION
 # ==========================================
 async def main(
@@ -1176,7 +1124,9 @@ async def main(
     log.info("ssh_connect_start", host=HA_HOST)
     yaml_content, config_hash = await fetch_remote_config(ssh_client=ssh_client)
 
-    report = await analyze_config_locally(yaml_content, llm_client=llm_client)
+    report, _ = await analyze_config_locally(
+        yaml_content, ssh_client=ssh_client, llm_client=llm_client
+    )
     log.info(
         "diagnostics_complete",
         is_valid=report.is_valid,

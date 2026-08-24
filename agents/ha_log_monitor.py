@@ -562,6 +562,7 @@ async def poll_for_updates(
                                 ha_cfg_yaml,
                                 _integrations,
                                 _llm,
+                                ssh_client=_ha_ssh,
                             )
                             log.info(
                                 "breaking_changes_personalized",

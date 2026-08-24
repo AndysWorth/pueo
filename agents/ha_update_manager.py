@@ -39,6 +39,7 @@ from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
+    from utils.agent.agent_loop import AgentLoopResult
     from utils.agent.autonomy import AutonomyGate, FakeAutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.hitl.notify import NotifierProtocol
@@ -242,16 +243,19 @@ async def personalize_breaking_changes(
     ha_config_yaml: str,
     installed_integrations: list[str],
     llm_client: Optional[LLMClientProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
 ) -> InstanceImpactReport:
     """Second LLM pass: determine which general breaking changes actually affect this install.
 
-    Returns an InstanceImpactReport classifying impact and proposing YAML fixes for any
-    breaking changes that do apply.  Falls back to a safe default on LLM error.
+    When *ssh_client* is provided, runs an AgentLoop that can follow !include
+    directives, verify installed apps via ``ha apps list``, and look up
+    integration docs before reporting.  Without it, falls back to a one-shot
+    LLM call (backward-compatible for tests and callers without SSH).
+
+    Returns an InstanceImpactReport classifying impact and proposing YAML fixes
+    for any breaking changes that do apply.  Falls back to a safe default on
+    LLM error.
     """
-    from utils.llm.llm_factory import make_llm_client
-
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-
     _safe_default = InstanceImpactReport(
         affected_changes=[],
         instance_impact="none",
@@ -266,6 +270,134 @@ async def personalize_breaking_changes(
             effective_safe_to_update=True,
             summary="No breaking changes found in the release notes for this version.",
         )
+
+    if ssh_client is not None:
+        try:
+            return await _personalize_with_agent_loop(
+                breaking_changes,
+                ha_config_yaml,
+                installed_integrations,
+                llm_client,
+                ssh_client,
+            )
+        except Exception as exc:
+            log.warning("personalize_agent_loop_failed", error=str(exc))
+            return _safe_default
+
+    return await _personalize_one_shot(
+        breaking_changes,
+        ha_config_yaml,
+        installed_integrations,
+        llm_client,
+        _safe_default,
+    )
+
+
+async def _personalize_with_agent_loop(
+    breaking_changes: list[str],
+    ha_config_yaml: str,
+    installed_integrations: list[str],
+    llm_client: Optional[LLMClientProtocol],
+    ssh_client: "SSHClientProtocol",
+) -> InstanceImpactReport:
+    from utils.llm.llm_factory import make_llm_client
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import (
+        build_impact_analysis_registry,
+        AgentLoopResult,
+    )
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.hitl.notify import FakeNotifier
+    from utils.core.prompts import load_prompt as _load_prompt
+
+    client: LLMClientProtocol = llm_client or make_llm_client()
+    base_prompt = _load_prompt("agent_loop_base").replace(
+        "{terminal_tool}", "finish_impact_analysis"
+    )
+
+    changes_text = "\n".join(f"- {c}" for c in breaking_changes)
+    integrations_text = ", ".join(installed_integrations) or "unknown"
+    config_snippet = truncate_to_budget(ha_config_yaml, MAX_PROMPT_TOKENS - 800)
+
+    initial_message = (
+        "Determine which of these HA breaking changes affect this specific installation.\n\n"
+        f"=== Breaking changes ===\n{changes_text}\n\n"
+        f"=== Installed integrations ===\n{integrations_text}\n\n"
+        f"=== Current configuration.yaml (excerpt) ===\n```yaml\n{config_snippet}\n```\n\n"
+        "Use read_file to follow !include directives, run_ha_command('ha apps list') to "
+        "verify installed apps, fetch_ha_docs for integration details, query_knowledge for "
+        "known patterns, then call finish_impact_analysis with your assessment."
+    )
+
+    executor = ToolExecutor(
+        ha_ssh_client=ssh_client,
+        gate=FakeAutonomyGate(),  # type: ignore[arg-type]
+        notifier=FakeNotifier(),
+        llm_client=client,
+    )
+    registry = build_impact_analysis_registry()
+    loop = AgentLoop(
+        llm_client=client,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=base_prompt,
+        terminal_tool_name="finish_impact_analysis",
+        trigger="impact_analysis",
+    )
+
+    loop_result: AgentLoopResult = await loop.run(initial_message)
+    return _extract_impact_report(loop_result)
+
+
+def _extract_impact_report(loop_result: "AgentLoopResult") -> "InstanceImpactReport":
+    for step in loop_result.steps:
+        if step.tool_call.name == "finish_impact_analysis":
+            args = step.tool_call.arguments
+            try:
+                raw_changes = args.get("affected_changes", [])
+                affected = [
+                    AffectedChange(
+                        description=c.get("description", ""),
+                        applies=bool(c.get("applies", False)),
+                        reason=c.get("reason", ""),
+                        config_fix_yaml=c.get("config_fix_yaml"),
+                        fix_description=c.get("fix_description"),
+                    )
+                    for c in raw_changes
+                    if isinstance(c, dict)
+                ]
+                impact = str(args.get("instance_impact", "none"))
+                if impact not in ("none", "low", "high"):
+                    impact = "low"
+                return InstanceImpactReport(
+                    affected_changes=affected,
+                    instance_impact=impact,
+                    effective_safe_to_update=bool(
+                        args.get("effective_safe_to_update", True)
+                    ),
+                    summary=str(args.get("summary", "")),
+                )
+            except Exception:  # nosec B110
+                pass
+    return InstanceImpactReport(
+        affected_changes=[],
+        instance_impact="none",
+        effective_safe_to_update=True,
+        summary="Agent loop completed without calling finish_impact_analysis.",
+    )
+
+
+async def _personalize_one_shot(
+    breaking_changes: list[str],
+    ha_config_yaml: str,
+    installed_integrations: list[str],
+    llm_client: Optional[LLMClientProtocol],
+    safe_default: InstanceImpactReport,
+) -> InstanceImpactReport:
+    from utils.llm.llm_factory import make_llm_client
+
+    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
 
     changes_text = "\n".join(f"- {c}" for c in breaking_changes)
     integrations_text = ", ".join(installed_integrations) or "unknown"
@@ -299,7 +431,7 @@ async def personalize_breaking_changes(
         return report
     except Exception as exc:
         log.warning("personalize_breaking_changes_failed", error=str(exc))
-        return _safe_default
+        return safe_default
 
 
 def _format_update_table(updates: list[UpdateStatus]) -> str:

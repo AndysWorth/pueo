@@ -13,17 +13,13 @@ from config import (
     CONFIG_REMOTE_PATH,
     SSH_RETRY_ATTEMPTS,
     SSH_RETRY_BASE_DELAY,
-    MAX_PROMPT_TOKENS,
     HA_KNOWN_VERSION,
 )
 from interfaces import LLMClientProtocol, SSHClientProtocol
-from utils.core.context import estimate_tokens, truncate_to_budget
-from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
-from utils.llm.llm_factory import make_llm_client
-from utils.core.prompts import load_prompt
 from utils.core.retry import async_retry, SSH_RETRY_KWARGS
 from utils.ha.ssh_client import AsyncSSHClient
+from utils.agent.config_analysis import analyze_config_locally
 
 log = get_logger("ha_agent_core")
 
@@ -99,62 +95,6 @@ async def check_ha_version(
 
 
 # ==========================================
-# OLLAMA INFERENCE LAYER
-# ==========================================
-@async_retry(
-    max_attempts=SSH_RETRY_ATTEMPTS,
-    base_delay=SSH_RETRY_BASE_DELAY,
-    exceptions=(ConnectionRefusedError,),
-)
-async def analyze_config_locally(
-    yaml_content: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-) -> tuple[DiagnosticsReport, LLMTrace]:
-    """Uses your local M-series Mac Ollama instance to analyze the config file."""
-    client = llm_client or make_llm_client()
-
-    system_prompt = load_prompt("diagnose_config")
-    user_prefix = "Analyze this configuration data:\n\n```yaml\n"
-    user_suffix = "\n```"
-    overhead = estimate_tokens(system_prompt) + estimate_tokens(
-        user_prefix + user_suffix
-    )
-    content_budget = MAX_PROMPT_TOKENS - overhead
-    original_tokens = estimate_tokens(yaml_content)
-    if original_tokens > content_budget:
-        yaml_content = truncate_to_budget(yaml_content, content_budget, "smart")
-        log.warning(
-            "content_truncated",
-            original_tokens=original_tokens,
-            truncated_tokens=estimate_tokens(yaml_content),
-        )
-    user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
-
-    try:
-        log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
-        response = await client.chat(
-            model=_config.OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.0},
-            format=DiagnosticsReport.model_json_schema(),
-        )
-        raw_output = response["message"]["content"]
-        trace = LLMTrace(
-            model=_config.OLLAMA_MODEL,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            raw_response=raw_output,
-        )
-        return DiagnosticsReport.model_validate_json(raw_output), trace
-    except Exception as e:
-        log.error("ollama_inference_failed", error=str(e))
-        raise
-
-
-# ==========================================
 # ORCHESTRATION PIPELINE
 # ==========================================
 async def main(
@@ -168,7 +108,9 @@ async def main(
     await check_ha_version(ssh_client=ssh_client)
     yaml_content = await fetch_remote_config(ssh_client=ssh_client)
 
-    report, _trace = await analyze_config_locally(yaml_content, llm_client=llm_client)
+    report, _trace = await analyze_config_locally(
+        yaml_content, ssh_client=ssh_client, llm_client=llm_client
+    )
 
     log.info(
         "diagnostics_complete",

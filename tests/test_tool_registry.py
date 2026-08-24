@@ -113,3 +113,30 @@ class TestRegistryMembership:
         ):
             assert "read_pueo_log" in reg
             assert "search_log" in reg
+
+    def test_config_analysis_registry_membership(self):
+        from utils.agent.tool_registry import build_config_analysis_registry
+
+        reg = build_config_analysis_registry()
+        for name in (
+            "read_file",
+            "run_ha_command",
+            "query_knowledge",
+            "save_strategy",
+            "finish_diagnosis",
+        ):
+            assert name in reg, f"expected {name!r} in config_analysis registry"
+
+    def test_impact_analysis_registry_membership(self):
+        from utils.agent.tool_registry import build_impact_analysis_registry
+
+        reg = build_impact_analysis_registry()
+        for name in (
+            "read_file",
+            "run_ha_command",
+            "fetch_ha_docs",
+            "query_knowledge",
+            "save_strategy",
+            "finish_impact_analysis",
+        ):
+            assert name in reg, f"expected {name!r} in impact_analysis registry"
