@@ -452,9 +452,11 @@ async def poll_for_updates(
 ) -> None:
     """Periodically checks for available HA updates and fires update approval cards."""
     from .ha_update_manager import (
+        InstanceImpactReport,
         UpdateReadinessReport,
         analyze_breaking_changes,
         fetch_release_notes_cached,
+        personalize_breaking_changes,
     )
     from utils.hitl.card_types import CARD_TYPE_UPDATE
 
@@ -508,6 +510,7 @@ async def poll_for_updates(
 
                 # Run breaking-change analysis for core updates.
                 readiness: Optional[UpdateReadinessReport] = None
+                impact: Optional[InstanceImpactReport] = None
                 if u.component == "core":
                     release_notes = ""
                     try:
@@ -529,12 +532,58 @@ async def poll_for_updates(
                         except Exception as exc:
                             log.warning("update_poll_analysis_failed", error=str(exc))
 
+                    # Personalize: cross-reference breaking changes against actual config.
+                    if readiness and readiness.breaking_changes and _ssh is not None:
+                        try:
+                            from utils.ha.ssh_client import AsyncSSHClient
+
+                            _ha_ssh = (
+                                _ssh
+                                if _ssh is not None
+                                else AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
+                            )
+                            _, ha_cfg_yaml, _ = await _ha_ssh.run(
+                                "cat /config/configuration.yaml", check=False
+                            )
+                            # Get installed integrations from last cached profile.
+                            _integrations: list[str] = []
+                            try:
+                                from utils.ha.ha_environment import (
+                                    load_environment_profile,
+                                )
+
+                                _cached = load_environment_profile(DB_PATH)
+                                if _cached is not None:
+                                    _integrations = _cached.installed_integrations
+                            except Exception:  # nosec B110
+                                pass
+                            impact = await personalize_breaking_changes(
+                                readiness.breaking_changes,
+                                ha_cfg_yaml,
+                                _integrations,
+                                _llm,
+                            )
+                            log.info(
+                                "breaking_changes_personalized",
+                                instance_impact=impact.instance_impact,
+                                effective_safe=impact.effective_safe_to_update,
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "update_poll_personalize_failed", error=str(exc)
+                            )
+
                 if HA_UPDATE_NOTIFY_ON_AVAILABLE:
+                    # Base risk level for the component type.
                     risk = (
                         "CRITICAL"
                         if u.component in ("core", "os")
                         else "HIGH" if u.component == "supervisor" else "MEDIUM"
                     )
+                    # Downgrade risk when personalized analysis confirms no impact.
+                    if impact is not None and impact.instance_impact == "none":
+                        risk = "HIGH" if u.component in ("core", "os") else risk
+
                     body_parts = [
                         f"Component: {u.component}",
                         f"Risk: {risk}",
@@ -548,6 +597,39 @@ async def poll_for_updates(
                         body_parts.append(
                             f"Advisory: {advisory} — {readiness.recommendation}"
                         )
+                    if impact is not None:
+                        if impact.instance_impact == "none":
+                            body_parts.append(
+                                "✅ None of the breaking changes affect your install. "
+                                "Safe to proceed."
+                            )
+                        else:
+                            body_parts.append(
+                                f"⚠️ Instance impact: {impact.instance_impact.upper()} — "
+                                f"{impact.summary}"
+                            )
+                            if not impact.effective_safe_to_update:
+                                body_parts.append(
+                                    "🚫 Config fixes required before updating — "
+                                    "see 'Apply fixes' below."
+                                )
+
+                    disk_headroom_warning: Optional[str] = None
+                    if u.component in ("core", "os"):
+                        from utils.disk.resource import get_resource_status
+
+                        _rs = get_resource_status()
+                        if (
+                            _rs is not None
+                            and _rs.disk_free_gb < HA_DISK_CRITICAL_GB + 1.0
+                        ):
+                            disk_headroom_warning = (
+                                f"⚠️ Disk free is {_rs.disk_free_gb:.1f} GB — only "
+                                f"{_rs.disk_free_gb - HA_DISK_CRITICAL_GB:.1f} GB above "
+                                f"the critical threshold. Updates temporarily require extra "
+                                f"space. Consider running disk recovery before approving."
+                            )
+                            body_parts.append(disk_headroom_warning)
 
                     # Warn when free space is tight for components that download
                     # new files during install (core and os).
@@ -569,6 +651,19 @@ async def poll_for_updates(
                             body_parts.append(disk_headroom_warning)
 
                     from utils.hitl.hitl_tracker import stable_nid
+
+                    # Collect proposed config fixes from affected changes.
+                    proposed_config_fixes = []
+                    if impact is not None:
+                        for ac in impact.affected_changes:
+                            if ac.applies and ac.config_fix_yaml:
+                                proposed_config_fixes.append(
+                                    {
+                                        "description": ac.description,
+                                        "fix_description": ac.fix_description or "",
+                                        "config_fix_yaml": ac.config_fix_yaml,
+                                    }
+                                )
 
                     # Mark sent in DB before writing file — if Pueo restarts between
                     # the two, DB says "sent" (no card visible) rather than DB saying
@@ -611,6 +706,16 @@ async def poll_for_updates(
                             "safe_to_update": (
                                 readiness.safe_to_update if readiness else None
                             ),
+                            "instance_impact": (
+                                impact.instance_impact if impact else None
+                            ),
+                            "effective_safe_to_update": (
+                                impact.effective_safe_to_update if impact else None
+                            ),
+                            "instance_impact_summary": (
+                                impact.summary if impact else None
+                            ),
+                            "proposed_config_fixes": proposed_config_fixes,
                             "disk_headroom_warning": disk_headroom_warning,
                         },
                     )
