@@ -2734,9 +2734,11 @@ async def _pre_inject_chat_context(
     message: str,
     executor: Any,
 ) -> str:
-    """Pre-call recall and query_knowledge and prepend results to the user message.
+    """Pre-call recall and prepend memories to the user message (chat-specific).
 
-    Mirrors ADR 014: guaranteed context retrieval before the loop starts, zero budget cost.
+    query_knowledge injection is handled by AgentLoop._pre_inject_knowledge when
+    a knowledge_store is passed to the constructor.  Only recall (persistent chat
+    memory) is done here since it is specific to the chat session flow.
     Best-effort — any failure or empty result returns the original message unchanged.
     """
     from utils.agent.tool_registry import ToolCall
@@ -2753,14 +2755,6 @@ async def _pre_inject_chat_context(
             and "Nothing found" not in r.output
         ):
             blocks.append(f"Relevant memories:\n{r.output}")
-    except Exception:  # nosec B110
-        pass
-    try:
-        r = await executor.execute(
-            ToolCall(name="query_knowledge", arguments={"query": message, "top_k": 3})
-        )
-        if r.success and r.output and "No results" not in r.output:
-            blocks.append(f"Relevant knowledge:\n{r.output[:1000]}")
     except Exception:  # nosec B110
         pass
     if not blocks:
@@ -2865,6 +2859,7 @@ async def _run_chat_loop(
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
             step_callback=on_step,
             pre_step_callback=on_pre_step,
+            knowledge_store=getattr(executor, "_knowledge_store", None),
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         result = await agent_loop.run(

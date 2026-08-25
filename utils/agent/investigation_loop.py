@@ -262,6 +262,7 @@ async def run_investigation(
         system_prompt=system_prompt,
         terminal_tool_name="finish_investigation",
         trigger="investigation",
+        knowledge_store=knowledge_store,
     )
 
     result = await loop.run(initial_context=topic)
