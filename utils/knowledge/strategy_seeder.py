@@ -48,6 +48,31 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA configuration diagnosis",
         "Invalid HA configuration, yaml error, config check failure",
     ),
+    (
+        "strategy_integration_error.md",
+        "Integration or entity error investigation",
+        "integration failing, sensor unavailable, entity error, connection error, API outage",
+    ),
+    (
+        "strategy_security_notification.md",
+        "Security notification investigation",
+        "failed login notification, suspicious device, unknown IP, http_login alert",
+    ),
+    (
+        "strategy_disk_space.md",
+        "HA disk space investigation",
+        "disk space low, HA disk usage, backups taking too much space, recorder DB large",
+    ),
+    (
+        "strategy_pueo_log.md",
+        "Pueo log investigation",
+        "errors in Pueo itself, stream resets, loop crashes, agent loop failures",
+    ),
+    (
+        "strategy_config_error.md",
+        "HA configuration error investigation",
+        "HA config invalid, yaml error, ha core check failing, configuration.yaml problem",
+    ),
 ]
 
 
