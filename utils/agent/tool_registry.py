@@ -118,17 +118,41 @@ READ_CONFIG = ToolDefinition(
 
 READ_LOGS = ToolDefinition(
     name="read_logs",
-    description="Tail N lines from the HA supervisor journal over SSH.",
+    description=(
+        "Tail N recent lines from an HA log source over SSH. "
+        "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_os', 'ha_host', or 'ha_app'. "
+        "When log_source='ha_app', also pass addon_slug (e.g. 'core_mosquitto'). "
+        "Use list_log_sources to discover valid addon slugs."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "lines": {
                 "type": "integer",
-                "description": "Number of lines to tail (default 100)",
-            }
+                "description": "Number of lines to tail (default 100, max 500)",
+            },
+            "log_source": {
+                "type": "string",
+                "enum": ["ha_core", "ha_supervisor", "ha_os", "ha_host", "ha_app"],
+                "description": "Which HA log source to read (default 'ha_core')",
+            },
+            "addon_slug": {
+                "type": "string",
+                "description": "Required when log_source='ha_app' (e.g. 'core_mosquitto')",
+            },
         },
         "required": [],
     },
+)
+
+LIST_LOG_SOURCES = ToolDefinition(
+    name="list_log_sources",
+    description=(
+        "List all available HA log sources. Returns always-available system sources "
+        "(ha_core, ha_supervisor, ha_os, ha_host) plus per-app sources discovered via "
+        "'ha apps list'. Use the returned slugs with search_log or read_logs."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
 )
 
 RUN_HA_COMMAND = ToolDefinition(
@@ -944,6 +968,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         SAVE_STRATEGY,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        LIST_LOG_SOURCES,
     ):
         reg.register(tool)
     return reg
@@ -985,6 +1010,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         SAVE_STRATEGY,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        LIST_LOG_SOURCES,
     ):
         reg.register(tool)
     return reg
@@ -1023,6 +1049,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         SAVE_STRATEGY,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        LIST_LOG_SOURCES,
         FINISH_CHAT,
     ):
         reg.register(tool)
@@ -1039,8 +1066,10 @@ def build_installer_diagnosis_registry() -> ToolRegistry:
     reg = ToolRegistry()
     for tool in (
         QUERY_KNOWLEDGE,
+        READ_LOGS,
         SEARCH_LOG,
         READ_PUEO_LOG,
+        LIST_LOG_SOURCES,
         SAVE_STRATEGY,
         FINISH_INSTALLER_DIAGNOSIS,
     ):
@@ -1057,8 +1086,10 @@ def build_health_diagnosis_registry() -> ToolRegistry:
     reg = ToolRegistry()
     for tool in (
         QUERY_KNOWLEDGE,
+        READ_LOGS,
         SEARCH_LOG,
         READ_PUEO_LOG,
+        LIST_LOG_SOURCES,
         SAVE_STRATEGY,
         FINISH_HEALTH_DIAGNOSIS,
     ):
