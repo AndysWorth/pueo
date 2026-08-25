@@ -1,4 +1,4 @@
-# ADR 018 — Dashboard entity health monitor
+# ADR 021 — Dashboard entity health monitor
 
 ## Status
 Accepted
