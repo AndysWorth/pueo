@@ -29,7 +29,7 @@ from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, Tool
 _UNSET = object()  # sentinel for provider-aware model default
 
 if TYPE_CHECKING:
-    from interfaces import LLMClientProtocol
+    from interfaces import KnowledgeStoreClientProtocol, LLMClientProtocol
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import ToolRegistry
 
@@ -126,6 +126,7 @@ class AgentLoop:
         trigger: str = "manual",
         db_path: Optional[str] = None,
         escalated: bool = False,
+        knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -145,6 +146,7 @@ class AgentLoop:
         self._trigger = trigger
         self._db_path = db_path
         self._escalated = escalated
+        self._knowledge_store = knowledge_store
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
 
@@ -232,6 +234,30 @@ class AgentLoop:
         )
         return episode.id
 
+    def _pre_inject_knowledge(self, initial_context: str) -> str:
+        """Query the knowledge store and prepend results to the initial context.
+
+        Best-effort — any failure returns the original context unchanged.
+        Capped at 1,000 tokens via truncate_to_budget.
+        """
+        from utils.core.context import truncate_to_budget
+
+        try:
+            chunks = self._knowledge_store.query(  # type: ignore[union-attr]
+                query_text=initial_context[:500],
+                top_k=3,
+            )
+        except Exception:
+            return initial_context
+        if not chunks:
+            return initial_context
+        parts = ["Relevant context (use as reference, verify before applying):"]
+        for chunk in chunks:
+            parts.append(f"\n{chunk.text}")
+        block = truncate_to_budget("\n".join(parts), 1000)
+        log.debug("agent_loop_knowledge_injected", chunks=len(chunks))
+        return f"{block}\n\n---\n{initial_context}"
+
     def _review_timeout(self, steps: list[AgentStep], elapsed: float) -> float:
         """Adaptive timeout for the limit-review call.
 
@@ -307,6 +333,9 @@ class AgentLoop:
             the model has proper multi-turn context.
         """
         self._executor.reset()
+
+        if self._knowledge_store is not None:
+            initial_context = self._pre_inject_knowledge(initial_context)
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
