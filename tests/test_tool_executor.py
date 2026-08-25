@@ -732,3 +732,186 @@ class TestSearchLog:
         result = asyncio.run(executor._search_log("unknown_log", "pattern"))
         assert result.success is False
         assert "Unknown log_name" in result.error
+
+    def test_pueo_stderr_log_searched(self, tmp_path):
+        """search_log with log_name='pueo_stderr' reads pueo-stderr.log (plain text)."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "pueo-stderr.log").write_text(
+            "INFO:     Application startup complete.\n"
+            "ERROR:    Exception in ASGI application\n"
+            "RuntimeError: Response content longer than Content-Length\n"
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}, command_results={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(
+                executor._search_log("pueo_stderr", "ASGI", context_lines=0)
+            )
+        assert result.success is True
+        assert "ASGI" in result.output
+
+    def test_ha_supervisor_log_uses_ssh(self, tmp_path):
+        """search_log with log_name='ha_supervisor' runs ha supervisor logs over SSH."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(
+            file_contents={},
+            command_results={
+                "ha supervisor logs": (
+                    0,
+                    "supervisor started\nsupervisor error here\n",
+                    "",
+                )
+            },
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(
+            executor._search_log("ha_supervisor", "error", context_lines=0)
+        )
+        assert result.success is True
+        assert "error" in result.output
+
+    def test_ha_app_log_requires_addon_slug(self):
+        """search_log with log_name='ha_app' and no addon_slug returns an error."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}, command_results={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(executor._search_log("ha_app", "error"))
+        assert result.success is False
+        assert "addon_slug" in result.error
+
+    def test_ha_app_log_calls_ha_apps_logs(self):
+        """search_log with log_name='ha_app' and addon_slug runs ha apps logs <slug>."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(
+            file_contents={},
+            command_results={
+                "ha apps logs core_mosquitto": (
+                    0,
+                    "[mosquitto] Started\n[mosquitto] error: client disconnected\n",
+                    "",
+                )
+            },
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        result = asyncio.run(
+            executor._search_log(
+                "ha_app", "error", context_lines=0, addon_slug="core_mosquitto"
+            )
+        )
+        assert result.success is True
+        assert "error" in result.output
+
+    def test_ssh_backed_log_fails_without_ssh_client(self):
+        """SSH-backed log sources return a clear error when no SSH client is available."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=None,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+        for log_name in ("ha_core", "ha_supervisor", "ha_os", "ha_host", "ha_app"):
+            kw = {"addon_slug": "core_mosquitto"} if log_name == "ha_app" else {}
+            result = asyncio.run(executor._search_log(log_name, "error", **kw))
+            assert result.success is False
+            assert (
+                "SSH" in result.error or "No SSH" in result.error
+            ), f"Expected SSH error for {log_name}, got: {result.error}"
+
+
+class TestReadPueoLogFilename:
+    """Tests for read_pueo_log with filename parameter (issue #406)."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}, command_results={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def test_reads_pueo_stderr_log(self, tmp_path):
+        """filename='pueo-stderr.log' reads the stderr file."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "pueo-stderr.log").write_text(
+            "INFO:     Application startup complete.\n"
+            "ERROR:    Exception in ASGI application\n"
+        )
+        executor = self._make_executor()
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(
+                executor._read_pueo_log(lines=50, filename="pueo-stderr.log")
+            )
+        assert result.success is True
+        assert "ASGI" in result.output
+
+    def test_disallowed_filename_rejected(self, tmp_path):
+        """filename outside the allowlist is rejected with an error."""
+        executor = self._make_executor()
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = tmp_path
+            result = asyncio.run(executor._read_pueo_log(filename="../../etc/passwd"))
+        assert result.success is False
+        assert "must be one of" in result.error
+
+    def test_level_filter_plain_text_for_stderr(self, tmp_path):
+        """Level filter on pueo-stderr.log uses plain-text substring match."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "pueo-stderr.log").write_text(
+            "INFO:     startup ok\n"
+            "ERROR:    Exception in ASGI\n"
+            "WARNING:  slow response\n"
+        )
+        executor = self._make_executor()
+        with patch("utils.agent.tool_executor._get_dirs") as mock_dirs:
+            mock_dirs.return_value.log_dir = log_dir
+            result = asyncio.run(
+                executor._read_pueo_log(
+                    lines=100, level="ERROR", filename="pueo-stderr.log"
+                )
+            )
+        assert result.success is True
+        assert "ASGI" in result.output
+        assert "startup ok" not in result.output

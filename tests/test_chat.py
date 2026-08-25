@@ -2389,3 +2389,267 @@ class TestPreInjectChatContext:
         executor = self._make_mock_executor(recall_output="Nothing found.")
         result = asyncio.run(_pre_inject_chat_context("anything", executor))
         assert result == "anything"
+
+
+# ---------------------------------------------------------------------------
+# TestAgentStepTimestamp — Fix 1 of issue #405
+# ---------------------------------------------------------------------------
+
+
+class TestAgentStepTimestamp:
+    """AgentStep.timestamp must be a real Unix epoch, not monotonic elapsed time."""
+
+    def _make_loop(self, llm, db_path):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        return AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+        )
+
+    def test_step_timestamp_is_unix_epoch(self, db_path):
+        """timestamp stored on each AgentStep must be a Unix epoch (> year 2020)."""
+        import time
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        steps_seen: list[float] = []
+
+        from utils.agent.tool_registry import AgentStep
+
+        def capture(step: AgentStep) -> None:
+            steps_seen.append(step.timestamp)
+
+        loop = self._make_loop(llm, db_path)
+        loop._step_callback = capture
+        before = time.time()
+        asyncio.run(loop.run("Hello"))
+        after = time.time()
+
+        assert steps_seen, "at least one step must have fired"
+        # 2020-01-01 in Unix time
+        year_2020 = 1_577_836_800
+        for ts in steps_seen:
+            assert (
+                ts > year_2020
+            ), f"timestamp {ts} looks like elapsed seconds, not epoch"
+            assert ts >= before
+            assert ts <= after + 1.0
+
+
+# ---------------------------------------------------------------------------
+# TestPreInjectStoredInDB — Fix 2 of issue #405
+# ---------------------------------------------------------------------------
+
+
+class TestPreInjectStoredInDB:
+    """When recall returns content, a pre_inject row must be written to chat_messages.
+    When the knowledge store injects context, context_inject_callback fires."""
+
+    @pytest.fixture
+    def ctx(self, monkeypatch, tmp_path):
+        import web.dashboard as dashboard
+
+        path = str(tmp_path / "test_agent.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(dashboard, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path, dashboard
+
+    def _insert_session(self, path: str) -> int:
+        with sqlite3.connect(path) as conn:
+            cur = conn.execute(
+                "INSERT INTO chat_sessions (title, created_at) VALUES (?, ?)",
+                ("Test", 0.0),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def _patch_loop_and_recall(self, monkeypatch, recall_output):
+        """Patch AgentLoop.run to return immediately and recall to return fixed output."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult, ToolResult
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            return AgentLoopResult(
+                outcome="success", steps=[], episode_stub={"summary": "ok"}
+            )
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+        async def _fake_execute(tool_call):
+            if tool_call.name == "recall":
+                return ToolResult(
+                    tool_name="recall",
+                    success=True,
+                    output=recall_output,
+                )
+            return ToolResult(tool_name=tool_call.name, success=True, output="")
+
+        async def _fake_pre_inject(msg, _ex):
+            if recall_output:
+                return (
+                    f"Relevant memories:\n{recall_output}\n\n---\nUser question: {msg}"
+                )
+            return msg
+
+        monkeypatch.setattr(
+            "web.dashboard._pre_inject_chat_context",
+            _fake_pre_inject,
+        )
+
+    def test_pre_inject_row_written_when_recall_has_content(self, ctx, monkeypatch):
+        """When recall returns memories, a pre_inject row appears in chat_messages."""
+        import web.dashboard as dashboard
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult
+
+        path, _ = ctx
+        session_id = self._insert_session(path)
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            return AgentLoopResult(
+                outcome="success", steps=[], episode_stub={"summary": "ok"}
+            )
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+        recall_memory = "User prefers verbose answers."
+
+        async def _fake_pre_inject(msg, _ex):
+            return f"Relevant memories:\n{recall_memory}\n\n---\nUser question: {msg}"
+
+        monkeypatch.setattr(dashboard, "_pre_inject_chat_context", _fake_pre_inject)
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "What caused the error?", []))
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM chat_messages"
+                " WHERE session_id = ? ORDER BY ts ASC",
+                (session_id,),
+            ).fetchall()
+
+        roles = [r[0] for r in rows]
+        assert (
+            "pre_inject" in roles
+        ), "pre_inject row must be written when recall returns content"
+        pre_row = next(r for r in rows if r[0] == "pre_inject")
+        assert recall_memory in pre_row[1]
+
+    def test_no_pre_inject_row_when_recall_empty(self, ctx, monkeypatch):
+        """When recall returns nothing, no pre_inject row is written."""
+        import web.dashboard as dashboard
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult
+
+        path, _ = ctx
+        session_id = self._insert_session(path)
+
+        async def _fake_run(self_, message, **kw):  # noqa: ARG001
+            return AgentLoopResult(
+                outcome="success", steps=[], episode_stub={"summary": "ok"}
+            )
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+
+        async def _fake_pre_inject(msg, _ex):
+            return msg  # unchanged — no memories found
+
+        monkeypatch.setattr(dashboard, "_pre_inject_chat_context", _fake_pre_inject)
+
+        asyncio.run(dashboard._run_chat_loop(session_id, "Hello", []))
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT role FROM chat_messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+
+        roles = [r[0] for r in rows]
+        assert "pre_inject" not in roles
+
+    def test_context_inject_callback_fires_on_knowledge_inject(self, db_path):
+        """context_inject_callback is invoked when _pre_inject_knowledge enriches the context."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        injected: list[str] = []
+
+        def capture(ctx_block: str) -> None:
+            injected.append(ctx_block)
+
+        class _FakeKnowledgeStore:
+            def query(self, query_text, top_k=3):
+                from utils.knowledge.knowledge_store import KnowledgeChunk
+
+                return [
+                    KnowledgeChunk(
+                        text="strategy: check HA logs first",
+                        source="seed_strategies",
+                        collection="strategies",
+                        score=0.9,
+                    )
+                ]
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            knowledge_store=_FakeKnowledgeStore(),
+            context_inject_callback=capture,
+        )
+        asyncio.run(loop.run("What is wrong?"))
+        assert (
+            injected
+        ), "context_inject_callback must have fired when knowledge was injected"
+        assert "strategy" in injected[0]

@@ -272,6 +272,7 @@ class ToolExecutor:
                 return await self._read_pueo_log(
                     int(args.get("lines", 100)),
                     args.get("level"),
+                    args.get("filename", "pueo.log"),
                 )
             if name == "search_log":
                 return await self._search_log(
@@ -279,6 +280,7 @@ class ToolExecutor:
                     args.get("pattern", ""),
                     int(args.get("context_lines", 2)),
                     int(args.get("max_matches", 20)),
+                    args.get("addon_slug"),
                 )
             if name == "finish_installer_diagnosis":
                 return ToolResult(
@@ -1393,12 +1395,23 @@ class ToolExecutor:
         )
 
     async def _read_pueo_log(
-        self, lines: int = 100, level: Optional[str] = None
+        self,
+        lines: int = 100,
+        level: Optional[str] = None,
+        filename: str = "pueo.log",
     ) -> ToolResult:
         import re as _re
 
+        _ALLOWED = {"pueo.log", "pueo-stderr.log"}
+        if filename not in _ALLOWED:
+            return ToolResult(
+                tool_name="read_pueo_log",
+                success=False,
+                output="",
+                error=f"filename must be one of {sorted(_ALLOWED)}, got {filename!r}",
+            )
         lines = max(1, min(lines, 500))
-        log_path = _get_dirs().log_dir / "pueo.log"
+        log_path = _get_dirs().log_dir / filename
         if not log_path.exists():
             return ToolResult(
                 tool_name="read_pueo_log",
@@ -1411,19 +1424,23 @@ class ToolExecutor:
             all_lines = raw.splitlines()[-lines:]
             if level:
                 level_upper = level.upper()
-                _LEVELS = {"ERROR": 3, "WARNING": 2, "INFO": 1}
-                min_rank = _LEVELS.get(level_upper, 1)
-                filtered = []
-                for line in all_lines:
-                    for lvl, rank in _LEVELS.items():
-                        if rank >= min_rank and (
-                            f'"level":"{lvl}"' in line
-                            or f'"level": "{lvl}"' in line
-                            or _re.search(rf"\b{lvl}\b", line)
-                        ):
-                            filtered.append(line)
-                            break
-                all_lines = filtered
+                if filename == "pueo.log":
+                    _LEVELS = {"ERROR": 3, "WARNING": 2, "INFO": 1}
+                    min_rank = _LEVELS.get(level_upper, 1)
+                    filtered = []
+                    for line in all_lines:
+                        for lvl, rank in _LEVELS.items():
+                            if rank >= min_rank and (
+                                f'"level":"{lvl}"' in line
+                                or f'"level": "{lvl}"' in line
+                                or _re.search(rf"\b{lvl}\b", line)
+                            ):
+                                filtered.append(line)
+                                break
+                    all_lines = filtered
+                else:
+                    # plain-text log: case-insensitive substring match
+                    all_lines = [l for l in all_lines if level_upper in l.upper()]
             if not all_lines:
                 return ToolResult(
                     tool_name="read_pueo_log",
@@ -1449,14 +1466,23 @@ class ToolExecutor:
         pattern: str,
         context_lines: int = 2,
         max_matches: int = 20,
+        addon_slug: Optional[str] = None,
     ) -> ToolResult:
         import re as _re
 
         context_lines = max(0, min(context_lines, 10))
         max_matches = max(1, min(max_matches, 100))
 
-        if log_name == "pueo":
-            log_path = _get_dirs().log_dir / "pueo.log"
+        _SSH_COMMANDS = {
+            "ha_core": "ha core logs --no-follow",
+            "ha_supervisor": "ha supervisor logs --no-follow",
+            "ha_os": "ha os logs --no-follow",
+            "ha_host": "ha host logs --no-follow",
+        }
+
+        if log_name in ("pueo", "pueo_stderr"):
+            fname = "pueo.log" if log_name == "pueo" else "pueo-stderr.log"
+            log_path = _get_dirs().log_dir / fname
             if not log_path.exists():
                 return ToolResult(
                     tool_name="search_log",
@@ -1474,16 +1500,43 @@ class ToolExecutor:
                     output="",
                     error=str(exc),
                 )
-        elif log_name == "ha_core":
+        elif log_name in _SSH_COMMANDS:
             if self._ha_ssh is None:
                 return ToolResult(
                     tool_name="search_log",
                     success=False,
                     output="",
-                    error="No SSH client available for ha_core log search",
+                    error=f"No SSH client available for {log_name} log search",
                 )
             try:
-                _, stdout, _ = await self._ha_ssh.run("ha core logs --no-follow")
+                _, stdout, _ = await self._ha_ssh.run(_SSH_COMMANDS[log_name])
+                all_lines = stdout.splitlines()
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error=str(exc),
+                )
+        elif log_name == "ha_app":
+            if not addon_slug:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error="addon_slug is required when log_name='ha_app' (e.g. 'core_mosquitto')",
+                )
+            if self._ha_ssh is None:
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error="No SSH client available for ha_app log search",
+                )
+            try:
+                _, stdout, _ = await self._ha_ssh.run(
+                    f"ha apps logs {addon_slug} -n 500"
+                )
                 all_lines = stdout.splitlines()
             except Exception as exc:
                 return ToolResult(
@@ -1497,7 +1550,11 @@ class ToolExecutor:
                 tool_name="search_log",
                 success=False,
                 output="",
-                error=f"Unknown log_name: {log_name!r}. Use 'pueo' or 'ha_core'.",
+                error=(
+                    f"Unknown log_name: {log_name!r}. "
+                    "Use one of: pueo, pueo_stderr, ha_core, ha_supervisor, "
+                    "ha_os, ha_host, ha_app."
+                ),
             )
 
         try:
