@@ -1,4 +1,4 @@
-# ADR 007 — Outcome primacy: correct fixes over arbitrary limits
+# ADR 020 — Outcome primacy: correct fixes over arbitrary limits
 
 ## Status
 Accepted

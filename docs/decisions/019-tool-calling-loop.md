@@ -1,4 +1,4 @@
-# ADR 006 — Tool-calling agent loop over linear pipeline
+# ADR 019 — Tool-calling agent loop over linear pipeline
 
 ## Status
 Accepted

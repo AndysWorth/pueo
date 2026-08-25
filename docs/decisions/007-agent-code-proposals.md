@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-Pueo's tool-calling loop (ADR 006) can diagnose and repair known failure modes by calling
+Pueo's tool-calling loop (ADR 019) can diagnose and repair known failure modes by calling
 tools already in the registry. When the agent encounters a failure mode that no existing tool
 can address — an integration type it has never seen, a new HAOS supervision API, a
 site-specific hardware fault — it has two options: escalate to a human engineer who then
@@ -123,7 +123,7 @@ part of the structured `AgentLoopResult` that callers already handle.
   (`execute_remote_backup`, `record_backup_slug`) is protected by symbol-level detection in
   `propose_patch` — the same principle as the invariant itself: the protection is enforced
   before the action, not after.
-- [ADR 006 (tool-calling loop)](006-tool-calling-loop.md): Code-proposal tools share the
+- [ADR 019 (tool-calling loop)](019-tool-calling-loop.md): Code-proposal tools share the
   `AgentLoop` + `ToolExecutor` architecture introduced there. Budget limits, timeout
   enforcement, and client injection apply unchanged to the proposal flow.
 - [ADR 006 (LLM provider)](006-llm-provider-abstraction.md): `ClaudeAPIClient` and
