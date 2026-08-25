@@ -15,7 +15,6 @@ from utils.core.context import estimate_tokens, truncate_to_budget
 from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
-from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol
@@ -181,9 +180,6 @@ async def diagnose_installer_failure(
 
     client = llm_client or make_llm_client()
     model = _default_model_for_provider()
-    base_prompt = load_prompt("agent_loop_base").replace(
-        "{terminal_tool}", "finish_installer_diagnosis"
-    )
     initial_message = (
         f"Diagnose this installer failure: {failure_type}"
         + (f" (add-on: {slug})" if slug else "")
@@ -205,7 +201,6 @@ async def diagnose_installer_failure(
         tool_executor=executor,
         tool_registry=registry,
         model=model,
-        system_prompt=base_prompt,
         terminal_tool_name="finish_installer_diagnosis",
         trigger="installer_diagnosis",
     )
@@ -224,9 +219,13 @@ async def diagnose_installer_failure(
         log.error("installer_diagnosis_failed", error=str(exc))
         diagnostic = _fallback_diagnostic()
 
+    from utils.core.prompts import load_prompt as _lp
+
     trace = LLMTrace(
         model=model,
-        system_prompt=base_prompt,
+        system_prompt=_lp("agent_loop").format(
+            terminal_tool="finish_installer_diagnosis"
+        ),
         user_prompt=initial_message,
         raw_response=diagnostic.model_dump_json(),
     )

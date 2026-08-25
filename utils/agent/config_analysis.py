@@ -68,9 +68,6 @@ async def _analyze_with_agent_loop(
     from utils.hitl.notify import FakeNotifier
 
     client = llm_client or make_llm_client()
-    base_prompt = load_prompt("agent_loop_base").replace(
-        "{terminal_tool}", "finish_diagnosis"
-    )
     snippet = truncate_to_budget(yaml_content, MAX_PROMPT_TOKENS - 400)
     initial_message = (
         "Analyse the following Home Assistant configuration.yaml for syntax errors, "
@@ -92,7 +89,6 @@ async def _analyze_with_agent_loop(
         llm_client=client,
         tool_executor=executor,
         tool_registry=registry,
-        system_prompt=base_prompt,
         terminal_tool_name="finish_diagnosis",
         trigger="config_analysis",
     )

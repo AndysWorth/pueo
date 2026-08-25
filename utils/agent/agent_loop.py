@@ -84,8 +84,7 @@ def _parse_content_as_tool_call(
     return None
 
 
-_AGENT_LOOP_SYSTEM_PROMPT = load_prompt("agent_loop_ha")
-_CHAT_SYSTEM_PROMPT = load_prompt("agent_loop_chat")
+_UNSET_PROMPT = object()  # sentinel for auto-loaded, terminal-tool-aware default
 
 
 class AgentLoop:
@@ -116,7 +115,7 @@ class AgentLoop:
         tool_executor: "ToolExecutor",
         tool_registry: "ToolRegistry",
         model: str | object = _UNSET,
-        system_prompt: str = _AGENT_LOOP_SYSTEM_PROMPT,
+        system_prompt: str | object = _UNSET_PROMPT,
         max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
         max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
         terminal_tool_name: str = "finish_repair",
@@ -132,11 +131,15 @@ class AgentLoop:
             from utils.llm.llm_factory import _default_model_for_provider
 
             model = _default_model_for_provider()
+        if system_prompt is _UNSET_PROMPT:
+            system_prompt = load_prompt("agent_loop").format(
+                terminal_tool=terminal_tool_name
+            )
         self._llm = llm_client
         self._executor = tool_executor
         self._registry = tool_registry
         self._model: str = model  # type: ignore[assignment]
-        self._system_prompt = system_prompt
+        self._system_prompt = system_prompt  # type: ignore[assignment]
         self._max_tool_calls = max_tool_calls
         self._max_wall_seconds = max_wall_seconds
         self._terminal_tool_name = terminal_tool_name
