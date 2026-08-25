@@ -2616,7 +2616,10 @@ async def chat_debug_log(session_id: int) -> Response:
         timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
         lines.append("")
 
-        if role == "user":
+        if role == "pre_inject":
+            lines.append("[Pre-injected context]")
+            lines.append(content)
+        elif role == "user":
             lines.append(f"[User] {timestamp}")
             lines.append(content)
         elif role == "assistant" and tool_calls_json and not content:
@@ -2849,6 +2852,14 @@ async def _run_chat_loop(
         if m.get("role") in ("user", "assistant")
     ]
 
+    def _store_pre_inject(content: str) -> None:
+        with sqlite3.connect(DB_PATH) as _c:
+            _c.execute(
+                "INSERT INTO chat_messages (session_id, role, content, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, "pre_inject", content[:2000], time.time()),
+            )
+
     try:
         agent_loop = AgentLoop(
             llm_client=make_llm_client(),
@@ -2860,8 +2871,11 @@ async def _run_chat_loop(
             step_callback=on_step,
             pre_step_callback=on_pre_step,
             knowledge_store=getattr(executor, "_knowledge_store", None),
+            context_inject_callback=_store_pre_inject,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
+        if enriched_message != message:
+            _store_pre_inject(enriched_message)
         result = await agent_loop.run(
             enriched_message, initial_messages=prior_messages or None
         )

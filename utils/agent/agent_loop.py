@@ -126,6 +126,7 @@ class AgentLoop:
         db_path: Optional[str] = None,
         escalated: bool = False,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+        context_inject_callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -150,6 +151,7 @@ class AgentLoop:
         self._db_path = db_path
         self._escalated = escalated
         self._knowledge_store = knowledge_store
+        self._context_inject_callback = context_inject_callback
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
 
@@ -338,7 +340,13 @@ class AgentLoop:
         self._executor.reset()
 
         if self._knowledge_store is not None:
-            initial_context = self._pre_inject_knowledge(initial_context)
+            enriched = self._pre_inject_knowledge(initial_context)
+            if (
+                enriched != initial_context
+                and self._context_inject_callback is not None
+            ):
+                self._context_inject_callback(enriched[:1000])
+            initial_context = enriched
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
@@ -612,7 +620,7 @@ class AgentLoop:
                     name=fn.get("name", ""),
                     arguments=fn.get("arguments", {}),
                 )
-                ts = time.monotonic() - start_time
+                ts = time.time()
                 if self._pre_step_callback is not None:
                     await self._pre_step_callback(tool_call)
                 tool_result: ToolResult = await self._executor.execute(tool_call)

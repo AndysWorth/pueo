@@ -660,8 +660,10 @@ SAVE_STRATEGY = ToolDefinition(
 READ_PUEO_LOG = ToolDefinition(
     name="read_pueo_log",
     description=(
-        "Read recent lines from Pueo's own structured JSON log. "
-        "Use to investigate errors or warnings in Pueo itself (loop crashes, stream resets, etc.)."
+        "Read recent lines from Pueo's own logs. "
+        "Default reads the structured JSON log (loop crashes, stream resets, etc.). "
+        "Pass filename='pueo-stderr.log' to read raw uvicorn/FastAPI stderr output "
+        "(ASGI exceptions, startup errors)."
     ),
     parameters={
         "type": "object",
@@ -675,6 +677,11 @@ READ_PUEO_LOG = ToolDefinition(
                 "enum": ["ERROR", "WARNING", "INFO"],
                 "description": "Filter to only lines at this log level or above",
             },
+            "filename": {
+                "type": "string",
+                "enum": ["pueo.log", "pueo-stderr.log"],
+                "description": "Which Pueo log file to read (default 'pueo.log')",
+            },
         },
         "required": [],
     },
@@ -683,20 +690,35 @@ READ_PUEO_LOG = ToolDefinition(
 SEARCH_LOG = ToolDefinition(
     name="search_log",
     description=(
-        "Search a named log for lines matching a regex pattern or timestamp range. "
-        "Returns matching lines with surrounding context."
+        "Search a log for lines matching a regex pattern. Returns matching lines with context. "
+        "Sources: 'pueo' (Pueo JSON log), 'pueo_stderr' (Pueo uvicorn/ASGI stderr), "
+        "'ha_core' (HA Core journal), 'ha_supervisor' (HA Supervisor daemon), "
+        "'ha_os' (HassOS OS log), 'ha_host' (host-level log), "
+        "'ha_app' (add-on log — also pass addon_slug, e.g. 'core_mosquitto')."
     ),
     parameters={
         "type": "object",
         "properties": {
             "log_name": {
                 "type": "string",
-                "enum": ["pueo", "ha_core"],
-                "description": "Which log to search: 'pueo' for Pueo's own log, 'ha_core' for the HA supervisor journal",
+                "enum": [
+                    "pueo",
+                    "pueo_stderr",
+                    "ha_core",
+                    "ha_supervisor",
+                    "ha_os",
+                    "ha_host",
+                    "ha_app",
+                ],
+                "description": "Which log to search",
             },
             "pattern": {
                 "type": "string",
                 "description": "Regex pattern to match (case-insensitive)",
+            },
+            "addon_slug": {
+                "type": "string",
+                "description": "Add-on slug (required when log_name='ha_app', e.g. 'core_mosquitto')",
             },
             "context_lines": {
                 "type": "integer",
