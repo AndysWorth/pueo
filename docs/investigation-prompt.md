@@ -1,65 +1,19 @@
 # Pueo Investigation Prompt — General Methodology
 
-This document describes the investigative process Pueo uses when encountering an unfamiliar
-failure mode or a domain where it needs to determine best practices before acting.
+> **Status:** The 5-step investigation methodology described here is superseded by
+> [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodology.md),
+> which defines the canonical 6-phase investigation cycle used by all Pueo agent sessions.
+> The `finish_investigation` schema and disk-space domain reference below remain accurate.
 
-The pattern is implemented in `utils/investigation_loop.py` and can be invoked via
-`run_investigation(topic, goal, context, llm_client, knowledge_store)`.
+The investigation pattern is implemented in `utils/agent/investigation_loop.py` and can be
+invoked via `run_investigation(topic, goal, context, llm_client, knowledge_store)`.
 
 ---
 
-## The Five-Step Pattern
+## `finish_investigation` Schema
 
-Every Pueo investigation follows this sequence regardless of domain:
+The terminal tool for investigation sessions. The LLM must call it with:
 
-### 1. Gather Evidence
-Use read tools to collect current system state relevant to the topic:
-- `get_disk_usage` — for storage problems
-- `read_logs` — for error patterns
-- `run_ha_command("ha host info")` / `run_ha_command("ha backups list")` — for HA state
-- `read_file` — for config files
-
-Do not skip evidence gathering to jump to recommendations.
-
-### 2. Consult Knowledge
-Always call `query_knowledge` with relevant search terms before forming conclusions:
-- Use the specific problem area: `"recorder database purge disk space"`
-- Use component names: `"systemd journal vacuum HAOS"`
-- Use best-practice phrases: `"home assistant disk full recovery"`
-
-If the knowledge store has no relevant chunks, note this in `knowledge_sources` and lower
-`confidence` accordingly. Never guess at best practices.
-
-### 3. Identify Root Causes
-Reason from evidence to underlying causes — not symptoms:
-- Symptom: "disk is full"
-- Root cause: "recorder DB grew to 8 GB due to high-frequency entity polling with no purge schedule"
-
-List each root cause separately.
-
-### 4. Rank Remediation Options
-For each option, assess four dimensions:
-
-| Dimension | Questions |
-|---|---|
-| **Impact** | How much space / performance / reliability does this recover? |
-| **Reversibility** | Can the action be undone? Deleting history cannot be; compacting a DB can be redone. |
-| **Risk level** | LOW / MEDIUM / HIGH / CRITICAL (see below) |
-| **Autonomy** | auto_actions / hitl_actions / manual_only (see below) |
-
-**Risk levels:**
-- `LOW` — read-only or easily reversible; no service interruption
-- `MEDIUM` — modifies data; recoverable via backup; no outage
-- `HIGH` — irreversible data loss or service interruption
-- `CRITICAL` — production outage or unrecoverable data loss risk
-
-**Autonomy classification:**
-- `auto_actions` — LOW risk, reversible-or-acceptable-loss, no service interruption → execute immediately without approval
-- `hitl_actions` — MEDIUM/HIGH risk, or any action with meaningful data loss or downtime → require user approval
-- `manual_only` — requires physical access, hypervisor changes, or human judgment on content (e.g. "which camera recordings to keep")
-
-### 5. Report Structured Findings
-Call `finish_investigation` with:
 ```json
 {
   "summary": "Plain-English diagnosis of root cause(s)",
@@ -71,6 +25,15 @@ Call `finish_investigation` with:
   "confidence": 0.85
 }
 ```
+
+`action_key` is the dispatch key used by the caller (e.g. `disk_recovery.py`) to map the
+LLM's chosen action to a concrete Python function. The valid keys for each domain are listed
+in the domain sections below. An unrecognised `action_key` is silently skipped.
+
+**Risk levels / autonomy classification:**
+- `auto_actions` — LOW risk, reversible or acceptable loss, no service interruption → executed immediately without approval
+- `hitl_actions` — MEDIUM/HIGH risk, or meaningful data loss or downtime → require user approval
+- `manual_only` — requires physical access, hypervisor changes, or human judgment on content
 
 ---
 
