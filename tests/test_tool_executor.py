@@ -915,3 +915,162 @@ class TestReadPueoLogFilename:
         assert result.success is True
         assert "ASGI" in result.output
         assert "startup ok" not in result.output
+
+
+class TestReadLogsExtended:
+    """Tests for the extended read_logs tool (log_source + addon_slug params)."""
+
+    def _make_executor(self, command_results=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(
+                file_contents={}, command_results=command_results or {}
+            ),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def test_default_reads_ha_core(self):
+        """read_logs() with no args calls ha core logs --lines 100."""
+        executor = self._make_executor(
+            {"ha core logs --lines 100": (0, "core log line\n", "")}
+        )
+        result = asyncio.run(executor._read_logs(100))
+        assert result.success is True
+        assert "core log line" in result.output
+
+    def test_ha_supervisor_calls_correct_command(self):
+        """read_logs(log_source='ha_supervisor') calls ha supervisor logs --no-follow."""
+        executor = self._make_executor(
+            {"ha supervisor logs --no-follow": (0, "supervisor started\n", "")}
+        )
+        result = asyncio.run(executor._read_logs(100, log_source="ha_supervisor"))
+        assert result.success is True
+        assert "supervisor started" in result.output
+
+    def test_ha_os_calls_correct_command(self):
+        """read_logs(log_source='ha_os') calls ha os logs --no-follow."""
+        executor = self._make_executor(
+            {"ha os logs --no-follow": (0, "os boot info\n", "")}
+        )
+        result = asyncio.run(executor._read_logs(100, log_source="ha_os"))
+        assert result.success is True
+        assert "os boot info" in result.output
+
+    def test_ha_host_calls_correct_command(self):
+        """read_logs(log_source='ha_host') calls ha host logs --no-follow."""
+        executor = self._make_executor(
+            {"ha host logs --no-follow": (0, "host kernel msg\n", "")}
+        )
+        result = asyncio.run(executor._read_logs(100, log_source="ha_host"))
+        assert result.success is True
+        assert "host kernel msg" in result.output
+
+    def test_ha_app_calls_ha_apps_logs_with_slug(self):
+        """read_logs(log_source='ha_app', addon_slug='core_mosquitto') uses correct command."""
+        executor = self._make_executor(
+            {"ha apps logs core_mosquitto -n 100": (0, "mosquitto started\n", "")}
+        )
+        result = asyncio.run(
+            executor._read_logs(100, log_source="ha_app", addon_slug="core_mosquitto")
+        )
+        assert result.success is True
+        assert "mosquitto started" in result.output
+
+    def test_ha_app_requires_addon_slug(self):
+        """read_logs(log_source='ha_app') without slug returns error."""
+        executor = self._make_executor()
+        result = asyncio.run(executor._read_logs(100, log_source="ha_app"))
+        assert result.success is False
+        assert "addon_slug" in result.error
+
+    def test_lines_capped_at_500(self):
+        """Lines argument is capped at 500."""
+        executor = self._make_executor(
+            {"ha core logs --lines 500": (0, "output\n", "")}
+        )
+        result = asyncio.run(executor._read_logs(9999))
+        assert result.success is True
+
+
+class TestListLogSources:
+    """Tests for the list_log_sources tool."""
+
+    def _make_executor(self, command_results=None, ha_ssh=True):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = (
+            FakeSSHClient(file_contents={}, command_results=command_results or {})
+            if ha_ssh
+            else None
+        )
+        return ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def test_returns_system_sources_always(self):
+        """System sources are always returned regardless of SSH availability."""
+        import json
+
+        executor = self._make_executor(ha_ssh=False)
+        result = asyncio.run(executor._list_log_sources())
+        assert result.success is True
+        data = json.loads(result.output)
+        sources = [s["log_name"] for s in data["system_sources"]]
+        assert "ha_core" in sources
+        assert "ha_supervisor" in sources
+        assert "ha_os" in sources
+        assert "ha_host" in sources
+        assert data["app_sources"] == []
+
+    def test_parses_app_sources_from_ha_apps_list(self):
+        """App sources are populated from ha apps list --raw-json output."""
+        import json
+
+        apps_json = json.dumps(
+            [
+                {"slug": "core_mosquitto", "name": "Mosquitto Broker"},
+                {"slug": "netalertx_fa", "name": "NetAlertX"},
+            ]
+        )
+        executor = self._make_executor({"ha apps list --raw-json": (0, apps_json, "")})
+        result = asyncio.run(executor._list_log_sources())
+        assert result.success is True
+        data = json.loads(result.output)
+        slugs = [s["addon_slug"] for s in data["app_sources"]]
+        assert "core_mosquitto" in slugs
+        assert "netalertx_fa" in slugs
+        assert all(s["log_name"] == "ha_app" for s in data["app_sources"])
+
+    def test_bad_json_from_ha_apps_list_returns_system_sources_only(self):
+        """Malformed JSON from ha apps list does not crash — returns system sources only."""
+        import json
+
+        executor = self._make_executor(
+            {"ha apps list --raw-json": (0, "not-json!", "")}
+        )
+        result = asyncio.run(executor._list_log_sources())
+        assert result.success is True
+        data = json.loads(result.output)
+        assert len(data["system_sources"]) == 4
+        assert data["app_sources"] == []
+
+    def test_no_ssh_returns_system_sources_only(self):
+        """Without SSH, only system sources are returned and app_sources is empty."""
+        import json
+
+        executor = self._make_executor(ha_ssh=False)
+        result = asyncio.run(executor._list_log_sources())
+        assert result.success is True
+        data = json.loads(result.output)
+        assert len(data["system_sources"]) == 4
+        assert data["app_sources"] == []

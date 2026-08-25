@@ -14410,3 +14410,69 @@ class TestAgentLoopStuckOutcome:
             result = asyncio.run(loop.run("diagnose the system"))
 
         assert result.outcome == "stuck"
+
+
+class TestRepairLoopKnowledgeInjectCallback:
+    """context_inject_callback is wired in the HA repair loop (Closes #410)."""
+
+    def test_callback_fires_when_knowledge_injected(self):
+        """When knowledge_store returns context, _on_knowledge_inject is called."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        injected_calls: list[str] = []
+
+        def _on_inject(ctx: str) -> None:
+            injected_calls.append(ctx)
+
+        class _Chunk:
+            text = "known fix: restart service"
+
+        class _FakeKnowledgeStore:
+            def query(self, *a, **k):
+                return [_Chunk()]
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            knowledge_store=_FakeKnowledgeStore(),
+        )
+
+        class _FinishLLM:
+            async def chat_with_tools(self, messages, tools, **k):
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ],
+                }
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        ks = _FakeKnowledgeStore()
+        loop = AgentLoop(
+            llm_client=_FinishLLM(),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+            knowledge_store=ks,
+            context_inject_callback=_on_inject,
+        )
+        asyncio.run(loop.run("check logs for errors"))
+        assert len(injected_calls) >= 1
+        assert "known fix" in injected_calls[0]

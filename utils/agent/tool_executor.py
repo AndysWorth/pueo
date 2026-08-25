@@ -176,7 +176,13 @@ class ToolExecutor:
             if name == "read_config":
                 return await self._read_config(args.get("path", CONFIG_REMOTE_PATH))
             if name == "read_logs":
-                return await self._read_logs(int(args.get("lines", 100)))
+                return await self._read_logs(
+                    int(args.get("lines", 100)),
+                    args.get("log_source", "ha_core"),
+                    args.get("addon_slug"),
+                )
+            if name == "list_log_sources":
+                return await self._list_log_sources()
             if name == "run_ha_command":
                 return await self._run_ha_command(args.get("command", ""))
             if name == "trigger_backup":
@@ -334,11 +340,34 @@ class ToolExecutor:
                 tool_name="read_config", success=False, output="", error=str(exc)
             )
 
-    async def _read_logs(self, lines: int) -> ToolResult:
+    _HA_LOG_CMDS = {
+        "ha_core": "ha core logs --lines {lines}",
+        "ha_supervisor": "ha supervisor logs --no-follow",
+        "ha_os": "ha os logs --no-follow",
+        "ha_host": "ha host logs --no-follow",
+    }
+
+    async def _read_logs(
+        self,
+        lines: int,
+        log_source: str = "ha_core",
+        addon_slug: Optional[str] = None,
+    ) -> ToolResult:
+        lines = min(lines, 500)
+        if log_source == "ha_app":
+            if not addon_slug:
+                return ToolResult(
+                    tool_name="read_logs",
+                    success=False,
+                    output="",
+                    error="addon_slug is required when log_source='ha_app'",
+                )
+            cmd = f"ha apps logs {addon_slug} -n {lines}"
+        else:
+            cmd_tmpl = self._HA_LOG_CMDS.get(log_source, self._HA_LOG_CMDS["ha_core"])
+            cmd = cmd_tmpl.format(lines=lines)
         try:
-            _, stdout, stderr = await self._ha_ssh.run(
-                f"ha core logs --lines {lines}", check=False
-            )
+            _, stdout, stderr = await self._ha_ssh.run(cmd, check=False)
             return ToolResult(
                 tool_name="read_logs", success=True, output=stdout or stderr
             )
@@ -346,6 +375,42 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="read_logs", success=False, output="", error=str(exc)
             )
+
+    async def _list_log_sources(self) -> ToolResult:
+        system_sources = [
+            {"log_name": "ha_core", "description": "HA Core container journal"},
+            {"log_name": "ha_supervisor", "description": "HA Supervisor daemon"},
+            {"log_name": "ha_os", "description": "HassOS operating system"},
+            {"log_name": "ha_host", "description": "Host-level log"},
+        ]
+        app_sources: list[dict] = []
+        if self._ha_ssh is not None:
+            try:
+                _, stdout, _ = await self._ha_ssh.run(
+                    "ha apps list --raw-json", check=False
+                )
+                apps = json.loads(stdout or "[]")
+                app_sources = [
+                    {
+                        "log_name": "ha_app",
+                        "addon_slug": a["slug"],
+                        "name": a.get("name", a["slug"]),
+                    }
+                    for a in apps
+                    if "slug" in a
+                ]
+            except (
+                json.JSONDecodeError,
+                KeyError,
+                Exception,
+            ):  # nosec B110 — best-effort
+                pass
+        output = {"system_sources": system_sources, "app_sources": app_sources}
+        return ToolResult(
+            tool_name="list_log_sources",
+            success=True,
+            output=json.dumps(output, indent=2),
+        )
 
     async def _run_ha_command(self, command: str) -> ToolResult:
         normalized = command.strip()

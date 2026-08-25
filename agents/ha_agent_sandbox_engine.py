@@ -679,6 +679,18 @@ async def main(
         except Exception:  # nosec B110 — best-effort SSE
             pass
 
+    def _on_knowledge_inject(injected: str) -> None:
+        line_count = injected.count("\n")
+        try:
+            asyncio.create_task(
+                _on_repair_timeline(
+                    "pre_inject",
+                    f"Knowledge pre-injected ({line_count} lines)",
+                )
+            )
+        except RuntimeError:
+            pass  # no event loop running
+
     loop = AgentLoop(
         llm_client=_llm,
         tool_executor=executor,
@@ -687,6 +699,7 @@ async def main(
         db_path=DB_PATH,
         timeline_callback=_on_repair_timeline,
         knowledge_store=_knowledge_store,
+        context_inject_callback=_on_knowledge_inject,
     )
 
     initial_context = (
