@@ -108,7 +108,7 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **LLM-guided all actions — 6-phase methodology**: Every significant Pueo action flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
 
-All agent sessions follow the **6-phase investigation cycle** (encoded in `prompts/agent_loop_base.md`):
+All agent sessions follow the **6-phase investigation cycle** (encoded in `prompts/agent_loop.md`; see ADR 018):
 1. **Retrieve context** — call `query_knowledge` first with the question or trigger (surfaces relevant strategies, past cases, breaking changes)
 2. **Form a hypothesis** — one sentence before calling any tool
 3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`

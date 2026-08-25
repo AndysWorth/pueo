@@ -126,9 +126,6 @@ async def _diagnose_with_agent_loop(
     from utils.agent.autonomy import FakeAutonomyGate
     from utils.hitl.notify import FakeNotifier
 
-    base_prompt = load_prompt("agent_loop_base").replace(
-        "{terminal_tool}", "finish_health_diagnosis"
-    )
     initial_message = (
         "Diagnose the following NetAlertX health issues:\n\n"
         + context
@@ -147,7 +144,6 @@ async def _diagnose_with_agent_loop(
         tool_executor=executor,
         tool_registry=registry,
         model=model,
-        system_prompt=base_prompt,
         terminal_tool_name="finish_health_diagnosis",
         trigger="health_diagnosis",
     )
@@ -164,7 +160,9 @@ async def _diagnose_with_agent_loop(
             )
         trace = LLMTrace(
             model=model,
-            system_prompt=base_prompt,
+            system_prompt=load_prompt("agent_loop").format(
+                terminal_tool="finish_health_diagnosis"
+            ),
             user_prompt=initial_message,
             raw_response=result.model_dump_json() if result else "",
         )

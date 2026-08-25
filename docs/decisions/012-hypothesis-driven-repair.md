@@ -1,7 +1,9 @@
 # ADR 012 — Hypothesis-driven repair cycle and query-first investigation
 
 ## Status
-Accepted
+Superseded by [ADR 018 — Unified Agent Methodology](018-unified-agent-methodology.md)
+
+The 5-phase repair cycle became the 6-phase universal cycle by prepending Phase 1 (retrieve context). See ADR 018.
 
 ## Context
 The original `_AGENT_LOOP_SYSTEM_PROMPT` was seven lines: "read config/logs, call apply_fix, call finish_repair." This symptom-driven flow caused three recurring problems:

@@ -2328,12 +2328,6 @@ class TestLoadPrompt:
         text = load_prompt("diagnose_config")
         assert "Home Assistant" in text
 
-    def test_loads_repair_prompt(self):
-        from utils.core.prompts import load_prompt
-
-        text = load_prompt("diagnose_config_repair")
-        assert len(text) > 20
-
     def test_loads_triage_prompt(self):
         from utils.core.prompts import load_prompt
 
@@ -2370,7 +2364,7 @@ class TestLoadPrompt:
         import importlib.resources
 
         ref = importlib.resources.files("prompts")
-        md_file = ref.joinpath("agent_loop_ha.md")
+        md_file = ref.joinpath("agent_loop.md")
         assert md_file.read_text(encoding="utf-8")
 
     def test_missing_prompt_raises(self):
@@ -2379,17 +2373,17 @@ class TestLoadPrompt:
         with pytest.raises(FileNotFoundError):
             load_prompt("nonexistent_prompt_xyz")
 
-    def test_loads_agent_loop_ha_prompt(self):
+    def test_loads_agent_loop_prompt(self):
         from utils.core.prompts import load_prompt
 
-        text = load_prompt("agent_loop_ha")
+        text = load_prompt("agent_loop").format(terminal_tool="finish_repair")
         assert "hypothesis" in text.lower()
         assert "finish_repair" in text
 
-    def test_loads_agent_loop_chat_prompt(self):
+    def test_agent_loop_prompt_substitutes_terminal_tool(self):
         from utils.core.prompts import load_prompt
 
-        text = load_prompt("agent_loop_chat")
+        text = load_prompt("agent_loop").format(terminal_tool="finish_chat")
         assert "finish_chat" in text
         assert "recall" in text.lower()
 
@@ -10547,10 +10541,11 @@ class TestAgentLoop:
 
     def test_system_prompt_requires_finish_repair(self):
         """Default system prompt explicitly mandates finish_repair and prohibits plain text."""
-        from utils.agent.agent_loop import _AGENT_LOOP_SYSTEM_PROMPT
+        from utils.core.prompts import load_prompt
 
-        prompt_lower = _AGENT_LOOP_SYSTEM_PROMPT.lower()
-        assert "finish_repair" in _AGENT_LOOP_SYSTEM_PROMPT
+        prompt = load_prompt("agent_loop").format(terminal_tool="finish_repair")
+        prompt_lower = prompt.lower()
+        assert "finish_repair" in prompt
         assert "mandatory" in prompt_lower or "required" in prompt_lower
         assert "plain text" in prompt_lower or "never return" in prompt_lower
 

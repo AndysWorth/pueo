@@ -26,7 +26,7 @@ Strategic capabilities in delivery order.
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
 | 12. Agent self-knowledge + HA live lookup     | ✅ Complete (2026-08-18)  | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
-| 13. Unified Agent Methodology                 | ✅ Complete (2026-08-24) | `prompts/agent_loop_base.md`, `utils/knowledge/strategy_seeder.py`, `utils/agent/tool_registry.py` |
+| 13. Unified Agent Methodology                 | ✅ Complete (2026-08-24) | `prompts/agent_loop.md`, `utils/knowledge/strategy_seeder.py`, `utils/agent/tool_registry.py` |
 
 ### Implementation Phases
 
@@ -356,6 +356,35 @@ Full spec: [plan/transparency.md](plan/transparency.md)
 **Validation gate:** In a repair session, `read_source("utils/tool_registry.py")` returns the tool list; an unfamiliar integration triggers `fetch_ha_docs`; `LLM_PROVIDER=local` + empty cache raises `ToolError`, no HTTP; CI passes.
 
 Full spec: [plan/ha-live-knowledge.md](plan/ha-live-knowledge.md)
+
+---
+
+### Milestone 13 — Unified Agent Methodology
+
+**Delivered:** 2026-08-24 (Phase after 22/23)
+
+Every Pueo agent session now follows the same **6-phase investigation cycle** encoded in `prompts/agent_loop.md`:
+
+1. **Retrieve context** — call `query_knowledge` first with the question or trigger (surfaces relevant strategies, past cases, breaking changes)
+2. **Form a hypothesis** — one sentence before calling any tool
+3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`
+4. **Confirm root cause** — state it explicitly before acting
+5. **Act** — apply fix, recommend action, or call `save_strategy` to record a novel approach
+6. **Report** — call the terminal tool (`finish_repair`, `finish_chat`, `finish_investigation`)
+
+**Why here:** Milestones 12 and 11 gave every agent self-knowledge and transparency. Unifying the investigation methodology ensures those capabilities are actually used — Phase 1 (retrieve context) is infrastructure-guaranteed via `AgentLoop._pre_inject_knowledge`, not left to the model's discretion.
+
+**Key design choices:**
+- Single `prompts/agent_loop.md` replaces three prompt files; loaded by `AgentLoop` when no explicit `system_prompt` is passed; `{terminal_tool}` placeholder substituted from `terminal_tool_name`
+- `save_strategy` tool registered in all agent registries; embeds novel approaches into the `strategies` ChromaDB collection and records them in `agent_strategies` SQLite table
+- `strategy_seeder.py` pre-embeds seed strategies from `prompts/seed_*.md` at RAG refresh time — 5 seed files covering config errors, disk space, integration errors, Pueo log patterns, and security notifications
+- `read_pueo_log` and `search_log` tools added to all registries so agents can consult Pueo's own history during an investigation
+- `query_knowledge` pre-injection moved into `AgentLoop` itself (via `knowledge_store` constructor param) — every session retrieves up to 3 relevant chunks before the first LLM call regardless of which caller constructs the loop
+- One-shot pipelines (log triage, breaking-change analysis, notification analysis) are deliberately left outside the loop — they are hot-path filters, not decision-making agents
+
+**Validation gate:** `grep -r "agent_loop_base\|agent_loop_ha\|agent_loop_chat" .` returns nothing; every `AgentLoop` constructor call either omits `system_prompt` (uses the default) or passes a domain-specific override (code proposals); CI passes; `strategy_seeder.py` embeds all 5 seed files without errors.
+
+ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodology.md)
 
 ---
 

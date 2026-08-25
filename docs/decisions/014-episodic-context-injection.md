@@ -1,7 +1,9 @@
 # ADR 014 — Episodic context injection before repair loops
 
 ## Status
-Accepted
+Superseded by [ADR 018 — Unified Agent Methodology](018-unified-agent-methodology.md)
+
+Infrastructure pre-injection replaced by Phase 1 (`query_knowledge`) as the universal context-retrieval step. See ADR 018.
 
 ## Context
 Every Pueo repair loop starts cold. The model receives the triggering log line or issue description and must reason from scratch about what is wrong and how to fix it. Two sources of relevant historical context exist but were not used:

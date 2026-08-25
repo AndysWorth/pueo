@@ -2568,7 +2568,7 @@ async def chat_debug_log(session_id: int) -> Response:
     from utils.core.prompts import load_prompt
 
     try:
-        system_prompt = load_prompt("agent_loop_chat")
+        system_prompt = load_prompt("agent_loop").format(terminal_tool="finish_chat")
     except Exception:
         system_prompt = "(could not load system prompt)"
 
@@ -2784,7 +2784,7 @@ async def _run_chat_loop(
         NOTIFY_WATCH_DIR,
         SSH_KEY_PATH,
     )
-    from utils.agent.agent_loop import AgentLoop, _CHAT_SYSTEM_PROMPT
+    from utils.agent.agent_loop import AgentLoop
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import get_notifier
     from utils.llm.llm_factory import make_llm_client
@@ -2860,7 +2860,6 @@ async def _run_chat_loop(
             llm_client=make_llm_client(),
             tool_executor=executor,
             tool_registry=build_chat_tool_registry(),
-            system_prompt=_CHAT_SYSTEM_PROMPT,
             terminal_tool_name="finish_chat",
             max_tool_calls=10,
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,

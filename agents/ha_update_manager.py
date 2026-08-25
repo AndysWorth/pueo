@@ -309,12 +309,8 @@ async def _personalize_with_agent_loop(
     )
     from utils.agent.autonomy import FakeAutonomyGate
     from utils.hitl.notify import FakeNotifier
-    from utils.core.prompts import load_prompt as _load_prompt
 
     client: LLMClientProtocol = llm_client or make_llm_client()
-    base_prompt = _load_prompt("agent_loop_base").replace(
-        "{terminal_tool}", "finish_impact_analysis"
-    )
 
     changes_text = "\n".join(f"- {c}" for c in breaking_changes)
     integrations_text = ", ".join(installed_integrations) or "unknown"
@@ -341,7 +337,6 @@ async def _personalize_with_agent_loop(
         llm_client=client,
         tool_executor=executor,
         tool_registry=registry,
-        system_prompt=base_prompt,
         terminal_tool_name="finish_impact_analysis",
         trigger="impact_analysis",
     )
