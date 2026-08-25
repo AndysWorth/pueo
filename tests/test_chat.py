@@ -2259,9 +2259,12 @@ class TestRepoRootRegression:
 
 
 class TestPreInjectChatContext:
-    """Unit tests for _pre_inject_chat_context (ADR 014 pattern for chat)."""
+    """Unit tests for _pre_inject_chat_context (recall-only, chat-specific).
 
-    def _make_mock_executor(self, recall_output="", qk_output=""):
+    query_knowledge injection moved to AgentLoop._pre_inject_knowledge (ADR 018).
+    """
+
+    def _make_mock_executor(self, recall_output=""):
         """Return a mock ToolExecutor whose execute() returns canned ToolResults."""
         from utils.agent.tool_registry import ToolResult
 
@@ -2271,40 +2274,29 @@ class TestPreInjectChatContext:
                 return ToolResult(
                     tool_name="recall", success=success, output=recall_output, error=""
                 )
-            if tool_call.name == "query_knowledge":
-                success = bool(qk_output)
-                return ToolResult(
-                    tool_name="query_knowledge",
-                    success=success,
-                    output=qk_output,
-                    error="",
-                )
             raise ValueError(f"unexpected tool: {tool_call.name}")
 
         mock = MagicMock()
         mock.execute = fake_execute
         return mock
 
-    def test_enriches_message_when_both_return_content(self):
+    def test_enriches_message_when_recall_returns_content(self):
         from web.dashboard import _pre_inject_chat_context
 
         executor = self._make_mock_executor(
             recall_output="User prefers concise answers.",
-            qk_output="Connection reset by peer is an SSH stream drop.",
         )
         result = asyncio.run(
             _pre_inject_chat_context("What caused the error?", executor)
         )
         assert "Relevant memories:" in result
         assert "User prefers concise answers." in result
-        assert "Relevant knowledge:" in result
-        assert "Connection reset by peer" in result
         assert "User question: What caused the error?" in result
 
-    def test_returns_original_when_both_empty(self):
+    def test_returns_original_when_recall_empty(self):
         from web.dashboard import _pre_inject_chat_context
 
-        executor = self._make_mock_executor(recall_output="", qk_output="")
+        executor = self._make_mock_executor(recall_output="")
         result = asyncio.run(
             _pre_inject_chat_context("What caused the error?", executor)
         )
@@ -2315,30 +2307,14 @@ class TestPreInjectChatContext:
 
         executor = self._make_mock_executor(
             recall_output="No memories found.",
-            qk_output="",
         )
         result = asyncio.run(
             _pre_inject_chat_context("What caused the error?", executor)
         )
         assert result == "What caused the error?"
 
-    def test_includes_only_knowledge_when_recall_empty(self):
-        from web.dashboard import _pre_inject_chat_context
-
-        executor = self._make_mock_executor(
-            recall_output="",
-            qk_output="SSH drops are transient — check HA restart logs.",
-        )
-        result = asyncio.run(
-            _pre_inject_chat_context("Why did the log stream reset?", executor)
-        )
-        assert "Relevant knowledge:" in result
-        assert "Relevant memories:" not in result
-        assert "User question: Why did the log stream reset?" in result
-
     def test_survives_executor_exception(self):
         from web.dashboard import _pre_inject_chat_context
-        from utils.agent.tool_registry import ToolResult
 
         async def boom(_tool_call):
             raise RuntimeError("db gone")
@@ -2348,12 +2324,9 @@ class TestPreInjectChatContext:
         result = asyncio.run(_pre_inject_chat_context("What caused the error?", mock))
         assert result == "What caused the error?"
 
-    def test_knowledge_truncated_at_1000_chars(self):
+    def test_returns_original_when_recall_returns_nothing_found(self):
         from web.dashboard import _pre_inject_chat_context
 
-        long_output = "x" * 2000
-        executor = self._make_mock_executor(recall_output="", qk_output=long_output)
+        executor = self._make_mock_executor(recall_output="Nothing found.")
         result = asyncio.run(_pre_inject_chat_context("anything", executor))
-        # The injected knowledge block must not exceed 1000 chars of the raw output
-        assert long_output not in result
-        assert "x" * 1000 in result
+        assert result == "anything"

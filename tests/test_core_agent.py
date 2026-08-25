@@ -95,65 +95,70 @@ class TestSandboxEngine:
 # ── Episodic context injection ────────────────────────────────────────────────────
 
 
-class TestRetrieveSimilarEpisodes:
-    def test_episodes_found_returns_formatted_block(self):
-        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
+class TestAgentLoopPreInject:
+    """AgentLoop pre-injects knowledge store results before the first LLM call."""
+
+    def _make_loop(self, knowledge_store=None):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            knowledge_store=knowledge_store,
+        )
+        return AgentLoop(
+            llm_client=FakeToolCallingLLMClient([]),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+            knowledge_store=knowledge_store,
+        )
+
+    def test_injects_knowledge_when_store_returns_chunks(self):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
         store.upsert(
-            "community_cases",
-            ids=["c1"],
+            "strategies",
+            ids=["s1"],
             documents=["ZHA error: fix by restarting the integration"],
-            metadatas=[{"source": "case1"}],
+            metadatas=[{"source": "s1"}],
         )
-        # FakeKnowledgeStore uses substring match: query must appear in doc
-        result = _retrieve_similar_episodes("ZHA error", store, top_k=2)
-        assert "Similar past repairs" in result
+        loop = self._make_loop(knowledge_store=store)
+        result = loop._pre_inject_knowledge("ZHA error")
+        assert "Relevant context" in result
         assert "ZHA error: fix by restarting" in result
+        assert "ZHA error" in result  # original context preserved
 
-    def test_empty_collection_returns_empty_string(self):
-        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+    def test_returns_original_when_store_is_none(self):
+        loop = self._make_loop(knowledge_store=None)
+        loop._knowledge_store = None
+        result = loop._pre_inject_knowledge("some context")
+        assert result == "some context"
 
-        store = FakeKnowledgeStore()
-        result = _retrieve_similar_episodes("any context", store, top_k=2)
-        assert result == ""
-
-    def test_store_raises_returns_empty_string(self):
-        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-
+    def test_returns_original_when_store_raises(self):
         class BrokenStore:
             def query(self, *a, **k):
                 raise RuntimeError("ChromaDB unavailable")
 
-        result = _retrieve_similar_episodes("any context", BrokenStore(), top_k=2)
-        assert result == ""
+        loop = self._make_loop()
+        loop._knowledge_store = BrokenStore()  # type: ignore[assignment]
+        result = loop._pre_inject_knowledge("some context")
+        assert result == "some context"
 
-    def test_none_store_returns_empty_string(self):
-        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
-
-        result = _retrieve_similar_episodes("any context", None, top_k=2)
-        assert result == ""
-
-    def test_episodes_prepended_to_initial_context(self):
-        """Integration: _retrieve_similar_episodes output is prepended in main()."""
-        from agents.ha_agent_sandbox_engine import _retrieve_similar_episodes
+    def test_returns_original_when_no_chunks(self):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
-        store = FakeKnowledgeStore()
-        # FakeKnowledgeStore checks query_text in doc — doc must contain the query
-        store.upsert(
-            "community_cases",
-            ids=["c1"],
-            documents=["ZHA error: Known fix is to restart HA core"],
-            metadatas=[{"source": "case1"}],
-        )
-        context = "ZHA error"
-        similar = _retrieve_similar_episodes(context, store, top_k=1)
-        combined = similar + "\n\n" + context
-        assert "Known fix is to restart" in combined
-        assert "ZHA error" in combined
+        store = FakeKnowledgeStore()  # empty store → no chunks
+        loop = self._make_loop(knowledge_store=store)
+        result = loop._pre_inject_knowledge("unrelated query")
+        assert result == "unrelated query"
 
 
 # ── Log monitor ──────────────────────────────────────────────────────────────────
