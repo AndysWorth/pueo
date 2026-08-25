@@ -394,6 +394,25 @@ def _migrate_v24(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v25(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS llm_calls ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts REAL NOT NULL, "
+        "episode_id TEXT, "
+        "session_id INTEGER, "
+        "model TEXT NOT NULL, "
+        "provider TEXT NOT NULL, "
+        "call_type TEXT NOT NULL, "
+        "latency_ms REAL NOT NULL, "
+        "ollama_eval_ms REAL, "
+        "ollama_load_ms REAL, "
+        "input_tokens INTEGER, "
+        "output_tokens INTEGER"
+        ")"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -419,6 +438,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (22, _migrate_v22),
     (23, _migrate_v23),
     (24, _migrate_v24),
+    (25, _migrate_v25),
 ]
 
 

@@ -40,3 +40,8 @@ def _default_model_for_provider() -> str:
     if config.LLM_PROVIDER == "cloud":
         return config.CLOUD_MODEL
     return config.OLLAMA_MODEL
+
+
+def _provider_name() -> str:
+    """Return a short provider identifier for latency tracking."""
+    return "cloud" if config.LLM_PROVIDER == "cloud" else "local"

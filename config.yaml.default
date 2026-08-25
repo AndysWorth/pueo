@@ -114,9 +114,14 @@ agent:
   known_issue_reminder_days: 7         # Days before a Known Issue generates a reminder card
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
   agent_max_tool_calls: 30            # Hard cap on tool invocations per agent loop run
-  agent_max_wall_seconds: 300.0       # Wall-clock timeout for the entire agent loop (seconds)
   agent_max_extension_calls: 15       # Max additional calls the LLM may request per limit-review
   agent_max_total_calls: 60           # Absolute ceiling across base budget + all extensions
+  # Adaptive per-call LLM timeout — fires only when Ollama is genuinely stuck
+  # agent_per_call_timeout_factor: 5.0      # Multiply P95 latency by this factor
+  # agent_per_call_min_timeout_seconds: 300  # Floor: 5 minutes
+  # agent_per_call_max_timeout_seconds: 1800 # Ceiling: 30 minutes
+  # agent_llm_latency_lookback: 100          # Recent calls to include in percentile
+  # agent_llm_latency_percentile: 95         # Percentile of latency to use as baseline
   # ha_profile_refresh_hours: 24       # How often to rebuild the HA environment profile (integrations, versions)
   # chat_memory_top_k: 10             # Max memory entries returned per recall() call
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)

@@ -61,6 +61,15 @@ class OllamaClient:
                 }
                 for tc in msg.tool_calls
             ]
+        # Expose Ollama-native timings (nanoseconds → milliseconds).
+        # eval_duration: pure generation; load_duration: model load.
+        # Stored separately so load spikes don't inflate latency expectations.
+        eval_ns = getattr(resp, "eval_duration", None)
+        load_ns = getattr(resp, "load_duration", None)
+        result["_ollama_timing"] = {
+            "eval_ms": eval_ns / 1_000_000 if eval_ns else None,
+            "load_ms": load_ns / 1_000_000 if load_ns else None,
+        }
         return result
 
 
