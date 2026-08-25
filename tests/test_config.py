@@ -754,20 +754,53 @@ class TestHAUpdateManagerConfig:
 
         assert config.AGENT_MAX_TOOL_CALLS == 10
 
-    def test_agent_max_wall_seconds_default(self, isolated_config):
+    def test_agent_max_wall_seconds_deprecated_alias(self, isolated_config):
+        # AGENT_MAX_WALL_SECONDS is a deprecated alias for the per-call min timeout.
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AGENT_MAX_WALL_SECONDS == 300.0
+        assert (
+            config.AGENT_MAX_WALL_SECONDS == config.AGENT_PER_CALL_MIN_TIMEOUT_SECONDS
+        )
 
-    def test_agent_max_wall_seconds_from_yaml(self, isolated_config):
+    def test_agent_per_call_timeout_factor_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_PER_CALL_TIMEOUT_FACTOR == 5.0
+
+    def test_agent_per_call_timeout_factor_from_yaml(self, isolated_config):
         isolated_config.write_text(
-            yaml.dump({"agent": {"agent_max_wall_seconds": 60.0}})
+            yaml.dump({"agent": {"agent_per_call_timeout_factor": 3.0}})
         )
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AGENT_MAX_WALL_SECONDS == 60.0
+        assert config.AGENT_PER_CALL_TIMEOUT_FACTOR == 3.0
+
+    def test_agent_per_call_min_timeout_seconds_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_PER_CALL_MIN_TIMEOUT_SECONDS == 300.0
+
+    def test_agent_per_call_max_timeout_seconds_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_PER_CALL_MAX_TIMEOUT_SECONDS == 1800.0
+
+    def test_agent_llm_latency_lookback_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_LLM_LATENCY_LOOKBACK == 100
+
+    def test_agent_llm_latency_percentile_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AGENT_LLM_LATENCY_PERCENTILE == 95.0
 
     def test_agent_max_extension_calls_default(self, isolated_config):
         importlib.reload(sys.modules["config"])

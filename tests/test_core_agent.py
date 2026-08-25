@@ -453,7 +453,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 24
+        assert version == 25
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -463,7 +463,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 24
+        assert rows[0][0] == 25
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -492,7 +492,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 24
+        assert version == 25
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1369,7 +1369,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 24
+        assert version == 25
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1379,7 +1379,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 24
+        assert rows[0][0] == 25
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1407,7 +1407,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 24
+        assert version == 25
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -14365,3 +14365,48 @@ class TestPersonalizeBreakingChangesAgentLoop:
         )
         assert report.instance_impact == "high"
         assert report.effective_safe_to_update is False
+
+
+class TestAgentLoopStuckOutcome:
+    """Per-call timeout fires as 'stuck' when chat_with_tools stalls."""
+
+    def _make_loop(self, llm_client):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        return AgentLoop(
+            llm_client=llm_client,
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+
+    def test_stuck_outcome_when_chat_times_out(self):
+        from unittest.mock import patch
+
+        async def _slow_chat(*a, **k):
+            await asyncio.sleep(9999)
+            return {"role": "assistant", "content": ""}
+
+        class SlowLLM:
+            async def chat_with_tools(self, *a, **k):
+                return await _slow_chat()
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        loop = self._make_loop(SlowLLM())
+
+        # Override per-call timeout to 0.01 s so the test completes quickly.
+        with patch.object(loop, "_per_call_timeout_seconds", return_value=0.01):
+            result = asyncio.run(loop.run("diagnose the system"))
+
+        assert result.outcome == "stuck"

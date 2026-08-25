@@ -136,9 +136,26 @@ RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 1
 
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 30))
-AGENT_MAX_WALL_SECONDS: float = float(_agent.get("agent_max_wall_seconds", 300.0))
 AGENT_MAX_EXTENSION_CALLS: int = int(_agent.get("agent_max_extension_calls", 15))
 AGENT_MAX_TOTAL_CALLS: int = int(_agent.get("agent_max_total_calls", 60))
+
+# Adaptive per-call LLM timeout (replaces AGENT_MAX_WALL_SECONDS)
+AGENT_PER_CALL_TIMEOUT_FACTOR: float = float(
+    _agent.get("agent_per_call_timeout_factor", 5.0)
+)
+AGENT_PER_CALL_MIN_TIMEOUT_SECONDS: float = float(
+    _agent.get("agent_per_call_min_timeout_seconds", 300.0)
+)
+AGENT_PER_CALL_MAX_TIMEOUT_SECONDS: float = float(
+    _agent.get("agent_per_call_max_timeout_seconds", 1800.0)
+)
+AGENT_LLM_LATENCY_LOOKBACK: int = int(_agent.get("agent_llm_latency_lookback", 100))
+AGENT_LLM_LATENCY_PERCENTILE: float = float(
+    _agent.get("agent_llm_latency_percentile", 95.0)
+)
+
+# Deprecated — use AGENT_PER_CALL_MIN_TIMEOUT_SECONDS instead
+AGENT_MAX_WALL_SECONDS: float = AGENT_PER_CALL_MIN_TIMEOUT_SECONDS
 
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))

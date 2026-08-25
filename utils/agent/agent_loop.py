@@ -17,10 +17,14 @@ from typing import TYPE_CHECKING, Any, Optional
 from pydantic import BaseModel, Field
 
 from config import (
+    AGENT_LLM_LATENCY_LOOKBACK,
+    AGENT_LLM_LATENCY_PERCENTILE,
     AGENT_MAX_EXTENSION_CALLS,
     AGENT_MAX_TOOL_CALLS,
     AGENT_MAX_TOTAL_CALLS,
-    AGENT_MAX_WALL_SECONDS,
+    AGENT_PER_CALL_MAX_TIMEOUT_SECONDS,
+    AGENT_PER_CALL_MIN_TIMEOUT_SECONDS,
+    AGENT_PER_CALL_TIMEOUT_FACTOR,
 )
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
@@ -117,7 +121,7 @@ class AgentLoop:
         model: str | object = _UNSET,
         system_prompt: str | object = _UNSET_PROMPT,
         max_tool_calls: int = AGENT_MAX_TOOL_CALLS,
-        max_wall_seconds: float = AGENT_MAX_WALL_SECONDS,
+        max_wall_seconds: float = 0.0,  # deprecated — ignored; per-call timeout used
         terminal_tool_name: str = "finish_repair",
         step_callback: Optional[Callable[["AgentStep"], None]] = None,
         pre_step_callback: Optional[Callable[["ToolCall"], Awaitable[None]]] = None,
@@ -142,7 +146,6 @@ class AgentLoop:
         self._model: str = model  # type: ignore[assignment]
         self._system_prompt = system_prompt  # type: ignore[assignment]
         self._max_tool_calls = max_tool_calls
-        self._max_wall_seconds = max_wall_seconds
         self._terminal_tool_name = terminal_tool_name
         self._step_callback = step_callback
         self._pre_step_callback = pre_step_callback
@@ -263,6 +266,33 @@ class AgentLoop:
         log.debug("agent_loop_knowledge_injected", chunks=len(chunks))
         return f"{block}\n\n---\n{initial_context}"
 
+    def _per_call_timeout_seconds(self) -> float:
+        """Compute the per-call LLM timeout from historical latency data.
+
+        Uses P95(recent_latency_ms) × factor, clamped to [min, max].
+        Falls back to min_timeout when the db_path is absent or has < 5 samples.
+        """
+        from utils.llm.llm_stats import expected_timeout_ms
+
+        provider = "local"
+        try:
+            from utils.llm.llm_factory import _provider_name
+
+            provider = _provider_name()
+        except Exception:  # nosec B110
+            pass
+        timeout_ms = expected_timeout_ms(
+            self._db_path or "",
+            model=self._model,
+            provider=provider,
+            percentile=AGENT_LLM_LATENCY_PERCENTILE,
+            lookback=AGENT_LLM_LATENCY_LOOKBACK,
+            factor=AGENT_PER_CALL_TIMEOUT_FACTOR,
+            min_ms=AGENT_PER_CALL_MIN_TIMEOUT_SECONDS * 1000.0,
+            max_ms=AGENT_PER_CALL_MAX_TIMEOUT_SECONDS * 1000.0,
+        )
+        return timeout_ms / 1000.0
+
     def _review_timeout(self, steps: list[AgentStep], elapsed: float) -> float:
         """Adaptive timeout for the limit-review call.
 
@@ -363,60 +393,27 @@ class AgentLoop:
         episode_stub: Optional[dict] = None
 
         try:
-            result = await asyncio.wait_for(
-                self._loop_body(messages, tools, steps, tool_call_count, start_time),
-                timeout=self._max_wall_seconds,
+            result = await self._loop_body(
+                messages, tools, steps, tool_call_count, start_time
             )
             outcome, episode_stub = result
         except asyncio.TimeoutError:
+            # A per-call LLM timeout fired — the LLM call stalled beyond its
+            # expected latency.  Treat this as "stuck" (not a wall-clock budget
+            # overrun) so callers can distinguish a slow-but-working LLM from a
+            # genuinely hung one.
             elapsed = time.monotonic() - start_time
             log.warning(
-                "agent_loop_timeout",
-                wall_seconds=self._max_wall_seconds,
+                "agent_loop_stuck",
                 steps=len(steps),
+                elapsed=round(elapsed, 2),
             )
             decision = await self._review_limit(
-                messages, steps, "timeout", len(steps), elapsed
+                messages, steps, "stuck", len(steps), elapsed
             )
-            if (
-                decision.can_resolve_with_more
-                and decision.additional_calls_requested > 0
-                and len(steps) < self._absolute_max
-            ):
-                headroom = self._absolute_max - len(steps)
-                grant = min(
-                    decision.additional_calls_requested,
-                    AGENT_MAX_EXTENSION_CALLS,
-                    headroom,
-                )
-                if grant > 0:
-                    self._max_tool_calls = len(steps) + grant
-                    self._max_wall_seconds += 120.0
-                    log.info(
-                        "agent_loop_timeout_extension",
-                        grant=grant,
-                        total_cap=self._absolute_max,
-                    )
-                    try:
-                        result = await asyncio.wait_for(
-                            self._loop_body(
-                                messages, tools, steps, len(steps), start_time
-                            ),
-                            timeout=self._max_wall_seconds,
-                        )
-                        outcome, episode_stub = result
-                    except asyncio.TimeoutError:
-                        outcome = "timeout"
-                        if decision.summary_if_giving_up and episode_stub is None:
-                            episode_stub = {"summary": decision.summary_if_giving_up}
-                else:
-                    outcome = "timeout"
-                    if decision.summary_if_giving_up and episode_stub is None:
-                        episode_stub = {"summary": decision.summary_if_giving_up}
-            else:
-                outcome = "timeout"
-                if decision.summary_if_giving_up and episode_stub is None:
-                    episode_stub = {"summary": decision.summary_if_giving_up}
+            if decision.summary_if_giving_up and episode_stub is None:
+                episode_stub = {"summary": decision.summary_if_giving_up}
+            outcome = "stuck"
 
         log.info(
             "agent_loop_complete",
@@ -504,11 +501,50 @@ class AgentLoop:
                     continue
                 return "exhausted", episode_stub
 
-            response = await self._llm.chat_with_tools(
-                model=self._model,
-                messages=messages,
-                tools=tools,
+            per_call_secs = self._per_call_timeout_seconds()
+            _t0 = time.monotonic()
+            try:
+                response = await asyncio.wait_for(
+                    self._llm.chat_with_tools(
+                        model=self._model,
+                        messages=messages,
+                        tools=tools,
+                    ),
+                    timeout=per_call_secs,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "llm_call_stuck",
+                    model=self._model,
+                    timeout_seconds=round(per_call_secs, 1),
+                )
+                raise  # propagates to run() as outcome="stuck"
+            _latency_ms = (time.monotonic() - _t0) * 1000.0
+            _timing = (
+                response.pop("_ollama_timing", {}) if isinstance(response, dict) else {}
             )
+            if self._db_path:
+                from utils.llm.llm_stats import record_llm_call
+
+                _provider = "local"
+                try:
+                    from utils.llm.llm_factory import _provider_name
+
+                    _provider = _provider_name()
+                except Exception:  # nosec B110
+                    pass
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        record_llm_call,
+                        self._db_path,
+                        model=self._model,
+                        provider=_provider,
+                        call_type="chat_with_tools",
+                        latency_ms=_latency_ms,
+                        ollama_eval_ms=_timing.get("eval_ms"),
+                        ollama_load_ms=_timing.get("load_ms"),
+                    )
+                )
 
             tool_calls_raw = response.get("tool_calls")
             if not tool_calls_raw:

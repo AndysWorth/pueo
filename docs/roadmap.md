@@ -394,7 +394,7 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 
 | Constraint | Target | Mitigation if failing |
 |---|---|---|
-| Inference latency | < 4 seconds per agent step | Quantize model to `q4_K_M`; offload embedding layers to Apple Silicon AMX |
+| Inference latency | Per-call timeout = P95(historical latency) × `AGENT_PER_CALL_TIMEOUT_FACTOR` (default 5×), floor 5 min, ceiling 30 min. No hard per-step latency target — correctness prioritized over speed. See ADR 019. | Quantize model to `q4_K_M`; offload embedding layers to Apple Silicon AMX |
 | Config hallucination | Zero on inputs up to 8,000 tokens | Sliding window log ingestion; pass only relevant config sections, not full directories |
 | Un-backed writes | 0% — no production write without a confirmed backup slug | `execute_remote_backup()` raises on failure; pipeline aborts |
 | LLM inference location | Configurable: `local` (Ollama, default), `cloud` (Anthropic API), or `both` | Set via `LLM_PROVIDER`; cloud and both require `ANTHROPIC_API_KEY` env var; billing caps enforced; WAN only via the designated provider |
@@ -402,7 +402,7 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 | HA disk free | ≥ `HA_DISK_CRITICAL_GB` at all times | Block backup trigger + offload older backups automatically before new backup fires. Note: the HA Supervisor independently hard-blocks **all** operations (including `ha backups new`) when free space < 1 GB — Pueo's threshold must remain above `1 GB + largest expected backup size` or the Supervisor will block Pueo's own backup before Pueo's guard can act. Default is 3.0 GB (2 GB above the Supervisor's floor). |
 | Backup location | 100% of slugs confirmed on Pueo before deleting from HA | SHA-256 gate; `location = 'both'` required before any HA-side delete |
 | Tool loop budget | ≤ 20 tool calls per incident | Hard cap in `AgentLoop`; exhaustion triggers escalation offer, not silent failure |
-| Loop wall time | ≤ 120 seconds | `asyncio` timeout wrapping `AgentLoop.run()`; same outcome as budget exhaustion |
+| Loop wall time | No outer wall-clock guard — replaced by per-call timeout (see Inference latency row). The loop runs until its tool-call budget is exhausted or a call stalls beyond the adaptive threshold (`outcome = "stuck"`). | — |
 | Local fix rate | ≥ 80% resolved without cloud escalation | Tune tool count + model size if falling below; cloud escalation is the fallback |
 | Episode coverage | 100% of successful repairs recorded | `finish_repair` tool fires serialization unconditionally |
 | Cloud spend | Per-incident cap ($0.50) + daily cap ($5.00) | `BillingCapError` before each API call; tracked in `cloud_spend` SQLite table; caps configurable in UI |

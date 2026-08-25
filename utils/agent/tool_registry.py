@@ -44,7 +44,7 @@ class AgentStep(BaseModel):
 
 
 AgentLoopOutcome = Literal[
-    "success", "exhausted", "timeout", "fix_failed", "awaiting_approval"
+    "success", "exhausted", "timeout", "fix_failed", "awaiting_approval", "stuck"
 ]
 
 
