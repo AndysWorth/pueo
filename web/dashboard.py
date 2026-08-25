@@ -2730,6 +2730,45 @@ def _sanitize_args_preview(args: dict) -> str:
     return preview[:120] if len(preview) > 120 else preview
 
 
+async def _pre_inject_chat_context(
+    message: str,
+    executor: Any,
+) -> str:
+    """Pre-call recall and query_knowledge and prepend results to the user message.
+
+    Mirrors ADR 014: guaranteed context retrieval before the loop starts, zero budget cost.
+    Best-effort — any failure or empty result returns the original message unchanged.
+    """
+    from utils.agent.tool_registry import ToolCall
+
+    blocks: list[str] = []
+    try:
+        r = await executor.execute(
+            ToolCall(name="recall", arguments={"query": message})
+        )
+        if (
+            r.success
+            and r.output
+            and "No memories" not in r.output
+            and "Nothing found" not in r.output
+        ):
+            blocks.append(f"Relevant memories:\n{r.output}")
+    except Exception:  # nosec B110
+        pass
+    try:
+        r = await executor.execute(
+            ToolCall(name="query_knowledge", arguments={"query": message, "top_k": 3})
+        )
+        if r.success and r.output and "No results" not in r.output:
+            blocks.append(f"Relevant knowledge:\n{r.output[:1000]}")
+    except Exception:  # nosec B110
+        pass
+    if not blocks:
+        return message
+    context = "\n\n".join(blocks)
+    return f"{context}\n\n---\nUser question: {message}"
+
+
 async def _run_chat_loop(
     session_id: int,
     message: str,
@@ -2828,7 +2867,10 @@ async def _run_chat_loop(
             step_callback=on_step,
             pre_step_callback=on_pre_step,
         )
-        result = await agent_loop.run(message, initial_messages=prior_messages or None)
+        enriched_message = await _pre_inject_chat_context(message, executor)
+        result = await agent_loop.run(
+            enriched_message, initial_messages=prior_messages or None
+        )
 
         summary = result.episode_stub.get("summary", "") if result.episode_stub else ""
         if not summary:
