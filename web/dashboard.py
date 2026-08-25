@@ -2550,7 +2550,7 @@ async def chat_session_messages(session_id: int) -> JSONResponse:
 
 
 @app.delete("/chat/sessions/{session_id}")
-async def delete_chat_session(session_id: int) -> JSONResponse:
+async def delete_chat_session(session_id: int) -> Response:
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
@@ -2559,7 +2559,7 @@ async def delete_chat_session(session_id: int) -> JSONResponse:
             conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return JSONResponse({}, status_code=204)
+    return Response(status_code=204)
 
 
 @app.get("/chat/sessions/{session_id}/debug-log")
