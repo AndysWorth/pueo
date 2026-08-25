@@ -2224,6 +2224,65 @@ class TestChatDebugLog:
 
 
 # ---------------------------------------------------------------------------
+# TestDeleteChatSession
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteChatSession:
+    """DELETE /chat/sessions/{id} must return 204 with no body."""
+
+    def _seed_session(self, db_path: str) -> int:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO chat_sessions (created_at, title) VALUES (?, ?)",
+                (1_700_000_000.0, "to delete"),
+            )
+            session_id = cur.lastrowid or 1
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, "user", "hello", 1_700_000_001.0),
+            )
+        return session_id
+
+    def test_delete_returns_204_no_body(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.delete(f"/chat/sessions/{sid}")
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    def test_delete_removes_session_and_messages(self, db_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        sid = self._seed_session(db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.delete(f"/chat/sessions/{sid}")
+
+        with sqlite3.connect(db_path) as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM chat_sessions WHERE id = ?", (sid,)
+                ).fetchone()[0]
+                == 0
+            )
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?", (sid,)
+                ).fetchone()[0]
+                == 0
+            )
+
+
+# ---------------------------------------------------------------------------
 # TestRepoRootRegression — verifies _REPO_ROOT points to the actual repo root
 # ---------------------------------------------------------------------------
 
