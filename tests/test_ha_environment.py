@@ -305,6 +305,67 @@ class TestLoadEnvironmentProfile:
         assert any("ha_profile_schema_drift" in r.message for r in caplog.records)
 
 
+class TestConfigYamlTopKeysRegex:
+    """config_yaml_top_keys must work with HA-specific YAML tags like !include."""
+
+    def _run(self, content):
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": content},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: [],
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_include_tags_do_not_raise(self):
+        """!include tags must not cause config_yaml_top_keys to fail."""
+        content = (
+            "homeassistant:\n"
+            "  name: Home\n"
+            "automation: !include automations.yaml\n"
+            "script: !include scripts.yaml\n"
+            "logger:\n"
+            "  default: warning\n"
+        )
+        profile = self._run(content)
+        assert profile.fetch_errors.get("config_yaml_top_keys") is None
+        assert "homeassistant" in profile.config_yaml_top_keys
+        assert "automation" in profile.config_yaml_top_keys
+        assert "script" in profile.config_yaml_top_keys
+        assert "logger" in profile.config_yaml_top_keys
+
+    def test_include_dir_tags_do_not_raise(self):
+        """!include_dir_merge_named and similar HA tags must not raise."""
+        content = (
+            "homeassistant:\n"
+            "packages: !include_dir_merge_named packages/\n"
+            "sensor: !include_dir_list sensors/\n"
+        )
+        profile = self._run(content)
+        assert profile.fetch_errors.get("config_yaml_top_keys") is None
+        assert "packages" in profile.config_yaml_top_keys
+        assert "sensor" in profile.config_yaml_top_keys
+
+    def test_deduplicates_keys(self):
+        """Duplicate top-level keys should appear only once."""
+        content = "homeassistant:\nlogger:\nhomeassistant:\n"
+        profile = self._run(content)
+        assert profile.config_yaml_top_keys.count("homeassistant") == 1
+
+
 class TestFormatProfileSummary:
     def _make_profile(self) -> HAEnvironmentProfile:
         return HAEnvironmentProfile(

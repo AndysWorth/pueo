@@ -89,7 +89,14 @@ class HAWebSocketClient:  # pragma: no cover
             await ws.send(json.dumps({"id": 1, "type": "config/config_entries/all"}))
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
-                raise RuntimeError(f"Config entries request failed: {msg}")
+                if msg.get("error", {}).get("code") == "unknown_command":
+                    # Older HA versions (pre-2022) use the legacy command name.
+                    await ws.send(json.dumps({"id": 2, "type": "config_entries/list"}))
+                    msg = json.loads(await ws.recv())
+                    if not msg.get("success"):
+                        raise RuntimeError(f"Config entries request failed: {msg}")
+                else:
+                    raise RuntimeError(f"Config entries request failed: {msg}")
             entries = msg.get("result", [])
             return [e for e in entries if e.get("state") == "loaded"]
         finally:
@@ -129,6 +136,9 @@ class HAWebSocketClient:  # pragma: no cover
             await ws.send(json.dumps(payload))
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
+                if msg.get("error", {}).get("code") == "config_not_found":
+                    # HA is in auto/storage mode with no stored YAML config — nothing to scan.
+                    return {}
                 raise RuntimeError(f"lovelace/config request failed: {msg}")
             return msg.get("result", {})
         finally:
