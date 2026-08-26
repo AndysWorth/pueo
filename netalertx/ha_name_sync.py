@@ -157,7 +157,15 @@ class HaNameSync:
                 fname = device.get("name_by_user") or device.get("name", "")
                 if not fname:
                     continue
-                for conn_type, conn_val in device.get("connections", []):
+                for conn in device.get("connections", []):
+                    try:
+                        conn_type, conn_val = conn
+                    except (ValueError, TypeError):
+                        log.warning(
+                            "ha_device_connections_unexpected_shape",
+                            conn=conn,
+                        )
+                        continue
                     if conn_type == "mac":
                         src1[_normalize_mac(conn_val)] = fname
             names.update(src1)

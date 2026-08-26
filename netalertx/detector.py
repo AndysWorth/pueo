@@ -124,7 +124,16 @@ async def _fetch_version(
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(url)
         resp.raise_for_status()
-        return str(resp.json().get("value", ""))
+        body = resp.json()
+        if not isinstance(body, dict):
+            from utils.core.logging import get_logger
+
+            get_logger("netalertx.detector").warning(
+                "netalertx_version_response_unexpected_type",
+                actual_type=type(body).__name__,
+            )
+            return ""
+        return str(body.get("value", ""))
     except Exception:
         return ""
 

@@ -100,7 +100,21 @@ class NetAlertXAPIClient:
         resp.raise_for_status()
         data = resp.json()
         items = data.get("data", {}).get("settings", {}).get("settings", [])
-        return {item["setKey"]: item.get("setValue", "") for item in items}
+        result = {}
+        skipped = 0
+        for item in items:
+            key = item.get("setKey")
+            if not key:
+                skipped += 1
+                continue
+            result[key] = item.get("setValue", "")
+        if skipped:
+            from utils.core.logging import get_logger
+
+            get_logger("netalertx_api_client").warning(
+                "netalertx_settings_missing_key", count=skipped
+            )
+        return result
 
     async def trigger_scan(self, scan_type: str = "ARPSCAN") -> None:
         """Queue a network scan via POST /nettools/trigger-scan."""
