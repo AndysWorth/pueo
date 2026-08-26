@@ -168,9 +168,9 @@ class TestRegistryMembership:
             build_code_proposal_registry,
         ):
             reg = registry_fn()
-            assert "search_integrations" in reg, (
-                f"search_integrations missing from {registry_fn.__name__}"
-            )
+            assert (
+                "search_integrations" in reg
+            ), f"search_integrations missing from {registry_fn.__name__}"
 
     def test_search_integrations_schema_has_query_param(self):
         from utils.agent.tool_registry import SEARCH_INTEGRATIONS
