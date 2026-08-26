@@ -203,8 +203,8 @@ async def enrich_http_login(
                     context["netalertx_name"] = device.get("devName")
                     context["is_known_device"] = True
                     break
-        except Exception:  # nosec B110
-            pass
+        except Exception as exc:  # nosec B110
+            log.warning("netalertx_enrichment_failed", ip=ip, error=str(exc))
 
     if ws_client is not None:
         try:
@@ -216,8 +216,8 @@ async def enrich_http_login(
                     ) or device.get("name")
                     context["is_known_device"] = True
                     break
-        except Exception:  # nosec B110
-            pass
+        except Exception as exc:  # nosec B110
+            log.warning("ha_device_registry_enrichment_failed", ip=ip, error=str(exc))
 
     arp_info = await _get_arp_info(ip)
     context.update(arp_info)
@@ -354,8 +354,8 @@ async def enrich_and_analyze_notification(
     elif notification_id == "invalid_config" and ssh_client is not None:
         try:
             config_content = await ssh_client.read_file(CONFIG_REMOTE_PATH)
-        except Exception:  # nosec B110
-            pass
+        except Exception as exc:  # nosec B110
+            log.warning("config_ssh_fetch_failed", error=str(exc))
 
     return await analyze_notification(
         notification_id,
@@ -563,6 +563,9 @@ async def run_notifications(
     new_count = 0
     for notif in notifications:
         ha_nid: str = notif.get("notification_id", "")
+        if not ha_nid:
+            log.warning("notification_id_missing", notif_keys=list(notif.keys()))
+            continue
         title: Optional[str] = notif.get("title")
         message: str = notif.get("message", "")
         ha_created_at: Optional[float] = None
@@ -573,7 +576,7 @@ async def run_notifications(
                     created_at_str
                 ).timestamp()
             except Exception:  # nosec B110
-                pass
+                log.warning("notification_created_at_parse_failed", raw=created_at_str)
 
         category, severity = classify_notification(ha_nid)
         record_notification_seen(ha_nid, category, severity, db_path, ha_created_at)

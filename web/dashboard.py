@@ -1633,8 +1633,8 @@ async def _execute_config_fixes(
             updated_payload["fixes_failed"] = failed
             data["payload"] = updated_payload
             json_path.write_text(json.dumps(data, indent=2))
-        except Exception:  # nosec B110
-            pass
+        except Exception as exc:  # nosec B110
+            log.warning("card_json_update_failed", path=str(json_path), error=str(exc))
     except Exception as exc:
         log.error("apply_fixes_pipeline_failed", nid=nid, error=str(exc))
     finally:
@@ -1748,7 +1748,8 @@ def _load_backup_inventory() -> list[dict]:
                 " deleted_from_ha_at, offloaded_at, name, ha_created_at"
                 " FROM backup_registry ORDER BY COALESCE(ha_created_at, timestamp) DESC"
             ).fetchall()
-    except Exception:
+    except Exception as exc:
+        log.error("dashboard_db_query_failed", query="backup_registry", error=str(exc))
         return []
 
     now = time.time()
@@ -1997,7 +1998,10 @@ def _load_notification_dashboard_data(
             rows = conn.execute(
                 "SELECT * FROM notification_history ORDER BY first_seen_at DESC"
             ).fetchall()
-    except Exception:
+    except Exception as exc:
+        log.error(
+            "dashboard_db_query_failed", query="notification_history", error=str(exc)
+        )
         return [], []
 
     records: list[dict] = []
@@ -2518,7 +2522,8 @@ def _load_chat_sessions() -> list[dict]:
                 " LEFT JOIN chat_messages m ON m.session_id = s.id"
                 " GROUP BY s.id ORDER BY s.created_at DESC"
             ).fetchall()
-    except Exception:
+    except Exception as exc:
+        log.error("dashboard_db_query_failed", query="chat_sessions", error=str(exc))
         return []
     return [dict(r) for r in rows]
 
