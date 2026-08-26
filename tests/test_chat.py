@@ -2641,7 +2641,7 @@ class TestPreInjectStoredInDB:
             injected.append(ctx_block)
 
         class _FakeKnowledgeStore:
-            def query(self, query_text, top_k=3):
+            def query(self, query_text, top_k=3, min_score=0.0, **_kw):
                 from utils.knowledge.knowledge_store import KnowledgeChunk
 
                 return [
