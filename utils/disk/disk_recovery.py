@@ -287,7 +287,8 @@ async def scan_orphaned_addon_dirs(
                 for a in _data.get("data", {}).get("addons", [])
                 if "slug" in a
             }
-        except Exception:
+        except Exception as exc:
+            log.error("addon_list_parse_failed", error=str(exc))
             installed_slugs = set()
 
         _, addons_ls, _ = await ssh_client.run(

@@ -212,7 +212,12 @@ async def analyze_repair_issue(
         )
         raw = response["message"]["content"]
         return RepairIssueAnalysis.model_validate_json(raw)
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "repair_issue_analysis_failed",
+            issue_id=issue.issue_id,
+            error=str(exc),
+        )
         return RepairIssueAnalysis(
             human_explanation=(
                 f"HA repair issue in {issue.domain}: {issue.translation_key or issue.issue_id}"

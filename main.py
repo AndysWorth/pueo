@@ -162,7 +162,8 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
     try:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT name, code FROM registered_tools").fetchall()
-    except Exception:
+    except Exception as exc:
+        log.error("registered_tools_load_failed", error=str(exc))
         return
 
     from paths import get_dirs
@@ -352,8 +353,10 @@ async def supervisor_main(config_path: Path) -> None:
                     selected=_best,
                 )
                 cfg.OLLAMA_MODEL = _best
-    except Exception:  # nosec B110 — hardware detection must not block startup
-        pass
+    except Exception as exc:  # nosec B110 — hardware detection must not block startup
+        from utils.core.logging import get_logger as _get_logger
+
+        _get_logger("main").warning("model_auto_select_failed", error=str(exc))
 
     # Deferred after auto-select so ha_log_monitor.py captures the final OLLAMA_MODEL.
     from agents.ha_log_monitor import (

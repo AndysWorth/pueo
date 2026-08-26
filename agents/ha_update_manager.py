@@ -378,8 +378,8 @@ def _extract_impact_report(loop_result: "AgentLoopResult") -> "InstanceImpactRep
                     ),
                     summary=str(args.get("summary", "")),
                 )
-            except Exception:  # nosec B110
-                pass
+            except Exception as exc:  # nosec B110
+                log.warning("impact_report_parse_failed", error=str(exc))
     return InstanceImpactReport(
         affected_changes=[],
         instance_impact="none",
@@ -569,7 +569,7 @@ async def run_update_preflight(
             else:
                 supervisor_status = "current"
     except Exception as exc:
-        log.warning("update_preflight_supervisor_check_failed", error=str(exc))
+        log.error("update_preflight_supervisor_check_failed", error=str(exc))
         supervisor_status = "unknown"
 
     log.info(
@@ -676,7 +676,7 @@ async def request_update_approval(
                     "⚠️ Supervisor update available — approve Supervisor before Core"
                 )
         except Exception as exc:
-            log.warning("update_preflight_failed", error=str(exc))
+            log.error("update_preflight_failed", error=str(exc))
 
     body = "\n".join(body_parts)
 
