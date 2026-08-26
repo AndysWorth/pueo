@@ -394,7 +394,7 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 
 | Constraint | Target | Mitigation if failing |
 |---|---|---|
-| Inference latency | Per-call timeout = P95(historical latency) × `AGENT_PER_CALL_TIMEOUT_FACTOR` (default 5×), floor 5 min, ceiling 30 min. No hard per-step latency target — correctness prioritized over speed. See ADR 019. | Quantize model to `q4_K_M`; offload embedding layers to Apple Silicon AMX |
+| Inference latency | Per-call timeout = P95(historical latency) × `AGENT_PER_CALL_TIMEOUT_FACTOR` (default 5×), floor 5 min, ceiling 30 min. No hard per-step latency target — correctness prioritized over speed. See ADR 022. | Quantize model to `q4_K_M`; offload embedding layers to Apple Silicon AMX |
 | Config hallucination | Zero on inputs up to 8,000 tokens | Sliding window log ingestion; pass only relevant config sections, not full directories |
 | Un-backed writes | 0% — no production write without a confirmed backup slug | `execute_remote_backup()` raises on failure; pipeline aborts |
 | LLM inference location | Configurable: `local` (Ollama, default), `cloud` (Anthropic API), or `both` | Set via `LLM_PROVIDER`; cloud and both require `ANTHROPIC_API_KEY` env var; billing caps enforced; WAN only via the designated provider |
