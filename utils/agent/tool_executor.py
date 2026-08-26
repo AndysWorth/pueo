@@ -162,6 +162,12 @@ class ToolExecutor:
         """Cache the HA environment profile so get_ha_profile tool can return it."""
         self._ha_profile = profile
 
+    def get_ha_profile_summary(self) -> str:
+        """Return a compact text summary of the cached HA profile for pre-injection."""
+        from utils.ha.ha_environment import format_profile_summary
+
+        return format_profile_summary(self._ha_profile)
+
     def set_ws_client(self, client: "HAWebSocketClientProtocol") -> None:
         """Inject the HA WebSocket client after construction (HA_API_TOKEN may not be
         available at executor creation time). Called from main.py once the client exists.
@@ -230,7 +236,7 @@ class ToolExecutor:
             if name == "recall":
                 return await self._recall(args.get("query", ""))
             if name == "get_ha_profile":
-                return await self._get_ha_profile()
+                return await self._get_ha_profile(field=args.get("field"))
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "fetch_ha_docs":
@@ -554,7 +560,9 @@ class ToolExecutor:
                 tool_name="recall", success=False, output="", error=str(exc)
             )
 
-    async def _get_ha_profile(self) -> ToolResult:
+    async def _get_ha_profile(self, field: Optional[str] = None) -> ToolResult:
+        from utils.ha.ha_environment import format_profile_summary
+
         if self._ha_profile is None:
             return ToolResult(
                 tool_name="get_ha_profile",
@@ -564,12 +572,29 @@ class ToolExecutor:
                     "Restart the supervisor to build it."
                 ),
             )
-        import dataclasses
-
+        _VALID_FIELDS = (
+            "installed_integrations",
+            "hacs_integrations",
+            "config_entries",
+        )
+        if field is None:
+            return ToolResult(
+                tool_name="get_ha_profile",
+                success=True,
+                output=format_profile_summary(self._ha_profile),
+            )
+        if field not in _VALID_FIELDS:
+            return ToolResult(
+                tool_name="get_ha_profile",
+                success=False,
+                output="",
+                error=f"Unknown field {field!r}. Valid fields: {', '.join(_VALID_FIELDS)}",
+            )
+        value = getattr(self._ha_profile, field)
         return ToolResult(
             tool_name="get_ha_profile",
             success=True,
-            output=json.dumps(dataclasses.asdict(self._ha_profile), indent=2),
+            output=json.dumps(value, indent=2),
         )
 
     async def _get_disk_usage(self) -> ToolResult:

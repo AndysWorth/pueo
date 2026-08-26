@@ -368,10 +368,28 @@ RECALL = ToolDefinition(
 GET_HA_PROFILE = ToolDefinition(
     name="get_ha_profile",
     description=(
-        "Return the current HA environment profile: installed version, OS version, "
-        "installed integrations, HACS components, and top-level config keys."
+        "Return HA environment info. With no arguments, returns a compact summary "
+        "(version, OS, Supervisor, config key names, and counts of integrations/config entries). "
+        "Pass field= to retrieve one large list in full."
     ),
-    parameters={"type": "object", "properties": {}, "required": []},
+    parameters={
+        "type": "object",
+        "properties": {
+            "field": {
+                "type": "string",
+                "enum": [
+                    "installed_integrations",
+                    "hacs_integrations",
+                    "config_entries",
+                ],
+                "description": (
+                    "Optional. Which large list to retrieve in full. "
+                    "Omit to get the compact summary."
+                ),
+            }
+        },
+        "required": [],
+    },
 )
 
 GET_DISK_USAGE = ToolDefinition(
@@ -969,6 +987,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
+        GET_HA_PROFILE,
     ):
         reg.register(tool)
     return reg

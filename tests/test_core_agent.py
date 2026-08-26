@@ -161,6 +161,66 @@ class TestAgentLoopPreInject:
         assert result == "unrelated query"
 
 
+class TestAgentLoopPreInjectHaProfile:
+    """AgentLoop._pre_inject_ha_profile prepends a compact profile block."""
+
+    def _make_loop_with_profile(self, profile=None):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if profile is not None:
+            executor.set_ha_profile(profile)
+        return AgentLoop(
+            llm_client=FakeToolCallingLLMClient([]),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+
+    def test_prepends_profile_block_when_profile_present(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            installed_integrations=["zha", "mqtt"],
+            hacs_integrations=[],
+            config_entries=[],
+        )
+        loop = self._make_loop_with_profile(profile=profile)
+        result = loop._pre_inject_ha_profile("original context")
+        assert "HA environment" in result
+        assert "2026.8.2" in result
+        assert "original context" in result
+
+    def test_returns_original_when_no_profile(self):
+        loop = self._make_loop_with_profile(profile=None)
+        result = loop._pre_inject_ha_profile("original context")
+        assert result == "original context"
+
+    def test_returns_original_when_executor_raises(self):
+        loop = self._make_loop_with_profile(profile=None)
+
+        class BrokenExecutor:
+            def get_ha_profile_summary(self):
+                raise RuntimeError("broken")
+
+        loop._executor = BrokenExecutor()  # type: ignore[assignment]
+        result = loop._pre_inject_ha_profile("some context")
+        assert result == "some context"
+
+
 # ── Log monitor ──────────────────────────────────────────────────────────────────
 
 
@@ -9659,9 +9719,11 @@ class TestToolExecutor:
             executor.execute(ToolCall(name="get_ha_profile", arguments={}))
         )
         assert result.success
-        assert "zha" in result.output
-        assert "mqtt" in result.output
         assert "2026.6.0" in result.output
+        assert (
+            "2 installed" in result.output
+        )  # compact summary shows count, not full list
+        assert "homeassistant" in result.output  # config keys shown fully
 
     def test_get_ha_profile_tool_when_no_profile(self):
         from utils.agent.autonomy import FakeAutonomyGate
