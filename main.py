@@ -110,6 +110,25 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     if docs_ids:
         store.prune("ha_integration_docs", docs_ids)
 
+    # ── 3.5. HA concept docs ────────────────────────────────────────────────
+    print("[rag-refresh] Fetching HA concept docs (Lovelace, entities, automation…)…")
+    from utils.knowledge.ha_concepts_scraper import (
+        embed_cached_concept_docs,
+        fetch_concept_docs,
+    )
+
+    n_fetched_concepts = fetch_concept_docs(config.HA_CONCEPTS_CACHE_DIR)
+    print(f"[rag-refresh]   → {n_fetched_concepts} new concept doc(s) downloaded")
+
+    print("[rag-refresh] Embedding HA concept docs…")
+    concepts_ids: set[str] = set()
+    n_concepts = embed_cached_concept_docs(
+        config.HA_CONCEPTS_CACHE_DIR, store, concepts_ids
+    )
+    print(f"[rag-refresh]   → embedded {n_concepts} concept doc(s)")
+    if concepts_ids:
+        store.prune("ha_concepts", concepts_ids)
+
     # ── 4. Community cases ───────────────────────────────────────────────────
     n_cases = 0
     if config.FEDERATED_CASES_REPO:
@@ -144,10 +163,10 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     n_strategies = seed_strategies(store)
     print(f"[rag-refresh]   → seeded {n_strategies} strategy document(s)")
 
-    total = n_ha + n_hacs + n_docs + n_cases + n_strategies
+    total = n_ha + n_hacs + n_docs + n_concepts + n_cases + n_strategies
     print(
         f"[rag-refresh] Done. Embedded content from {total} file(s) "
-        f"across 5 collections."
+        f"across 6 collections."
     )
 
 

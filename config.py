@@ -132,6 +132,9 @@ RAG_HA_DOCS_CACHE_DIR: str = _agent.get(
 HA_SOURCE_CACHE_DIR: str = _agent.get(
     "ha_source_cache_dir", str(_dirs.cache_dir / "ha_source")
 )
+HA_CONCEPTS_CACHE_DIR: str = _agent.get(
+    "ha_concepts_cache_dir", str(_dirs.cache_dir / "ha_concepts")
+)
 RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 168))
 
 # Tool-calling agent loop

@@ -6358,3 +6358,120 @@ class TestStrategySeeder:
         from utils.knowledge.knowledge_store import COLLECTIONS
 
         assert "strategies" in COLLECTIONS
+
+
+class TestParseConceptDoc:
+    def test_strips_frontmatter(self):
+        from utils.knowledge.ha_concepts_scraper import parse_concept_doc
+
+        doc = "---\ntitle: Lovelace\n---\n## Overview\nDashboard concepts."
+        result = parse_concept_doc(doc)
+        assert result
+        assert all("---" not in c for c in result)
+        assert any("Dashboard concepts" in c for c in result)
+
+    def test_splits_by_headings(self):
+        from utils.knowledge.ha_concepts_scraper import parse_concept_doc
+
+        doc = "## Cards\nCard config here.\n## Views\nView config here."
+        result = parse_concept_doc(doc)
+        assert len(result) == 2
+
+    def test_word_boundary_truncation(self):
+        from utils.knowledge.ha_concepts_scraper import parse_concept_doc
+
+        long_section = "word " * 700  # ~3500 chars
+        doc = f"## Section\n{long_section}"
+        result = parse_concept_doc(doc)
+        assert len(result) == 1
+        assert len(result[0]) <= 3000
+        assert not result[0].endswith("wor")
+
+    def test_strips_empty_sections(self):
+        from utils.knowledge.ha_concepts_scraper import parse_concept_doc
+
+        doc = "## Header\n\n## Content\nActual text here"
+        result = parse_concept_doc(doc)
+        assert all(c.strip() for c in result)
+
+    def test_handles_doc_without_frontmatter(self):
+        from utils.knowledge.ha_concepts_scraper import parse_concept_doc
+
+        doc = "## Overview\nLovelace dashboard configuration."
+        result = parse_concept_doc(doc)
+        assert result
+        assert "Lovelace" in result[0]
+
+
+class TestEmbedCachedConceptDocs:
+    def test_returns_zero_for_missing_dir(self):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_concept_docs("/nonexistent/path", store) == 0
+
+    def test_processes_md_files(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "lovelace_dashboards.md").write_text(
+            "## Dashboards\nLovelace dashboard overview.\n## Views\nView config."
+        )
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_concept_docs(str(cache), store)
+        assert result == 1
+        hits = store.query("Lovelace dashboard", top_k=5)
+        assert len(hits) > 0
+        assert hits[0].collection == "ha_concepts"
+
+    def test_collected_ids_populated(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "entity_registry.md").write_text(
+            "## Registry\nEntity section one.\n## Lookup\nSection two."
+        )
+
+        store = FakeKnowledgeStore()
+        collected: set[str] = set()
+        embed_cached_concept_docs(str(cache), store, collected)
+        assert len(collected) == 2
+        assert "ha-concepts-entity_registry-0" in collected
+
+    def test_skips_non_md_files(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "readme.txt").write_text("## Overview\nSome text")
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_concept_docs(str(cache), store) == 0
+
+    def test_metadata_source_field(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "automation_basics.md").write_text("## Automation\nTrigger on event.")
+
+        store = FakeKnowledgeStore()
+        embed_cached_concept_docs(str(cache), store)
+        hits = store.query("Trigger on event", top_k=5)
+        assert hits
+        assert hits[0].metadata.get("source") == "ha_concepts/automation_basics"
+
+
+class TestHaConceptsCollection:
+    def test_ha_concepts_in_collections(self):
+        from utils.knowledge.knowledge_store import COLLECTIONS
+
+        assert "ha_concepts" in COLLECTIONS
