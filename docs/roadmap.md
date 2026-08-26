@@ -369,15 +369,15 @@ Every Pueo agent session now follows the same **6-phase investigation cycle** en
 2. **Form a hypothesis** — one sentence before calling any tool
 3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`
 4. **Confirm root cause** — state it explicitly before acting
-5. **Act** — apply fix, recommend action, or call `save_strategy` to record a novel approach
+5. **Act** — apply fix, recommend action, or call `save_runbook` to record a novel approach
 6. **Report** — call the terminal tool (`finish_repair`, `finish_chat`, `finish_investigation`)
 
 **Why here:** Milestones 12 and 11 gave every agent self-knowledge and transparency. Unifying the investigation methodology ensures those capabilities are actually used — Phase 1 (retrieve context) is infrastructure-guaranteed via `AgentLoop._pre_inject_knowledge`, not left to the model's discretion.
 
 **Key design choices:**
 - Single `prompts/agent_loop.md` replaces three prompt files; loaded by `AgentLoop` when no explicit `system_prompt` is passed; `{terminal_tool}` placeholder substituted from `terminal_tool_name`
-- `save_strategy` tool registered in all agent registries; embeds novel approaches into the `strategies` ChromaDB collection and records them in `agent_strategies` SQLite table
-- `strategy_seeder.py` pre-embeds seed strategies from `prompts/seed_*.md` at RAG refresh time — 5 seed files covering config errors, disk space, integration errors, Pueo log patterns, and security notifications
+- `save_runbook` tool registered in all agent registries; embeds novel runbooks into the `strategies` ChromaDB collection and records them in `agent_strategies` SQLite table
+- `strategy_seeder.py` pre-embeds seed runbooks from `prompts/seed_*.md` at RAG refresh time — 5 seed files covering config errors, disk space, integration errors, Pueo log patterns, and security notifications
 - `read_pueo_log` and `search_log` tools added to all registries so agents can consult Pueo's own history during an investigation
 - `query_knowledge` pre-injection moved into `AgentLoop` itself (via `knowledge_store` constructor param) — every session retrieves up to 3 relevant chunks before the first LLM call regardless of which caller constructs the loop
 - One-shot pipelines (log triage, breaking-change analysis, notification analysis) are deliberately left outside the loop — they are hot-path filters, not decision-making agents

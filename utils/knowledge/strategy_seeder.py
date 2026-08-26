@@ -1,8 +1,8 @@
 """Seed the 'strategies' ChromaDB collection from Pueo's prompt files.
 
 Each prompt file that contains a playbook or investigation methodology is
-embedded as a strategy document. This ensures query_knowledge surfaces
-relevant approaches alongside breaking-change release notes and community cases.
+embedded as a runbook document. This ensures query_knowledge surfaces
+relevant runbooks alongside breaking-change release notes and community cases.
 
 Called once per RAG refresh cycle.
 """
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
 
-# Prompt files to seed as strategy documents.
+# Prompt files to seed as runbook documents.
 # Each entry is (prompt_filename, title, trigger_pattern).
 _SEED_PROMPTS: list[tuple[str, str, str]] = [
     (
@@ -77,7 +77,7 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
 
 
 def seed_strategies(store: "KnowledgeStoreClientProtocol") -> int:
-    """Embed seed strategy documents into the 'strategies' collection.
+    """Embed seed runbook documents into the 'strategies' collection.
 
     Uses the prompt file name as the document ID so repeated calls are
     idempotent (upsert semantics). Returns the number of documents upserted.

@@ -560,7 +560,7 @@ class TestInvestigateDevice:
 
 
 class TestSaveStrategy:
-    """Tests for _save_strategy executor."""
+    """Tests for _save_strategy executor (exposed as save_runbook tool)."""
 
     def _make_executor_with_store(self, tmp_path):
         import sqlite3

@@ -278,7 +278,7 @@ class ToolExecutor:
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
                 return await self._rewrite_netalertx_conf(args.get("overrides", {}))
-            if name == "save_strategy":
+            if name == "save_runbook":
                 return await self._save_strategy(
                     args.get("title", ""),
                     args.get("trigger_pattern", ""),
@@ -1576,7 +1576,7 @@ class ToolExecutor:
     ) -> ToolResult:
         if not title or not approach:
             return ToolResult(
-                tool_name="save_strategy",
+                tool_name="save_runbook",
                 success=False,
                 output="",
                 error="title and approach are required",
@@ -1599,7 +1599,7 @@ class ToolExecutor:
                     [meta],
                 )
             except Exception as exc:
-                log.warning("save_strategy_chroma_failed", error=str(exc))
+                log.warning("save_runbook_chroma_failed", error=str(exc))
         try:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
@@ -1610,11 +1610,11 @@ class ToolExecutor:
                 )
                 conn.commit()
         except Exception as exc:
-            log.warning("save_strategy_sqlite_failed", error=str(exc))
+            log.warning("save_runbook_sqlite_failed", error=str(exc))
         return ToolResult(
-            tool_name="save_strategy",
+            tool_name="save_runbook",
             success=True,
-            output=f"Strategy '{title}' saved (id={strategy_id})",
+            output=f"Runbook '{title}' saved (id={strategy_id})",
         )
 
     async def _read_pueo_log(

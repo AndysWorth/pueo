@@ -113,12 +113,12 @@ All agent sessions follow the **6-phase investigation cycle** (encoded in `promp
 2. **Form a hypothesis** — one sentence before calling any tool
 3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`
 4. **Confirm root cause** — state it explicitly before acting
-5. **Act** — apply fix, recommend action, or call `save_strategy` to record a novel approach
+5. **Act** — apply fix, recommend action, or call `save_runbook` to record a novel approach
 6. **Report** — call the terminal tool (`finish_repair`, `finish_chat`, `finish_investigation`)
 
 **Use `AgentLoop`** for anything that touches HA state, makes a judgment call, or could benefit from iterative evidence gathering. **Use one-shot** only for: hot streaming paths (`analyze_log_line_with_ai()`), pure text comparison (`analyze_breaking_changes()`), or post-loop enrichment where the question has a single definitive answer. See ADR 018.
 
-**Strategy learning**: The `strategies` ChromaDB collection stores novel investigation approaches. `save_strategy` (registered in all agent registries except code-proposal) embeds a new strategy into ChromaDB and records it in the `agent_strategies` SQLite table. Seed strategies from Pueo's own prompt files are embedded at RAG refresh time by `utils/knowledge/strategy_seeder.py`.
+**Runbook library**: The `strategies` ChromaDB collection stores novel investigation approaches as runbooks. `save_runbook` (registered in all agent registries except code-proposal) embeds a new runbook into ChromaDB and records it in the `agent_strategies` SQLite table. Seed runbooks from Pueo's own prompt files are embedded at RAG refresh time by `utils/knowledge/strategy_seeder.py`.
 
 **Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`) in `utils/agent/tool_registry.py`. The LLM can call `read_source("utils/agent/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/hitl/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
 
