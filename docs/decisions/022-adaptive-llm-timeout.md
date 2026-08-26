@@ -1,4 +1,4 @@
-# ADR 019 — Adaptive Per-Call LLM Timeout with Latency History
+# ADR 022 — Adaptive Per-Call LLM Timeout with Latency History
 
 ## Status
 Accepted
