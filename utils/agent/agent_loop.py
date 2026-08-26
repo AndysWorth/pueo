@@ -270,6 +270,7 @@ class AgentLoop:
             chunks = self._knowledge_store.query(  # type: ignore[union-attr]
                 query_text=initial_context[:500],
                 top_k=3,
+                min_score=0.35,
             )
         except Exception as exc:
             log.warning("knowledge_injection_failed", error=str(exc))
@@ -280,7 +281,7 @@ class AgentLoop:
         for chunk in chunks:
             parts.append(f"\n{chunk.text}")
         block = truncate_to_budget("\n".join(parts), 1000)
-        log.debug("agent_loop_knowledge_injected", chunks=len(chunks))
+        log.debug("agent_loop_knowledge_injected", runbooks_found=len(chunks))
         return f"{block}\n\n---\n{initial_context}"
 
     def _per_call_timeout_seconds(self) -> float:

@@ -1568,6 +1568,48 @@ class TestFakeKnowledgeStore:
         results = store.query("anything", top_k=5, collections=["nonexistent"])
         assert results == []
 
+    def test_query_min_score_filters_below_threshold(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["doc-1"],
+            documents=["dashboard entity"],
+            metadatas=[{"source": "s1"}],
+        )
+        # FakeKnowledgeStore assigns score=1.0 to text matches; min_score above 1.0 should
+        # return nothing
+        results = store.query("dashboard entity", top_k=5, min_score=1.1)
+        assert results == []
+
+    def test_query_min_score_passes_chunks_above_threshold(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["doc-1"],
+            documents=["dashboard entity"],
+            metadatas=[{"source": "s1"}],
+        )
+        results = store.query("dashboard entity", top_k=5, min_score=0.35)
+        assert len(results) == 1
+        assert results[0].score >= 0.35
+
+    def test_query_min_score_zero_is_default_no_filtering(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["doc-1"],
+            documents=["any content"],
+            metadatas=[{"source": "s1"}],
+        )
+        results = store.query("any content", top_k=5)
+        assert len(results) == 1
+
 
 class TestFakeKnowledgeStorePrune:
     def test_prune_removes_stale_ids(self):
