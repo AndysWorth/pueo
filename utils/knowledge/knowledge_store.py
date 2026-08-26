@@ -103,6 +103,9 @@ class FakeKnowledgeStore:
     def total_count(self) -> int:
         return sum(len(docs) for docs in self._docs.values())
 
+    def collection_count(self, name: str) -> int:
+        return len(self._docs.get(name, []))
+
 
 class ChromaKnowledgeStore:  # pragma: no cover
     """Production ChromaDB-backed knowledge store with Ollama embeddings."""
@@ -178,6 +181,11 @@ class ChromaKnowledgeStore:  # pragma: no cover
 
     def total_count(self) -> int:
         return sum(col.count() for col in self._cols.values())
+
+    def collection_count(self, name: str) -> int:
+        if name not in self._cols:
+            return 0
+        return self._cols[name].count()
 
 
 async def embed_local_episode(

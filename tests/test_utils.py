@@ -1684,6 +1684,43 @@ class TestFakeKnowledgeStoreTotalCount:
         assert store.total_count() == 3
 
 
+class TestFakeKnowledgeStoreCollectionCount:
+    def test_empty_collection_returns_zero(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert store.collection_count("ha_release_notes") == 0
+
+    def test_populated_collection_returns_count(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ["a", "b"],
+            ["doc a", "doc b"],
+            [{"source": "a"}, {"source": "b"}],
+        )
+        assert store.collection_count("ha_release_notes") == 2
+
+    def test_unknown_collection_returns_zero(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert store.collection_count("nonexistent") == 0
+
+    def test_only_counts_named_collection(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert("ha_release_notes", ["a"], ["doc a"], [{"source": "a"}])
+        store.upsert(
+            "strategies", ["x", "y", "z"], ["s1", "s2", "s3"], [{"source": "s"}] * 3
+        )
+        assert store.collection_count("ha_release_notes") == 1
+        assert store.collection_count("strategies") == 3
+
+
 # ── HA release notes scraper (item 50) ────────────────────────────────────────────
 
 
