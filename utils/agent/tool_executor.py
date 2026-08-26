@@ -336,8 +336,17 @@ class ToolExecutor:
             content = await self._ha_ssh.read_file(path)
             return ToolResult(tool_name="read_config", success=True, output=content)
         except Exception as exc:
+            # asyncssh SFTPNoSuchFile stringifies to the bare path, making it
+            # indistinguishable from file content to the LLM. Always include
+            # the path and a readable description so the model knows it failed.
+            detail = str(exc) or "unknown error"
+            if detail.strip() == path.strip():
+                detail = "file not found"
             return ToolResult(
-                tool_name="read_config", success=False, output="", error=str(exc)
+                tool_name="read_config",
+                success=False,
+                output="",
+                error=f"could not read {path}: {detail}",
             )
 
     _HA_LOG_CMDS = {

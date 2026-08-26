@@ -8766,6 +8766,36 @@ class TestToolExecutor:
         )
         assert not result.success
         assert result.error is not None
+        # Error must include the path so the LLM can understand what failed.
+        assert "/config/configuration.yaml" in result.error
+        assert "could not read" in result.error
+
+    def test_read_config_sftp_path_only_error(self):
+        """asyncssh SFTPNoSuchFile str() == the bare path; must still produce a clear error."""
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ssh_client import FakeSSHClient
+
+        class _PathOnlyError(Exception):
+            """Simulates asyncssh SFTPNoSuchFile which stringifies to the bare path."""
+
+            def __str__(self) -> str:
+                return "/config/dashy.yaml"
+
+        class _BadSSH(FakeSSHClient):
+            async def read_file(self, path: str) -> str:
+                raise _PathOnlyError()
+
+        executor = self._make_executor(ssh=_BadSSH())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="read_config", arguments={"path": "/config/dashy.yaml"})
+            )
+        )
+        assert not result.success
+        # The error must not just be the bare path — the LLM needs "could not read" context.
+        assert result.error != "/config/dashy.yaml"
+        assert "could not read" in result.error
+        assert "file not found" in result.error
 
     def test_run_ha_command_allowed(self):
         from utils.ha.ssh_client import FakeSSHClient

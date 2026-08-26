@@ -405,6 +405,43 @@ class TestAgentLoopTerminalTool:
         # finish_repair IS the terminal tool here → should succeed
         assert result.outcome == "success"
 
+    def test_agentloop_db_path_is_wired(self, db_path):
+        """AgentLoop receives db_path so adaptive timeouts accumulate for chat sessions."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "Done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            db_path=db_path,
+        )
+        assert loop._db_path == db_path
+
 
 # ---------------------------------------------------------------------------
 # TestReadSource
