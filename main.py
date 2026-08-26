@@ -227,31 +227,64 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
 async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     """Periodically scrape and embed RAG content (release notes, HACS, HA docs).
 
-    Runs immediately on startup when any collection is empty so a fresh install
-    populates ChromaDB without requiring a manual --mode rag-refresh invocation.
+    Runs immediately on startup when any bootstrap collection is empty so a fresh
+    install populates ChromaDB without requiring a manual --mode rag-refresh invocation.
+    Bootstrap collections are those run_rag_refresh always populates without a token
+    (ha_release_notes, strategies). Token-gated collections (hacs_changelogs,
+    ha_integration_docs) are excluded from the trigger — they may be legitimately empty
+    and are covered by the weekly scheduled refresh.
     Subsequent runs fire every interval_hours (default 168 = weekly).
     """
     from utils.core.logging import get_logger as _gl
+    from utils.core.timeline import write_timeline_event
 
     _log = _gl("main")
 
-    # Run immediately if any primary collection is empty.
-    if knowledge_store.total_count() == 0:
-        _log.info("rag_refresh_start", reason="collections_empty")
+    # Bootstrap collections run_rag_refresh always populates (no token needed).
+    # Token-gated collections (hacs_changelogs, ha_integration_docs) are excluded —
+    # they may be legitimately empty and would cause endless startup refreshes.
+    _BOOTSTRAP_COLLECTIONS = ("ha_release_notes", "strategies")
+    empty_bootstrap = [
+        c for c in _BOOTSTRAP_COLLECTIONS if knowledge_store.collection_count(c) == 0
+    ]
+    if empty_bootstrap:
+        _log.info(
+            "rag_refresh_start", reason="collections_empty", empty=empty_bootstrap
+        )
+        write_timeline_event(
+            "INFO",
+            "rag_refresh",
+            "RAG refresh started (bootstrap collections empty)",
+            {"reason": "collections_empty", "empty": empty_bootstrap},
+        )
         try:
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
+            write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
+            write_timeline_event(
+                "WARNING", "rag_refresh", f"RAG refresh failed: {exc}"
+            )  # pragma: no cover
 
     while True:
         await asyncio.sleep(interval_hours * 3600)
         _log.info("rag_refresh_start", reason="scheduled")
+        write_timeline_event(
+            "INFO",
+            "rag_refresh",
+            "RAG refresh started (scheduled)",
+            {"reason": "scheduled"},
+        )
         try:
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
+            write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
+            write_timeline_event(
+                "WARNING", "rag_refresh", f"RAG refresh failed: {exc}"
+            )  # pragma: no cover
 
 
 async def _known_issues_poll_loop(

@@ -11009,6 +11009,68 @@ class TestRunRagRefresh:
         assert "no HA API token" in out
 
 
+class TestRagRefreshLoopStartupTrigger:
+    """_rag_refresh_loop fires the startup refresh only when bootstrap collections are empty."""
+
+    def _make_store(
+        self, release_notes_count: int, strategies_count: int, hacs_count: int = 0
+    ):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        for i in range(release_notes_count):
+            store.upsert("ha_release_notes", [f"r{i}"], [f"doc {i}"], [{"source": "s"}])
+        for i in range(strategies_count):
+            store.upsert("strategies", [f"s{i}"], [f"strategy {i}"], [{"source": "s"}])
+        for i in range(hacs_count):
+            store.upsert("hacs_changelogs", [f"h{i}"], [f"hacs {i}"], [{"source": "s"}])
+        return store
+
+    def _run_loop_once(self, store, monkeypatch):
+        """Run _rag_refresh_loop until the first asyncio.sleep (exits the startup block)."""
+        import main as main_module
+        from unittest.mock import MagicMock, patch
+
+        refresh_mock = MagicMock()
+
+        async def _run():
+            with patch.object(main_module, "run_rag_refresh", refresh_mock):
+                try:
+                    await main_module._rag_refresh_loop(store, interval_hours=168)
+                except asyncio.CancelledError:
+                    pass
+
+        async def _sleep_raises(_s):
+            raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=_sleep_raises):
+            asyncio.run(_run())
+        return refresh_mock
+
+    def test_fires_when_ha_release_notes_empty(self, monkeypatch):
+        store = self._make_store(release_notes_count=0, strategies_count=5)
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_called_once()
+
+    def test_fires_when_strategies_empty(self, monkeypatch):
+        store = self._make_store(release_notes_count=5, strategies_count=0)
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_called_once()
+
+    def test_skips_when_both_bootstrap_populated(self, monkeypatch):
+        store = self._make_store(release_notes_count=3, strategies_count=2)
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_not_called()
+
+    def test_empty_token_gated_collection_does_not_trigger(self, monkeypatch):
+        # hacs_changelogs empty, but both bootstrap collections populated
+        store = self._make_store(
+            release_notes_count=5, strategies_count=3, hacs_count=0
+        )
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_not_called()
+
+
 class TestLoopCrashTimeline:
     """LoopSupervisor writes a timeline event when a loop crashes."""
 
