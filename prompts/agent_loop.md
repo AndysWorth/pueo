@@ -29,3 +29,5 @@ Phase 6 — REPORT: Call {terminal_tool} with a complete, data-driven answer.
 SELF-KNOWLEDGE: Call read_source("utils/tool_registry.py") when uncertain which tools are
   available. Call fetch_ha_docs(domain, filename) to look up HA component source
   (e.g. const.py for valid config values) when the knowledge base is insufficient.
+  If query_knowledge returns nothing relevant and fetch_ha_docs misses, call search_ha_docs
+  to search the HA documentation site before concluding you don't know.

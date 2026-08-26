@@ -635,6 +635,27 @@ FETCH_URL = ToolDefinition(
     },
 )
 
+SEARCH_HA_DOCS = ToolDefinition(
+    name="search_ha_docs",
+    description=(
+        "Search the Home Assistant documentation site for a question or topic. "
+        "Call this after query_knowledge returns nothing relevant and fetch_ha_docs misses, "
+        "as a last resort before concluding you don't know. "
+        "Returns top 3–5 result titles, URLs, and short excerpts. "
+        "Requires ALLOW_DIAGNOSTIC_WAN=true (default)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language question or topic to search for (e.g. 'Lovelace section card')",
+            },
+        },
+        "required": ["query"],
+    },
+)
+
 INVESTIGATE_DEVICE = ToolDefinition(
     name="investigate_device",
     description=(
@@ -1001,6 +1022,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         READ_SOURCE,
         FETCH_HA_DOCS,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         SAVE_RUNBOOK,
         READ_PUEO_LOG,
@@ -1027,6 +1049,7 @@ def build_code_proposal_registry() -> ToolRegistry:
         SANDBOX_CODE,
         OPEN_PR,
         SEARCH_INTEGRATIONS,
+        SEARCH_HA_DOCS,
         FINISH_REPAIR,
     ):
         reg.register(tool)
@@ -1046,6 +1069,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         SAVE_RUNBOOK,
         READ_PUEO_LOG,
@@ -1084,6 +1108,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         OPEN_PR,
         SWITCH_MODEL,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,

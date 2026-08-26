@@ -131,6 +131,7 @@ agent:
   # rag_hacs_cache_dir: ""      # HACS changelog cache; default: ~/Library/Caches/Pueo/hacs_changelogs (macOS)
   # rag_ha_docs_cache_dir: ""   # HA docs cache; default: ~/Library/Caches/Pueo/ha_docs (macOS)
   # ha_source_cache_dir: ""     # HA source cache; default: ~/Library/Caches/Pueo/ha_source (macOS)
+  # ha_concepts_cache_dir: ""   # HA concept docs cache; default: ~/Library/Caches/Pueo/ha_concepts (macOS)
   # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
   # federated_cases_repo: ""  # GitHub repo for community case library (e.g. "owner/pueo-cases"); enables episode submission and ingest
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
