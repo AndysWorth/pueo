@@ -688,10 +688,10 @@ REWRITE_NETALERTX_CONF = ToolDefinition(
 )
 
 
-SAVE_STRATEGY = ToolDefinition(
-    name="save_strategy",
+SAVE_RUNBOOK = ToolDefinition(
+    name="save_runbook",
     description=(
-        "Record a novel investigation or repair approach in the strategies knowledge base "
+        "Record a novel investigation or repair approach in the runbook library "
         "so future sessions can retrieve it via query_knowledge. "
         "Call when you used an approach that worked and was not already in the knowledge base."
     ),
@@ -1002,7 +1002,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         FETCH_HA_DOCS,
         FETCH_URL,
         INVESTIGATE_DEVICE,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
@@ -1047,7 +1047,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         READ_SOURCE,
         FETCH_URL,
         INVESTIGATE_DEVICE,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
@@ -1087,7 +1087,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         INVESTIGATE_DEVICE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
@@ -1112,7 +1112,7 @@ def build_installer_diagnosis_registry() -> ToolRegistry:
         SEARCH_LOG,
         READ_PUEO_LOG,
         LIST_LOG_SOURCES,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         FINISH_INSTALLER_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -1132,7 +1132,7 @@ def build_health_diagnosis_registry() -> ToolRegistry:
         SEARCH_LOG,
         READ_PUEO_LOG,
         LIST_LOG_SOURCES,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         FINISH_HEALTH_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -1151,7 +1151,7 @@ def build_config_analysis_registry() -> ToolRegistry:
         READ_FILE,
         RUN_HA_COMMAND,
         QUERY_KNOWLEDGE,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         FINISH_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -1172,7 +1172,7 @@ def build_impact_analysis_registry() -> ToolRegistry:
         RUN_HA_COMMAND,
         FETCH_HA_DOCS,
         QUERY_KNOWLEDGE,
-        SAVE_STRATEGY,
+        SAVE_RUNBOOK,
         FINISH_IMPACT_ANALYSIS,
     ):
         reg.register(tool)

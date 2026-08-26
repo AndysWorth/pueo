@@ -93,7 +93,7 @@ class TestRegistryMembership:
         reg = build_ha_tool_registry()
         assert "query_netalertx" not in reg
 
-    def test_all_registries_include_save_strategy(self):
+    def test_all_registries_include_save_runbook(self):
         from utils.agent.tool_registry import build_netalertx_tool_registry
 
         for reg in (
@@ -101,7 +101,7 @@ class TestRegistryMembership:
             build_netalertx_tool_registry(),
             build_chat_tool_registry(),
         ):
-            assert "save_strategy" in reg
+            assert "save_runbook" in reg
 
     def test_all_registries_include_log_reading_tools(self):
         from utils.agent.tool_registry import build_netalertx_tool_registry
@@ -122,7 +122,7 @@ class TestRegistryMembership:
             "read_file",
             "run_ha_command",
             "query_knowledge",
-            "save_strategy",
+            "save_runbook",
             "finish_diagnosis",
         ):
             assert name in reg, f"expected {name!r} in config_analysis registry"
@@ -136,7 +136,7 @@ class TestRegistryMembership:
             "run_ha_command",
             "fetch_ha_docs",
             "query_knowledge",
-            "save_strategy",
+            "save_runbook",
             "finish_impact_analysis",
         ):
             assert name in reg, f"expected {name!r} in impact_analysis registry"

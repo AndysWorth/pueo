@@ -5375,7 +5375,7 @@ class TestNetAlertXDiagnostic:
         assert "finish_installer_diagnosis" in names
         assert "query_knowledge" in names
         assert "search_log" in names
-        assert "save_strategy" in names
+        assert "save_runbook" in names
 
     def test_health_diagnosis_registry_has_terminal_tool(self):
         from utils.agent.tool_registry import build_health_diagnosis_registry
