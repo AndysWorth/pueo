@@ -83,22 +83,28 @@ class HAWebSocketClient:  # pragma: no cover
             await ws.close()
 
     async def get_config_entries(self) -> list[dict]:
-        """Fetch loaded config entries via HA WebSocket config/config_entries/all."""
+        """Fetch loaded config entries via HA WebSocket API.
+
+        Tries commands in order of recency:
+          config_entries/get          — HA 2026.x+
+          config/config_entries/all   — HA 2022–2025
+          config_entries/list         — HA pre-2022
+        """
         ws = await self._connect_and_auth()
         try:
-            await ws.send(json.dumps({"id": 1, "type": "config/config_entries/all"}))
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                if msg.get("error", {}).get("code") == "unknown_command":
-                    # Older HA versions (pre-2022) use the legacy command name.
-                    await ws.send(json.dumps({"id": 2, "type": "config_entries/list"}))
-                    msg = json.loads(await ws.recv())
-                    if not msg.get("success"):
-                        raise RuntimeError(f"Config entries request failed: {msg}")
-                else:
+            for msg_id, cmd in (
+                (1, "config_entries/get"),
+                (2, "config/config_entries/all"),
+                (3, "config_entries/list"),
+            ):
+                await ws.send(json.dumps({"id": msg_id, "type": cmd}))
+                msg = json.loads(await ws.recv())
+                if msg.get("success"):
+                    entries = msg.get("result", [])
+                    return [e for e in entries if e.get("state") == "loaded"]
+                if msg.get("error", {}).get("code") != "unknown_command":
                     raise RuntimeError(f"Config entries request failed: {msg}")
-            entries = msg.get("result", [])
-            return [e for e in entries if e.get("state") == "loaded"]
+            raise RuntimeError("Config entries: no supported WebSocket command found")
         finally:
             await ws.close()
 
