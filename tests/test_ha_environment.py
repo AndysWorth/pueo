@@ -276,6 +276,34 @@ class TestLoadEnvironmentProfile:
         assert loaded is not None
         assert loaded.fetch_errors == {"ha_version": "timeout"}
 
+    def test_schema_drift_detected_logs_warning(self, tmp_path, caplog):
+        """Unknown fields in persisted profile JSON emit ha_profile_schema_drift warning."""
+        import json
+        import logging
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE ha_environment_profile "
+                "(id INTEGER PRIMARY KEY, profile_json TEXT, last_updated REAL)"
+            )
+            data = {f.name: f.default for f in dataclasses.fields(HAEnvironmentProfile)}
+            data["installed_integrations"] = []
+            data["hacs_integrations"] = []
+            data["config_yaml_top_keys"] = []
+            data["config_entries"] = []
+            data["fetch_errors"] = {}
+            data["future_field_from_next_version"] = "ignored"
+            conn.execute(
+                "INSERT INTO ha_environment_profile (id, profile_json, last_updated) "
+                "VALUES (1, ?, 0.0)",
+                (json.dumps(data),),
+            )
+        with caplog.at_level(logging.WARNING, logger="ha_environment"):
+            loaded = load_environment_profile(db)
+        assert loaded is not None
+        assert any("ha_profile_schema_drift" in r.message for r in caplog.records)
+
 
 class TestFormatProfileSummary:
     def _make_profile(self) -> HAEnvironmentProfile:

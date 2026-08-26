@@ -115,8 +115,19 @@ def discover_installed_integrations(
     except Exception:
         return []
 
+    components = config_data.get("components", [])
+    if not isinstance(components, list):
+        from utils.core.logging import get_logger
+
+        get_logger("ha_docs_scraper").warning(
+            "schema_drift_detected",
+            source="ha_api_config",
+            field="components",
+            actual_type=type(components).__name__,
+        )
+        return []
     domains: set[str] = set()
-    for component in config_data.get("components", []):
+    for component in components:
         domain = component.split(".")[0]
         if domain not in _TRIVIAL_DOMAINS:
             domains.add(domain)

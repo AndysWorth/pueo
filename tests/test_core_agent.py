@@ -3371,6 +3371,18 @@ class TestUpdateStatus:
         assert status.component == "os"
         assert status.update_available is True
 
+    def test_returns_none_when_entity_id_missing(self, caplog):
+        """Missing entity_id logs required_field_missing and returns None."""
+        import logging
+
+        from utils.ha.ha_rest_client import _entity_to_update_status
+
+        entity = {"state": "on", "attributes": {}}
+        with caplog.at_level(logging.ERROR, logger="ha_rest_client"):
+            result = _entity_to_update_status(entity)
+        assert result is None
+        assert any("required_field_missing" in r.message for r in caplog.records)
+
 
 class TestFakeHARestClient:
     def test_get_states_returns_all(self):

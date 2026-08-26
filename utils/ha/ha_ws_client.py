@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
+
+_log = logging.getLogger("ha_ws_client")
 
 
 class HAWebSocketClient:  # pragma: no cover
@@ -68,7 +71,14 @@ class HAWebSocketClient:  # pragma: no cover
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
                 raise RuntimeError(f"Repairs list_issues request failed: {msg}")
-            return msg.get("result", {}).get("issues", [])
+            result = msg.get("result", {})
+            if not isinstance(result, dict):
+                _log.error(
+                    "required_field_missing field=result source=ha_ws_repairs actual_type=%s",
+                    type(result).__name__,
+                )
+                return []
+            return result.get("issues", [])
         finally:
             await ws.close()
 

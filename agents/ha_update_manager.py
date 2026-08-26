@@ -1034,6 +1034,8 @@ async def _poll_core_version(
             _, stdout, _ = await ssh_client.run("ha core info --raw-json", check=False)
             data = json.loads(stdout)
             info = data.get("data", data)
+            if not isinstance(info.get("version"), str):
+                log.error("ha_core_info_schema_unexpected", keys=list(info.keys()))
             current = info.get("version", "")
             update_available = info.get("update_available", True)
             if current == target_version or not update_available:

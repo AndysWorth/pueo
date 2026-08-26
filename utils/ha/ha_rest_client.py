@@ -28,8 +28,15 @@ _COMPONENT_MAP = {
 }
 
 
-def _entity_to_update_status(entity: dict) -> UpdateStatus:
-    entity_id = entity["entity_id"]
+def _entity_to_update_status(entity: dict) -> Optional[UpdateStatus]:
+    entity_id = entity.get("entity_id")
+    if not entity_id:
+        from utils.core.logging import get_logger
+
+        get_logger("ha_rest_client").error(
+            "required_field_missing", field="entity_id", source="ha_rest"
+        )
+        return None
     attrs = entity.get("attributes", {})
     name = entity_id.removeprefix("update.")
     if name.endswith("_update"):
@@ -52,7 +59,7 @@ async def get_update_status(
 ) -> list[UpdateStatus]:
     """Return UpdateStatus for every update.* entity visible via the HA REST API."""
     entities = await ha_rest_client.get_states(prefix="update.")
-    return [_entity_to_update_status(e) for e in entities]
+    return [s for e in entities if (s := _entity_to_update_status(e)) is not None]
 
 
 class HARestClient:  # pragma: no cover

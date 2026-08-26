@@ -175,4 +175,7 @@ def load_environment_profile(db_path: str) -> Optional[HAEnvironmentProfile]:
         return None
     data = json.loads(row[0])
     known = {f.name for f in dataclasses.fields(HAEnvironmentProfile)}
+    unknown = set(data) - known
+    if unknown:
+        log.warning("ha_profile_schema_drift", unknown_fields=sorted(unknown))
     return HAEnvironmentProfile(**{k: v for k, v in data.items() if k in known})
