@@ -69,6 +69,7 @@ class FakeKnowledgeStore:
         top_k: int,
         collections: Optional[list[str]] = None,
         where: Optional[dict] = None,
+        min_score: float = 0.0,
     ) -> list[KnowledgeChunk]:
         target_cols = collections or list(self._docs.keys())
         results: list[KnowledgeChunk] = []
@@ -88,7 +89,8 @@ class FakeKnowledgeStore:
                             metadata=meta,
                         )
                     )
-        return results[:top_k]
+        filtered = [c for c in results if c.score >= min_score]
+        return filtered[:top_k]
 
     def prune(self, collection: str, keep_ids: set[str]) -> int:
         if collection not in self._docs:
@@ -135,6 +137,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
         top_k: int,
         collections: Optional[list[str]] = None,
         where: Optional[dict] = None,
+        min_score: float = 0.0,
     ) -> list[KnowledgeChunk]:
         target_cols = collections or list(COLLECTIONS)
         results: list[KnowledgeChunk] = []
@@ -159,7 +162,8 @@ class ChromaKnowledgeStore:  # pragma: no cover
                     )
                 )
         results.sort(key=lambda c: c.score, reverse=True)
-        return results[:top_k]
+        filtered = [c for c in results if c.score >= min_score]
+        return filtered[:top_k]
 
     def prune(self, collection: str, keep_ids: set[str]) -> int:
         if collection not in self._cols:
