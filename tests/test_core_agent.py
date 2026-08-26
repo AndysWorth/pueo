@@ -9607,7 +9607,7 @@ class TestToolExecutor:
         from utils.agent.tool_registry import ToolCall
 
         class _RaisingStore(FakeKnowledgeStore):
-            def query(self, query_text, top_k, collections=None):
+            def query(self, query_text, top_k, collections=None, min_score=0.0, **_kw):
                 raise RuntimeError("store exploded")
 
         executor = ToolExecutor(
