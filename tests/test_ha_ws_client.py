@@ -132,72 +132,73 @@ class TestGetLovelaceConfigNotFound:
 
 
 # ---------------------------------------------------------------------------
-# get_config_entries — unknown_command falls back to legacy command
+# get_config_entries — tries config_entries/get, then two legacy fallbacks
 # ---------------------------------------------------------------------------
 
+_UNKNOWN_CMD = {
+    "type": "result",
+    "success": False,
+    "error": {"code": "unknown_command", "message": "Unknown command."},
+}
 
-class TestGetConfigEntriesLegacyFallback:
-    def test_unknown_command_falls_back_to_legacy(self, monkeypatch):
-        """On unknown_command, retry with config_entries/list and return entries."""
+
+class TestGetConfigEntriesCommandFallback:
+    def test_modern_command_succeeds(self, monkeypatch):
+        """config_entries/get (HA 2026.x) returns entries on first try."""
         entries = [{"entry_id": "abc", "domain": "zha", "state": "loaded"}]
         ws = _MockWs(
             [
-                # First call: modern command returns unknown_command
-                {
-                    "id": 1,
-                    "type": "result",
-                    "success": False,
-                    "error": {
-                        "code": "unknown_command",
-                        "message": "Unknown command.",
-                    },
-                },
-                # Second call: legacy command succeeds
-                {
-                    "id": 2,
-                    "type": "result",
-                    "success": True,
-                    "result": entries,
-                },
+                {**_UNKNOWN_CMD, "id": 1},
+                {"id": 1, "type": "result", "success": True, "result": entries},
+            ]
+        )
+        # Override: first msg succeeds immediately
+        ws = _MockWs([{"id": 1, "type": "result", "success": True, "result": entries}])
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.get_config_entries())
+        assert result == entries
+        cmds = [json.loads(s) for s in ws._sent]
+        assert cmds[0]["type"] == "config_entries/get"
+        assert len(cmds) == 1
+
+    def test_falls_back_through_all_three_commands(self, monkeypatch):
+        """All three commands tried in order; succeeds on the third."""
+        entries = [{"entry_id": "x", "domain": "mqtt", "state": "loaded"}]
+        ws = _MockWs(
+            [
+                {**_UNKNOWN_CMD, "id": 1},
+                {**_UNKNOWN_CMD, "id": 2},
+                {"id": 3, "type": "result", "success": True, "result": entries},
             ]
         )
         _patch_connect(monkeypatch, ws)
         client = _make_client()
         result = asyncio.run(client.get_config_entries())
         assert result == entries
-        # Confirm both commands were sent
         cmds = [json.loads(s) for s in ws._sent]
-        assert any(c.get("type") == "config/config_entries/all" for c in cmds)
-        assert any(c.get("type") == "config_entries/list" for c in cmds)
+        assert [c["type"] for c in cmds] == [
+            "config_entries/get",
+            "config/config_entries/all",
+            "config_entries/list",
+        ]
 
-    def test_legacy_fallback_also_fails_raises(self, monkeypatch):
-        """If both modern and legacy commands fail, RuntimeError is raised."""
+    def test_all_commands_unknown_raises(self, monkeypatch):
+        """If all three commands return unknown_command, RuntimeError is raised."""
         ws = _MockWs(
             [
-                {
-                    "id": 1,
-                    "type": "result",
-                    "success": False,
-                    "error": {"code": "unknown_command", "message": "Unknown command."},
-                },
-                {
-                    "id": 2,
-                    "type": "result",
-                    "success": False,
-                    "error": {
-                        "code": "unknown_error",
-                        "message": "Something went wrong.",
-                    },
-                },
+                {**_UNKNOWN_CMD, "id": 1},
+                {**_UNKNOWN_CMD, "id": 2},
+                {**_UNKNOWN_CMD, "id": 3},
             ]
         )
         _patch_connect(monkeypatch, ws)
         client = _make_client()
-        with pytest.raises(RuntimeError, match="Config entries request failed"):
+        with pytest.raises(RuntimeError, match="no supported WebSocket command found"):
             asyncio.run(client.get_config_entries())
 
     def test_non_unknown_command_error_raises_immediately(self, monkeypatch):
-        """Errors other than unknown_command raise without attempting the legacy command."""
+        """Errors other than unknown_command raise without trying the next command."""
         ws = _MockWs(
             [
                 {
@@ -212,11 +213,10 @@ class TestGetConfigEntriesLegacyFallback:
         client = _make_client()
         with pytest.raises(RuntimeError, match="Config entries request failed"):
             asyncio.run(client.get_config_entries())
-        # Only one message sent (no fallback attempted)
         assert len(ws._sent) == 1
 
     def test_success_filters_to_loaded_entries(self, monkeypatch):
-        """Happy-path: only entries with state=loaded are returned."""
+        """Only entries with state=loaded are returned."""
         ws = _MockWs(
             [
                 {
@@ -235,3 +235,19 @@ class TestGetConfigEntriesLegacyFallback:
         result = asyncio.run(client.get_config_entries())
         assert len(result) == 1
         assert result[0]["entry_id"] == "a"
+
+    def test_second_command_succeeds(self, monkeypatch):
+        """config/config_entries/all (HA 2022–2025) works on second try."""
+        entries = [{"entry_id": "y", "state": "loaded"}]
+        ws = _MockWs(
+            [
+                {**_UNKNOWN_CMD, "id": 1},
+                {"id": 2, "type": "result", "success": True, "result": entries},
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.get_config_entries())
+        assert result == entries
+        cmds = [json.loads(s) for s in ws._sent]
+        assert cmds[1]["type"] == "config/config_entries/all"
