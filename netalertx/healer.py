@@ -34,7 +34,11 @@ if TYPE_CHECKING:
     from netalertx.api_client import NetAlertXAPIClient
     from netalertx.config_validator import ConfigIssue
     from netalertx.diagnosis import NetAlertXDiagnostic
-    from interfaces import LLMClientProtocol, SSHClientProtocol
+    from interfaces import (
+        KnowledgeStoreClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import NotifierProtocol
 
@@ -95,6 +99,7 @@ class NetAlertXHealer:
         notifier: "NotifierProtocol",
         container_name: str = NETALERTX_LOG_CONTAINER_NAME,
         db_path: str = DB_PATH,
+        knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     ) -> None:
         self._gate = gate
         self._ssh = ssh_client
@@ -103,6 +108,7 @@ class NetAlertXHealer:
         self._notifier = notifier
         self._container = container_name
         self._db_path = db_path
+        self._knowledge_store = knowledge_store
 
     # ------------------------------------------------------------------
     # Version tracking
@@ -198,6 +204,7 @@ class NetAlertXHealer:
             model=_config.OLLAMA_MODEL,
             trigger="netalertx",
             db_path=self._db_path,
+            knowledge_store=self._knowledge_store,
         )
 
         initial_context = (

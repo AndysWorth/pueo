@@ -797,6 +797,7 @@ async def main(
                     ha_ssh_client=_ssh,
                     notifier=_notifier,
                     incident_id=nid,
+                    knowledge_store=_knowledge_store,
                 )
             except BillingCapError as exc:
                 log.error("cloud_escalation_billing_cap", error=str(exc))

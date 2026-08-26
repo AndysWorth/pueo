@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
+    from interfaces import KnowledgeStoreClientProtocol
     from utils.agent.tool_registry import AgentLoopResult, ToolRegistry
 
 log = get_logger("cloud_escalation")
@@ -25,6 +26,7 @@ async def run_cloud_escalation(
     notifier: Any,
     incident_id: str,
     timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> "AgentLoopResult":
     """Run AgentLoop with ClaudeAPIClient. Raises BillingCapError if caps exceeded."""
     from utils.agent.agent_loop import AgentLoop
@@ -57,6 +59,7 @@ async def run_cloud_escalation(
         db_path=DB_PATH,
         escalated=True,
         timeline_callback=timeline_callback,
+        knowledge_store=knowledge_store,
     )
 
     if not initial_context:
