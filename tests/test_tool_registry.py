@@ -152,3 +152,31 @@ class TestRegistryMembership:
         assert "field" in props
         assert props["field"].get("type") == "string"
         assert "enum" in props["field"]
+
+    def test_search_integrations_in_all_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_code_proposal_registry,
+            build_ha_tool_registry,
+            build_netalertx_tool_registry,
+        )
+
+        for registry_fn in (
+            build_ha_tool_registry,
+            build_netalertx_tool_registry,
+            build_chat_tool_registry,
+            build_code_proposal_registry,
+        ):
+            reg = registry_fn()
+            assert "search_integrations" in reg, (
+                f"search_integrations missing from {registry_fn.__name__}"
+            )
+
+    def test_search_integrations_schema_has_query_param(self):
+        from utils.agent.tool_registry import SEARCH_INTEGRATIONS
+
+        props = SEARCH_INTEGRATIONS.parameters.get("properties", {})
+        assert "query" in props
+        assert props["query"].get("type") == "string"
+        required = SEARCH_INTEGRATIONS.parameters.get("required", [])
+        assert "query" in required
