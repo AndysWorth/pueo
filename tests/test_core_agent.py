@@ -617,7 +617,8 @@ class TestHAEnvironmentProfile:
             },
             command_results={
                 "ha core info": (0, "version: 2026.8.0\narch: aarch64\n", ""),
-                "ha os info": (0, "version: 18.2\nsupervisor: 2024.11.0\n", ""),
+                "ha os info": (0, "version: 18.2\n", ""),
+                "ha supervisor info": (0, "version: 2024.11.0\n", ""),
             },
         )
         ws = FakeHAWebSocketClient(

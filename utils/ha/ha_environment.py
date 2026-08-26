@@ -13,8 +13,11 @@ from typing import TYPE_CHECKING, Callable, Optional
 if TYPE_CHECKING:
     from interfaces import HAWebSocketClientProtocol, SSHClientProtocol
 
+from utils.core.logging import get_logger
+
+log = get_logger("ha_environment")
+
 _VERSION_RE = re.compile(r"version:\s*(\S+)")
-_SUPERVISOR_RE = re.compile(r"supervisor:\s*(\S+)")
 
 
 @dataclass
@@ -27,6 +30,7 @@ class HAEnvironmentProfile:
     config_yaml_top_keys: list[str] = field(default_factory=list)
     config_entries: list[dict] = field(default_factory=list)
     last_updated: float = 0.0
+    fetch_errors: dict = field(default_factory=dict)
 
 
 async def build_environment_profile(
@@ -60,33 +64,46 @@ async def build_environment_profile(
         m = _VERSION_RE.search(stdout)
         if m:
             profile.ha_version = m.group(1)
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="ha_version", exc=str(e))
+        profile.fetch_errors["ha_version"] = str(e)
 
-    # 2. os_version + supervisor_version from `ha os info`
+    # 2. os_version from `ha os info`
     try:
         _, stdout, _ = await ssh_client.run("ha os info")
         m = _VERSION_RE.search(stdout)
         if m:
             profile.os_version = m.group(1)
-        m = _SUPERVISOR_RE.search(stdout)
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="os_version", exc=str(e))
+        profile.fetch_errors["os_version"] = str(e)
+
+    # 2b. supervisor_version from `ha supervisor info` (not present in `ha os info` output)
+    try:
+        _, stdout, _ = await ssh_client.run("ha supervisor info")
+        m = _VERSION_RE.search(stdout)
         if m:
             profile.supervisor_version = m.group(1)
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="supervisor_version", exc=str(e))
+        profile.fetch_errors["supervisor_version"] = str(e)
 
     # 3. installed_integrations via REST /api/config
     try:
         profile.installed_integrations = _discover_integrations(ha_url, ha_token)
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning(
+            "ha_profile_field_failed", field="installed_integrations", exc=str(e)
+        )
+        profile.fetch_errors["installed_integrations"] = str(e)
 
     # 4. hacs_integrations — extract slugs from (slug, repo) pairs
     try:
         pairs = _discover_hacs(ha_url, ha_token)
         profile.hacs_integrations = [slug for slug, _ in pairs]
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="hacs_integrations", exc=str(e))
+        profile.fetch_errors["hacs_integrations"] = str(e)
 
     # 5. config_yaml_top_keys from remote configuration.yaml
     try:
@@ -96,14 +113,16 @@ async def build_environment_profile(
         doc = yaml.safe_load(content)
         if isinstance(doc, dict):
             profile.config_yaml_top_keys = list(doc.keys())
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="config_yaml_top_keys", exc=str(e))
+        profile.fetch_errors["config_yaml_top_keys"] = str(e)
 
     # 6. config_entries via WebSocket config/config_entries/all
     try:
         profile.config_entries = await ws_client.get_config_entries()
-    except Exception:  # nosec B110
-        pass
+    except Exception as e:  # nosec B110
+        log.warning("ha_profile_field_failed", field="config_entries", exc=str(e))
+        profile.fetch_errors["config_entries"] = str(e)
 
     return profile
 
@@ -131,4 +150,5 @@ def load_environment_profile(db_path: str) -> Optional[HAEnvironmentProfile]:
     if not row:
         return None
     data = json.loads(row[0])
-    return HAEnvironmentProfile(**data)
+    known = {f.name for f in dataclasses.fields(HAEnvironmentProfile)}
+    return HAEnvironmentProfile(**{k: v for k, v in data.items() if k in known})

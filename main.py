@@ -446,7 +446,9 @@ async def supervisor_main(config_path: Path) -> None:
                     _shared_executor.set_ha_profile(_p)
                     save_environment_profile(_p, cfg.DB_PATH)
                 except Exception as exc:  # pragma: no cover  # nosec B110
-                    pass
+                    from utils.core.logging import get_logger as _gl
+
+                    _gl("main").warning("ha_profile_refresh_failed", exc=str(exc))
                 await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
 
         supervisor.start("profile_refresh", _profile_refresh_loop)
