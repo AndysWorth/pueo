@@ -825,6 +825,9 @@ async def poll_for_notifications(
 
         for notif in notifications:
             nid: str = notif.get("notification_id", "")
+            if not nid:
+                log.warning("notification_id_missing", notif_keys=list(notif.keys()))
+                continue
             title: Optional[str] = notif.get("title")
             message: str = notif.get("message", "")
             ha_created_at: Optional[float] = None
@@ -835,7 +838,9 @@ async def poll_for_notifications(
                         created_at_str
                     ).timestamp()
                 except Exception:  # nosec B110
-                    pass
+                    log.warning(
+                        "notification_created_at_parse_failed", raw=created_at_str
+                    )
 
             category, severity = classify_notification(nid)
             record_notification_seen(

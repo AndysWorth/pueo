@@ -718,7 +718,8 @@ def _parse_backup_list(output: str) -> list[dict]:
             for b in backups
             if "slug" in b
         ]
-    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+        log.error("backup_list_parse_failed", error=str(exc))
         return []
 
 
