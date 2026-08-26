@@ -180,3 +180,31 @@ class TestRegistryMembership:
         assert props["query"].get("type") == "string"
         required = SEARCH_INTEGRATIONS.parameters.get("required", [])
         assert "query" in required
+
+    def test_search_ha_docs_in_all_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_code_proposal_registry,
+            build_ha_tool_registry,
+            build_netalertx_tool_registry,
+        )
+
+        for registry_fn in (
+            build_ha_tool_registry,
+            build_netalertx_tool_registry,
+            build_chat_tool_registry,
+            build_code_proposal_registry,
+        ):
+            reg = registry_fn()
+            assert (
+                "search_ha_docs" in reg
+            ), f"search_ha_docs missing from {registry_fn.__name__}"
+
+    def test_search_ha_docs_schema_has_query_param(self):
+        from utils.agent.tool_registry import SEARCH_HA_DOCS
+
+        props = SEARCH_HA_DOCS.parameters.get("properties", {})
+        assert "query" in props
+        assert props["query"].get("type") == "string"
+        required = SEARCH_HA_DOCS.parameters.get("required", [])
+        assert "query" in required

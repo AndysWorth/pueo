@@ -300,6 +300,82 @@ class TestFetchUrl:
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
 
 
+class TestSearchHaDocs:
+    """Tests for ToolExecutor._search_ha_docs."""
+
+    def _run(self, query: str, *, allow_wan: bool = True, response_body: bytes = b""):
+        with patch(
+            "utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
+        ):
+            executor = _make_executor()
+            if response_body:
+                with patch(
+                    "urllib.request.urlopen",
+                    return_value=_FakeSyncResp(response_body),
+                ):
+                    return asyncio.run(executor._search_ha_docs(query))
+            return asyncio.run(executor._search_ha_docs(query))
+
+    def _algolia_response(self, hits: list[dict]) -> bytes:
+        import json
+
+        return json.dumps({"hits": hits}).encode()
+
+    def test_disallowed_when_config_false(self):
+        result = self._run("Lovelace", allow_wan=False)
+        assert result.success is False
+        assert "ALLOW_DIAGNOSTIC_WAN" in result.error
+
+    def test_no_hits_returns_not_found(self):
+        body = self._algolia_response([])
+        result = self._run("xyzzy", response_body=body)
+        assert result.success is True
+        assert "No results" in result.output
+
+    def test_returns_titles_and_urls(self):
+        body = self._algolia_response(
+            [
+                {
+                    "hierarchy": {"lvl1": "Lovelace"},
+                    "url": "https://www.home-assistant.io/docs/lovelace/",
+                    "content": "Lovelace is the dashboard UI for Home Assistant.",
+                },
+            ]
+        )
+        result = self._run("Lovelace dashboard", response_body=body)
+        assert result.success is True
+        assert "Lovelace" in result.output
+        assert "home-assistant.io" in result.output
+
+    def test_truncates_to_2000_chars(self):
+        long_content = "x" * 5000
+        body = self._algolia_response(
+            [
+                {
+                    "hierarchy": {"lvl1": "Test"},
+                    "url": "https://www.home-assistant.io/test",
+                    "content": long_content,
+                },
+            ]
+        )
+        result = self._run("test", response_body=body)
+        assert result.success is True
+        assert len(result.output) <= 2000
+
+    def test_network_error_returns_failure(self):
+        with (
+            patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
+            patch(
+                "urllib.request.urlopen",
+                side_effect=OSError("connection refused"),
+            ),
+        ):
+            executor = _make_executor()
+            result = asyncio.run(executor._search_ha_docs("test"))
+        assert result.success is False
+        assert "connection refused" in result.error
+
+
 class TestInvestigateDevice:
     """Tests for ToolExecutor._investigate_device."""
 
