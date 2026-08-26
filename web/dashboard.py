@@ -2872,6 +2872,7 @@ async def _run_chat_loop(
             pre_step_callback=on_pre_step,
             knowledge_store=getattr(executor, "_knowledge_store", None),
             context_inject_callback=_store_pre_inject,
+            db_path=DB_PATH,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:
