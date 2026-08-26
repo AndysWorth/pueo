@@ -76,6 +76,7 @@ class KnowledgeStoreClientProtocol(Protocol):
         top_k: int,
         collections: list[str] | None = None,
         where: dict | None = None,
+        min_score: float = 0.0,
     ) -> list[Any]: ...
 
     def prune(self, collection: str, keep_ids: set[str]) -> int: ...
