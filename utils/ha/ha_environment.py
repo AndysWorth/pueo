@@ -106,13 +106,12 @@ async def build_environment_profile(
         profile.fetch_errors["hacs_integrations"] = str(e)
 
     # 5. config_yaml_top_keys from remote configuration.yaml
+    # Use regex instead of yaml.safe_load: HA config files use !include tags that
+    # yaml.safe_load does not support, and we only need top-level key names.
     try:
-        import yaml  # type: ignore[import-untyped]
-
         content = await ssh_client.read_file(config_remote_path)
-        doc = yaml.safe_load(content)
-        if isinstance(doc, dict):
-            profile.config_yaml_top_keys = list(doc.keys())
+        keys = re.findall(r"^([a-zA-Z_]\w*)\s*:", content, re.MULTILINE)
+        profile.config_yaml_top_keys = list(dict.fromkeys(keys))
     except Exception as e:  # nosec B110
         log.warning("ha_profile_field_failed", field="config_yaml_top_keys", exc=str(e))
         profile.fetch_errors["config_yaml_top_keys"] = str(e)
