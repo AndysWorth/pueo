@@ -237,6 +237,8 @@ class ToolExecutor:
                 return await self._recall(args.get("query", ""))
             if name == "get_ha_profile":
                 return await self._get_ha_profile(field=args.get("field"))
+            if name == "search_integrations":
+                return await self._search_integrations(args.get("query", ""))
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "fetch_ha_docs":
@@ -595,6 +597,41 @@ class ToolExecutor:
             tool_name="get_ha_profile",
             success=True,
             output=json.dumps(value, indent=2),
+        )
+
+    async def _search_integrations(self, query: str) -> ToolResult:
+        if self._ha_profile is None:
+            return ToolResult(
+                tool_name="search_integrations",
+                success=True,
+                output="HA environment profile not yet available. Restart the supervisor to build it.",
+            )
+        q = query.lower()
+        installed = [
+            name
+            for name in (self._ha_profile.installed_integrations or [])
+            if q in name.lower()
+        ]
+        hacs = [
+            name
+            for name in (self._ha_profile.hacs_integrations or [])
+            if q in name.lower()
+        ]
+        if not installed and not hacs:
+            return ToolResult(
+                tool_name="search_integrations",
+                success=True,
+                output=f"No matching integrations found for {query!r}.",
+            )
+        lines = []
+        if installed:
+            lines.append(f"Installed ({len(installed)}): {', '.join(installed)}")
+        if hacs:
+            lines.append(f"HACS ({len(hacs)}): {', '.join(hacs)}")
+        return ToolResult(
+            tool_name="search_integrations",
+            success=True,
+            output="\n".join(lines),
         )
 
     async def _get_disk_usage(self) -> ToolResult:

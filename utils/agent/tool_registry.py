@@ -392,6 +392,25 @@ GET_HA_PROFILE = ToolDefinition(
     },
 )
 
+SEARCH_INTEGRATIONS = ToolDefinition(
+    name="search_integrations",
+    description=(
+        "Search installed integrations and HACS add-ons by name (partial, case-insensitive match). "
+        "Use this instead of get_ha_profile when you need to check whether a specific "
+        "integration is present."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Partial name to search for (case-insensitive).",
+            }
+        },
+        "required": ["query"],
+    },
+)
+
 GET_DISK_USAGE = ToolDefinition(
     name="get_disk_usage",
     description=(
@@ -988,6 +1007,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         SEARCH_LOG,
         LIST_LOG_SOURCES,
         GET_HA_PROFILE,
+        SEARCH_INTEGRATIONS,
     ):
         reg.register(tool)
     return reg
@@ -1006,6 +1026,7 @@ def build_code_proposal_registry() -> ToolRegistry:
         PROPOSE_PATCH,
         SANDBOX_CODE,
         OPEN_PR,
+        SEARCH_INTEGRATIONS,
         FINISH_REPAIR,
     ):
         reg.register(tool)
@@ -1030,6 +1051,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
+        SEARCH_INTEGRATIONS,
     ):
         reg.register(tool)
     return reg
@@ -1069,6 +1091,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
+        SEARCH_INTEGRATIONS,
         FINISH_CHAT,
     ):
         reg.register(tool)
