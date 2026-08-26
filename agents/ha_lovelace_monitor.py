@@ -249,7 +249,8 @@ async def poll_for_dashboard_entity_issues(
             # Enumerate all named dashboards; the default (url_path=None) is always tried.
             try:
                 named = await _ws.get_lovelace_dashboards()
-            except Exception:
+            except Exception as exc:
+                log.warning("lovelace_dashboard_list_failed", error=str(exc))
                 named = []
 
             url_paths: list[Optional[str]] = [None] + [  # type: ignore[assignment]
@@ -264,8 +265,12 @@ async def poll_for_dashboard_entity_issues(
                     for ref in _extract_entity_refs(cfg):
                         if ref.entity_id not in merged_refs:
                             merged_refs[ref.entity_id] = ref
-                except Exception:  # nosec B110
-                    pass  # dashboard may not exist (e.g. no default dashboard)
+                except Exception as exc:  # nosec B110
+                    log.warning(
+                        "lovelace_dashboard_config_failed",
+                        url_path=url_path,
+                        error=str(exc),
+                    )
 
             entity_refs = list(merged_refs.values())
             registry = await _ws.get_entity_registry()

@@ -254,7 +254,8 @@ class AgentLoop:
             if summary == "HA environment profile not yet available.":
                 return initial_context
             return f"{summary}\n\n---\n{initial_context}"
-        except Exception:
+        except Exception as exc:
+            log.warning("ha_profile_injection_failed", error=str(exc))
             return initial_context
 
     def _pre_inject_knowledge(self, initial_context: str) -> str:
@@ -270,7 +271,8 @@ class AgentLoop:
                 query_text=initial_context[:500],
                 top_k=3,
             )
-        except Exception:
+        except Exception as exc:
+            log.warning("knowledge_injection_failed", error=str(exc))
             return initial_context
         if not chunks:
             return initial_context
@@ -294,8 +296,8 @@ class AgentLoop:
             from utils.llm.llm_factory import _provider_name
 
             provider = _provider_name()
-        except Exception:  # nosec B110
-            pass
+        except Exception as exc:  # nosec B110
+            log.warning("llm_provider_detection_failed", error=str(exc))
         timeout_ms = expected_timeout_ms(
             self._db_path or "",
             model=self._model,
