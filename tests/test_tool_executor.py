@@ -300,6 +300,82 @@ class TestFetchUrl:
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
 
 
+class TestSearchHaDocs:
+    """Tests for ToolExecutor._search_ha_docs."""
+
+    def _run(self, query: str, *, allow_wan: bool = True, response_body: bytes = b""):
+        with patch(
+            "utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", allow_wan
+        ):
+            executor = _make_executor()
+            if response_body:
+                with patch(
+                    "urllib.request.urlopen",
+                    return_value=_FakeSyncResp(response_body),
+                ):
+                    return asyncio.run(executor._search_ha_docs(query))
+            return asyncio.run(executor._search_ha_docs(query))
+
+    def _algolia_response(self, hits: list[dict]) -> bytes:
+        import json
+
+        return json.dumps({"hits": hits}).encode()
+
+    def test_disallowed_when_config_false(self):
+        result = self._run("Lovelace", allow_wan=False)
+        assert result.success is False
+        assert "ALLOW_DIAGNOSTIC_WAN" in result.error
+
+    def test_no_hits_returns_not_found(self):
+        body = self._algolia_response([])
+        result = self._run("xyzzy", response_body=body)
+        assert result.success is True
+        assert "No results" in result.output
+
+    def test_returns_titles_and_urls(self):
+        body = self._algolia_response(
+            [
+                {
+                    "hierarchy": {"lvl1": "Lovelace"},
+                    "url": "https://www.home-assistant.io/docs/lovelace/",
+                    "content": "Lovelace is the dashboard UI for Home Assistant.",
+                },
+            ]
+        )
+        result = self._run("Lovelace dashboard", response_body=body)
+        assert result.success is True
+        assert "Lovelace" in result.output
+        assert "home-assistant.io" in result.output
+
+    def test_truncates_to_2000_chars(self):
+        long_content = "x" * 5000
+        body = self._algolia_response(
+            [
+                {
+                    "hierarchy": {"lvl1": "Test"},
+                    "url": "https://www.home-assistant.io/test",
+                    "content": long_content,
+                },
+            ]
+        )
+        result = self._run("test", response_body=body)
+        assert result.success is True
+        assert len(result.output) <= 2000
+
+    def test_network_error_returns_failure(self):
+        with (
+            patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
+            patch(
+                "urllib.request.urlopen",
+                side_effect=OSError("connection refused"),
+            ),
+        ):
+            executor = _make_executor()
+            result = asyncio.run(executor._search_ha_docs("test"))
+        assert result.success is False
+        assert "connection refused" in result.error
+
+
 class TestInvestigateDevice:
     """Tests for ToolExecutor._investigate_device."""
 
@@ -1166,3 +1242,68 @@ class TestGetHaProfile:
         executor = self._make_executor()
         summary = executor.get_ha_profile_summary()
         assert "not yet available" in summary
+
+
+class TestSearchIntegrations:
+    """Tests for ToolExecutor._search_integrations."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def _make_profile(self, installed=None, hacs=None):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            config_yaml_top_keys=[],
+            installed_integrations=installed or ["zha", "mqtt", "esphome"],
+            hacs_integrations=hacs or ["my_custom_card"],
+            config_entries=[],
+        )
+
+    def test_no_profile_returns_not_available(self):
+        executor = self._make_executor()
+        result = asyncio.run(executor._search_integrations("zha"))
+        assert result.success is True
+        assert "not yet available" in result.output
+
+    def test_match_in_installed(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._search_integrations("esp"))
+        assert result.success is True
+        assert "esphome" in result.output
+        assert "Installed" in result.output
+
+    def test_match_in_hacs(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._search_integrations("custom"))
+        assert result.success is True
+        assert "my_custom_card" in result.output
+        assert "HACS" in result.output
+
+    def test_no_match_returns_not_found(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._search_integrations("dashy"))
+        assert result.success is True
+        assert "No matching" in result.output
+
+    def test_case_insensitive_match(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile(installed=["ZHA"]))
+        result = asyncio.run(executor._search_integrations("zha"))
+        assert result.success is True
+        assert "ZHA" in result.output

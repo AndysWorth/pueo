@@ -237,6 +237,8 @@ class ToolExecutor:
                 return await self._recall(args.get("query", ""))
             if name == "get_ha_profile":
                 return await self._get_ha_profile(field=args.get("field"))
+            if name == "search_integrations":
+                return await self._search_integrations(args.get("query", ""))
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "fetch_ha_docs":
@@ -245,6 +247,8 @@ class ToolExecutor:
                 )
             if name == "fetch_url":
                 return await self._fetch_url(args.get("url", ""))
+            if name == "search_ha_docs":
+                return await self._search_ha_docs(args.get("query", ""))
             if name == "read_source":
                 return await self._read_source(args.get("path", ""))
             if name == "propose_patch":
@@ -597,6 +601,41 @@ class ToolExecutor:
             output=json.dumps(value, indent=2),
         )
 
+    async def _search_integrations(self, query: str) -> ToolResult:
+        if self._ha_profile is None:
+            return ToolResult(
+                tool_name="search_integrations",
+                success=True,
+                output="HA environment profile not yet available. Restart the supervisor to build it.",
+            )
+        q = query.lower()
+        installed = [
+            name
+            for name in (self._ha_profile.installed_integrations or [])
+            if q in name.lower()
+        ]
+        hacs = [
+            name
+            for name in (self._ha_profile.hacs_integrations or [])
+            if q in name.lower()
+        ]
+        if not installed and not hacs:
+            return ToolResult(
+                tool_name="search_integrations",
+                success=True,
+                output=f"No matching integrations found for {query!r}.",
+            )
+        lines = []
+        if installed:
+            lines.append(f"Installed ({len(installed)}): {', '.join(installed)}")
+        if hacs:
+            lines.append(f"HACS ({len(hacs)}): {', '.join(hacs)}")
+        return ToolResult(
+            tool_name="search_integrations",
+            success=True,
+            output="\n".join(lines),
+        )
+
     async def _get_disk_usage(self) -> ToolResult:
         """Return disk breakdown — use cached if fresh enough, else fetch via SSH."""
         import time
@@ -798,6 +837,91 @@ class ToolExecutor:
 
         text = raw.decode("utf-8", errors="replace")[:_MAX_FETCH_URL_CHARS]
         return ToolResult(tool_name="fetch_url", success=True, output=text)
+
+    async def _search_ha_docs(self, query: str) -> ToolResult:
+        """Search the HA documentation site via Algolia (WAN-gated)."""
+        import json
+        import urllib.parse
+        import urllib.request
+
+        allow_wan = getattr(_config_mod, "ALLOW_DIAGNOSTIC_WAN", True)
+        if not allow_wan:
+            return ToolResult(
+                tool_name="search_ha_docs",
+                success=False,
+                output="",
+                error="search_ha_docs requires ALLOW_DIAGNOSTIC_WAN=true in config.",
+            )
+
+        # HA docs use Algolia; query the public search-only API key endpoint.
+        algolia_app = "LVNQ19NOSP"
+        algolia_key = "c7cd23ba07a1e3cdda21d29ae0a53e98"
+        algolia_index = "home-assistant"
+        url = (
+            f"https://{algolia_app}-dsn.algolia.net/1/indexes/{algolia_index}/query"
+            f"?x-algolia-application-id={algolia_app}"
+            f"&x-algolia-api-key={algolia_key}"
+        )
+        payload = json.dumps(
+            {
+                "query": query,
+                "hitsPerPage": 5,
+                "attributesToRetrieve": ["hierarchy", "url", "content"],
+                "attributesToHighlight": [],
+            }
+        ).encode()
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "pueo-diagnostic/1.0",
+            },
+            method="POST",
+        )
+        try:
+            raw = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(req, timeout=15).read(),  # nosec B310
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="search_ha_docs",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return ToolResult(
+                tool_name="search_ha_docs",
+                success=False,
+                output="",
+                error=f"Failed to parse search response: {exc}",
+            )
+
+        hits = data.get("hits") or []
+        if not hits:
+            return ToolResult(
+                tool_name="search_ha_docs",
+                success=True,
+                output=f"No results found for {query!r}.",
+            )
+
+        lines: list[str] = []
+        for hit in hits[:5]:
+            hier = hit.get("hierarchy") or {}
+            title = (
+                hier.get("lvl2") or hier.get("lvl1") or hier.get("lvl0") or "HA Docs"
+            )
+            hit_url = hit.get("url", "")
+            snippet = (hit.get("content") or "")[:200].replace("\n", " ")
+            lines.append(f"- {title}\n  URL: {hit_url}\n  {snippet}")
+
+        output = "\n".join(lines)[:2000]
+        return ToolResult(tool_name="search_ha_docs", success=True, output=output)
 
     async def _propose_patch(self, path: str, content: str) -> ToolResult:
         result = self._resolve_repo_path(path)

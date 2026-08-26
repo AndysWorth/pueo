@@ -392,6 +392,25 @@ GET_HA_PROFILE = ToolDefinition(
     },
 )
 
+SEARCH_INTEGRATIONS = ToolDefinition(
+    name="search_integrations",
+    description=(
+        "Search installed integrations and HACS add-ons by name (partial, case-insensitive match). "
+        "Use this instead of get_ha_profile when you need to check whether a specific "
+        "integration is present."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Partial name to search for (case-insensitive).",
+            }
+        },
+        "required": ["query"],
+    },
+)
+
 GET_DISK_USAGE = ToolDefinition(
     name="get_disk_usage",
     description=(
@@ -613,6 +632,27 @@ FETCH_URL = ToolDefinition(
             },
         },
         "required": ["url"],
+    },
+)
+
+SEARCH_HA_DOCS = ToolDefinition(
+    name="search_ha_docs",
+    description=(
+        "Search the Home Assistant documentation site for a question or topic. "
+        "Call this after query_knowledge returns nothing relevant and fetch_ha_docs misses, "
+        "as a last resort before concluding you don't know. "
+        "Returns top 3–5 result titles, URLs, and short excerpts. "
+        "Requires ALLOW_DIAGNOSTIC_WAN=true (default)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language question or topic to search for (e.g. 'Lovelace section card')",
+            },
+        },
+        "required": ["query"],
     },
 )
 
@@ -982,12 +1022,14 @@ def build_ha_tool_registry() -> ToolRegistry:
         READ_SOURCE,
         FETCH_HA_DOCS,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         SAVE_STRATEGY,
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
         GET_HA_PROFILE,
+        SEARCH_INTEGRATIONS,
     ):
         reg.register(tool)
     return reg
@@ -1006,6 +1048,8 @@ def build_code_proposal_registry() -> ToolRegistry:
         PROPOSE_PATCH,
         SANDBOX_CODE,
         OPEN_PR,
+        SEARCH_INTEGRATIONS,
+        SEARCH_HA_DOCS,
         FINISH_REPAIR,
     ):
         reg.register(tool)
@@ -1025,11 +1069,13 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         SAVE_STRATEGY,
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
+        SEARCH_INTEGRATIONS,
     ):
         reg.register(tool)
     return reg
@@ -1062,6 +1108,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         OPEN_PR,
         SWITCH_MODEL,
         FETCH_URL,
+        SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
@@ -1069,6 +1116,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         READ_PUEO_LOG,
         SEARCH_LOG,
         LIST_LOG_SOURCES,
+        SEARCH_INTEGRATIONS,
         FINISH_CHAT,
     ):
         reg.register(tool)
