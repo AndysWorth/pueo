@@ -11,7 +11,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 import config as _config
@@ -449,6 +449,7 @@ async def poll_for_updates(
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     cache_dir: Optional[str] = None,
+    knowledge_store: Optional[Any] = None,
 ) -> None:
     """Periodically checks for available HA updates and fires update approval cards."""
     from .ha_update_manager import (
@@ -563,6 +564,7 @@ async def poll_for_updates(
                                 _integrations,
                                 _llm,
                                 ssh_client=_ha_ssh,
+                                knowledge_store=knowledge_store,
                             )
                             log.info(
                                 "breaking_changes_personalized",

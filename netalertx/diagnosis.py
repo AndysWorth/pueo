@@ -18,7 +18,11 @@ from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
-    from interfaces import LLMClientProtocol, SSHClientProtocol
+    from interfaces import (
+        KnowledgeStoreClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from netalertx.config_validator import ConfigIssue
     from netalertx.health import HealthReport
     from utils.agent.tool_registry import AgentLoopResult
@@ -93,6 +97,7 @@ async def diagnose_health_report(
     config_issues: Optional[list["ConfigIssue"]] = None,
     llm_client: Optional["LLMClientProtocol"] = None,
     ssh_client: Optional["SSHClientProtocol"] = None,
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Return a (NetAlertXDiagnostic, LLMTrace) tuple, or (None, None) if nothing to diagnose.
 
@@ -109,7 +114,9 @@ async def diagnose_health_report(
     context = _build_context(report, all_issues)
 
     if ssh_client is not None:
-        return await _diagnose_with_agent_loop(context, client, model, ssh_client)
+        return await _diagnose_with_agent_loop(
+            context, client, model, ssh_client, knowledge_store
+        )
     return await _diagnose_one_shot(context, client, model)
 
 
@@ -118,6 +125,7 @@ async def _diagnose_with_agent_loop(
     client: "LLMClientProtocol",
     model: str,
     ssh_client: "SSHClientProtocol",
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> tuple[Optional[NetAlertXDiagnostic], Optional[LLMTrace]]:
     """Run an AgentLoop to diagnose NetAlertX health anomalies adaptively."""
     from utils.agent.agent_loop import AgentLoop
@@ -146,6 +154,7 @@ async def _diagnose_with_agent_loop(
         model=model,
         terminal_tool_name="finish_health_diagnosis",
         trigger="health_diagnosis",
+        knowledge_store=knowledge_store,
     )
 
     try:

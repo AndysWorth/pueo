@@ -542,7 +542,12 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Update check loop (only if interval > 0 and token is configured)
     if cfg.HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and cfg.HA_API_TOKEN:
-        supervisor.start("update_check", lambda: poll_for_updates(notifier=notifier))
+        supervisor.start(
+            "update_check",
+            lambda: poll_for_updates(
+                notifier=notifier, knowledge_store=knowledge_store
+            ),
+        )
 
     # Notification polling loop (only if interval > 0 and token is configured)
     if cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:

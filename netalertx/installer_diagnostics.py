@@ -17,7 +17,11 @@ from utils.core.logging import get_logger
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
 
 if TYPE_CHECKING:
-    from interfaces import LLMClientProtocol, SSHClientProtocol
+    from interfaces import (
+        KnowledgeStoreClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from utils.agent.tool_registry import AgentLoopResult
 
 log = get_logger("netalertx.installer_diagnostics")
@@ -146,6 +150,7 @@ async def diagnose_installer_failure(
     ssh_client: "SSHClientProtocol",
     llm_client: Optional["LLMClientProtocol"] = None,
     slug: str = "",
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> tuple[InstallerDiagnostic, LLMTrace, dict[str, str]]:
     """Gather evidence then run an AgentLoop to produce a structured diagnosis.
 
@@ -203,6 +208,7 @@ async def diagnose_installer_failure(
         model=model,
         terminal_tool_name="finish_installer_diagnosis",
         trigger="installer_diagnosis",
+        knowledge_store=knowledge_store,
     )
 
     try:

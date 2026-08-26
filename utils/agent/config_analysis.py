@@ -24,7 +24,11 @@ from utils.core.logging import get_logger
 if TYPE_CHECKING:
     from agents.ha_agent_core import DiagnosticsReport
     from utils.hitl.llm_trace import LLMTrace
-    from interfaces import LLMClientProtocol, SSHClientProtocol
+    from interfaces import (
+        KnowledgeStoreClientProtocol,
+        LLMClientProtocol,
+        SSHClientProtocol,
+    )
     from utils.agent.tool_registry import AgentLoopResult
 
 import config as _config
@@ -38,6 +42,7 @@ async def analyze_config_locally(
     yaml_content: str,
     ssh_client: Optional["SSHClientProtocol"] = None,
     llm_client: Optional["LLMClientProtocol"] = None,
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> tuple["DiagnosticsReport", Optional["LLMTrace"]]:
     """Analyse HA config.yaml for issues.
 
@@ -48,7 +53,9 @@ async def analyze_config_locally(
     scripts that run without SSH).
     """
     if ssh_client is not None:
-        return await _analyze_with_agent_loop(yaml_content, ssh_client, llm_client)
+        return await _analyze_with_agent_loop(
+            yaml_content, ssh_client, llm_client, knowledge_store
+        )
     return await _analyze_one_shot(yaml_content, llm_client)
 
 
@@ -56,6 +63,7 @@ async def _analyze_with_agent_loop(
     yaml_content: str,
     ssh_client: "SSHClientProtocol",
     llm_client: Optional["LLMClientProtocol"],
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> tuple["DiagnosticsReport", Optional["LLMTrace"]]:
     from utils.llm.llm_factory import make_llm_client
     from utils.agent.agent_loop import AgentLoop
@@ -91,6 +99,7 @@ async def _analyze_with_agent_loop(
         tool_registry=registry,
         terminal_tool_name="finish_diagnosis",
         trigger="config_analysis",
+        knowledge_store=knowledge_store,
     )
 
     try:

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from utils.agent.autonomy import AutonomyGate, FakeAutonomyGate
     from utils.ha.ha_environment import HAEnvironmentProfile
     from utils.hitl.notify import NotifierProtocol
+    from interfaces import KnowledgeStoreClientProtocol
 
 log = get_logger("ha_update_manager")
 
@@ -244,6 +245,7 @@ async def personalize_breaking_changes(
     installed_integrations: list[str],
     llm_client: Optional[LLMClientProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> InstanceImpactReport:
     """Second LLM pass: determine which general breaking changes actually affect this install.
 
@@ -279,6 +281,7 @@ async def personalize_breaking_changes(
                 installed_integrations,
                 llm_client,
                 ssh_client,
+                knowledge_store,
             )
         except Exception as exc:
             log.warning("personalize_agent_loop_failed", error=str(exc))
@@ -299,6 +302,7 @@ async def _personalize_with_agent_loop(
     installed_integrations: list[str],
     llm_client: Optional[LLMClientProtocol],
     ssh_client: "SSHClientProtocol",
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> InstanceImpactReport:
     from utils.llm.llm_factory import make_llm_client
     from utils.agent.agent_loop import AgentLoop
@@ -339,6 +343,7 @@ async def _personalize_with_agent_loop(
         tool_registry=registry,
         terminal_tool_name="finish_impact_analysis",
         trigger="impact_analysis",
+        knowledge_store=knowledge_store,
     )
 
     loop_result: AgentLoopResult = await loop.run(initial_message)
