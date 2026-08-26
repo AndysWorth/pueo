@@ -140,3 +140,15 @@ class TestRegistryMembership:
             "finish_impact_analysis",
         ):
             assert name in reg, f"expected {name!r} in impact_analysis registry"
+
+    def test_ha_registry_includes_get_ha_profile(self):
+        reg = build_ha_tool_registry()
+        assert "get_ha_profile" in reg
+
+    def test_get_ha_profile_schema_has_field_param(self):
+        from utils.agent.tool_registry import GET_HA_PROFILE
+
+        props = GET_HA_PROFILE.parameters.get("properties", {})
+        assert "field" in props
+        assert props["field"].get("type") == "string"
+        assert "enum" in props["field"]

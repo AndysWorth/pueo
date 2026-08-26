@@ -1074,3 +1074,95 @@ class TestListLogSources:
         data = json.loads(result.output)
         assert len(data["system_sources"]) == 4
         assert data["app_sources"] == []
+
+
+class TestGetHaProfile:
+    """Tests for ToolExecutor._get_ha_profile and get_ha_profile_summary."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def _make_profile(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            config_yaml_top_keys=["homeassistant", "mqtt"],
+            installed_integrations=["zha", "mqtt", "esphome"],
+            hacs_integrations=["custom_comp"],
+            config_entries=[{"id": "e1"}, {"id": "e2"}],
+        )
+
+    def test_no_profile_returns_not_available(self):
+        executor = self._make_executor()
+        result = asyncio.run(executor._get_ha_profile())
+        assert result.success is True
+        assert "not yet available" in result.output
+
+    def test_no_field_returns_compact_summary(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._get_ha_profile())
+        assert result.success is True
+        assert "3 installed" in result.output
+        assert "zha" not in result.output  # full list must not appear
+
+    def test_field_installed_integrations_returns_full_list(self):
+        import json
+
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._get_ha_profile(field="installed_integrations"))
+        assert result.success is True
+        data = json.loads(result.output)
+        assert "zha" in data
+        assert "esphome" in data
+
+    def test_field_hacs_integrations_returns_full_list(self):
+        import json
+
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._get_ha_profile(field="hacs_integrations"))
+        assert result.success is True
+        assert "custom_comp" in json.loads(result.output)
+
+    def test_field_config_entries_returns_full_list(self):
+        import json
+
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._get_ha_profile(field="config_entries"))
+        assert result.success is True
+        data = json.loads(result.output)
+        assert len(data) == 2
+
+    def test_unknown_field_returns_error(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        result = asyncio.run(executor._get_ha_profile(field="bad_field"))
+        assert result.success is False
+        assert "bad_field" in (result.error or "")
+
+    def test_get_ha_profile_summary_returns_compact(self):
+        executor = self._make_executor()
+        executor.set_ha_profile(self._make_profile())
+        summary = executor.get_ha_profile_summary()
+        assert "3 installed" in summary
+        assert "HA environment" in summary
+
+    def test_get_ha_profile_summary_no_profile(self):
+        executor = self._make_executor()
+        summary = executor.get_ha_profile_summary()
+        assert "not yet available" in summary

@@ -11,6 +11,7 @@ import pytest
 from utils.ha.ha_environment import (
     HAEnvironmentProfile,
     build_environment_profile,
+    format_profile_summary,
     load_environment_profile,
     save_environment_profile,
 )
@@ -274,3 +275,45 @@ class TestLoadEnvironmentProfile:
         loaded = load_environment_profile(db)
         assert loaded is not None
         assert loaded.fetch_errors == {"ha_version": "timeout"}
+
+
+class TestFormatProfileSummary:
+    def _make_profile(self) -> HAEnvironmentProfile:
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            config_yaml_top_keys=["homeassistant", "mqtt", "recorder"],
+            installed_integrations=["zha", "mqtt", "esphome", "cast"],
+            hacs_integrations=["hacs_custom"],
+            config_entries=[{"id": str(i)} for i in range(5)],
+        )
+
+    def test_counts_not_full_lists(self):
+        summary = format_profile_summary(self._make_profile())
+        assert "4 installed" in summary
+        assert "1 via HACS" in summary
+        assert "5" in summary  # config_entries count
+        # full list values must not appear
+        assert "esphome" not in summary
+        assert "hacs_custom" not in summary
+
+    def test_versions_shown(self):
+        summary = format_profile_summary(self._make_profile())
+        assert "2026.8.2" in summary
+        assert "13.2" in summary
+        assert "2026.08.0" in summary
+
+    def test_config_keys_shown(self):
+        summary = format_profile_summary(self._make_profile())
+        assert "homeassistant" in summary
+        assert "mqtt" in summary
+
+    def test_hint_line_present(self):
+        summary = format_profile_summary(self._make_profile())
+        assert 'field="installed_integrations"' in summary
+
+    def test_none_returns_not_available(self):
+        assert (
+            format_profile_summary(None) == "HA environment profile not yet available."
+        )

@@ -127,6 +127,30 @@ async def build_environment_profile(
     return profile
 
 
+def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
+    """Return a compact one-block summary of the HA environment profile.
+
+    Large lists (installed_integrations, hacs_integrations, config_entries) are
+    shown as counts only. A hint line tells the LLM how to retrieve full lists.
+    """
+    if profile is None:
+        return "HA environment profile not yet available."
+    keys_str = (
+        ", ".join(profile.config_yaml_top_keys)
+        if profile.config_yaml_top_keys
+        else "(none)"
+    )
+    lines = [
+        "HA environment:",
+        f"  Core: {profile.ha_version or '?'}  |  OS: {profile.os_version or '?'}  |  Supervisor: {profile.supervisor_version or '?'}",
+        f"  Config keys: {keys_str}",
+        f"  Integrations: {len(profile.installed_integrations)} installed  |  {len(profile.hacs_integrations)} via HACS",
+        f"  Config entries: {len(profile.config_entries)}",
+        '  (use get_ha_profile field="installed_integrations"|"hacs_integrations"|"config_entries" for full lists)',
+    ]
+    return "\n".join(lines)
+
+
 def save_environment_profile(profile: HAEnvironmentProfile, db_path: str) -> None:
     """Persist the profile as a single JSON row in SQLite (INSERT OR REPLACE)."""
     profile_json = json.dumps(dataclasses.asdict(profile))

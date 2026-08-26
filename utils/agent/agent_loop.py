@@ -242,6 +242,21 @@ class AgentLoop:
         )
         return episode.id
 
+    def _pre_inject_ha_profile(self, initial_context: str) -> str:
+        """Prepend a compact HA profile block to the initial context.
+
+        Best-effort — any failure returns the original context unchanged.
+        """
+        try:
+            if self._executor is None:
+                return initial_context
+            summary = self._executor.get_ha_profile_summary()
+            if summary == "HA environment profile not yet available.":
+                return initial_context
+            return f"{summary}\n\n---\n{initial_context}"
+        except Exception:
+            return initial_context
+
     def _pre_inject_knowledge(self, initial_context: str) -> str:
         """Query the knowledge store and prepend results to the initial context.
 
@@ -368,6 +383,8 @@ class AgentLoop:
             the model has proper multi-turn context.
         """
         self._executor.reset()
+
+        initial_context = self._pre_inject_ha_profile(initial_context)
 
         if self._knowledge_store is not None:
             enriched = self._pre_inject_knowledge(initial_context)
