@@ -41,7 +41,8 @@ case "$CMD" in
         # Source user env so the background process inherits secrets like ANTHROPIC_API_KEY.
         # shellcheck disable=SC1091
         [ -f "$HOME/.zshenv" ] && source "$HOME/.zshenv"
-        if grep -q "LLM_PROVIDER.*both\|LLM_PROVIDER.*cloud" "$PROJECT_DIR/config.yaml" 2>/dev/null; then
+        _CONFIG_PATH=$("$PYTHON" -c "import sys; sys.path.insert(0,'$PROJECT_DIR'); import paths; print(paths.get_dirs().config_dir / 'config.yaml')" 2>/dev/null || echo "$PROJECT_DIR/config.yaml")
+        if grep -q "LLM_PROVIDER.*both\|LLM_PROVIDER.*cloud" "$_CONFIG_PATH" 2>/dev/null; then
             if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
                 echo "Error: ANTHROPIC_API_KEY is not set. Add it to ~/.zshenv and retry." >&2
                 exit 1

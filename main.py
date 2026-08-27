@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import paths as _paths
+
+_DEFAULT_CONFIG = _paths.get_dirs().config_dir / "config.yaml"
+
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
 
@@ -769,9 +773,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default="config.yaml",
+        default=str(_DEFAULT_CONFIG),
         metavar="FILE",
-        help="path to config.yaml (default: config.yaml)",
+        help=f"path to config.yaml (default: {_DEFAULT_CONFIG})",
     )
     parser.add_argument(
         "--mode",
