@@ -119,7 +119,6 @@ pueo --mode install-service     # install as macOS launchd service
 pueo --mode stop-service        # stop the launchd service (stays stopped until start-service)
 pueo --mode start-service       # re-enable and start the launchd service
 pueo --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
-pueo --mode migrate-paths       # move existing data from repo root to platform dirs
 ```
 
 > **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`, `audit`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts.
@@ -138,8 +137,6 @@ All mutable state lives outside the repo in macOS platform directories:
 | `~/.config/pueo/` | config.yaml |
 
 Override any directory with environment variables: `PUEO_DATA_DIR`, `PUEO_STATE_DIR`, `PUEO_CACHE_DIR`, `PUEO_LOG_DIR`, `PUEO_CONFIG_DIR`.
-
-**Upgrading from an older checkout-based layout?** Run `pueo --mode migrate-paths` once to move existing data from the repo root into the platform directories.
 
 ---
 
