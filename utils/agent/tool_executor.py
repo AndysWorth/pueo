@@ -272,6 +272,8 @@ class ToolExecutor:
                 )
             if name == "investigate_device":
                 return await self._investigate_device(args.get("ip", ""))
+            if name == "get_dashboard_entity_health":
+                return await self._get_dashboard_entity_health(args.get("dashboard"))
             if name == "switch_model":
                 return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
@@ -1452,6 +1454,76 @@ class ToolExecutor:
         except Exception as exc:
             return ToolResult(
                 tool_name="investigate_device",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _get_dashboard_entity_health(
+        self, dashboard: Optional[str] = None
+    ) -> ToolResult:
+        """Check Lovelace dashboards for entity references not in the entity registry."""
+        from utils.ha.lovelace_utils import _extract_entity_refs, _fuzzy_candidates
+
+        if self._ws_client is None:
+            return ToolResult(
+                tool_name="get_dashboard_entity_health",
+                success=False,
+                output="",
+                error="HA WebSocket client not available — check HA_API_TOKEN config",
+            )
+        try:
+            named = await self._ws_client.get_lovelace_dashboards()
+            url_paths: list[Optional[str]] = [None]
+            url_paths += [d.get("url_path") for d in named if d.get("url_path")]
+            if dashboard:
+                url_paths = [p for p in url_paths if p == dashboard or p is None]
+
+            registry_entries = await self._ws_client.get_entity_registry()
+            registry_ids: set[str] = {
+                e.get("entity_id", "") for e in registry_entries if e.get("entity_id")
+            }
+
+            missing: list[str] = []
+            for url_path in url_paths:
+                try:
+                    cfg = await self._ws_client.get_lovelace_config(url_path)
+                except Exception as exc:
+                    log.warning(
+                        "dashboard_config_fetch_failed",
+                        url_path=url_path,
+                        error=str(exc),
+                    )
+                    continue
+                label = url_path or "default"
+                refs = _extract_entity_refs(cfg)
+                for ref in refs:
+                    if ref.entity_id not in registry_ids:
+                        candidates = _fuzzy_candidates(ref.entity_id, registry_ids)
+                        suggestion = (
+                            f" (possible replacements: {', '.join(candidates)})"
+                            if candidates
+                            else ""
+                        )
+                        missing.append(
+                            f"Dashboard '{label}' / view '{ref.view_title}' / "
+                            f"{ref.path}: {ref.entity_id} not found{suggestion}"
+                        )
+
+            if not missing:
+                return ToolResult(
+                    tool_name="get_dashboard_entity_health",
+                    success=True,
+                    output="All dashboard entity references are valid.",
+                )
+            return ToolResult(
+                tool_name="get_dashboard_entity_health",
+                success=True,
+                output="\n".join(missing),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_dashboard_entity_health",
                 success=False,
                 output="",
                 error=str(exc),

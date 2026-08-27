@@ -14,7 +14,8 @@ Phase 1 — RETRIEVE CONTEXT: Relevant memories and knowledge base results are p
 Phase 2 — FORM A HYPOTHESIS: State what you think is happening before gathering evidence.
 
 Phase 3 — GATHER EVIDENCE: Use get_disk_usage, read_config, read_logs, run_ha_command,
-  read_pueo_log, search_log, investigate_device, fetch_ha_docs as appropriate.
+  read_pueo_log, search_log, investigate_device, fetch_ha_docs,
+  get_dashboard_entity_health as appropriate.
 
 Phase 4 — CONFIRM: State what the data shows before answering or acting.
 
