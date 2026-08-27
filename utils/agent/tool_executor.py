@@ -278,7 +278,13 @@ class ToolExecutor:
             if name == "investigate_device":
                 return await self._investigate_device(args.get("ip", ""))
             if name == "get_dashboard_entity_health":
-                return await self._get_dashboard_entity_health(args.get("dashboard"))
+                return await self._get_dashboard_entity_health(
+                    args.get("dashboard"), args.get("view")
+                )
+            if name == "execute_local_python":
+                return await self._execute_local_python(
+                    args.get("code", ""), args.get("description", "")
+                )
             if name == "switch_model":
                 return await self._switch_model(args.get("model_name"))
             if name == "restart_netalertx":
@@ -1470,7 +1476,7 @@ class ToolExecutor:
             )
 
     async def _get_dashboard_entity_health(
-        self, dashboard: Optional[str] = None
+        self, dashboard: Optional[str] = None, view: Optional[str] = None
     ) -> ToolResult:
         """Check Lovelace dashboards for entity references not in the entity registry."""
         from utils.ha.lovelace_utils import _extract_entity_refs, _fuzzy_candidates
@@ -1540,6 +1546,14 @@ class ToolExecutor:
                     continue
                 label = url_path or "default"
                 refs = _extract_entity_refs(cfg)
+                if view:
+                    view_lower = view.lower()
+                    refs = [
+                        r
+                        for r in refs
+                        if r.view_title.lower() == view_lower
+                        or (r.view_path and r.view_path.lower() == view_lower)
+                    ]
                 for ref in refs:
                     if ref.entity_id in active_ids:
                         continue
@@ -1580,6 +1594,61 @@ class ToolExecutor:
                 output="",
                 error=str(exc),
             )
+
+    async def _execute_local_python(self, code: str, description: str) -> ToolResult:
+        """Run a Python snippet locally in the Pueo venv for diagnostic analysis."""
+        _OUTPUT_CAP = 8000
+        _STDERR_CAP = 2000
+        temp_dir = tempfile.mkdtemp(prefix="pueo_diag_")
+        try:
+            script_path = Path(temp_dir) / "diagnostic.py"
+            script_path.write_text(code)
+
+            def _run() -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+                return subprocess.run(  # nosec B603 — runs user-supplied code in a temp dir; chat-only tool
+                    [sys.executable, str(script_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=temp_dir,
+                )
+
+            proc = await asyncio.to_thread(_run)
+            stdout = proc.stdout[:_OUTPUT_CAP]
+            stderr = proc.stderr[:_STDERR_CAP]
+            combined = stdout
+            if stderr:
+                combined = (
+                    combined + ("\n--- stderr ---\n" if combined else "") + stderr
+                )
+            if proc.returncode != 0:
+                return ToolResult(
+                    tool_name="execute_local_python",
+                    success=False,
+                    output=combined,
+                    error=f"Script exited with code {proc.returncode}",
+                )
+            return ToolResult(
+                tool_name="execute_local_python",
+                success=True,
+                output=combined or "(no output)",
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(
+                tool_name="execute_local_python",
+                success=False,
+                output="",
+                error="Script timed out after 60s",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="execute_local_python",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     async def _switch_model(self, model_name: Optional[str]) -> ToolResult:
         """Auto-select or explicitly set the active Ollama model."""

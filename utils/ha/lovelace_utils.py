@@ -11,13 +11,16 @@ class EntityRef:
     view_title: str
     card_index: int
     path: str
+    view_path: str = ""
 
 
 def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
     """Walk the Lovelace card tree and return all entity_id references."""
     refs: dict[str, EntityRef] = {}  # deduplicate by entity_id
 
-    def _add(entity_id: str, view_title: str, card_index: int, path: str) -> None:
+    def _add(
+        entity_id: str, view_title: str, card_index: int, path: str, view_path: str
+    ) -> None:
         if not entity_id or not isinstance(entity_id, str):
             return
         if entity_id not in refs:
@@ -26,21 +29,25 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
                 view_title=view_title,
                 card_index=card_index,
                 path=path,
+                view_path=view_path,
             )
 
-    def _walk_entity(val: object, view_title: str, card_index: int, path: str) -> None:
+    def _walk_entity(
+        val: object, view_title: str, card_index: int, path: str, view_path: str
+    ) -> None:
         if isinstance(val, str):
-            _add(val, view_title, card_index, path)
+            _add(val, view_title, card_index, path, view_path)
         elif isinstance(val, dict):
             _add(
                 val.get("entity") or val.get("entity_id") or "",
                 view_title,
                 card_index,
                 path,
+                view_path,
             )
 
     def _walk_card(
-        card: dict, view_title: str, card_index: int, depth: int = 0
+        card: dict, view_title: str, card_index: int, view_path: str, depth: int = 0
     ) -> None:
         if not isinstance(card, dict):
             return
@@ -50,32 +57,35 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
 
         entity = card.get("entity") or card.get("entity_id") or ""
         if entity:
-            _add(entity, view_title, card_index, prefix + ".entity")
+            _add(entity, view_title, card_index, prefix + ".entity", view_path)
 
         entities = card.get("entities", [])
         if isinstance(entities, list):
             for ent in entities:
-                _walk_entity(ent, view_title, card_index, prefix + ".entities")
+                _walk_entity(
+                    ent, view_title, card_index, prefix + ".entities", view_path
+                )
 
         for nested in card.get("cards", []):
-            _walk_card(nested, view_title, card_index, depth + 1)
+            _walk_card(nested, view_title, card_index, view_path, depth + 1)
 
     for view in lovelace_cfg.get("views", []):
         if not isinstance(view, dict):
             continue
         view_title: str = str(view.get("title") or view.get("path") or "unnamed")
+        view_path_val: str = str(view.get("path") or "")
 
         for badge in view.get("badges", []):
-            _walk_entity(badge, view_title, -1, "badges")
+            _walk_entity(badge, view_title, -1, "badges", view_path_val)
 
         for idx, card in enumerate(view.get("cards", [])):
-            _walk_card(card, view_title, idx)
+            _walk_card(card, view_title, idx, view_path_val)
 
         for section in view.get("sections", []):
             if not isinstance(section, dict):
                 continue
             for card_idx, card in enumerate(section.get("cards", [])):
-                _walk_card(card, view_title, card_idx)
+                _walk_card(card, view_title, card_idx, view_path_val)
 
     return list(refs.values())
 
