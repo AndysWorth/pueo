@@ -2463,19 +2463,36 @@ class _MockHTTPResponse:
         pass
 
 
-class TestDiscoverHacsApiFiltering:
-    """_discover_via_hacs_api parses HACS repository JSON correctly."""
+class TestDiscoverHacsWsFiltering:
+    """_discover_via_hacs_ws parses HACS WebSocket repository results correctly."""
 
-    def _urlopen(self, payload):
+    def _mock_ws(self, payload, monkeypatch):
+        """Monkeypatch websockets.connect to return a fake WS that yields auth then result."""
         import json
+        from unittest.mock import AsyncMock, MagicMock
 
-        data = json.dumps(payload).encode()
-        return lambda *a, **kw: _MockHTTPResponse(data)
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"type": "auth_required"}),
+                json.dumps({"type": "auth_ok"}),
+                json.dumps(
+                    {"id": 1, "type": "result", "success": True, "result": payload}
+                ),
+            ]
+        )
+        ws.send = AsyncMock()
+        ws.close = AsyncMock()
+        ws.__aenter__ = AsyncMock(return_value=ws)
+        ws.__aexit__ = AsyncMock(return_value=False)
+        cm = MagicMock()
+        cm.__await__ = lambda self: iter([ws])
+        import websockets
+
+        monkeypatch.setattr(websockets, "connect", AsyncMock(return_value=ws))
 
     def test_returns_installed_integrations(self, monkeypatch):
-        import urllib.request
-
-        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
         payload = [
             {
@@ -2491,14 +2508,12 @@ class TestDiscoverHacsApiFiltering:
                 "full_name": "someorg/noaa",
             },
         ]
-        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen(payload))
-        result = _discover_via_hacs_api("http://ha:8123", "tok")
+        self._mock_ws(payload, monkeypatch)
+        result = _discover_via_hacs_ws("http://ha:8123", "tok")
         assert result == [("pycync", "dmamontov/hass-pycync")]
 
     def test_excludes_non_integration_categories(self, monkeypatch):
-        import urllib.request
-
-        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
         payload = [
             {
@@ -2514,48 +2529,47 @@ class TestDiscoverHacsApiFiltering:
                 "full_name": "someone/myint",
             },
         ]
-        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen(payload))
-        result = _discover_via_hacs_api("http://ha:8123", "tok")
+        self._mock_ws(payload, monkeypatch)
+        result = _discover_via_hacs_ws("http://ha:8123", "tok")
         assert result == [("myint", "someone/myint")]
 
-    def test_returns_empty_on_network_error(self, monkeypatch):
-        import urllib.request
+    def test_returns_empty_on_connection_error(self, monkeypatch):
+        from unittest.mock import AsyncMock
 
-        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
+        import websockets
+
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
         monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("refused")),
+            websockets,
+            "connect",
+            AsyncMock(side_effect=OSError("refused")),
         )
-        assert _discover_via_hacs_api("http://ha:8123", "tok") == []
+        assert _discover_via_hacs_ws("http://ha:8123", "tok") == []
 
-    def test_returns_empty_when_no_token(self):
-        from utils.knowledge.hacs_scraper import _discover_via_hacs_api
+    def test_has_docstring(self):
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
-        # No HA token — discover_hacs_integrations guards against this, but
-        # _discover_via_hacs_api itself will attempt the call and get an exception
-        # from urllib (no actual network used in tests, so just verify shape).
-        assert isinstance(_discover_via_hacs_api.__doc__, str)
+        assert isinstance(_discover_via_hacs_ws.__doc__, str)
 
 
 class TestDiscoverHacsIntegrationsEntityFallback:
     """Entity-scan fallback excludes the HACS manager (hacs/integration)."""
 
-    def _make_sequential_urlopen(self, hacs_api_exc, states_payload):
-        """First call raises (HACS API unavailable); second returns states JSON."""
+    def _mock_ws_failed(self, monkeypatch):
+        """Make websockets.connect fail so the WS primary returns [] and the fallback runs."""
+        from unittest.mock import AsyncMock
+
+        import websockets
+
+        monkeypatch.setattr(
+            websockets, "connect", AsyncMock(side_effect=OSError("unavailable"))
+        )
+
+    def _urlopen_states(self, states_payload):
         import json
 
-        calls = [0]
-
-        def urlopen(*a, **kw):
-            if calls[0] == 0:
-                calls[0] += 1
-                raise hacs_api_exc
-            calls[0] += 1
-            return _MockHTTPResponse(json.dumps(states_payload).encode())
-
-        return urlopen
+        return lambda *a, **kw: _MockHTTPResponse(json.dumps(states_payload).encode())
 
     def test_excludes_hacs_manager_from_entity_scan(self, monkeypatch):
         import urllib.request
@@ -2579,11 +2593,8 @@ class TestDiscoverHacsIntegrationsEntityFallback:
                 },
             },
         ]
-        monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
-            self._make_sequential_urlopen(OSError("unavailable"), states),
-        )
+        self._mock_ws_failed(monkeypatch)
+        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen_states(states))
         result = discover_hacs_integrations("http://ha:8123", "tok")
         repos = [r for _, r in result]
         assert "hacs/integration" not in repos
@@ -2604,11 +2615,8 @@ class TestDiscoverHacsIntegrationsEntityFallback:
                 },
             },
         ]
-        monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
-            self._make_sequential_urlopen(OSError("unavailable"), states),
-        )
+        self._mock_ws_failed(monkeypatch)
+        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen_states(states))
         result = discover_hacs_integrations("http://ha:8123", "tok")
         assert result == []
 

@@ -67,28 +67,48 @@ def chunk_changelog(
     return ids, chunks, metadatas
 
 
-def _discover_via_hacs_api(  # pragma: no cover
+def _discover_via_hacs_ws(  # pragma: no cover
     ha_url: str,
     ha_token: str,
 ) -> list[tuple[str, str]]:
-    """Query the HACS REST API for installed integrations.
+    """Query the HACS WebSocket API for installed integrations.
 
-    GET /api/hacs/repositories returns a list of tracked repositories.  Each
+    Sends ``hacs/repositories/list`` over the HA WebSocket API.  Each result
     entry includes 'slug', 'installed', 'category', and 'full_name' (org/repo).
     Returns [] on any error so the caller can fall back to the entity-scan path.
     """
+    import asyncio
     import json
-    import urllib.request
+    from urllib.parse import urlparse
+
+    parsed = urlparse(ha_url)
+    host = parsed.hostname or "homeassistant.local"
+    port = parsed.port or 8123
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    uri = f"{scheme}://{host}:{port}/api/websocket"
+
+    async def _query() -> list[dict]:
+        import websockets
+
+        ws = await websockets.connect(uri)
+        try:
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_required":
+                return []
+            await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_ok":
+                return []
+            await ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                return []
+            return msg.get("result", [])
+        finally:
+            await ws.close()
 
     try:
-        req = urllib.request.Request(
-            f"{ha_url}/api/hacs/repositories",
-            headers={"Authorization": f"Bearer {ha_token}"},
-        )
-        with urllib.request.urlopen(
-            req, timeout=10
-        ) as resp:  # nosec B310 — HA URL from user config
-            repos = json.loads(resp.read())
+        repos: list[dict] = asyncio.run(_query())
     except Exception as exc:
         from utils.core.logging import get_logger
 
@@ -117,9 +137,9 @@ def discover_hacs_integrations(  # pragma: no cover
 ) -> list[tuple[str, str]]:
     """Discover HACS-managed integrations installed on HA.
 
-    Tries the HACS REST API first (/api/hacs/repositories), then falls back to
-    scanning update.* entities from /api/states.  The HACS manager itself
-    (hacs/integration) is excluded from both paths.
+    Tries the HACS WebSocket API first (hacs/repositories/list), then falls
+    back to scanning update.* entities from /api/states.  The HACS manager
+    itself (hacs/integration) is excluded from both paths.
 
     Returns a list of (slug, github_repo) pairs.  Falls back to [] if HA is
     unreachable or the token is missing.
@@ -130,8 +150,8 @@ def discover_hacs_integrations(  # pragma: no cover
     if not ha_token:
         return []
 
-    # Primary: HACS REST API — more reliable, includes integrations without GitHub releases
-    pairs = _discover_via_hacs_api(ha_url, ha_token)
+    # Primary: HACS WebSocket API — more reliable, includes integrations without GitHub releases
+    pairs = _discover_via_hacs_ws(ha_url, ha_token)
     if pairs:
         return pairs
 
