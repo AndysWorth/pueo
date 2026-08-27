@@ -11008,6 +11008,24 @@ class TestRunRagRefresh:
         out = capsys.readouterr().out
         assert "no HA API token" in out
 
+    def test_discover_integrations_failure_is_logged(self, monkeypatch, caplog):
+        """discover_installed_integrations logs a warning on network failure."""
+        import logging
+        import urllib.request
+        import utils.knowledge.ha_docs_scraper as docs_mod
+
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("connection refused")),
+        )
+        with caplog.at_level(logging.WARNING, logger="ha_docs_scraper"):
+            result = docs_mod.discover_installed_integrations(
+                "http://ha.local:8123", "test-token"
+            )
+        assert result == []
+        assert any("discover_integrations_failed" in r.message for r in caplog.records)
+
 
 class TestRagRefreshLoopStartupTrigger:
     """_rag_refresh_loop fires the startup refresh only when bootstrap collections are empty."""
@@ -11058,17 +11076,89 @@ class TestRagRefreshLoopStartupTrigger:
         refresh_mock.assert_called_once()
 
     def test_skips_when_both_bootstrap_populated(self, monkeypatch):
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
         store = self._make_store(release_notes_count=3, strategies_count=2)
         refresh_mock = self._run_loop_once(store, monkeypatch)
         refresh_mock.assert_not_called()
 
-    def test_empty_token_gated_collection_does_not_trigger(self, monkeypatch):
-        # hacs_changelogs empty, but both bootstrap collections populated
+    def test_empty_token_gated_collection_does_not_trigger_without_token(
+        self, monkeypatch
+    ):
+        # hacs_changelogs empty, bootstrap collections populated, but no HA token —
+        # token-gated collections should not be added to the bootstrap check.
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
         store = self._make_store(
             release_notes_count=5, strategies_count=3, hacs_count=0
         )
         refresh_mock = self._run_loop_once(store, monkeypatch)
         refresh_mock.assert_not_called()
+
+    def test_empty_token_gated_collection_triggers_when_token_set(self, monkeypatch):
+        # hacs_changelogs empty + HA token configured → startup refresh fires.
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "test-token")
+        store = self._make_store(
+            release_notes_count=5, strategies_count=3, hacs_count=0
+        )
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_called_once()
+
+    def test_token_gated_collection_populated_does_not_retrigger(self, monkeypatch):
+        # All collections including token-gated ones are populated — no startup refresh.
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "test-token")
+        store = self._make_store(
+            release_notes_count=5, strategies_count=3, hacs_count=2
+        )
+        # ha_integration_docs also needs to be populated
+        for i in range(2):
+            store.upsert(
+                "ha_integration_docs", [f"d{i}"], [f"doc {i}"], [{"source": "s"}]
+            )
+        refresh_mock = self._run_loop_once(store, monkeypatch)
+        refresh_mock.assert_not_called()
+
+    def test_scheduled_timeline_event_written_even_when_no_refresh(self, monkeypatch):
+        """A 'next run in Nh' INFO event is written even when startup refresh is skipped."""
+        import main as main_module
+        from unittest.mock import MagicMock, patch
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
+        store = self._make_store(release_notes_count=3, strategies_count=2)
+        timeline_calls: list[tuple] = []
+
+        def _capture_timeline(level, source, message, detail=None):
+            timeline_calls.append((level, source, message))
+
+        async def _run():
+            with patch.object(main_module, "run_rag_refresh", MagicMock()):
+                with patch(
+                    "utils.core.timeline.write_timeline_event",
+                    side_effect=_capture_timeline,
+                ):
+                    try:
+                        await main_module._rag_refresh_loop(store, interval_hours=168)
+                    except asyncio.CancelledError:
+                        pass
+
+        async def _sleep_raises(_s):
+            raise asyncio.CancelledError
+
+        with patch("asyncio.sleep", side_effect=_sleep_raises):
+            asyncio.run(_run())
+
+        assert any(
+            "next run in" in msg and src == "rag_refresh"
+            for _, src, msg in timeline_calls
+        )
 
 
 class TestLoopCrashTimeline:
