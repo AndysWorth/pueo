@@ -1483,11 +1483,28 @@ class ToolExecutor:
                 error="HA WebSocket client not available — check HA_API_TOKEN config",
             )
         try:
+            from utils.ha.ha_ws_client import LovelaceConfigNotFound
+
             named = await self._ws_client.get_lovelace_dashboards()
             url_paths: list[Optional[str]] = [None]
             url_paths += [d.get("url_path") for d in named if d.get("url_path")]
             if dashboard:
-                url_paths = [p for p in url_paths if p == dashboard or p is None]
+                # Build case-insensitive lookup: lower(url_path or title) → canonical url_path
+                named_lookup: dict[str, Optional[str]] = {}
+                for d in named:
+                    url = d.get("url_path")
+                    title = d.get("title", "")
+                    if url:
+                        named_lookup[url.lower()] = url
+                    if title:
+                        named_lookup[title.lower()] = url
+                key = dashboard.lower()
+                if key not in named_lookup:
+                    log.warning("dashboard_not_found_in_list", requested=dashboard)
+                    url_paths = [None]
+                else:
+                    canonical = named_lookup[key]
+                    url_paths = [p for p in url_paths if p == canonical or p is None]
 
             registry_entries = await self._ws_client.get_entity_registry()
             registry_ids: set[str] = {
@@ -1498,6 +1515,12 @@ class ToolExecutor:
             for url_path in url_paths:
                 try:
                     cfg = await self._ws_client.get_lovelace_config(url_path)
+                except LovelaceConfigNotFound:
+                    missing.append(
+                        f"Dashboard '{url_path}': config not accessible"
+                        " (file-mode dashboard — cannot check entity refs)"
+                    )
+                    continue
                 except Exception as exc:
                     log.warning(
                         "dashboard_config_fetch_failed",

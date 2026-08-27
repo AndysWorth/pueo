@@ -2986,7 +2986,9 @@ async def _run_chat_loop(
                         step.timestamp,
                     ),
                 )
-                output = (step.tool_result.output or step.tool_result.error or "")[:500]
+                output = (step.tool_result.output or step.tool_result.error or "")[
+                    :4000
+                ]
                 conn.execute(
                     "INSERT INTO chat_messages (session_id, role, content, ts)"
                     " VALUES (?, ?, ?, ?)",

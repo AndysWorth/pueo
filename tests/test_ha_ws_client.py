@@ -77,7 +77,9 @@ class TestGetLovelaceConfigNotFound:
         assert ws.closed
 
     def test_config_not_found_for_named_dashboard(self, monkeypatch):
-        """config_not_found on a named url_path also returns {} silently."""
+        """config_not_found on a named url_path raises LovelaceConfigNotFound."""
+        from utils.ha.ha_ws_client import LovelaceConfigNotFound
+
         ws = _MockWs(
             [
                 {
@@ -93,8 +95,8 @@ class TestGetLovelaceConfigNotFound:
         )
         _patch_connect(monkeypatch, ws)
         client = _make_client()
-        result = asyncio.run(client.get_lovelace_config("my-dashboard"))
-        assert result == {}
+        with pytest.raises(LovelaceConfigNotFound, match="my-dashboard"):
+            asyncio.run(client.get_lovelace_config("my-dashboard"))
 
     def test_other_errors_still_raise(self, monkeypatch):
         """Non-config_not_found failures must still raise RuntimeError."""
