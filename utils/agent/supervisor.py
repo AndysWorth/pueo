@@ -273,5 +273,16 @@ class LoopSupervisor:
         for task in self._tasks.values():
             task.cancel()
 
+    def touch(self, name: str) -> None:
+        """Update last_run to now after a loop completes one work cycle.
+
+        Call this at the end of each internal iteration in a long-running loop
+        so the Overview page shows when meaningful work last happened, not just
+        when the coroutine was first started by the supervisor.
+        """
+        if name in self._handles:
+            self._handles[name].last_run = time.time()
+            self._emit(name)
+
     def get_statuses(self) -> list[LoopStatus]:
         return list(self._handles.values())

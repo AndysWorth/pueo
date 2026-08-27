@@ -3131,6 +3131,52 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_touch_updates_last_run_and_emits_event(self):
+        """touch(name) sets last_run to approximately now and emits a loop_status event."""
+        import time
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)  # daemon running
+
+            before = time.time()
+            sup.touch("d")
+            after = time.time()
+
+            status = sup._handles["d"]
+            assert status.last_run is not None
+            assert before <= status.last_run <= after
+
+            # SSE event should carry updated last_run
+            events = []
+            while not bus.empty():
+                events.append(bus.get_nowait())
+            loop_events = [
+                e
+                for e in events
+                if e.get("event_type") == "loop_status" and e.get("loop") == "d"
+            ]
+            assert any(e["last_run"] == status.last_run for e in loop_events)
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_touch_unknown_name_is_noop(self):
+        """touch() with an unknown loop name silently does nothing."""
+        from utils.agent.supervisor import LoopSupervisor
+
+        sup = LoopSupervisor()
+        sup.touch("nonexistent")  # must not raise
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 
