@@ -241,9 +241,13 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     _log = _gl("main")
 
     # Bootstrap collections run_rag_refresh always populates (no token needed).
-    # Token-gated collections (hacs_changelogs, ha_integration_docs) are excluded —
-    # they may be legitimately empty and would cause endless startup refreshes.
-    _BOOTSTRAP_COLLECTIONS = ("ha_release_notes", "strategies")
+    # Token-gated collections are added when the token is available — on a fresh
+    # install with a configured token they should not stay empty across restarts.
+    import config as _cfg
+
+    _BOOTSTRAP_COLLECTIONS: list[str] = ["ha_release_notes", "strategies"]
+    if _cfg.HA_API_TOKEN:
+        _BOOTSTRAP_COLLECTIONS += ["hacs_changelogs", "ha_integration_docs"]
     empty_bootstrap = [
         c for c in _BOOTSTRAP_COLLECTIONS if knowledge_store.collection_count(c) == 0
     ]
@@ -264,8 +268,15 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
-                "WARNING", "rag_refresh", f"RAG refresh failed: {exc}"
+                "WARN", "rag_refresh", f"RAG refresh failed: {exc}"
             )  # pragma: no cover
+
+    _log.info("rag_refresh_loop_started", next_run_hours=interval_hours)
+    write_timeline_event(
+        "INFO",
+        "rag_refresh",
+        f"RAG refresh scheduled (next run in {interval_hours}h)",
+    )
 
     while True:
         await asyncio.sleep(interval_hours * 3600)
@@ -283,7 +294,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
-                "WARNING", "rag_refresh", f"RAG refresh failed: {exc}"
+                "WARN", "rag_refresh", f"RAG refresh failed: {exc}"
             )  # pragma: no cover
 
 
