@@ -452,8 +452,14 @@ EXECUTE_LOCAL_PYTHON = ToolDefinition(
         "and can connect to HA over SSH using asyncssh with the configured credentials. "
         "Use this to cross-reference multiple HA data sources, test Pueo utilities against real "
         "HA data, or analyze raw .storage/ files fetched with read_file. "
-        "For diagnosis and analysis only — do not write to files outside temp directories. "
-        "Output (stdout + stderr) is returned, capped at 8000 characters."
+        "HARD RULES — the script must not violate any of these:\n"
+        "1. READ-ONLY: never write, delete, or move files outside the temp directory.\n"
+        "2. NO HA STATE CHANGES: never run HA commands (ha core restart, ha config save, etc.) "
+        "from within the script — use run_ha_command for any actions so they go through the "
+        "safety gate. SSH connections in the script are for reading only.\n"
+        "3. ANALYSIS ONLY: the script returns findings; it does not take action. "
+        "Use the output to inform a subsequent tool call.\n"
+        "Output (stdout + stderr) is returned, capped at 8000 characters. Timeout: 60s."
     ),
     parameters={
         "type": "object",
