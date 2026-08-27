@@ -1376,3 +1376,64 @@ class TestGetDashboardEntityHealth:
         result = asyncio.run(executor._get_dashboard_entity_health())
         assert result.success is False
         assert "connection lost" in result.error
+
+    def test_case_insensitive_url_path_match(self):
+        """Passing 'DASHY' should match url_path='dashy' and detect the missing entity."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "entity", "entity": "sensor.missing"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.present"}],
+            lovelace_dashboards=[{"url_path": "dashy", "title": "Dashy"}],
+            lovelace_configs={None: {}, "dashy": cfg},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health(dashboard="DASHY"))
+        assert result.success is True
+        assert "sensor.missing" in result.output
+        assert "not found" in result.output
+
+    def test_title_match_finds_dashboard(self):
+        """Passing display name 'Dashy' should match title='Dashy' and detect the missing entity."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "entity", "entity": "sensor.gone"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.present"}],
+            lovelace_dashboards=[{"url_path": "dashy", "title": "Dashy"}],
+            lovelace_configs={None: {}, "dashy": cfg},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health(dashboard="Dashy"))
+        assert result.success is True
+        assert "sensor.gone" in result.output
+
+    def test_file_mode_dashboard_reported_not_silently_skipped(self):
+        """File-mode dashboard (LovelaceConfigNotFound) should appear in output, not silently pass."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.present"}],
+            lovelace_dashboards=[{"url_path": "file_dash", "title": "File Dash"}],
+            lovelace_configs={None: {}},
+            lovelace_config_not_found={"file_dash"},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is True
+        assert "config not accessible" in result.output
+        assert "file_dash" in result.output

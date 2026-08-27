@@ -425,7 +425,8 @@ GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
             "dashboard": {
                 "type": "string",
                 "description": (
-                    "Optional URL path of a specific dashboard (e.g. 'lovelace'). "
+                    "Optional dashboard identifier — the display name (e.g. 'Dashy') "
+                    "or URL path (e.g. 'lovelace'). Matched case-insensitively. "
                     "Omit to check all dashboards."
                 ),
             }

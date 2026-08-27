@@ -8,6 +8,10 @@ import logging
 _log = logging.getLogger("ha_ws_client")
 
 
+class LovelaceConfigNotFound(Exception):
+    """Raised when a named Lovelace dashboard has no stored config (file-mode or empty)."""
+
+
 class HAWebSocketClient:  # pragma: no cover
     """Short-lived WebSocket client for HA device registry queries.
 
@@ -143,7 +147,11 @@ class HAWebSocketClient:  # pragma: no cover
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
                 if msg.get("error", {}).get("code") == "config_not_found":
-                    # HA is in auto/storage mode with no stored YAML config — nothing to scan.
+                    if url_path is not None:
+                        raise LovelaceConfigNotFound(
+                            f"Dashboard '{url_path}' has no stored config (file-mode or empty)"
+                        )
+                    # Default dashboard in auto/storage mode — nothing to scan.
                     return {}
                 raise RuntimeError(f"lovelace/config request failed: {msg}")
             return msg.get("result", {})
@@ -163,6 +171,7 @@ class FakeHAWebSocketClient:
         entity_registry: list[dict] | None = None,
         lovelace_dashboards: list[dict] | None = None,
         lovelace_configs: dict | None = None,
+        lovelace_config_not_found: set[str] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -172,6 +181,8 @@ class FakeHAWebSocketClient:
         self._lovelace_dashboards: list[dict] = lovelace_dashboards or []
         # Keys are url_path strings or None for the default dashboard.
         self._lovelace_configs: dict = lovelace_configs or {}
+        # url_path values for which get_lovelace_config should raise LovelaceConfigNotFound.
+        self._lovelace_config_not_found: set[str] = lovelace_config_not_found or set()
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -200,6 +211,10 @@ class FakeHAWebSocketClient:
 
     async def get_lovelace_config(self, url_path: str | None = None) -> dict:
         self.calls.append(f"get_lovelace_config:{url_path}")
+        if url_path is not None and url_path in self._lovelace_config_not_found:
+            raise LovelaceConfigNotFound(
+                f"Dashboard '{url_path}' has no stored config (file-mode or empty)"
+            )
         if url_path not in self._lovelace_configs:
             raise RuntimeError(f"No lovelace config for url_path={url_path!r}")
         return dict(self._lovelace_configs[url_path])
