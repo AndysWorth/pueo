@@ -73,13 +73,15 @@ def _discover_via_hacs_ws(  # pragma: no cover
 ) -> list[tuple[str, str]]:
     """Query the HACS WebSocket API for installed integrations.
 
-    Sends ``hacs/repositories/list`` over the HA WebSocket API.  Each result
-    entry includes 'slug', 'installed', 'category', and 'full_name' (org/repo).
-    Returns [] on any error so the caller can fall back to the entity-scan path.
+    Sends ``hacs/repositories/list`` over the HA WebSocket API using the
+    synchronous websockets client so this function is safe to call from both
+    sync and async contexts (no asyncio.run() needed).  Returns [] on any
+    error so the caller can fall back to the entity-scan path.
     """
-    import asyncio
     import json
     from urllib.parse import urlparse
+
+    from websockets.sync.client import connect as ws_connect
 
     parsed = urlparse(ha_url)
     host = parsed.hostname or "homeassistant.local"
@@ -87,28 +89,20 @@ def _discover_via_hacs_ws(  # pragma: no cover
     scheme = "wss" if parsed.scheme == "https" else "ws"
     uri = f"{scheme}://{host}:{port}/api/websocket"
 
-    async def _query() -> list[dict]:
-        import websockets
-
-        ws = await websockets.connect(uri)
-        try:
-            msg = json.loads(await ws.recv())
+    try:
+        with ws_connect(uri) as ws:
+            msg = json.loads(ws.recv())
             if msg.get("type") != "auth_required":
                 return []
-            await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
-            msg = json.loads(await ws.recv())
+            ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
+            msg = json.loads(ws.recv())
             if msg.get("type") != "auth_ok":
                 return []
-            await ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
-            msg = json.loads(await ws.recv())
+            ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
+            msg = json.loads(ws.recv())
             if not msg.get("success"):
                 return []
-            return msg.get("result", [])
-        finally:
-            await ws.close()
-
-    try:
-        repos: list[dict] = asyncio.run(_query())
+            repos: list[dict] = msg.get("result", [])
     except Exception as exc:
         from utils.core.logging import get_logger
 

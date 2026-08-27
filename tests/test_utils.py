@@ -2467,29 +2467,23 @@ class TestDiscoverHacsWsFiltering:
     """_discover_via_hacs_ws parses HACS WebSocket repository results correctly."""
 
     def _mock_ws(self, payload, monkeypatch):
-        """Monkeypatch websockets.connect to return a fake WS that yields auth then result."""
+        """Monkeypatch websockets.sync.client.connect with a sync fake context manager."""
         import json
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
-        ws = AsyncMock()
-        ws.recv = AsyncMock(
-            side_effect=[
-                json.dumps({"type": "auth_required"}),
-                json.dumps({"type": "auth_ok"}),
-                json.dumps(
-                    {"id": 1, "type": "result", "success": True, "result": payload}
-                ),
-            ]
-        )
-        ws.send = AsyncMock()
-        ws.close = AsyncMock()
-        ws.__aenter__ = AsyncMock(return_value=ws)
-        ws.__aexit__ = AsyncMock(return_value=False)
-        cm = MagicMock()
-        cm.__await__ = lambda self: iter([ws])
-        import websockets
+        messages = [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "auth_ok"}),
+            json.dumps({"id": 1, "type": "result", "success": True, "result": payload}),
+        ]
+        ws = MagicMock()
+        ws.recv.side_effect = messages
+        ws.__enter__ = MagicMock(return_value=ws)
+        ws.__exit__ = MagicMock(return_value=False)
 
-        monkeypatch.setattr(websockets, "connect", AsyncMock(return_value=ws))
+        import websockets.sync.client as _wsc
+
+        monkeypatch.setattr(_wsc, "connect", MagicMock(return_value=ws))
 
     def test_returns_installed_integrations(self, monkeypatch):
         from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
@@ -2534,16 +2528,16 @@ class TestDiscoverHacsWsFiltering:
         assert result == [("myint", "someone/myint")]
 
     def test_returns_empty_on_connection_error(self, monkeypatch):
-        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
 
-        import websockets
+        import websockets.sync.client as _wsc
 
         from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
 
         monkeypatch.setattr(
-            websockets,
+            _wsc,
             "connect",
-            AsyncMock(side_effect=OSError("refused")),
+            MagicMock(side_effect=OSError("refused")),
         )
         assert _discover_via_hacs_ws("http://ha:8123", "tok") == []
 
@@ -2557,13 +2551,13 @@ class TestDiscoverHacsIntegrationsEntityFallback:
     """Entity-scan fallback excludes the HACS manager (hacs/integration)."""
 
     def _mock_ws_failed(self, monkeypatch):
-        """Make websockets.connect fail so the WS primary returns [] and the fallback runs."""
-        from unittest.mock import AsyncMock
+        """Make websockets.sync.client.connect fail so the WS primary returns [] and fallback runs."""
+        from unittest.mock import MagicMock
 
-        import websockets
+        import websockets.sync.client as _wsc
 
         monkeypatch.setattr(
-            websockets, "connect", AsyncMock(side_effect=OSError("unavailable"))
+            _wsc, "connect", MagicMock(side_effect=OSError("unavailable"))
         )
 
     def _urlopen_states(self, states_payload):
