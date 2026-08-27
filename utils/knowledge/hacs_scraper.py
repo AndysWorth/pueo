@@ -90,7 +90,7 @@ def _discover_via_hacs_ws(  # pragma: no cover
     uri = f"{scheme}://{host}:{port}/api/websocket"
 
     try:
-        with ws_connect(uri) as ws:
+        with ws_connect(uri, max_size=None) as ws:
             msg = json.loads(ws.recv())
             if msg.get("type") != "auth_required":
                 return []
