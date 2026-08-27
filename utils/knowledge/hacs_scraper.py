@@ -89,7 +89,10 @@ def _discover_via_hacs_api(  # pragma: no cover
             req, timeout=10
         ) as resp:  # nosec B310 — HA URL from user config
             repos = json.loads(resp.read())
-    except Exception:
+    except Exception as exc:
+        from utils.core.logging import get_logger
+
+        get_logger("hacs_scraper").warning("discover_hacs_failed", error=str(exc))
         return []
 
     pairs: list[tuple[str, str]] = []
@@ -142,7 +145,12 @@ def discover_hacs_integrations(  # pragma: no cover
             req, timeout=10
         ) as resp:  # nosec B310 — HA URL from user config
             states = json.loads(resp.read())
-    except Exception:
+    except Exception as exc:
+        from utils.core.logging import get_logger
+
+        get_logger("hacs_scraper").warning(
+            "discover_hacs_fallback_failed", error=str(exc)
+        )
         return []
 
     pairs = []

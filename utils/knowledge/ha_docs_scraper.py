@@ -112,7 +112,12 @@ def discover_installed_integrations(
             req, timeout=10
         ) as resp:  # nosec B310 — HA URL from user config
             config_data = json.loads(resp.read())
-    except Exception:
+    except Exception as exc:
+        from utils.core.logging import get_logger
+
+        get_logger("ha_docs_scraper").warning(
+            "discover_integrations_failed", error=str(exc)
+        )
         return []
 
     components = config_data.get("components", [])
