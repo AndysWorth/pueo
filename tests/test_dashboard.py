@@ -1504,6 +1504,48 @@ class TestBackupInventoryDashboard:
 # ── Defer endpoint and DEFERRED status ───────────────────────────────────────────
 
 
+class TestDebugModeEndpoints:
+    """Tests for POST/GET /chat/debug-mode."""
+
+    def test_post_enable_toggles_logger_level(self, tmp_path, monkeypatch):
+        import logging
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "_debug_mode_enabled", False)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/chat/debug-mode", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+        assert logging.getLogger("pueo").isEnabledFor(logging.DEBUG)
+
+    def test_post_disable_restores_info_level(self, tmp_path, monkeypatch):
+        import logging
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
+        logging.getLogger("pueo").setLevel(logging.DEBUG)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/chat/debug-mode", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is False
+        assert not logging.getLogger("pueo").isEnabledFor(logging.DEBUG)
+
+    def test_get_reflects_current_state(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/chat/debug-mode")
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+
+
 class TestDeferEndpoint:
     def _write_request(self, watch_dir: Path, nid: str) -> None:
         import json as _json

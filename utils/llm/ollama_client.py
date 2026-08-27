@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import ollama
 
 from config import OLLAMA_ENDPOINT
+from utils.core.logging import get_logger
+
+log = get_logger("llm.ollama")
 
 
 class OllamaClient:
@@ -39,6 +43,16 @@ class OllamaClient:
         tools: list[dict],
         options: dict | None = None,
     ) -> dict:
+        t0 = time.monotonic()
+        log.debug(
+            "llm_request",
+            model=model,
+            messages_count=len(messages),
+            tools_count=len(tools) if tools else 0,
+            last_user_msg=(
+                str(messages[-1].get("content", ""))[:300] if messages else ""
+            ),
+        )
         resp = await asyncio.to_thread(
             lambda: self._client.chat(
                 model=model,
@@ -70,6 +84,14 @@ class OllamaClient:
             "eval_ms": eval_ns / 1_000_000 if eval_ns else None,
             "load_ms": load_ns / 1_000_000 if load_ns else None,
         }
+        tool_calls = result.get("tool_calls", [])
+        log.debug(
+            "llm_response",
+            model=model,
+            tool_calls=[tc["function"]["name"] for tc in tool_calls],
+            content_preview=str(result.get("content", ""))[:300],
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
         return result
 
 

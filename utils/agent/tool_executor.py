@@ -178,6 +178,11 @@ class ToolExecutor:
         args = tool_call.arguments
         name = tool_call.name
         log.info("tool_execute", tool=name)
+        log.debug(
+            "tool_execute_args",
+            tool=name,
+            args={k: str(v)[:200] for k, v in (args or {}).items()},
+        )
         try:
             if name == "read_config":
                 return await self._read_config(args.get("path", CONFIG_REMOTE_PATH))
@@ -337,6 +342,9 @@ class ToolExecutor:
             )
         except Exception as exc:
             log.error("tool_execute_error", tool=name, error=str(exc))
+            log.debug(
+                "tool_execute_result", tool=name, output_preview="", success=False
+            )
             return ToolResult(tool_name=name, success=False, output="", error=str(exc))
 
     # ------------------------------------------------------------------
@@ -532,6 +540,7 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     async def _remember(self, key: str, content: str, source: str) -> ToolResult:
+        log.debug("tool_remember", key=key, value_preview=str(content)[:200])
         try:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
@@ -555,6 +564,7 @@ class ToolExecutor:
                     "ORDER BY ts DESC LIMIT ?",
                     (f"%{query}%", f"%{query}%", CHAT_MEMORY_TOP_K),
                 ).fetchall()
+            log.debug("tool_recall", query=query, results_count=len(rows))
             if not rows:
                 return ToolResult(
                     tool_name="recall", success=True, output="Nothing found."

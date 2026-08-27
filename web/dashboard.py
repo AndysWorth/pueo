@@ -29,7 +29,7 @@ from config import (
     FEDERATED_CASES_REPO,
     NOTIFY_WATCH_DIR,
 )
-from utils.core.logging import get_logger
+from utils.core.logging import get_logger, set_log_level
 from utils.hitl.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
@@ -57,6 +57,13 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["epoch_to_iso"] = lambda ts: (
     datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
 )
+
+
+_debug_mode_enabled: bool = False
+
+
+class DebugModeRequest(BaseModel):
+    enabled: bool
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -2646,6 +2653,38 @@ async def chat_debug_log(session_id: int) -> Response:
             lines.append(f"[Assistant] {timestamp}")
             lines.append(content)
 
+    # Append log file entries that fall within this session's time window.
+    session_start_ts = session["created_at"]
+    if session_start_ts:
+        try:
+            log_path = _get_dirs().log_dir / "pueo.log"
+            log_lines: list[str] = []
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        entry = json.loads(raw)
+                        ts_str = entry.get("timestamp", "")
+                        if (
+                            ts_str
+                            >= datetime.fromtimestamp(session_start_ts)
+                            .astimezone()
+                            .isoformat()
+                        ):
+                            log_lines.append(raw)
+                    except Exception:  # nosec B112 — skip malformed log lines
+                        continue
+                    if len(log_lines) >= 2000:
+                        break
+            if log_lines:
+                lines.append("")
+                lines.append("=== LOG FILE ENTRIES (debug mode) ===")
+                lines.extend(log_lines)
+        except Exception:
+            pass  # nosec B110 — missing log file is not an error
+
     text = "\n".join(lines) + "\n"
     filename = f"pueo-chat-{session_id}-debug.txt"
     return Response(
@@ -2653,6 +2692,21 @@ async def chat_debug_log(session_id: int) -> Response:
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/chat/debug-mode")
+async def set_chat_debug_mode(body: DebugModeRequest) -> JSONResponse:
+    """Toggle runtime DEBUG logging for the pueo logger."""
+    global _debug_mode_enabled
+    _debug_mode_enabled = body.enabled
+    set_log_level("DEBUG" if body.enabled else "INFO")
+    return JSONResponse({"enabled": _debug_mode_enabled})
+
+
+@app.get("/chat/debug-mode")
+async def get_chat_debug_mode() -> JSONResponse:
+    """Return current debug mode state."""
+    return JSONResponse({"enabled": _debug_mode_enabled})
 
 
 @app.get("/chat/events")
@@ -2865,6 +2919,12 @@ async def _run_chat_loop(
                 (session_id, "pre_inject", content[:2000], time.time()),
             )
 
+    log.info(
+        "chat_session_start",
+        session_id=session_id,
+        message_preview=message[:200],
+        history_turns=len(prior_messages),
+    )
     try:
         agent_loop = AgentLoop(
             llm_client=make_llm_client(),
@@ -2938,6 +2998,12 @@ async def _run_chat_loop(
                 (session_id, "assistant", summary, time.time()),
             )
 
+        log.info(
+            "chat_session_complete",
+            session_id=session_id,
+            outcome=result.outcome,
+            steps=len(result.steps),
+        )
         publish_chat_event(
             {
                 "event_type": "chat_done",
@@ -2946,6 +3012,9 @@ async def _run_chat_loop(
             }
         )
     except Exception as exc:
+        log.error(
+            "chat_session_error", session_id=session_id, error=str(exc), exc_info=True
+        )
         publish_chat_event(
             {
                 "event_type": "chat_error",
