@@ -414,10 +414,11 @@ SEARCH_INTEGRATIONS = ToolDefinition(
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
-        "Check all HA Lovelace dashboards for entity references that no longer exist "
-        "in the entity registry. Returns missing entities with dashboard/view/card location "
-        "plus fuzzy candidate replacements from the same domain. Use when the user reports "
-        "'Entity not found' in a dashboard or Lovelace card."
+        "Check HA Lovelace dashboards for entity references that no longer exist or are "
+        "disabled in the entity registry. Returns missing/disabled entities with "
+        "dashboard/view/card location plus fuzzy candidate replacements from the same domain. "
+        "Use when the user reports 'Entity not found' in a dashboard or Lovelace card. "
+        "Pass 'dashboard' and 'view' to target the exact tab the user is looking at."
     ),
     parameters={
         "type": "object",
@@ -429,9 +430,44 @@ GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
                     "or URL path (e.g. 'lovelace'). Matched case-insensitively. "
                     "Omit to check all dashboards."
                 ),
-            }
+            },
+            "view": {
+                "type": "string",
+                "description": (
+                    "Optional view/tab title or URL path to limit the check to a single tab "
+                    "(e.g. 'Main', 'Home', 'main'). Matched case-insensitively against both "
+                    "the view title and its URL slug. Omit to check all views."
+                ),
+            },
         },
         "required": [],
+    },
+)
+
+EXECUTE_LOCAL_PYTHON = ToolDefinition(
+    name="execute_local_python",
+    description=(
+        "Run a Python snippet locally in the Pueo virtualenv for diagnostic analysis. "
+        "The script runs with all Pueo utilities available (import config, lovelace_utils, etc.) "
+        "and can connect to HA over SSH using asyncssh with the configured credentials. "
+        "Use this to cross-reference multiple HA data sources, test Pueo utilities against real "
+        "HA data, or analyze raw .storage/ files fetched with read_file. "
+        "For diagnosis and analysis only — do not write to files outside temp directories. "
+        "Output (stdout + stderr) is returned, capped at 8000 characters."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "Python source code to execute",
+            },
+            "description": {
+                "type": "string",
+                "description": "One-line description of what this script analyzes",
+            },
+        },
+        "required": ["code", "description"],
     },
 )
 
@@ -1143,6 +1179,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
         GET_DASHBOARD_ENTITY_HEALTH,
+        EXECUTE_LOCAL_PYTHON,
         FINISH_CHAT,
     ):
         reg.register(tool)

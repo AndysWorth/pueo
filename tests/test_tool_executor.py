@@ -1534,3 +1534,126 @@ class TestGetDashboardEntityHealth:
         assert "valid" in result.output.lower()
         # The default dashboard's broken entity must not appear (it was not requested)
         assert "sensor.broken" not in result.output
+
+    def test_view_filter_targets_correct_view(self):
+        """When view= is given, only entities in that view are checked."""
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "tile", "entity": "sensor.home_missing"}],
+                },
+                {
+                    "title": "Main",
+                    "cards": [{"type": "tile", "entity": "sensor.main_missing"}],
+                },
+            ]
+        }
+        ws = self._make_ws([], cfg)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health(view="Main"))
+        assert result.success is True
+        assert "sensor.main_missing" in result.output
+        assert "sensor.home_missing" not in result.output
+
+    def test_view_filter_case_insensitive(self):
+        """view= matching is case-insensitive against view title and path."""
+        cfg = {
+            "views": [
+                {
+                    "title": "Main",
+                    "path": "main",
+                    "cards": [{"type": "tile", "entity": "sensor.target"}],
+                }
+            ]
+        }
+        ws = self._make_ws([], cfg)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health(view="MAIN"))
+        assert result.success is True
+        assert "sensor.target" in result.output
+
+    def test_view_filter_none_scans_all_views(self):
+        """Without view=, entities in all views are reported."""
+        cfg = {
+            "views": [
+                {
+                    "title": "Alpha",
+                    "cards": [{"type": "tile", "entity": "sensor.alpha_missing"}],
+                },
+                {
+                    "title": "Beta",
+                    "cards": [{"type": "tile", "entity": "sensor.beta_missing"}],
+                },
+            ]
+        }
+        ws = self._make_ws([], cfg)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is True
+        assert "sensor.alpha_missing" in result.output
+        assert "sensor.beta_missing" in result.output
+
+
+class TestExecuteLocalPython:
+    """Tests for ToolExecutor._execute_local_python."""
+
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+        )
+
+    def test_returns_stdout_on_success(self):
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor._execute_local_python(
+                code='print("hello world")', description="basic test"
+            )
+        )
+        assert result.success is True
+        assert "hello world" in result.output
+
+    def test_returns_error_on_nonzero_exit(self):
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor._execute_local_python(
+                code="raise ValueError('boom')", description="error test"
+            )
+        )
+        assert result.success is False
+        assert "1" in result.error or "exit" in result.error.lower()
+
+    def test_output_is_truncated_to_limit(self):
+        executor = self._make_executor()
+        # Print 20000 chars worth of output
+        code = "print('x' * 20000)"
+        result = asyncio.run(
+            executor._execute_local_python(code=code, description="truncation test")
+        )
+        assert result.success is True
+        assert len(result.output) <= 8000
+
+    def test_timeout_returns_error(self):
+        import unittest.mock as mock
+
+        executor = self._make_executor()
+        import subprocess
+
+        with mock.patch(
+            "utils.agent.tool_executor.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="python", timeout=60),
+        ):
+            result = asyncio.run(
+                executor._execute_local_python(
+                    code="import time; time.sleep(999)", description="timeout test"
+                )
+            )
+        assert result.success is False
+        assert "timed out" in result.error.lower()
