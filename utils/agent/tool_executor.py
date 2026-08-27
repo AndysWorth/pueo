@@ -1504,12 +1504,22 @@ class ToolExecutor:
                     url_paths = [None]
                 else:
                     canonical = named_lookup[key]
-                    url_paths = [p for p in url_paths if p == canonical or p is None]
+                    url_paths = [canonical]
 
             registry_entries = await self._ws_client.get_entity_registry()
-            registry_ids: set[str] = {
-                e.get("entity_id", "") for e in registry_entries if e.get("entity_id")
-            }
+            # Entities with disabled_by set show as "Entity not found" in Lovelace
+            # exactly like absent entities, so treat them the same way.
+            active_ids: set[str] = set()
+            disabled_ids: dict[str, str] = {}
+            for e in registry_entries:
+                eid = e.get("entity_id", "")
+                if not eid:
+                    continue
+                disabled_by = e.get("disabled_by")
+                if disabled_by:
+                    disabled_ids[eid] = str(disabled_by)
+                else:
+                    active_ids.add(eid)
 
             missing: list[str] = []
             for url_path in url_paths:
@@ -1531,8 +1541,17 @@ class ToolExecutor:
                 label = url_path or "default"
                 refs = _extract_entity_refs(cfg)
                 for ref in refs:
-                    if ref.entity_id not in registry_ids:
-                        candidates = _fuzzy_candidates(ref.entity_id, registry_ids)
+                    if ref.entity_id in active_ids:
+                        continue
+                    if ref.entity_id in disabled_ids:
+                        reason = disabled_ids[ref.entity_id]
+                        missing.append(
+                            f"Dashboard '{label}' / view '{ref.view_title}' / "
+                            f"{ref.path}: {ref.entity_id} is disabled"
+                            f" ({reason}) — re-enable via HA Settings > Integrations"
+                        )
+                    else:
+                        candidates = _fuzzy_candidates(ref.entity_id, active_ids)
                         suggestion = (
                             f" (possible replacements: {', '.join(candidates)})"
                             if candidates

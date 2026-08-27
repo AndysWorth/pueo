@@ -1437,3 +1437,100 @@ class TestGetDashboardEntityHealth:
         assert result.success is True
         assert "config not accessible" in result.output
         assert "file_dash" in result.output
+
+    def test_disabled_entity_flagged_not_silently_passed(self):
+        """Entities with disabled_by set show as 'Entity not found' in Lovelace; tool must report them."""
+        cfg = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [
+                        {"type": "tile", "entity": "water_heater.broken_heater"},
+                        {"type": "tile", "entity": "sensor.good_sensor"},
+                    ],
+                }
+            ]
+        }
+        ws = self._make_ws(
+            entity_ids=[],  # not used directly; we pass full registry below
+            lovelace_cfg=cfg,
+        )
+        # Override entity_registry to have one disabled and one active entity
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                {
+                    "entity_id": "water_heater.broken_heater",
+                    "disabled_by": "config_entry",
+                },
+                {"entity_id": "sensor.good_sensor"},
+            ],
+            lovelace_configs={None: cfg},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is True
+        assert "water_heater.broken_heater" in result.output
+        assert "disabled" in result.output
+        assert "config_entry" in result.output
+        # The active entity must NOT appear in the output
+        assert "sensor.good_sensor" not in result.output
+
+    def test_disabled_entity_not_offered_as_replacement(self):
+        """Disabled entities must not appear in fuzzy replacement suggestions for absent entities."""
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "tile", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            entity_registry=[
+                # sensor.high_tide_level is disabled — must not appear as replacement
+                {"entity_id": "sensor.high_tide_level", "disabled_by": "integration"},
+                {"entity_id": "sensor.something_else"},
+            ],
+            lovelace_configs={None: cfg},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert "sensor.high_tide" in result.output
+        assert "not found" in result.output
+        # Disabled entity must not surface as a replacement candidate
+        assert "sensor.high_tide_level" not in result.output
+
+    def test_named_dashboard_does_not_also_scan_default(self):
+        """When a named dashboard is requested and found, the default dashboard is NOT scanned."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        # Default dashboard has a broken entity; named dashboard is clean
+        default_cfg = {
+            "views": [
+                {
+                    "title": "Default",
+                    "cards": [{"type": "tile", "entity": "sensor.broken"}],
+                }
+            ]
+        }
+        named_cfg = {
+            "views": [
+                {"title": "Named", "cards": [{"type": "tile", "entity": "sensor.good"}]}
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.good"}],
+            lovelace_dashboards=[{"url_path": "my_dash", "title": "My Dash"}],
+            lovelace_configs={None: default_cfg, "my_dash": named_cfg},
+        )
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health(dashboard="My Dash"))
+        assert result.success is True
+        # Named dashboard is healthy — result should say all valid
+        assert "valid" in result.output.lower()
+        # The default dashboard's broken entity must not appear (it was not requested)
+        assert "sensor.broken" not in result.output
