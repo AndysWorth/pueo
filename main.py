@@ -214,6 +214,7 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
 
 async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
     """Embed unembedded successful repair episodes into ChromaDB every 10 minutes."""
+    from utils.agent.supervisor import get_supervisor_instance
     from utils.knowledge.knowledge_store import embed_local_episode
     from utils.repair.repair_episode import get_unembedded_successful_episodes
 
@@ -221,6 +222,9 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
         episodes = get_unembedded_successful_episodes(db_path)
         for ep in episodes:
             await embed_local_episode(ep, knowledge_store, db_path)
+        _sv = get_supervisor_instance()
+        if _sv:
+            _sv.touch("embed_episodes")
         await asyncio.sleep(600)
 
 
@@ -235,6 +239,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     and are covered by the weekly scheduled refresh.
     Subsequent runs fire every interval_hours (default 168 = weekly).
     """
+    from utils.agent.supervisor import get_supervisor_instance
     from utils.core.logging import get_logger as _gl
     from utils.core.timeline import write_timeline_event
 
@@ -265,6 +270,9 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
+            _sv = get_supervisor_instance()
+            if _sv:
+                _sv.touch("rag_refresh")
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
@@ -291,6 +299,9 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
+            _sv = get_supervisor_instance()
+            if _sv:
+                _sv.touch("rag_refresh")
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
@@ -304,6 +315,7 @@ async def _known_issues_poll_loop(
     """Hourly: fire one reminder card for each Known Issue older than reminder_days."""
     import sqlite3
 
+    from utils.agent.supervisor import get_supervisor_instance
     from utils.hitl.hitl_tracker import check_reminders_due, touch_reminder_sent
     from utils.core.logging import get_logger as _gl
 
@@ -333,6 +345,9 @@ async def _known_issues_poll_loop(
                     touch_reminder_sent(conn, issue["card_key"])
         except Exception as exc:
             _log.warning("known_issues_poll_failed", error=str(exc))
+        _sv = get_supervisor_instance()
+        if _sv:
+            _sv.touch("known_issues_poll")
 
 
 async def supervisor_main(config_path: Path) -> None:
@@ -515,6 +530,7 @@ async def supervisor_main(config_path: Path) -> None:
                     from utils.core.logging import get_logger as _gl
 
                     _gl("main").warning("ha_profile_refresh_failed", exc=str(exc))
+                supervisor.touch("profile_refresh")
                 await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
 
         supervisor.start("profile_refresh", _profile_refresh_loop)
@@ -549,6 +565,7 @@ async def supervisor_main(config_path: Path) -> None:
                 )
             except Exception as e:  # pragma: no cover  # nosec B110
                 _log.warning("archive_retention_loop_failed", error=str(e))
+            supervisor.touch("backup_sync")
 
     supervisor.start("backup_sync", _backup_reconcile_loop)
 
