@@ -88,6 +88,10 @@ class TestRegistryMembership:
         assert "restart_netalertx" in reg
         assert "rewrite_netalertx_conf" in reg
 
+    def test_chat_registry_includes_dashboard_health(self):
+        reg = build_chat_tool_registry()
+        assert "get_dashboard_entity_health" in reg
+
     def test_ha_registry_excludes_query_netalertx(self):
         # Sandbox engine executor has no NAX client; the tool would always error.
         reg = build_ha_tool_registry()

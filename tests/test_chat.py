@@ -2690,3 +2690,141 @@ class TestPreInjectStoredInDB:
             injected
         ), "context_inject_callback must have fired when knowledge was injected"
         assert "strategy" in injected[0]
+
+
+# ---------------------------------------------------------------------------
+# TestKnowledgeInjectionOrdering
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeInjectionOrdering:
+    """_pre_inject_knowledge uses user question (not HA profile) as query text."""
+
+    class _CapturingKnowledgeStore:
+        """Records the query_text passed to query()."""
+
+        def __init__(self):
+            self.captured_query: str = ""
+
+        def query(self, query_text, top_k=3, min_score=0.0, **_kw):
+            self.captured_query = query_text
+            return []
+
+    def _run_loop(self, db_path, store, executor_extra=None):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            knowledge_store=store,
+        )
+        return loop
+
+    def test_knowledge_query_uses_user_question_not_ha_profile(self, db_path):
+        """ChromaDB must receive the user question, not the injected HA profile text."""
+        store = self._CapturingKnowledgeStore()
+        loop = self._run_loop(db_path, store)
+        user_question = "Why is my Lovelace showing entity not found?"
+        asyncio.run(loop.run(user_question))
+        # The captured query must start with the original question, not profile text.
+        assert store.captured_query.startswith(
+            user_question[:50]
+        ), f"Expected query to start with user question, got: {store.captured_query!r}"
+
+    def test_context_ordering_question_before_ha_profile(self, db_path):
+        """Final user message must read [question] -> [knowledge] -> [HA profile]."""
+        from utils.knowledge.knowledge_store import KnowledgeChunk
+
+        class _ReturnsChunk:
+            def query(self, query_text, **_kw):
+                return [
+                    KnowledgeChunk(
+                        text="KNOWLEDGE_BLOCK",
+                        source="seed",
+                        collection="strategies",
+                        score=0.9,
+                    )
+                ]
+
+        captured_messages: list[list[dict]] = []
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        class _CapturingLLM(FakeToolCallingLLMClient):
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                captured_messages.append(list(messages))
+                return await super().chat_with_tools(
+                    model, messages, tools, options=options
+                )
+
+        llm = _CapturingLLM(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_chat",
+                                "arguments": {"summary": "done"},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_chat_tool_registry
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+        loop = AgentLoop(
+            llm_client=llm,
+            tool_executor=ex,
+            tool_registry=build_chat_tool_registry(),
+            terminal_tool_name="finish_chat",
+            max_tool_calls=5,
+            max_wall_seconds=10.0,
+            knowledge_store=_ReturnsChunk(),
+        )
+        asyncio.run(loop.run("USER_QUESTION"))
+
+        assert captured_messages, "LLM must have been called"
+        first_call = captured_messages[0]
+        user_msg = next(m for m in first_call if m["role"] == "user")
+        content = user_msg["content"]
+        q_pos = content.find("USER_QUESTION")
+        k_pos = content.find("KNOWLEDGE_BLOCK")
+        assert q_pos != -1, "User question not found in context"
+        assert k_pos != -1, "Knowledge block not found in context"
+        assert (
+            q_pos < k_pos
+        ), "User question must appear before knowledge block in context"

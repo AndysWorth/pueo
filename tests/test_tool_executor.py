@@ -1307,3 +1307,72 @@ class TestSearchIntegrations:
         result = asyncio.run(executor._search_integrations("zha"))
         assert result.success is True
         assert "ZHA" in result.output
+
+
+class TestGetDashboardEntityHealth:
+    """Tests for ToolExecutor._get_dashboard_entity_health."""
+
+    def _make_executor(self, ws=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            ha_ws_client=ws,
+        )
+
+    def _make_ws(self, entity_ids, lovelace_cfg):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        return FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": e} for e in entity_ids],
+            lovelace_configs={None: lovelace_cfg},
+        )
+
+    def test_missing_entity_returned(self):
+        cfg = {
+            "views": [
+                {"title": "Home", "cards": [{"type": "entity", "entity": "light.gone"}]}
+            ]
+        }
+        ws = self._make_ws(["light.living_room"], cfg)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is True
+        assert "light.gone" in result.output
+        assert "not found" in result.output
+
+    def test_no_missing_entities(self):
+        cfg = {
+            "views": [
+                {"title": "Home", "cards": [{"type": "entity", "entity": "light.lamp"}]}
+            ]
+        }
+        ws = self._make_ws(["light.lamp"], cfg)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is True
+        assert "valid" in result.output.lower()
+
+    def test_ws_client_none_returns_error(self):
+        executor = self._make_executor(ws=None)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is False
+        assert "HA_API_TOKEN" in result.error
+
+    def test_ws_error_propagates_as_tool_error(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class _BrokenWS(FakeHAWebSocketClient):
+            async def get_entity_registry(self):
+                raise RuntimeError("connection lost")
+
+        ws = _BrokenWS()
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(executor._get_dashboard_entity_health())
+        assert result.success is False
+        assert "connection lost" in result.error

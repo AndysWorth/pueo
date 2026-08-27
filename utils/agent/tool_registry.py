@@ -411,6 +411,29 @@ SEARCH_INTEGRATIONS = ToolDefinition(
     },
 )
 
+GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
+    name="get_dashboard_entity_health",
+    description=(
+        "Check all HA Lovelace dashboards for entity references that no longer exist "
+        "in the entity registry. Returns missing entities with dashboard/view/card location "
+        "plus fuzzy candidate replacements from the same domain. Use when the user reports "
+        "'Entity not found' in a dashboard or Lovelace card."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "dashboard": {
+                "type": "string",
+                "description": (
+                    "Optional URL path of a specific dashboard (e.g. 'lovelace'). "
+                    "Omit to check all dashboards."
+                ),
+            }
+        },
+        "required": [],
+    },
+)
+
 GET_DISK_USAGE = ToolDefinition(
     name="get_disk_usage",
     description=(
@@ -424,8 +447,9 @@ GET_DISK_USAGE = ToolDefinition(
 FINISH_CHAT = ToolDefinition(
     name="finish_chat",
     description=(
-        "Signal that the chat response is complete. "
-        "Call with a plain-language summary of what you found or did."
+        "Deliver your response to the user. This is the ONLY way the user "
+        "sees your answer — plain text responses are invisible to them. "
+        "Always call this as your final action with a complete, helpful summary."
     ),
     parameters={
         "type": "object",
@@ -1117,6 +1141,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         SEARCH_LOG,
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
+        GET_DASHBOARD_ENTITY_HEALTH,
         FINISH_CHAT,
     ):
         reg.register(tool)

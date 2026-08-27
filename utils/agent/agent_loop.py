@@ -243,7 +243,7 @@ class AgentLoop:
         return episode.id
 
     def _pre_inject_ha_profile(self, initial_context: str) -> str:
-        """Prepend a compact HA profile block to the initial context.
+        """Append a compact HA profile block to the initial context.
 
         Best-effort — any failure returns the original context unchanged.
         """
@@ -253,22 +253,25 @@ class AgentLoop:
             summary = self._executor.get_ha_profile_summary()
             if summary == "HA environment profile not yet available.":
                 return initial_context
-            return f"{summary}\n\n---\n{initial_context}"
+            return f"{initial_context}\n\n---\n{summary}"
         except Exception as exc:
             log.warning("ha_profile_injection_failed", error=str(exc))
             return initial_context
 
-    def _pre_inject_knowledge(self, initial_context: str) -> str:
-        """Query the knowledge store and prepend results to the initial context.
+    def _pre_inject_knowledge(self, initial_context: str, query_text: str = "") -> str:
+        """Query the knowledge store and append results to the initial context.
 
         Best-effort — any failure returns the original context unchanged.
         Capped at 1,000 tokens via truncate_to_budget.
+        The query_text parameter should be the original user question so
+        ChromaDB searches user intent rather than the injected HA profile.
         """
         from utils.core.context import truncate_to_budget
 
+        effective_query = (query_text or initial_context)[:500]
         try:
             chunks = self._knowledge_store.query(  # type: ignore[union-attr]
-                query_text=initial_context[:500],
+                query_text=effective_query,
                 top_k=3,
                 min_score=0.35,
             )
@@ -282,7 +285,7 @@ class AgentLoop:
             parts.append(f"\n{chunk.text}")
         block = truncate_to_budget("\n".join(parts), 1000)
         log.debug("agent_loop_knowledge_injected", runbooks_found=len(chunks))
-        return f"{block}\n\n---\n{initial_context}"
+        return f"{initial_context}\n\n---\n{block}"
 
     def _per_call_timeout_seconds(self) -> float:
         """Compute the per-call LLM timeout from historical latency data.
@@ -387,16 +390,22 @@ class AgentLoop:
         """
         self._executor.reset()
 
-        initial_context = self._pre_inject_ha_profile(initial_context)
+        # Save the raw user question before any injection so ChromaDB gets
+        # user intent, not the prepended HA profile block.
+        knowledge_query = initial_context[:500]
 
         if self._knowledge_store is not None:
-            enriched = self._pre_inject_knowledge(initial_context)
+            enriched = self._pre_inject_knowledge(
+                initial_context, query_text=knowledge_query
+            )
             if (
                 enriched != initial_context
                 and self._context_inject_callback is not None
             ):
                 self._context_inject_callback(enriched[:1000])
             initial_context = enriched
+
+        initial_context = self._pre_inject_ha_profile(initial_context)
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
@@ -641,10 +650,11 @@ class AgentLoop:
                             )
                         else:
                             nudge = (
-                                "Your response was not a valid tool call. Call the "
-                                "next appropriate tool now. If investigation is "
-                                f"complete, call {self._terminal_tool_name} with "
-                                f'your findings in the "summary" field.'
+                                "Your response was not a valid tool call. "
+                                "The user cannot see plain text — it is not delivered. "
+                                "Call the next appropriate tool now, or if investigation "
+                                f"is complete call {self._terminal_tool_name} with "
+                                'your findings in the "summary" field.'
                             )
                     messages.append({"role": "user", "content": nudge})
                     continue
