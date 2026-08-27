@@ -726,6 +726,16 @@ class AgentLoop:
                     tool=tool_call.name,
                     success=tool_result.success,
                 )
+                log.debug(
+                    "agent_loop_tool_detail",
+                    step=tool_call_count,
+                    tool=tool_call.name,
+                    args_preview=str(tool_call.arguments)[:300],
+                    output_preview=(
+                        str(tool_result.output)[:300] if tool_result.output else ""
+                    ),
+                    success=tool_result.success,
+                )
 
                 if tool_call.name == self._terminal_tool_name:
                     episode_stub = {

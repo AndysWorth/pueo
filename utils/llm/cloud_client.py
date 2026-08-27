@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import config
+from utils.core.logging import get_logger
+
+log = get_logger("llm.cloud")
 
 
 def _adapt_tool_schema(tool: dict) -> dict:
@@ -236,6 +240,16 @@ class ClaudeAPIClient:
         request, then normalizes the response back to the Ollama-shaped dict that
         agent_loop.py expects.
         """
+        t0 = time.monotonic()
+        log.debug(
+            "llm_request",
+            model=model,
+            messages_count=len(messages),
+            tools_count=len(tools) if tools else 0,
+            last_user_msg=(
+                str(messages[-1].get("content", ""))[:300] if messages else ""
+            ),
+        )
         self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
         anthropic_tools = [_adapt_tool_schema(t) for t in tools]
@@ -278,4 +292,11 @@ class ClaudeAPIClient:
         if tool_calls:
             result["tool_calls"] = tool_calls
 
+        log.debug(
+            "llm_response",
+            model=model,
+            tool_calls=[tc["function"]["name"] for tc in tool_calls],
+            content_preview=str(result.get("content", ""))[:300],
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
         return result

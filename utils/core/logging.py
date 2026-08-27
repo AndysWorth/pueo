@@ -151,3 +151,8 @@ def set_correlation_id(cid: str) -> None:
 def get_correlation_id() -> str:
     """Return the active correlation ID, or empty string if none is set."""
     return _correlation_id.get("")
+
+
+def set_log_level(level: str) -> None:
+    """Change the effective log level of the pueo logger at runtime (no restart)."""
+    logging.getLogger("pueo").setLevel(getattr(logging, level.upper(), logging.INFO))
