@@ -37,6 +37,48 @@ The investigation loop already handles evidence gathering and hypothesis formati
 - The dashboard timeline gains a `disk_recovery_investigation` event row showing the model's hypothesis and chosen action sequence
 - Tests must cover: investigation success (mock returns report, assert actions match report), investigation failure (mock raises, assert heuristic runs), unknown action_key (assert warning logged, not raised)
 
+## Implementation detail — `finish_investigation` schema
+
+The terminal tool for disk-recovery investigation sessions. The LLM calls it with:
+
+```json
+{
+  "summary": "Plain-English diagnosis of root cause(s)",
+  "root_causes": ["..."],
+  "auto_actions": [{"name": "...", "description": "...", "estimated_impact": "...", "reversible": true, "risk_level": "LOW", "action_key": "..."}],
+  "hitl_actions": [...],
+  "manual_only": ["..."],
+  "knowledge_sources": ["chunk/source refs used"],
+  "confidence": 0.85
+}
+```
+
+`action_key` is the dispatch key that maps the LLM's chosen action to a concrete Python function in `disk_recovery.py`. An unrecognised `action_key` is silently skipped with a warning.
+
+**Three-tier classification:**
+- `auto_actions` — LOW risk, reversible or acceptable loss, no service interruption → executed immediately without approval
+- `hitl_actions` — MEDIUM/HIGH risk, or meaningful data loss or downtime → surfaced as a `CARD_TYPE_DISK_RECOVERY` approval card
+- `manual_only` — requires physical access, hypervisor changes, or human judgment on content → listed in the card body only
+
+**Disk-space action tiers (implemented in `utils/disk/disk_recovery.py`):**
+
+Auto-safe (run immediately):
+- Truncate `/config/home-assistant.log` — can free 100 MB–28 GB; HA keeps the file handle open
+- Vacuum systemd journal to ≤200 MB — typically saves 1–5 GB
+- `recorder.purge(keep_days=30, repack=False)` — frees logical space quickly
+
+Approval-required:
+- `recorder.purge(repack=True)` — physical compaction; needs ~2.5× DB size in free space
+- Aggressive purge (keep_days=7) — larger history loss
+- Clear `/mnt/data/supervisor/tmp/` — orphaned failed-backup temp files (up to 60 GB)
+- Delete old backups from HA — irreversible without a confirmed local copy
+
+Manual-only:
+- Expanding the VM disk (hypervisor action)
+- Deciding which camera recordings or media files to keep
+
+The schema is domain-agnostic — `run_investigation()` in `utils/agent/investigation_loop.py` uses the same `finish_investigation` tool for any topic; only the `action_key` values and dispatch table are domain-specific.
+
 ## Related decisions
 - [ADR 002 — Safety invariant](002-safety-invariant.md): disk recovery does not write HA config; the backup-before-write invariant does not apply. But any recovery action that deletes a backup must confirm the backup is offloaded to Pueo storage first (the SHA-256 gate in the evaluation matrix).
 - [ADR 005 — asyncio over agentic framework](005-asyncio-over-agentic-framework.md): `investigate_with_fallback()` is itself an asyncio coroutine; no framework change required.

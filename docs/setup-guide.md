@@ -347,8 +347,6 @@ Setup symlinks `bin/pueo` to `/usr/local/bin/pueo`.
 
 Override any directory with environment variables: `PUEO_CONFIG_DIR`, `PUEO_DATA_DIR`, `PUEO_STATE_DIR`, `PUEO_CACHE_DIR`, `PUEO_LOG_DIR`.
 
-**Upgrading from an older checkout-based layout?** Run `pueo --mode migrate-paths` once to move existing data from the repo root into the platform directories.
-
 ### Docker
 
 | Container path | Volume | Contents |
