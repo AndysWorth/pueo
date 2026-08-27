@@ -181,7 +181,7 @@ class ToolExecutor:
         log.debug(
             "tool_execute_args",
             tool=name,
-            args={k: str(v)[:200] for k, v in (args or {}).items()},
+            tool_args={k: str(v)[:200] for k, v in (args or {}).items()},
         )
         try:
             if name == "read_config":

@@ -14,6 +14,8 @@ _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "correlation_id", default=""
 )
 
+_STDLIB_PASSTHROUGH = frozenset({"exc_info", "stack_info", "stacklevel"})
+
 _STANDARD_ATTRS = frozenset(
     {
         "name",
@@ -89,7 +91,8 @@ class StructuredLogger:
         cid = _correlation_id.get("")
         if cid:
             kwargs.setdefault("correlation_id", cid)
-        self._logger.log(level, event, extra=kwargs)
+        passthrough = {k: kwargs.pop(k) for k in _STDLIB_PASSTHROUGH if k in kwargs}
+        self._logger.log(level, event, extra=kwargs, **passthrough)
 
     def debug(self, event: str, **kwargs: Any) -> None:
         self._log(logging.DEBUG, event, **kwargs)
