@@ -2296,10 +2296,12 @@ class TestSupervisorMain:
         assert len(received_store) == 1
         assert isinstance(received_store[0], _FakeChroma)
 
-    def test_supervisor_skips_knowledge_store_when_path_missing(
-        self, monkeypatch, tmp_path
-    ):
-        """ToolExecutor receives knowledge_store=None when CHROMADB_PATH does not exist."""
+    def test_supervisor_always_inits_knowledge_store(self, monkeypatch, tmp_path):
+        """ToolExecutor receives a non-None knowledge_store even when CHROMADB_PATH doesn't exist.
+
+        ChromaDB creates the directory automatically, so the chroma_path.exists() guard
+        was removed. knowledge_store is now always constructed during supervisor startup.
+        """
         config_path = self._make_config(tmp_path)
         self._patch_all(monkeypatch, config_path)
 
@@ -2322,7 +2324,7 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
 
         assert len(received_store) == 1
-        assert received_store[0] is None
+        assert received_store[0] is not None
 
 
 # ── check_ha_version ─────────────────────────────────────────────────────────────
