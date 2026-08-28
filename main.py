@@ -38,8 +38,14 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         fetch_hacs_changelog,
     )
 
+    from utils.core.timeline import write_timeline_event
+
     ha_url = f"http://{config.HA_HOST}:{config.HA_API_PORT}"
     ha_token = config.HA_API_TOKEN
+
+    write_timeline_event(
+        "INFO", "rag_refresh", "RAG refresh started (manual/scheduled)"
+    )
 
     # ── 1. HA release notes ──────────────────────────────────────────────────
     print(
@@ -168,6 +174,9 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     print(f"[rag-refresh]   → seeded {n_strategies} strategy document(s)")
 
     total = n_ha + n_hacs + n_docs + n_concepts + n_cases + n_strategies
+    write_timeline_event(
+        "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
+    )
     print(
         f"[rag-refresh] Done. Embedded content from {total} file(s) "
         f"across 6 collections."
@@ -464,17 +473,10 @@ async def supervisor_main(config_path: Path) -> None:
 
         _ks_log = _get_logger("main")
         chroma_path = Path(cfg.CHROMADB_PATH)
-        if chroma_path.exists():
-            knowledge_store = ChromaKnowledgeStore(
-                str(chroma_path), cfg.RAG_EMBED_MODEL, cfg.OLLAMA_ENDPOINT
-            )
-            _ks_log.info("knowledge_store_ready", path=str(chroma_path))
-        else:
-            _ks_log.warning(
-                "knowledge_store_missing",
-                path=str(chroma_path),
-                hint="Run --mode rag-refresh to populate it",
-            )
+        knowledge_store = ChromaKnowledgeStore(
+            str(chroma_path), cfg.RAG_EMBED_MODEL, cfg.OLLAMA_ENDPOINT
+        )
+        _ks_log.info("knowledge_store_ready", path=str(chroma_path))
     except Exception as exc:  # pragma: no cover
         _get_logger("main").warning("knowledge_store_init_failed", error=str(exc))
 
