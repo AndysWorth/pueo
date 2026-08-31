@@ -344,8 +344,17 @@ class AgentLoop:
             "(3) If you cannot make progress, summarize what you learned."
         )
         timeout = self._review_timeout(steps, elapsed)
+        review_messages = messages + [{"role": "user", "content": review_prompt}]
+        log.debug(
+            "limit_review_start",
+            reason=reason,
+            total_calls_used=total_calls_used,
+            elapsed=round(elapsed, 1),
+            timeout=round(timeout, 1),
+            review_prompt=review_prompt[:500],
+            messages_count=len(review_messages),
+        )
         try:
-            review_messages = messages + [{"role": "user", "content": review_prompt}]
             response = await asyncio.wait_for(
                 self._llm.chat(
                     model=self._model,
@@ -355,9 +364,17 @@ class AgentLoop:
                 ),
                 timeout=timeout,
             )
-            return LimitReviewDecision.model_validate_json(
+            decision = LimitReviewDecision.model_validate_json(
                 response["message"]["content"]
             )
+            log.info(
+                "limit_review_decision",
+                can_resolve=decision.can_resolve_with_more,
+                additional_calls=decision.additional_calls_requested,
+                reason_limit_hit=decision.reason_limit_hit[:120],
+                summary=decision.summary_if_giving_up[:120],
+            )
+            return decision
         except Exception:
             log.warning("limit_review_failed", timeout_used=timeout)
             return LimitReviewDecision(

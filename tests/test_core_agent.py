@@ -10951,6 +10951,128 @@ class TestAgentLoop:
         assert "read_config" in trace
         assert "OK" in trace
 
+    def test_limit_review_decision_emitted_info(self, monkeypatch, caplog):
+        """limit_review_decision is logged at INFO after a successful limit review."""
+        import logging
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        give_up = LimitReviewDecision(
+            reason_limit_hit="hit budget",
+            can_resolve_with_more=False,
+            summary_if_giving_up="nothing found",
+        )
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        loop, _ = self._make_review_loop(
+            call_sequence=[read_call],
+            review_response_json=give_up.model_dump_json(),
+            budget=1,
+        )
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        with caplog.at_level(logging.INFO, logger="pueo.agent_loop"):
+            asyncio.run(loop.run("Check config"))
+
+        events = [r.msg for r in caplog.records]
+        assert "limit_review_decision" in events
+        rec = next(r for r in caplog.records if r.msg == "limit_review_decision")
+        assert hasattr(rec, "can_resolve")
+        assert hasattr(rec, "additional_calls")
+
+    def test_limit_review_start_emitted_debug(self, monkeypatch, caplog):
+        """limit_review_start is logged at DEBUG before the LLM call fires."""
+        import logging
+        from utils.agent.agent_loop import LimitReviewDecision
+
+        give_up = LimitReviewDecision(
+            reason_limit_hit="hit budget",
+            can_resolve_with_more=False,
+            summary_if_giving_up="nothing found",
+        )
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+        loop, _ = self._make_review_loop(
+            call_sequence=[read_call],
+            review_response_json=give_up.model_dump_json(),
+            budget=1,
+        )
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        with caplog.at_level(logging.DEBUG, logger="pueo.agent_loop"):
+            asyncio.run(loop.run("Check config"))
+
+        events = [r.msg for r in caplog.records]
+        assert "limit_review_start" in events
+        rec = next(r for r in caplog.records if r.msg == "limit_review_start")
+        assert hasattr(rec, "reason")
+        assert hasattr(rec, "total_calls_used")
+
+    def test_limit_review_start_emitted_even_on_timeout(self, monkeypatch, caplog):
+        """limit_review_start fires before wait_for; limit_review_decision absent on timeout."""
+        import asyncio as _asyncio
+        import logging
+        from utils.agent.agent_loop import AgentLoop, LimitReviewDecision
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolDefinition, ToolRegistry
+
+        read_call = {
+            "tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]
+        }
+
+        class _SlowClient:
+            async def chat(self, model, messages, options, format):
+                await _asyncio.sleep(10)  # longer than the forced 50 ms timeout
+                return {
+                    "message": {
+                        "content": LimitReviewDecision(
+                            reason_limit_hit="x",
+                            can_resolve_with_more=False,
+                            summary_if_giving_up="",
+                        ).model_dump_json()
+                    }
+                }
+
+            async def chat_with_tools(self, model, messages, tools, options=None):
+                return {"role": "assistant", **read_call}
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair", "apply_fix"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=name,
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_SlowClient(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=1,
+            max_wall_seconds=30.0,
+        )
+        # Force a very short review timeout so wait_for cancels quickly
+        loop._review_timeout = lambda steps, elapsed: 0.05  # type: ignore[method-assign]
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        with caplog.at_level(logging.DEBUG, logger="pueo.agent_loop"):
+            asyncio.run(loop.run("Check config"))
+
+        events = [r.msg for r in caplog.records]
+        assert "limit_review_start" in events, "start must fire before wait_for"
+        assert (
+            "limit_review_decision" not in events
+        ), "decision must not fire on timeout"
+        assert "limit_review_failed" in events, "warning must fire on exception"
+
 
 class TestRunRagRefresh:
     """Tests for run_rag_refresh() — all network-dependent functions are mocked."""

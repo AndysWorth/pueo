@@ -192,6 +192,20 @@ class ClaudeAPIClient:
         forces the model to call it, then returns the input field as JSON content
         in the same shape OllamaClient.chat() returns: {"message": {"content": "..."}}
         """
+        t0 = time.monotonic()
+        log.debug(
+            "llm_request",
+            model=model,
+            call_type="chat",
+            messages_count=len(messages),
+            last_user_msg=(
+                str(messages[-1].get("content", ""))[:300] if messages else ""
+            ),
+            messages_summary=[
+                {"role": m["role"], "preview": str(m.get("content", ""))[:200]}
+                for m in messages
+            ],
+        )
         _SCHEMA_TOOL_NAME = "structured_output"
         tools = [
             {
@@ -223,8 +237,23 @@ class ClaudeAPIClient:
 
         for block in response.content:
             if getattr(block, "type", "") == "tool_use":
+                content_preview = json.dumps(block.input)[:300]
+                log.debug(
+                    "llm_response",
+                    model=model,
+                    call_type="chat",
+                    content_preview=content_preview,
+                    duration_ms=round((time.monotonic() - t0) * 1000),
+                )
                 return {"message": {"content": json.dumps(block.input)}}
 
+        log.debug(
+            "llm_response",
+            model=model,
+            call_type="chat",
+            content_preview="{}",
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
         return {"message": {"content": "{}"}}
 
     async def chat_with_tools(
@@ -249,6 +278,10 @@ class ClaudeAPIClient:
             last_user_msg=(
                 str(messages[-1].get("content", ""))[:300] if messages else ""
             ),
+            messages_summary=[
+                {"role": m["role"], "preview": str(m.get("content", ""))[:200]}
+                for m in messages
+            ],
         )
         self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
