@@ -283,6 +283,27 @@ class TestFakeWsGetEntityRegistry:
         assert result == []
 
 
+class TestFakeWsGetStates:
+    def test_returns_states_list(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        states = [
+            {"entity_id": "sensor.high_tide", "state": "2.3"},
+            {"entity_id": "light.lamp", "state": "on"},
+        ]
+        ws = FakeHAWebSocketClient(states=states)
+        result = asyncio.run(ws.get_states())
+        assert result == states
+        assert "get_states" in ws.calls
+
+    def test_empty_by_default(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.get_states())
+        assert result == []
+
+
 class TestFakeWsLovelace:
     def test_get_lovelace_dashboards(self):
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
@@ -618,6 +639,177 @@ class TestPollMissingEntity:
         asyncio.run(_run())
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
+
+    def test_unregistered_but_present_in_states_no_card(self, tmp_path):
+        """Entities in hass.states but not the registry are not truly missing."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [
+                        {
+                            "type": "entities",
+                            "title": "Gloucester Harbor (tomorrow)",
+                            "entities": ["sensor.high_tide"],
+                        }
+                    ],
+                }
+            ]
+        }
+        # entity_registry is empty (no unique_id), but hass.states has the entity
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 0  # suppressed — entity has state
+        assert "get_states" in ws.calls
+
+    def test_absent_from_both_registry_and_states_fires_card(self, tmp_path):
+        """Entities absent from both registry and hass.states do fire a card."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "entity", "entity": "sensor.truly_gone"}],
+                }
+            ]
+        }
+        # Neither registry nor hass.states has the entity
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.something_else", "state": "ok"}],
+        )
+        analysis_json = json.dumps(
+            {
+                "explanation": "Deleted.",
+                "likely_cause": "deleted",
+                "action": "remove",
+                "proposed_entity_id": None,
+            }
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient(analysis_json)
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.truly_gone"
+
+    def test_rich_payload_fields_present(self, tmp_path):
+        """Card payload includes dashboard_url_path, card_title, and dash_url."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        dashy_cfg = {
+            "views": [
+                {
+                    "title": "Weather",
+                    "cards": [
+                        {
+                            "type": "entities",
+                            "title": "Harbor Tides",
+                            "entities": ["sensor.truly_gone"],
+                        }
+                    ],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_dashboards=[{"url_path": "dashboard-dashy", "title": "Dashy"}],
+            lovelace_configs={"dashboard-dashy": dashy_cfg},
+            states=[],
+        )
+        analysis_json = json.dumps(
+            {
+                "explanation": "Deleted.",
+                "likely_cause": "deleted",
+                "action": "remove",
+                "proposed_entity_id": None,
+            }
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient(analysis_json)
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        p = notifier.sent[0]["payload"]
+        assert p["dashboard_url_path"] == "dashboard-dashy"
+        assert p["dashboard_title"] == "Dashy"
+        assert p["card_title"] == "Harbor Tides"
+        assert "dashboard-dashy" in p["dash_url"]
+        assert "sensor.truly_gone" in p["body"]
 
     def test_sections_layout_missing_entity(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues

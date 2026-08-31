@@ -112,6 +112,58 @@ class TestExtractEntityRefs:
         }
         assert "person.alice" in self._extract(cfg)
 
+    def test_card_title_captured(self):
+        from utils.ha.lovelace_utils import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [
+                        {
+                            "type": "entities",
+                            "title": "Gloucester Harbor (tomorrow)",
+                            "entities": ["sensor.high_tide"],
+                        }
+                    ],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(cfg)
+        assert len(refs) == 1
+        assert refs[0].card_title == "Gloucester Harbor (tomorrow)"
+
+    def test_dashboard_metadata_threaded(self):
+        from utils.ha.lovelace_utils import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "entity", "entity": "light.ceiling"}],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(
+            cfg, dashboard_url_path="dashboard-custom", dashboard_title="Custom Dash"
+        )
+        assert refs[0].dashboard_url_path == "dashboard-custom"
+        assert refs[0].dashboard_title == "Custom Dash"
+
+    def test_card_without_title_defaults_empty(self):
+        from utils.ha.lovelace_utils import _extract_entity_refs
+
+        cfg = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "entity", "entity": "switch.fan"}],
+                }
+            ]
+        }
+        refs = _extract_entity_refs(cfg)
+        assert refs[0].card_title == ""
+
 
 class TestFuzzyCandidates:
     """_fuzzy_candidates returns same-domain entities ranked by edit distance."""

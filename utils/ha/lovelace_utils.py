@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -12,14 +13,27 @@ class EntityRef:
     card_index: int
     path: str
     view_path: str = ""
+    dashboard_url_path: Optional[str] = None
+    dashboard_title: str = ""
+    card_title: str = ""
 
 
-def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
+def _extract_entity_refs(
+    lovelace_cfg: dict,
+    *,
+    dashboard_url_path: Optional[str] = None,
+    dashboard_title: str = "",
+) -> list[EntityRef]:
     """Walk the Lovelace card tree and return all entity_id references."""
     refs: dict[str, EntityRef] = {}  # deduplicate by entity_id
 
     def _add(
-        entity_id: str, view_title: str, card_index: int, path: str, view_path: str
+        entity_id: str,
+        view_title: str,
+        card_index: int,
+        path: str,
+        view_path: str,
+        card_title: str = "",
     ) -> None:
         if not entity_id or not isinstance(entity_id, str):
             return
@@ -30,13 +44,21 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
                 card_index=card_index,
                 path=path,
                 view_path=view_path,
+                dashboard_url_path=dashboard_url_path,
+                dashboard_title=dashboard_title,
+                card_title=card_title,
             )
 
     def _walk_entity(
-        val: object, view_title: str, card_index: int, path: str, view_path: str
+        val: object,
+        view_title: str,
+        card_index: int,
+        path: str,
+        view_path: str,
+        card_title: str = "",
     ) -> None:
         if isinstance(val, str):
-            _add(val, view_title, card_index, path, view_path)
+            _add(val, view_title, card_index, path, view_path, card_title)
         elif isinstance(val, dict):
             _add(
                 val.get("entity") or val.get("entity_id") or "",
@@ -44,6 +66,7 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
                 card_index,
                 path,
                 view_path,
+                card_title,
             )
 
     def _walk_card(
@@ -51,19 +74,32 @@ def _extract_entity_refs(lovelace_cfg: dict) -> list[EntityRef]:
     ) -> None:
         if not isinstance(card, dict):
             return
+        card_title: str = card.get("title", "") or ""
         prefix = f"card[{card_index}]"
         if depth > 0:
             prefix += f".nested[{depth}]"
 
         entity = card.get("entity") or card.get("entity_id") or ""
         if entity:
-            _add(entity, view_title, card_index, prefix + ".entity", view_path)
+            _add(
+                entity,
+                view_title,
+                card_index,
+                prefix + ".entity",
+                view_path,
+                card_title,
+            )
 
         entities = card.get("entities", [])
         if isinstance(entities, list):
             for ent in entities:
                 _walk_entity(
-                    ent, view_title, card_index, prefix + ".entities", view_path
+                    ent,
+                    view_title,
+                    card_index,
+                    prefix + ".entities",
+                    view_path,
+                    card_title,
                 )
 
         for nested in card.get("cards", []):
