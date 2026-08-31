@@ -6362,3 +6362,100 @@ class TestPueoStatusEndpoint:
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
         assert response.json()["activity"] == "executing"
+
+
+# ---------------------------------------------------------------------------
+# _patch_unique_id — pure function tests
+# ---------------------------------------------------------------------------
+
+
+class TestPatchUniqueId:
+    def test_inserts_unique_id_into_sensor_block(self):
+        from web.dashboard import _patch_unique_id
+
+        config_text = (
+            "sensor:\n"
+            "  high_tide:\n"
+            "    platform: template\n"
+            "    value_template: \"{{ states('sensor.raw') }}\"\n"
+        )
+        result = _patch_unique_id(config_text, "sensor.high_tide", "sensor_high_tide")
+        assert result is not None
+        assert "unique_id: sensor_high_tide" in result
+        # Original content preserved
+        assert "platform: template" in result
+
+    def test_returns_none_when_entity_not_found(self):
+        from web.dashboard import _patch_unique_id
+
+        config_text = "homeassistant:\n  name: Home\n"
+        result = _patch_unique_id(config_text, "sensor.missing", "sensor_missing")
+        assert result is None
+
+    def test_returns_none_when_unique_id_already_present(self):
+        from web.dashboard import _patch_unique_id
+
+        config_text = (
+            "sensor:\n"
+            "  high_tide:\n"
+            "    unique_id: already_set\n"
+            "    platform: template\n"
+        )
+        result = _patch_unique_id(config_text, "sensor.high_tide", "sensor_high_tide")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# approve() form-data capture for unregistered_entity cards
+# ---------------------------------------------------------------------------
+
+
+class TestApproveUnregisteredEntity:
+    def test_unique_id_override_stored_in_payload(self, tmp_path, monkeypatch):
+        import json as _json
+        import time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        nid = "unreg-1"
+        (tmp_path / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Unregistered entity",
+                    "body": "sensor.high_tide has no unique_id",
+                    "payload": {
+                        "card_type": "unregistered_entity",
+                        "entity_id": "sensor.high_tide",
+                        "proposed_unique_id": "sensor_high_tide",
+                    },
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+
+        executed: list[dict] = []
+
+        async def _fake_execute(nid_, data_, jpath_, wdir_):
+            executed.append(
+                {"payload": _json.loads(jpath_.read_text()).get("payload", {})}
+            )
+            (wdir_ / f"{nid_}.approved").touch()
+
+        monkeypatch.setitem(
+            dashboard._CARD_DISPATCH,
+            dashboard.CARD_TYPE_UNREGISTERED_ENTITY,
+            _fake_execute,
+        )
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            f"/approve/{nid}",
+            data={"unique_id_override": "my_custom_id"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert len(executed) == 1
+        assert executed[0]["payload"]["unique_id_override"] == "my_custom_id"

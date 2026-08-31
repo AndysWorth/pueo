@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity") or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -201,6 +201,27 @@
           <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("sandbox_output", "") }}</pre>
         </details>
         {% endif %}
+      </div>
+      {% endif %}
+      {% if ct == "unregistered_entity" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;">
+          <strong>Entity:</strong> <code>{{ r.payload.get("entity_id", "") }}</code>
+          {% if r.payload.get("dash_url") %}
+          &nbsp;·&nbsp;<a href="{{ r.payload.dash_url }}" target="_blank" rel="noopener">View dashboard</a>
+          {% endif %}
+        </p>
+        {% if r.payload.get("card_title") %}
+        <p style="margin:0 0 0.4rem;"><strong>Card:</strong> {{ r.payload.card_title }}</p>
+        {% endif %}
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;">
+          This entity has no <code>unique_id</code> in its YAML definition. HA cannot rename,
+          disable, or area-assign it until one is added.
+        </p>
+        <details open>
+          <summary><span class="section-label label-evidence">YAML to add</span>Add this to the entity block</summary>
+          <pre style="white-space:pre-wrap;word-break:break-all;">{{ r.payload.get("yaml_hint", "") }}</pre>
+        </details>
       </div>
       {% endif %}
       {% if ct == "netalertx_new_device" %}
@@ -377,6 +398,9 @@
             {% set hint_approve = "Acknowledge this dashboard entity issue (no config change)" %}
             {% set hint_reject = "Skip; no action taken" %}
           {% endif %}
+        {% elif ct == "unregistered_entity" %}
+          {% set hint_approve = "Write unique_id to HA config (best-effort) or record the snippet for manual addition" %}
+          {% set hint_reject = "Skip; entity remains unregistered" %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}
@@ -389,9 +413,24 @@
         <strong style="color:#222;">Defer</strong> — Ask again in 24 hours
         {% if _sk %}&nbsp;·&nbsp;<strong style="color:#222;">Suppress</strong> — Add to Known Issues; no more cards until the condition resolves{% endif %}
       </p>
+      {% if ct == "unregistered_entity" %}
+      <form method="POST" action="/approve/{{ r.notification_id }}">
+        <label style="font-size:0.82rem;display:block;margin-bottom:0.3rem;">
+          unique_id (edit before approving):
+        </label>
+        <input type="text" name="unique_id_override"
+               value="{{ r.payload.get('proposed_unique_id', '') }}"
+               style="font-family:monospace;font-size:0.88rem;padding:0.25rem 0.4rem;
+                      border:1px solid #aaa;border-radius:4px;width:22rem;max-width:100%;
+                      margin-bottom:0.4rem;">
+        <br>
+        <button class="btn btn-approve" type="submit">Approve</button>
+      </form>
+      {% else %}
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Approve</button>
       </form>
+      {% endif %}
       <form method="POST" action="/reject/{{ r.notification_id }}">
         <button class="btn btn-reject" type="submit">Reject</button>
       </form>
