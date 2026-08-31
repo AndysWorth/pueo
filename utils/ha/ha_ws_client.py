@@ -124,6 +124,18 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def get_states(self) -> list[dict]:
+        """Return all current HA entity states via get_states WS command."""
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "get_states"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"get_states request failed: {msg}")
+            return msg.get("result", [])
+        finally:
+            await ws.close()
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -172,6 +184,7 @@ class FakeHAWebSocketClient:
         lovelace_dashboards: list[dict] | None = None,
         lovelace_configs: dict | None = None,
         lovelace_config_not_found: set[str] | None = None,
+        states: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -183,6 +196,7 @@ class FakeHAWebSocketClient:
         self._lovelace_configs: dict = lovelace_configs or {}
         # url_path values for which get_lovelace_config should raise LovelaceConfigNotFound.
         self._lovelace_config_not_found: set[str] = lovelace_config_not_found or set()
+        self._states: list[dict] = states or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -204,6 +218,10 @@ class FakeHAWebSocketClient:
     async def get_entity_registry(self) -> list[dict]:
         self.calls.append("get_entity_registry")
         return list(self._entity_registry)
+
+    async def get_states(self) -> list[dict]:
+        self.calls.append("get_states")
+        return list(self._states)
 
     async def get_lovelace_dashboards(self) -> list[dict]:
         self.calls.append("get_lovelace_dashboards")

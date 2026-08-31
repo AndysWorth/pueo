@@ -147,6 +147,12 @@ async def poll_for_dashboard_entity_issues(
                 log.warning("lovelace_dashboard_list_failed", error=str(exc))
                 named = []
 
+            dash_titles = {
+                d.get("url_path"): d.get("title", d.get("url_path", ""))
+                for d in named
+                if d.get("url_path")
+            }
+
             url_paths: list[Optional[str]] = [None] + [  # type: ignore[assignment]
                 d.get("url_path") for d in named if d.get("url_path")
             ]
@@ -155,8 +161,13 @@ async def poll_for_dashboard_entity_issues(
             merged_refs: dict[str, EntityRef] = {}
             for url_path in url_paths:
                 try:
-                    cfg = await _ws.get_lovelace_config(url_path)
-                    for ref in _extract_entity_refs(cfg):
+                    lovelace_cfg = await _ws.get_lovelace_config(url_path)
+                    dash_title = dash_titles.get(url_path, "") if url_path else ""
+                    for ref in _extract_entity_refs(
+                        lovelace_cfg,
+                        dashboard_url_path=url_path,
+                        dashboard_title=dash_title,
+                    ):
                         if ref.entity_id not in merged_refs:
                             merged_refs[ref.entity_id] = ref
                 except Exception as exc:  # nosec B110
@@ -175,10 +186,29 @@ async def poll_for_dashboard_entity_issues(
             continue
 
         registry_ids = {e.get("entity_id", "") for e in registry if e.get("entity_id")}
+
+        # Fetch hass.states once if any refs fall outside the registry.
+        # Entities defined in YAML without unique_id appear in hass.states but not
+        # the entity registry — they are valid, not missing.
+        state_ids: set[str] = set()
+        if any(ref.entity_id not in registry_ids for ref in entity_refs):
+            try:
+                states_raw = await _ws.get_states()
+                state_ids = {s["entity_id"] for s in states_raw if s.get("entity_id")}
+            except Exception:
+                state_ids = set()
+
         active_missing: set[str] = set()
 
         for ref in entity_refs:
             if ref.entity_id in registry_ids:
+                continue
+            if ref.entity_id in state_ids:
+                log.debug(
+                    "lovelace_entity_unregistered",
+                    entity_id=ref.entity_id,
+                    note="has state but no unique_id; not truly missing",
+                )
                 continue
             active_missing.add(ref.entity_id)
             card_key = f"dashboard_entity:{ref.entity_id}"
@@ -189,9 +219,24 @@ async def poll_for_dashboard_entity_issues(
 
             analysis = await _analyze_missing_entity(ref, registry, llm_client)
 
+            base = f"http://{_cfg.HA_HOST}:8123"
+            if ref.dashboard_url_path:
+                dash_url = f"{base}/{ref.dashboard_url_path}"
+                dash_label = ref.dashboard_title or ref.dashboard_url_path
+            else:
+                dash_url = f"{base}/lovelace"
+                dash_label = "Default"
+            if ref.view_path:
+                dash_url += f"/{ref.view_path}"
+            card_label = (
+                f'"{ref.card_title}"' if ref.card_title else f"card {ref.card_index}"
+            )
+            location = f"{dash_label} → {ref.view_title} → {card_label}"
             description = (
-                f"Dashboard entity missing: {ref.entity_id} "
-                f"(view: {ref.view_title}, card {ref.card_index})"
+                f"Dashboard entity missing: {ref.entity_id}\n"
+                f"Dashboard: {location}\n"
+                f"Navigate to: {dash_url}\n"
+                f"(view: {ref.view_title}, card {ref.card_index}, field: {ref.path})"
             )
             title = f"Missing dashboard entity: {ref.entity_id}"
             body_parts = [
@@ -217,6 +262,10 @@ async def poll_for_dashboard_entity_issues(
                 "likely_cause": analysis.likely_cause,
                 "explanation": analysis.explanation,
                 "proposed_entity_id": analysis.proposed_entity_id,
+                "dashboard_url_path": ref.dashboard_url_path,
+                "dashboard_title": ref.dashboard_title,
+                "card_title": ref.card_title,
+                "dash_url": dash_url,
                 "title": title,
                 "body": "\n".join(body_parts),
             }
