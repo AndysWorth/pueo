@@ -42,6 +42,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_OPEN_PR,
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
+    CARD_TYPE_UNREGISTERED_ENTITY,
     CARD_TYPE_UPDATE,
 )
 
@@ -1427,6 +1428,93 @@ async def _execute_dashboard_entity_fix(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+def _patch_unique_id(config_text: str, entity_id: str, unique_id: str) -> str | None:
+    """
+    Best-effort insertion of a unique_id line into a YAML entity block.
+
+    Looks for a dict-key matching the entity_id suffix (e.g. ``  high_tide:`` for
+    ``sensor.high_tide``).  If found and the block does not already have a
+    ``unique_id:`` key, inserts the line at the same indentation level.
+    Returns the patched text, or None when the pattern was not found.
+    """
+    suffix = entity_id.split(".", 1)[-1] if "." in entity_id else entity_id
+    lines = config_text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if stripped.endswith(f"{suffix}:") and stripped.lstrip() == f"{suffix}:":
+            indent = len(line) - len(line.lstrip())
+            window = lines[i + 1 : i + 10]
+            if any("unique_id:" in ln for ln in window):
+                return None  # already has one
+            lines.insert(i + 1, " " * indent + f"unique_id: {unique_id}\n")
+            return "".join(lines)
+    return None
+
+
+async def _execute_unregistered_entity(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Handle an approved unregistered-entity card — best-effort unique_id write."""
+    import config as _config
+
+    payload = data.get("payload", {})
+    entity_id = payload.get("entity_id", "")
+    unique_id = payload.get("unique_id_override", "").strip() or payload.get(
+        "proposed_unique_id", ""
+    )
+
+    try:
+        from utils.ha.ssh_client import AsyncSSHClient
+        from agents.ha_agent_sandbox_engine import (
+            execute_remote_backup,
+            record_backup_slug,
+        )
+
+        ssh = AsyncSSHClient()
+        try:
+            config_text = await ssh.read_file(_config.CONFIG_REMOTE_PATH)
+        except Exception:
+            config_text = ""
+
+        write_succeeded = False
+        if config_text:
+            patched = _patch_unique_id(config_text, entity_id, unique_id)
+            if patched and patched != config_text:
+                slug = await execute_remote_backup(ssh_client=ssh)
+                record_backup_slug(slug)
+                await ssh.write_file(_config.CONFIG_REMOTE_PATH, patched)
+                rc, _, _ = await ssh.run("ha core check")
+                if rc == 0:
+                    write_succeeded = True
+                    data["fix_applied"] = True
+                    data["fix_backup_slug"] = slug
+                    log.info(
+                        "unregistered_entity_unique_id_written",
+                        entity_id=entity_id,
+                        unique_id=unique_id,
+                    )
+                else:
+                    await ssh.write_file(_config.CONFIG_REMOTE_PATH, config_text)
+                    log.warning("unregistered_entity_check_failed", entity_id=entity_id)
+
+        if not write_succeeded:
+            data["fix_note"] = (
+                f"Could not automatically patch YAML. "
+                f"Add  unique_id: {unique_id}  to the entity definition for {entity_id}."
+            )
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()  # card served its purpose
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 _CARD_DISPATCH: dict[
     str,
     Any,
@@ -1442,11 +1530,12 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_CLOUD_ESCALATION: _execute_cloud_escalation,
     CARD_TYPE_OPEN_PR: _execute_open_pr,
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
+    CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
 }
 
 
 @app.post("/approve/{nid}")
-async def approve(nid: str) -> RedirectResponse:
+async def approve(nid: str, request: Request = None) -> RedirectResponse:  # type: ignore[assignment]
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
@@ -1486,6 +1575,13 @@ async def approve(nid: str) -> RedirectResponse:
                 return RedirectResponse(
                     url=f"/queue?order_error={blocker}", status_code=303
                 )
+
+        if card_type == CARD_TYPE_UNREGISTERED_ENTITY and request is not None:
+            form = await request.form()
+            override = str(form.get("unique_id_override", "")).strip()
+            if override:
+                data["payload"]["unique_id_override"] = override
+                json_path.write_text(json.dumps(data, indent=2))
 
         handler = _CARD_DISPATCH.get(card_type)
         if handler:

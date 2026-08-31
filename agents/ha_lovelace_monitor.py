@@ -115,7 +115,10 @@ async def poll_for_dashboard_entity_issues(
 ) -> None:
     """Polling loop — checks all Lovelace dashboards for missing entity references."""
     import config as _cfg
-    from utils.hitl.card_types import CARD_TYPE_DASHBOARD_ENTITY
+    from utils.hitl.card_types import (
+        CARD_TYPE_DASHBOARD_ENTITY,
+        CARD_TYPE_UNREGISTERED_ENTITY,
+    )
     from utils.ha.ha_ws_client import HAWebSocketClient
     from utils.hitl.hitl_tracker import (
         mark_card_resolved,
@@ -199,26 +202,13 @@ async def poll_for_dashboard_entity_issues(
                 state_ids = set()
 
         active_missing: set[str] = set()
+        active_unregistered: set[str] = set()
 
         for ref in entity_refs:
             if ref.entity_id in registry_ids:
                 continue
-            if ref.entity_id in state_ids:
-                log.debug(
-                    "lovelace_entity_unregistered",
-                    entity_id=ref.entity_id,
-                    note="has state but no unique_id; not truly missing",
-                )
-                continue
-            active_missing.add(ref.entity_id)
-            card_key = f"dashboard_entity:{ref.entity_id}"
 
-            with sqlite3.connect(_db_path) as conn:
-                if not should_send_card(conn, card_key):
-                    continue
-
-            analysis = await _analyze_missing_entity(ref, registry, llm_client)
-
+            # Compute dash_url once; used by both card paths below.
             base = f"http://{_cfg.HA_HOST}:8123"
             if ref.dashboard_url_path:
                 dash_url = f"{base}/{ref.dashboard_url_path}"
@@ -228,6 +218,72 @@ async def poll_for_dashboard_entity_issues(
                 dash_label = "Default"
             if ref.view_path:
                 dash_url += f"/{ref.view_path}"
+
+            if ref.entity_id in state_ids:
+                # Entity has state but no unique_id — propose adding one.
+                proposed_unique_id = ref.entity_id.replace(".", "_")
+                card_key = f"unregistered_entity:{ref.entity_id}"
+                active_unregistered.add(ref.entity_id)
+
+                with sqlite3.connect(_db_path) as conn:
+                    if not should_send_card(conn, card_key):
+                        continue
+
+                location_str = f"{dash_label} → {ref.view_title}"
+                if ref.card_title:
+                    location_str += f' → "{ref.card_title}"'
+                yaml_hint = f"  unique_id: {proposed_unique_id}"
+                description = (
+                    f"Entity {ref.entity_id!r} has no unique_id — "
+                    f"it cannot be renamed, disabled, or area-assigned in HA.\n"
+                    f"Location: {location_str}\n"
+                    f"Proposed unique_id: {proposed_unique_id}"
+                )
+                title = f"Unregistered entity: {ref.entity_id}"
+                body_parts = [
+                    description,
+                    "",
+                    "Add this to the entity's YAML definition:",
+                    yaml_hint,
+                ]
+                unreg_payload: dict = {
+                    "notification_id": stable_nid(card_key),
+                    "card_type": CARD_TYPE_UNREGISTERED_ENTITY,
+                    "suppression_key": card_key,
+                    "entity_id": ref.entity_id,
+                    "proposed_unique_id": proposed_unique_id,
+                    "yaml_hint": yaml_hint,
+                    "view_title": ref.view_title,
+                    "card_title": ref.card_title,
+                    "dashboard_url_path": ref.dashboard_url_path,
+                    "dashboard_title": ref.dashboard_title,
+                    "dash_url": dash_url,
+                    "title": title,
+                    "body": "\n".join(body_parts),
+                }
+                with sqlite3.connect(_db_path) as conn:
+                    mark_card_sent(
+                        conn, card_key, CARD_TYPE_UNREGISTERED_ENTITY, description
+                    )
+                await _notifier.send(
+                    subject=title,
+                    body="\n".join(body_parts),
+                    payload=unreg_payload,
+                )
+                log.info(
+                    "lovelace_unregistered_entity_card_sent", entity_id=ref.entity_id
+                )
+                continue
+
+            active_missing.add(ref.entity_id)
+            card_key = f"dashboard_entity:{ref.entity_id}"
+
+            with sqlite3.connect(_db_path) as conn:
+                if not should_send_card(conn, card_key):
+                    continue
+
+            analysis = await _analyze_missing_entity(ref, registry, llm_client)
+
             card_label = (
                 f'"{ref.card_title}"' if ref.card_title else f"card {ref.card_index}"
             )
@@ -284,7 +340,7 @@ async def poll_for_dashboard_entity_issues(
                 likely_cause=analysis.likely_cause,
             )
 
-        # Reconcile: mark resolved any card whose entity has since reappeared.
+        # Reconcile missing-entity cards.
         with sqlite3.connect(_db_path) as conn:
             pending_rows = conn.execute(
                 "SELECT card_key FROM hitl_suppression"
@@ -297,5 +353,22 @@ async def poll_for_dashboard_entity_issues(
                 with sqlite3.connect(_db_path) as conn:
                     mark_card_resolved(conn, pending_key)
                 log.info("lovelace_entity_resolved", entity_id=pending_entity_id)
+
+        # Reconcile unregistered-entity cards: resolve when entity gains a unique_id.
+        with sqlite3.connect(_db_path) as conn:
+            unreg_rows = conn.execute(
+                "SELECT card_key FROM hitl_suppression"
+                " WHERE card_type = ? AND resolved_at IS NULL",
+                (CARD_TYPE_UNREGISTERED_ENTITY,),
+            ).fetchall()
+        for (pending_key,) in unreg_rows:
+            pending_entity_id = pending_key.removeprefix("unregistered_entity:")
+            if pending_entity_id in registry_ids:
+                with sqlite3.connect(_db_path) as conn:
+                    mark_card_resolved(conn, pending_key)
+                log.info(
+                    "lovelace_unregistered_entity_resolved",
+                    entity_id=pending_entity_id,
+                )
 
         await asyncio.sleep(_interval * 60)

@@ -4,6 +4,7 @@ asyncssh
 chromadb
 fastapi
 httpx
+python-multipart
 jinja2
 ollama
 platformdirs

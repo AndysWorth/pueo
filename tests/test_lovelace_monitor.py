@@ -640,8 +640,8 @@ class TestPollMissingEntity:
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
 
-    def test_unregistered_but_present_in_states_no_card(self, tmp_path):
-        """Entities in hass.states but not the registry are not truly missing."""
+    def test_unregistered_but_present_in_states_fires_unique_id_card(self, tmp_path):
+        """Entities in hass.states but not the registry get an unregistered_entity card."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
@@ -689,8 +689,11 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        assert len(notifier.sent) == 0  # suppressed — entity has state
         assert "get_states" in ws.calls
+        assert len(notifier.sent) == 1
+        p = notifier.sent[0]["payload"]
+        assert p["card_type"] == "unregistered_entity"
+        assert p["entity_id"] == "sensor.high_tide"
 
     def test_absent_from_both_registry_and_states_fires_card(self, tmp_path):
         """Entities absent from both registry and hass.states do fire a card."""
@@ -864,6 +867,113 @@ class TestPollMissingEntity:
         asyncio.run(_run())
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_section"
+
+    def test_unregistered_entity_fires_unique_id_card(self, tmp_path):
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.high_tide"}],
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        p = notifier.sent[0]["payload"]
+        assert p["card_type"] == "unregistered_entity"
+        assert p["entity_id"] == "sensor.high_tide"
+        assert p["proposed_unique_id"] == "sensor_high_tide"
+        assert "unique_id: sensor_high_tide" in p["yaml_hint"]
+
+    def test_unregistered_entity_resolves_when_registered(self, tmp_path):
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+
+        # Pre-seed: entity was previously flagged as unregistered.
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(
+                conn,
+                "unregistered_entity:sensor.high_tide",
+                "unregistered_entity",
+                "has no unique_id",
+            )
+
+        # Next poll: entity now appears in the registry.
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.high_tide"}],
+            lovelace_configs={None: lovelace},
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'unregistered_entity:sensor.high_tide'"
+            ).fetchone()
+        assert row is not None and row[0] is not None
 
 
 # ---------------------------------------------------------------------------
