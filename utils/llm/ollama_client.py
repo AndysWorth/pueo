@@ -27,7 +27,21 @@ class OllamaClient:
         options: dict,
         format: dict,
     ) -> Any:
-        return await asyncio.to_thread(
+        t0 = time.monotonic()
+        log.debug(
+            "llm_request",
+            model=model,
+            call_type="chat",
+            messages_count=len(messages),
+            last_user_msg=(
+                str(messages[-1].get("content", ""))[:300] if messages else ""
+            ),
+            messages_summary=[
+                {"role": m["role"], "preview": str(m.get("content", ""))[:200]}
+                for m in messages
+            ],
+        )
+        resp = await asyncio.to_thread(
             lambda: self._client.chat(
                 model=model,
                 messages=messages,
@@ -35,6 +49,16 @@ class OllamaClient:
                 format=format,
             )
         )
+        log.debug(
+            "llm_response",
+            model=model,
+            call_type="chat",
+            content_preview=str(
+                getattr(getattr(resp, "message", None), "content", "") or ""
+            )[:300],
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        return resp
 
     async def chat_with_tools(
         self,
@@ -52,6 +76,10 @@ class OllamaClient:
             last_user_msg=(
                 str(messages[-1].get("content", ""))[:300] if messages else ""
             ),
+            messages_summary=[
+                {"role": m["role"], "preview": str(m.get("content", ""))[:200]}
+                for m in messages
+            ],
         )
         resp = await asyncio.to_thread(
             lambda: self._client.chat(
