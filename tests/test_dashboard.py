@@ -6072,3 +6072,93 @@ class TestExecuteCodeProposalPath:
                 "SELECT name FROM registered_tools WHERE name='my_tool'"
             ).fetchone()
         assert row is not None, "Tool must be recorded in registered_tools"
+
+
+class TestPueoStatusEndpoint:
+    def test_returns_starting_when_no_supervisor(self, monkeypatch, pueo_dirs):
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        with unittest.mock.patch(
+            "utils.agent.supervisor.get_supervisor_instance", return_value=None
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "starting"
+
+    def test_returns_monitoring_when_all_healthy(self, monkeypatch, pueo_dirs):
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "monitoring"
+
+    def test_returns_error_when_loop_errored(self, monkeypatch, pueo_dirs):
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        broken = [
+            LoopStatus(name="ha_log", status="running"),
+            LoopStatus(name="resource_poll", status="error"),
+        ]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = broken
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["activity"] == "error"
+        assert "resource_poll" in data["detail"]
+
+    def test_returns_repairing_when_active_repair_loop(self, monkeypatch, pueo_dirs):
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+        fake_loop = object()
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=fake_loop
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "repairing"

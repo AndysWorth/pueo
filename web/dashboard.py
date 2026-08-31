@@ -448,6 +448,27 @@ async def ha_status_check() -> JSONResponse:  # pragma: no cover
         return JSONResponse({"reachable": False, "auth_error": False, "version": None})
 
 
+@app.get("/api/pueo-status")
+async def pueo_status() -> JSONResponse:
+    """Return a simple activity summary for the navbar status pill."""
+    from utils.agent.supervisor import get_supervisor_instance, get_active_repair_loop
+
+    sv = get_supervisor_instance()
+    if not sv:
+        return JSONResponse({"activity": "starting", "detail": "Supervisor not ready"})
+    statuses = sv.get_statuses()
+    error_loops = [s.name for s in statuses if s.status == "error"]
+    if error_loops:
+        return JSONResponse(
+            {"activity": "error", "detail": f"Loop error: {', '.join(error_loops)}"}
+        )
+    if any(s.status == "starting" for s in statuses):
+        return JSONResponse({"activity": "starting", "detail": "Loops starting"})
+    if get_active_repair_loop() is not None:
+        return JSONResponse({"activity": "repairing", "detail": "Repair in progress"})
+    return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
+
+
 @app.get("/events")
 async def sse_events() -> StreamingResponse:
     """Server-Sent Events stream — pushes loop_status and resource events to the browser."""
