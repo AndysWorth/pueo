@@ -10975,18 +10975,23 @@ class TestRunRagRefresh:
         monkeypatch.setattr("config.RAG_HACS_CACHE_DIR", str(tmp_path / "hacs"))
         monkeypatch.setattr("config.RAG_HA_DOCS_CACHE_DIR", str(tmp_path / "docs"))
 
-    def test_produces_progress_output(self, tmp_path, monkeypatch, capsys):
+    def test_produces_progress_output(self, tmp_path, monkeypatch, caplog):
+        import logging
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         self._patch_network(monkeypatch, tmp_path)
+        # pueo logger has propagate=False; enable it so caplog can capture records.
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
         store = FakeKnowledgeStore()
-        main_module.run_rag_refresh(store)
-        out = capsys.readouterr().out
-        assert "rag-refresh" in out
-        assert "HA release note" in out
-        assert "HACS" in out
-        assert "integration doc" in out
+        with caplog.at_level(logging.INFO, logger="pueo.rag_refresh"):
+            main_module.run_rag_refresh(store)
+        events = [r.msg for r in caplog.records]
+        assert "rag_refresh_step" in events
+        assert any(
+            getattr(r, "step", "") in ("fetch_release_notes", "discover_hacs")
+            for r in caplog.records
+        )
 
     def test_embeds_ha_release_notes(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
@@ -11044,16 +11049,22 @@ class TestRunRagRefresh:
         assert len(results) > 0
         assert results[0].collection == "ha_integration_docs"
 
-    def test_skips_hacs_discovery_when_no_token(self, tmp_path, monkeypatch, capsys):
+    def test_skips_hacs_discovery_when_no_token(self, tmp_path, monkeypatch, caplog):
+        import logging
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
         import main as main_module
 
         self._patch_network(monkeypatch, tmp_path)
         monkeypatch.setattr("config.HA_API_TOKEN", "")
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
         store = FakeKnowledgeStore()
-        main_module.run_rag_refresh(store)
-        out = capsys.readouterr().out
-        assert "no HA API token" in out
+        with caplog.at_level(logging.INFO, logger="pueo.rag_refresh"):
+            main_module.run_rag_refresh(store)
+        skip_records = [
+            r for r in caplog.records if r.msg == "rag_refresh_step_skipped"
+        ]
+        reasons = [getattr(r, "reason", "") for r in skip_records]
+        assert "no_ha_token" in reasons
 
     def test_discover_integrations_failure_is_logged(self, monkeypatch, caplog):
         """discover_installed_integrations logs a warning on network failure."""
