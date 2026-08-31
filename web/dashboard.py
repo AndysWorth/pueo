@@ -466,6 +466,12 @@ async def pueo_status() -> JSONResponse:
         return JSONResponse({"activity": "starting", "detail": "Loops starting"})
     if get_active_repair_loop() is not None:
         return JSONResponse({"activity": "repairing", "detail": "Repair in progress"})
+    from utils.agent.supervisor import get_active_triage_count
+
+    if get_active_triage_count() > 0:
+        return JSONResponse(
+            {"activity": "triaging", "detail": "Log triage in progress"}
+        )
     return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
 
 

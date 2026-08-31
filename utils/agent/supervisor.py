@@ -31,6 +31,9 @@ _supervisor_instance: "LoopSupervisor | None" = None
 # Active repair AgentLoop (set when a repair loop starts; cleared when it ends)
 _active_repair_loop: Any = None
 
+# Count of concurrent one-shot triage inference calls in flight
+_active_triage_count: int = 0
+
 
 def set_active_repair_loop(loop: Any) -> None:
     global _active_repair_loop
@@ -39,6 +42,20 @@ def set_active_repair_loop(loop: Any) -> None:
 
 def get_active_repair_loop() -> Any:
     return _active_repair_loop
+
+
+def increment_active_triage() -> None:
+    global _active_triage_count
+    _active_triage_count += 1
+
+
+def decrement_active_triage() -> None:
+    global _active_triage_count
+    _active_triage_count = max(0, _active_triage_count - 1)
+
+
+def get_active_triage_count() -> int:
+    return _active_triage_count
 
 
 def publish_event(event: dict) -> None:
