@@ -451,7 +451,13 @@ async def ha_status_check() -> JSONResponse:  # pragma: no cover
 @app.get("/api/pueo-status")
 async def pueo_status() -> JSONResponse:
     """Return a simple activity summary for the navbar status pill."""
-    from utils.agent.supervisor import get_supervisor_instance, get_active_repair_loop
+    from utils.agent.supervisor import (
+        get_active_chat_count,
+        get_active_repair_loop,
+        get_active_triage_count,
+        get_rag_refreshing,
+        get_supervisor_instance,
+    )
 
     sv = get_supervisor_instance()
     if not sv:
@@ -466,11 +472,19 @@ async def pueo_status() -> JSONResponse:
         return JSONResponse({"activity": "starting", "detail": "Loops starting"})
     if get_active_repair_loop() is not None:
         return JSONResponse({"activity": "repairing", "detail": "Repair in progress"})
-    from utils.agent.supervisor import get_active_triage_count
-
     if get_active_triage_count() > 0:
         return JSONResponse(
             {"activity": "triaging", "detail": "Log triage in progress"}
+        )
+    if any(Path(NOTIFY_WATCH_DIR).glob("*.in_progress")):
+        return JSONResponse(
+            {"activity": "executing", "detail": "Running approved action"}
+        )
+    if get_active_chat_count() > 0:
+        return JSONResponse({"activity": "chatting", "detail": "Chat in progress"})
+    if get_rag_refreshing():
+        return JSONResponse(
+            {"activity": "refreshing", "detail": "Refreshing knowledge base"}
         )
     return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
 
@@ -2871,10 +2885,16 @@ async def _run_chat_loop(
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import get_notifier
     from utils.llm.llm_factory import make_llm_client
-    from utils.agent.supervisor import get_supervisor_instance, publish_chat_event
+    from utils.agent.supervisor import (
+        decrement_active_chat,
+        get_supervisor_instance,
+        increment_active_chat,
+        publish_chat_event,
+    )
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import AgentStep, ToolCall, build_chat_tool_registry
 
+    increment_active_chat()
     sv = get_supervisor_instance()
     executor: ToolExecutor
     if (
@@ -3051,6 +3071,8 @@ async def _run_chat_loop(
                 "error": str(exc),
             }
         )
+    finally:
+        decrement_active_chat()
 
 
 @app.get("/episodes", response_class=HTMLResponse)
