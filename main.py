@@ -38,7 +38,10 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         fetch_hacs_changelog,
     )
 
+    from utils.core.logging import get_logger
     from utils.core.timeline import write_timeline_event
+
+    _log = get_logger("rag_refresh")
 
     ha_url = f"http://{config.HA_HOST}:{config.HA_API_PORT}"
     ha_token = config.HA_API_TOKEN
@@ -48,53 +51,64 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     )
 
     # ── 1. HA release notes ──────────────────────────────────────────────────
-    print(
-        f"[rag-refresh] Fetching HA release notes "
-        f"(last {config.RAG_HA_VERSIONS_TO_FETCH} versions)…"
+    _log.info(
+        "rag_refresh_step",
+        step="fetch_release_notes",
+        versions=config.RAG_HA_VERSIONS_TO_FETCH,
     )
     n_fetched_notes = fetch_ha_release_notes(
         config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, config.RAG_HA_VERSIONS_TO_FETCH
     )
-    print(f"[rag-refresh]   → {n_fetched_notes} new version(s) downloaded")
+    _log.info(
+        "rag_refresh_step_done", step="fetch_release_notes", fetched=n_fetched_notes
+    )
 
-    print("[rag-refresh] Fetching HA blog posts for stub releases…")
+    _log.info("rag_refresh_step", step="fetch_blog_stubs")
     n_blog = fetch_blog_release_notes(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR)
-    print(f"[rag-refresh]   → {n_blog} stub(s) replaced with blog content")
+    _log.info("rag_refresh_step_done", step="fetch_blog_stubs", replaced=n_blog)
 
-    print("[rag-refresh] Embedding HA release notes…")
+    _log.info("rag_refresh_step", step="embed_release_notes")
     ha_ids: set[str] = set()
     n_ha = scrape_cached_release_notes(
         config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR, store, ha_ids
     )
-    print(f"[rag-refresh]   → embedded {n_ha} version(s)")
+    _log.info("rag_refresh_step_done", step="embed_release_notes", embedded=n_ha)
     if ha_ids:
         store.prune("ha_release_notes", ha_ids)
 
     # ── 2. HACS changelogs ───────────────────────────────────────────────────
-    print("[rag-refresh] Discovering HACS integrations from HA…")
+    _log.info("rag_refresh_step", step="discover_hacs")
     if ha_token:
         hacs_pairs = discover_hacs_integrations(ha_url, ha_token)
         slugs = [s for s, _ in hacs_pairs]
-        slug_list = ", ".join(slugs) if slugs else "none found"
-        print(f"[rag-refresh]   → {len(hacs_pairs)} integration(s): {slug_list}")
+        _log.info(
+            "rag_refresh_step_done",
+            step="discover_hacs",
+            count=len(hacs_pairs),
+            integrations=slugs,
+        )
         for slug, repo in hacs_pairs:
             fetch_hacs_changelog(slug, repo, config.RAG_HACS_CACHE_DIR)
     else:
-        print("[rag-refresh]   → skipped (no HA API token configured)")
+        _log.info(
+            "rag_refresh_step_skipped", step="discover_hacs", reason="no_ha_token"
+        )
 
-    print("[rag-refresh] Embedding HACS changelogs…")
+    _log.info("rag_refresh_step", step="embed_hacs")
     hacs_ids: set[str] = set()
     n_hacs = embed_cached_changelogs(config.RAG_HACS_CACHE_DIR, store, hacs_ids)
-    print(f"[rag-refresh]   → embedded {n_hacs} changelog(s)")
+    _log.info("rag_refresh_step_done", step="embed_hacs", embedded=n_hacs)
     if hacs_ids:
         store.prune("hacs_changelogs", hacs_ids)
 
     # ── 3. HA integration docs ───────────────────────────────────────────────
-    print("[rag-refresh] Discovering installed HA integrations…")
+    _log.info("rag_refresh_step", step="discover_integrations")
     n_fetched_docs = n_cached_docs = n_missing_docs = 0
     if ha_token:
         domains = discover_installed_integrations(ha_url, ha_token)
-        print(f"[rag-refresh]   → {len(domains)} domain(s) active")
+        _log.info(
+            "rag_refresh_step_done", step="discover_integrations", domains=len(domains)
+        )
         for domain in domains:
             result = fetch_integration_doc(domain, config.RAG_HA_DOCS_CACHE_DIR)
             if result == 1:
@@ -103,39 +117,46 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
                 n_cached_docs += 1
             else:
                 n_missing_docs += 1
-        print(
-            f"[rag-refresh]   → {n_fetched_docs} new, "
-            f"{n_cached_docs} cached, "
-            f"{n_missing_docs} not on ha.io"
+        _log.info(
+            "rag_refresh_integration_docs_fetched",
+            fetched=n_fetched_docs,
+            cached=n_cached_docs,
+            missing=n_missing_docs,
         )
     else:
-        print("[rag-refresh]   → skipped (no HA API token configured)")
+        _log.info(
+            "rag_refresh_step_skipped",
+            step="discover_integrations",
+            reason="no_ha_token",
+        )
 
-    print("[rag-refresh] Embedding HA integration docs…")
+    _log.info("rag_refresh_step", step="embed_integration_docs")
     docs_ids: set[str] = set()
     n_docs = embed_cached_integration_docs(
         config.RAG_HA_DOCS_CACHE_DIR, store, docs_ids
     )
-    print(f"[rag-refresh]   → embedded {n_docs} doc(s)")
+    _log.info("rag_refresh_step_done", step="embed_integration_docs", embedded=n_docs)
     if docs_ids:
         store.prune("ha_integration_docs", docs_ids)
 
     # ── 3.5. HA concept docs ────────────────────────────────────────────────
-    print("[rag-refresh] Fetching HA concept docs (Lovelace, entities, automation…)…")
     from utils.knowledge.ha_concepts_scraper import (
         embed_cached_concept_docs,
         fetch_concept_docs,
     )
 
+    _log.info("rag_refresh_step", step="fetch_concept_docs")
     n_fetched_concepts = fetch_concept_docs(config.HA_CONCEPTS_CACHE_DIR)
-    print(f"[rag-refresh]   → {n_fetched_concepts} new concept doc(s) downloaded")
+    _log.info(
+        "rag_refresh_step_done", step="fetch_concept_docs", fetched=n_fetched_concepts
+    )
 
-    print("[rag-refresh] Embedding HA concept docs…")
+    _log.info("rag_refresh_step", step="embed_concept_docs")
     concepts_ids: set[str] = set()
     n_concepts = embed_cached_concept_docs(
         config.HA_CONCEPTS_CACHE_DIR, store, concepts_ids
     )
-    print(f"[rag-refresh]   → embedded {n_concepts} concept doc(s)")
+    _log.info("rag_refresh_step_done", step="embed_concept_docs", embedded=n_concepts)
     if concepts_ids:
         store.prune("ha_concepts", concepts_ids)
 
@@ -144,8 +165,8 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     if config.FEDERATED_CASES_REPO:
         from utils.cases.case_ingester import CaseIngestError, ingest_community_cases
 
-        print(
-            f"[rag-refresh] Ingesting community cases from {config.FEDERATED_CASES_REPO}…"
+        _log.info(
+            "rag_refresh_step", step="ingest_cases", repo=config.FEDERATED_CASES_REPO
         )
         community_scenarios_dir = str(
             Path(__file__).parent / "evals" / "scenarios" / "community"
@@ -157,29 +178,31 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
                 store,
                 scenarios_dir=community_scenarios_dir,
             )
-            print(f"[rag-refresh]   → {n_cases} new episode(s) ingested")
+            _log.info("rag_refresh_step_done", step="ingest_cases", ingested=n_cases)
         except CaseIngestError as exc:
-            print(f"[rag-refresh]   → case ingest failed: {exc}")
+            _log.warning("rag_refresh_case_ingest_failed", error=str(exc))
     else:
-        print(
-            "[rag-refresh] Community cases: skipped "
-            "(set federated_cases_repo in config.yaml to enable)"
+        _log.info(
+            "rag_refresh_step_skipped",
+            step="ingest_cases",
+            reason="federated_cases_repo_not_configured",
         )
 
     # ── 5. Strategy seeding ──────────────────────────────────────────────────
-    print("[rag-refresh] Seeding strategy knowledge base from prompt files…")
     from utils.knowledge.strategy_seeder import seed_strategies
 
+    _log.info("rag_refresh_step", step="seed_strategies")
     n_strategies = seed_strategies(store)
-    print(f"[rag-refresh]   → seeded {n_strategies} strategy document(s)")
+    _log.info("rag_refresh_step_done", step="seed_strategies", seeded=n_strategies)
 
     total = n_ha + n_hacs + n_docs + n_concepts + n_cases + n_strategies
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
     )
-    print(
-        f"[rag-refresh] Done. Embedded content from {total} file(s) "
-        f"across 6 collections."
+    _log.info(
+        "rag_refresh_complete",
+        total_embedded=total,
+        collections=6,
     )
 
 
@@ -730,7 +753,6 @@ async def supervisor_main(config_path: Path) -> None:
         log_level="warning",
     )
     server = uvicorn.Server(uvi_config)
-    print(f"Pueo supervisor → dashboard at http://127.0.0.1:{cfg.DASHBOARD_PORT}")
     await server.serve()
 
     # serve() returned — cancel all loops on clean exit

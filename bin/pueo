@@ -50,7 +50,8 @@ case "$CMD" in
         fi
         "$PYTHON" "$PROJECT_DIR/main.py" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" >> "$LOG" 2>> "$ERRLOG" &
         echo $! > "$PID_FILE"
-        echo "Pueo started (PID $!). Log: $LOG  Stderr: $ERRLOG"
+        _PORT=$("$PYTHON" -c "import sys; sys.path.insert(0,'$PROJECT_DIR'); import config; print(config.DASHBOARD_PORT)" 2>/dev/null || echo "8080")
+        echo "Pueo started (PID $!). Dashboard: http://127.0.0.1:$_PORT  Log: $LOG"
         ;;
     stop)
         if ! _running; then
