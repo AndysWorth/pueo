@@ -72,6 +72,8 @@
     .pueo-status-monitoring::before { background: #28a745; }
     .pueo-status-repairing  { background: #e0e7ff; color: #3730a3; border-color: #6366f1; }
     .pueo-status-repairing::before  { background: #6366f1; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-triaging   { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
+    .pueo-status-triaging::before   { background: #f59e0b; animation: pulse-dot 1.2s infinite; }
     .pueo-status-chatting   { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
     .pueo-status-chatting::before   { background: #3b82f6; animation: pulse-dot 1.2s infinite; }
     .pueo-status-starting   { background: #fff3cd; color: #856404; border-color: #ffc107; }
@@ -130,7 +132,7 @@
       setInterval(updateHaStatus, 30000);
     })();
     (function () {
-      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', chatting:'Chatting', starting:'Starting', error:'Error'};
+      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', triaging:'Triaging', chatting:'Chatting', starting:'Starting', error:'Error'};
       var state = 'monitoring';
       var repairTimer = null, chatTimer = null;
       var TIMEOUT_MS = 90000;
@@ -166,6 +168,15 @@
       });
       es.addEventListener('repair_done', function () { clearTimeout(repairTimer); if (state === 'repairing') setState('monitoring'); });
       es.addEventListener('repair_failed', function () { clearTimeout(repairTimer); if (state === 'repairing') setState('monitoring'); });
+      var triageTimer = null;
+      es.addEventListener('triage_start', function () {
+        if (state !== 'repairing' && state !== 'error') {
+          clearTimeout(triageTimer);
+          setState('triaging');
+          triageTimer = setTimeout(function () { if (state === 'triaging') setState('monitoring'); }, TIMEOUT_MS);
+        }
+      });
+      es.addEventListener('triage_done', function () { clearTimeout(triageTimer); if (state === 'triaging') setState('monitoring'); });
 
       var ces = new EventSource('/chat/events');
       ces.addEventListener('chat_pre_step', function () {

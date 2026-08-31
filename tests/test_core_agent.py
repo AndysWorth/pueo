@@ -3053,6 +3053,51 @@ class TestLogMonitorTriage:
         assert calls, "_default_model_for_provider was not called"
         assert llm_actionable.calls[0]["model"] == "sentinel-model"
 
+    def test_analyze_emits_triage_start_and_done(self, llm_actionable, monkeypatch):
+        """triage_start and triage_done events are published around the LLM call."""
+        from agents.ha_log_monitor import analyze_log_line_with_ai
+
+        published = []
+        increments = []
+        decrements = []
+
+        import utils.agent.supervisor as sup
+
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+        monkeypatch.setattr(
+            sup, "increment_active_triage", lambda: increments.append(1)
+        )
+        monkeypatch.setattr(
+            sup, "decrement_active_triage", lambda: decrements.append(1)
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR crash"], llm_actionable))
+        assert {"type": "triage_start"} in published
+        assert {"type": "triage_done"} in published
+        assert published.index({"type": "triage_start"}) < published.index(
+            {"type": "triage_done"}
+        )
+        assert increments and decrements
+
+    def test_analyze_emits_triage_done_on_inference_failure(self, monkeypatch):
+        """triage_done is published even when LLM inference raises."""
+        from utils.llm.ollama_client import FakeLLMClient
+        from agents.ha_log_monitor import analyze_log_line_with_ai
+
+        broken_llm = FakeLLMClient("{invalid json}")
+        published = []
+        decrements = []
+
+        import utils.agent.supervisor as sup
+
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+        monkeypatch.setattr(sup, "increment_active_triage", lambda: None)
+        monkeypatch.setattr(
+            sup, "decrement_active_triage", lambda: decrements.append(1)
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
+        assert {"type": "triage_done"} in published
+        assert decrements
+
 
 # ── Retention policy (item 32) ────────────────────────────────────────────────────
 

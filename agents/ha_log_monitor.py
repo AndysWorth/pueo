@@ -141,6 +141,19 @@ async def analyze_log_line_with_ai(
     user_prompt = f"Evaluate these log lines:\n```\n{log_context}\n```"
 
     model = _default_model_for_provider()
+    _triage_armed = False
+    try:
+        from utils.agent.supervisor import (
+            decrement_active_triage,
+            increment_active_triage,
+            publish_event,
+        )
+
+        increment_active_triage()
+        publish_event({"type": "triage_start"})
+        _triage_armed = True
+    except Exception:
+        pass
     try:
         response = await client.chat(
             model=model,
@@ -171,6 +184,13 @@ async def analyze_log_line_with_ai(
             user_prompt=user_prompt,
             raw_response="",
         )
+    finally:
+        if _triage_armed:
+            try:
+                decrement_active_triage()
+                publish_event({"type": "triage_done"})
+            except Exception:
+                pass
 
 
 async def analyze_repair_issue(

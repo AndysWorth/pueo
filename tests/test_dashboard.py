@@ -6162,3 +6162,57 @@ class TestPueoStatusEndpoint:
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
         assert response.json()["activity"] == "repairing"
+
+    def test_returns_triaging_when_triage_count_nonzero(self, monkeypatch, pueo_dirs):
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=1
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "triaging"
+
+    def test_repairing_takes_priority_over_triaging(self, monkeypatch, pueo_dirs):
+        """Active repair loop wins over triage count."""
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+        fake_loop = object()
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=fake_loop
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=1
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "repairing"

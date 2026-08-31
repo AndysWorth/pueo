@@ -4387,6 +4387,50 @@ class TestNetAlertXLogMonitor:
         assert result.is_actionable is False
         assert result.confidence_score == 0.0
 
+    def test_analyze_emits_triage_events(self, llm_actionable, monkeypatch):
+        """triage_start and triage_done are published around the LLM call."""
+        import asyncio
+
+        from netalertx.log_monitor import analyze_log_line_with_ai
+
+        published = []
+        decrements = []
+
+        import utils.agent.supervisor as sup
+
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+        monkeypatch.setattr(sup, "increment_active_triage", lambda: None)
+        monkeypatch.setattr(
+            sup, "decrement_active_triage", lambda: decrements.append(1)
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR ArpScan failed"], llm_actionable))
+        assert {"type": "triage_start"} in published
+        assert {"type": "triage_done"} in published
+        assert decrements
+
+    def test_analyze_emits_triage_done_on_inference_failure(self, monkeypatch):
+        """triage_done is published even when LLM inference raises."""
+        import asyncio
+
+        from utils.llm.ollama_client import FakeLLMClient
+
+        from netalertx.log_monitor import analyze_log_line_with_ai
+
+        broken_llm = FakeLLMClient("{invalid}")
+        published = []
+        decrements = []
+
+        import utils.agent.supervisor as sup
+
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+        monkeypatch.setattr(sup, "increment_active_triage", lambda: None)
+        monkeypatch.setattr(
+            sup, "decrement_active_triage", lambda: decrements.append(1)
+        )
+        asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
+        assert {"type": "triage_done"} in published
+        assert decrements
+
     # ── stream behaviour ──────────────────────────────────────────────────────
 
     def test_stream_non_critical_lines_skip_triage(self, llm_not_actionable):
