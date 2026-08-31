@@ -152,7 +152,7 @@ async def analyze_log_line_with_ai(
         increment_active_triage()
         publish_event({"type": "triage_start"})
         _triage_armed = True
-    except Exception:
+    except Exception:  # nosec B110
         pass
     try:
         response = await client.chat(
@@ -189,7 +189,7 @@ async def analyze_log_line_with_ai(
             try:
                 decrement_active_triage()
                 publish_event({"type": "triage_done"})
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
 
