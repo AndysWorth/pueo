@@ -63,6 +63,22 @@
     .ha-badge-auth::before        { background: #ffc107; }
     .ha-badge-unknown      { background: #e9ecef; color: #666;    border-color: #adb5bd; }
     .ha-badge-unknown::before     { background: #adb5bd; }
+    .pueo-status { font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.55rem;
+      border-radius: 10px; display: inline-flex; align-items: center; gap: 0.35rem;
+      white-space: nowrap; border: 1px solid; margin-right: 0.4rem; }
+    .pueo-status::before { content: ''; display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; flex-shrink: 0; }
+    .pueo-status-monitoring { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
+    .pueo-status-monitoring::before { background: #28a745; }
+    .pueo-status-repairing  { background: #e0e7ff; color: #3730a3; border-color: #6366f1; }
+    .pueo-status-repairing::before  { background: #6366f1; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-chatting   { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
+    .pueo-status-chatting::before   { background: #3b82f6; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-starting   { background: #fff3cd; color: #856404; border-color: #ffc107; }
+    .pueo-status-starting::before   { background: #ffc107; }
+    .pueo-status-error      { background: #f8d7da; color: #58151c; border-color: #dc3545; }
+    .pueo-status-error::before      { background: #dc3545; }
+    @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
   </head>
   <body>
@@ -80,7 +96,8 @@
       <a class="nav-link{% if p.startswith('/control') %} active{% endif %}" href="/control">Control</a>
       <a class="nav-link{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>
       <a class="nav-link{% if p.startswith('/chat') %} active{% endif %}" href="/chat">Chat</a>
-      <span style="margin-left:auto;">
+      <span style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;">
+        <span id="pueo-status-badge" class="pueo-status pueo-status-monitoring">Monitoring</span>
         <span id="ha-status-badge" class="ha-badge ha-badge-unknown">HA ?</span>
       </span>
     </nav>
@@ -111,6 +128,53 @@
       }
       updateHaStatus();
       setInterval(updateHaStatus, 30000);
+    })();
+    (function () {
+      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', chatting:'Chatting', starting:'Starting', error:'Error'};
+      var state = 'monitoring';
+      var repairTimer = null, chatTimer = null;
+      var TIMEOUT_MS = 90000;
+
+      function setState(s) {
+        if (state === s) return;
+        state = s;
+        var el = document.getElementById('pueo-status-badge');
+        if (!el) return;
+        el.className = 'pueo-status pueo-status-' + s;
+        el.textContent = LABELS[s] || s;
+      }
+
+      fetch('/api/pueo-status').then(function (r) { return r.json(); }).then(function (d) {
+        setState(d.activity);
+      }).catch(function () {});
+
+      var es = new EventSource('/events');
+      es.addEventListener('loop_status', function (e) {
+        var d = JSON.parse(e.data);
+        if (d.status === 'error') {
+          setState('error');
+        } else if (d.status === 'starting' && state !== 'error') {
+          setState('starting');
+        } else if (state === 'error' || state === 'starting') {
+          setState('monitoring');
+        }
+      });
+      es.addEventListener('agent_step', function () {
+        clearTimeout(repairTimer);
+        setState('repairing');
+        repairTimer = setTimeout(function () { if (state === 'repairing') setState('monitoring'); }, TIMEOUT_MS);
+      });
+      es.addEventListener('repair_done', function () { clearTimeout(repairTimer); if (state === 'repairing') setState('monitoring'); });
+      es.addEventListener('repair_failed', function () { clearTimeout(repairTimer); if (state === 'repairing') setState('monitoring'); });
+
+      var ces = new EventSource('/chat/events');
+      ces.addEventListener('chat_pre_step', function () {
+        clearTimeout(chatTimer);
+        if (state !== 'repairing' && state !== 'error') setState('chatting');
+        chatTimer = setTimeout(function () { if (state === 'chatting') setState('monitoring'); }, TIMEOUT_MS);
+      });
+      ces.addEventListener('chat_done', function () { clearTimeout(chatTimer); if (state === 'chatting') setState('monitoring'); });
+      ces.addEventListener('chat_error', function () { clearTimeout(chatTimer); if (state === 'chatting') setState('monitoring'); });
     })();
     </script>
   </body>
