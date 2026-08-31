@@ -17,6 +17,12 @@ ask()  {
     read -rp "  $1 [${2}]: " answer
     printf -v "$3" '%s' "${answer:-$2}"
 }
+ask_secret() {
+    # ask_secret "Prompt" varname  — input is not echoed
+    local answer
+    read -rsp "  $1: " answer; echo
+    printf -v "$2" '%s' "${answer}"
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -221,7 +227,7 @@ else
         CONFIGURED_MODEL="$DEFAULT_MODEL"
     fi
 
-    if ollama list | grep -q "^${CONFIGURED_MODEL}"; then
+    if ollama show "${CONFIGURED_MODEL}" &>/dev/null; then
         ok "Model ${CONFIGURED_MODEL} is available"
     else
         info "Pulling model ${CONFIGURED_MODEL} (this may take several minutes)..."
@@ -230,7 +236,7 @@ else
     fi
 
     RAG_EMBED_MODEL="nomic-embed-text"
-    if ollama list | grep -q "^${RAG_EMBED_MODEL}"; then
+    if ollama show "${RAG_EMBED_MODEL}" &>/dev/null; then
         ok "Embedding model ${RAG_EMBED_MODEL} is available"
     else
         info "Pulling embedding model ${RAG_EMBED_MODEL} (required for RAG knowledge base)..."
@@ -362,6 +368,7 @@ CONFIGURED_MODEL="${CONFIGURED_MODEL:-qwen2.5-coder:7b}"
 
 # Initialize unbound variables before the NAX prompts to avoid set -u failures
 NAX_DOCKER_CONFIG_PATH=""
+NAX_API_TOKEN=""
 HA_KNOWN_VERSION=""
 
 if $WRITE_CONFIG; then
@@ -372,7 +379,7 @@ if $WRITE_CONFIG; then
     ask "SSH username"                      "root"                          HA_USER
     ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
     echo "  (Create at: HA Profile → Security → Long-Lived Access Tokens)"
-    ask "HA long-lived access token"        ""                              HA_API_TOKEN
+    ask_secret "HA long-lived access token (hidden)" HA_API_TOKEN
     echo
     echo "  ── HA polling features (require api_token) ──"
     echo "  When an api_token is set, Pueo can poll for HA updates and surface"
@@ -392,7 +399,7 @@ if $WRITE_CONFIG; then
         OLLAMA_MODEL="$CONFIGURED_MODEL"
     fi
     if [[ "$DEPLOY_MODE" != "docker" && "$OLLAMA_MODEL" != "$CONFIGURED_MODEL" ]]; then
-        if ! ollama list | grep -q "^${OLLAMA_MODEL}"; then
+        if ! ollama show "${OLLAMA_MODEL}" &>/dev/null; then
             warn "Model ${OLLAMA_MODEL} is not installed locally."
             read -rp "  Pull it now? [Y/n]: " pull_new_model
             if [[ "${pull_new_model:-Y}" =~ ^[Yy] ]]; then
@@ -542,16 +549,16 @@ if $WRITE_CONFIG; then
                 fi
             fi
         fi
-    fi
 
-    echo
-    echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
-    echo "  installed. If this is your first run, press Enter to skip."
-    echo "  Once NetAlertX is running, find it at:"
-    echo "    NetAlertX web UI → Settings → Main Settings → API Key"
-    echo "  Then re-run setup.sh or edit config.yaml directly."
-    echo
-    ask "NetAlertX API token (blank = set after first install)"  ""  NAX_API_TOKEN
+        echo
+        echo "  NOTE: The NetAlertX API token can only be generated AFTER NetAlertX is"
+        echo "  installed. If this is your first run, press Enter to skip."
+        echo "  Once NetAlertX is running, find it at:"
+        echo "    NetAlertX web UI → Settings → Main Settings → API Key"
+        echo "  Then re-run setup.sh or edit config.yaml directly."
+        echo
+        ask_secret "NetAlertX API token, blank = set after first install (hidden)" NAX_API_TOKEN
+    fi
 
     # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
     echo
