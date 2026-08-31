@@ -6560,3 +6560,30 @@ class TestHaConceptsCollection:
         from utils.knowledge.knowledge_store import COLLECTIONS
 
         assert "ha_concepts" in COLLECTIONS
+
+
+class TestSupervisorActivityCounters:
+    def test_chat_counter_increment_decrement(self):
+        import utils.agent.supervisor as sup
+
+        initial = sup.get_active_chat_count()
+        sup.increment_active_chat()
+        assert sup.get_active_chat_count() == initial + 1
+        sup.decrement_active_chat()
+        assert sup.get_active_chat_count() == initial
+
+    def test_chat_counter_decrement_clamps_at_zero(self):
+        import utils.agent.supervisor as sup
+
+        while sup.get_active_chat_count() > 0:
+            sup.decrement_active_chat()
+        sup.decrement_active_chat()
+        assert sup.get_active_chat_count() == 0
+
+    def test_rag_refreshing_flag(self):
+        import utils.agent.supervisor as sup
+
+        sup.set_rag_refreshing(True)
+        assert sup.get_rag_refreshing() is True
+        sup.set_rag_refreshing(False)
+        assert sup.get_rag_refreshing() is False

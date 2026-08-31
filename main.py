@@ -275,7 +275,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     and are covered by the weekly scheduled refresh.
     Subsequent runs fire every interval_hours (default 168 = weekly).
     """
-    from utils.agent.supervisor import get_supervisor_instance
+    from utils.agent.supervisor import get_supervisor_instance, set_rag_refreshing
     from utils.core.logging import get_logger as _gl
     from utils.core.timeline import write_timeline_event
 
@@ -303,6 +303,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             {"reason": "collections_empty", "empty": empty_bootstrap},
         )
         try:
+            set_rag_refreshing(True)
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
@@ -314,6 +315,8 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             write_timeline_event(
                 "WARN", "rag_refresh", f"RAG refresh failed: {exc}"
             )  # pragma: no cover
+        finally:
+            set_rag_refreshing(False)
 
     _log.info("rag_refresh_loop_started", next_run_hours=interval_hours)
     write_timeline_event(
@@ -332,6 +335,7 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             {"reason": "scheduled"},
         )
         try:
+            set_rag_refreshing(True)
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
@@ -343,6 +347,8 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             write_timeline_event(
                 "WARN", "rag_refresh", f"RAG refresh failed: {exc}"
             )  # pragma: no cover
+        finally:
+            set_rag_refreshing(False)
 
 
 async def _known_issues_poll_loop(

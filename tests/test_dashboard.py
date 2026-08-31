@@ -6216,3 +6216,149 @@ class TestPueoStatusEndpoint:
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
         assert response.json()["activity"] == "repairing"
+
+    def test_returns_executing_when_in_progress_file_exists(
+        self, monkeypatch, pueo_dirs, tmp_path
+    ):
+        """Pill shows executing when any card .in_progress sentinel exists."""
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        (watch_dir / "abc123.in_progress").touch()
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_chat_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_rag_refreshing", return_value=False
+            ),
+            unittest.mock.patch.object(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir)),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "executing"
+
+    def test_returns_chatting_when_chat_count_nonzero(self, monkeypatch, pueo_dirs):
+        """Pill shows chatting when an AgentLoop chat session is running."""
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_chat_count", return_value=1
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_rag_refreshing", return_value=False
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "chatting"
+
+    def test_returns_refreshing_when_rag_active(self, monkeypatch, pueo_dirs):
+        """Pill shows refreshing while run_rag_refresh is executing."""
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_chat_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_rag_refreshing", return_value=True
+            ),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "refreshing"
+
+    def test_executing_beats_chatting_and_refreshing(
+        self, monkeypatch, pueo_dirs, tmp_path
+    ):
+        """Card execution takes priority over chat and RAG refresh."""
+        import unittest.mock
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.agent.supervisor import LoopStatus
+
+        watch_dir = tmp_path / "hitl"
+        watch_dir.mkdir()
+        (watch_dir / "xyz.in_progress").touch()
+
+        healthy = [LoopStatus(name="ha_log", status="running")]
+        fake_sv = unittest.mock.MagicMock()
+        fake_sv.get_statuses.return_value = healthy
+
+        with (
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_supervisor_instance", return_value=fake_sv
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_repair_loop", return_value=None
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_triage_count", return_value=0
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_active_chat_count", return_value=1
+            ),
+            unittest.mock.patch(
+                "utils.agent.supervisor.get_rag_refreshing", return_value=True
+            ),
+            unittest.mock.patch.object(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir)),
+        ):
+            client = TestClient(dashboard.app, raise_server_exceptions=True)
+            response = client.get("/api/pueo-status")
+        assert response.status_code == 200
+        assert response.json()["activity"] == "executing"

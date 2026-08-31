@@ -34,6 +34,12 @@ _active_repair_loop: Any = None
 # Count of concurrent one-shot triage inference calls in flight
 _active_triage_count: int = 0
 
+# Count of concurrent chat AgentLoop sessions in flight
+_active_chat_count: int = 0
+
+# True while run_rag_refresh() is executing
+_rag_refreshing: bool = False
+
 
 def set_active_repair_loop(loop: Any) -> None:
     global _active_repair_loop
@@ -56,6 +62,29 @@ def decrement_active_triage() -> None:
 
 def get_active_triage_count() -> int:
     return _active_triage_count
+
+
+def increment_active_chat() -> None:
+    global _active_chat_count
+    _active_chat_count += 1
+
+
+def decrement_active_chat() -> None:
+    global _active_chat_count
+    _active_chat_count = max(0, _active_chat_count - 1)
+
+
+def get_active_chat_count() -> int:
+    return _active_chat_count
+
+
+def set_rag_refreshing(value: bool) -> None:
+    global _rag_refreshing
+    _rag_refreshing = value
+
+
+def get_rag_refreshing() -> bool:
+    return _rag_refreshing
 
 
 def publish_event(event: dict) -> None:

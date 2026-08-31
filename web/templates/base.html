@@ -76,6 +76,10 @@
     .pueo-status-triaging::before   { background: #f59e0b; animation: pulse-dot 1.2s infinite; }
     .pueo-status-chatting   { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
     .pueo-status-chatting::before   { background: #3b82f6; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-executing  { background: #ede9fe; color: #5b21b6; border-color: #7c3aed; }
+    .pueo-status-executing::before  { background: #7c3aed; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-refreshing { background: #e0f2fe; color: #0c4a6e; border-color: #0ea5e9; }
+    .pueo-status-refreshing::before { background: #0ea5e9; animation: pulse-dot 1.2s infinite; }
     .pueo-status-starting   { background: #fff3cd; color: #856404; border-color: #ffc107; }
     .pueo-status-starting::before   { background: #ffc107; }
     .pueo-status-error      { background: #f8d7da; color: #58151c; border-color: #dc3545; }
@@ -132,7 +136,7 @@
       setInterval(updateHaStatus, 30000);
     })();
     (function () {
-      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', triaging:'Triaging', chatting:'Chatting', starting:'Starting', error:'Error'};
+      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', triaging:'Triaging', chatting:'Chatting', executing:'Executing', refreshing:'Refreshing', starting:'Starting', error:'Error'};
       var state = 'monitoring';
       var repairTimer = null, chatTimer = null;
       var TIMEOUT_MS = 90000;
