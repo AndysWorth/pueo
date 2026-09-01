@@ -3835,12 +3835,13 @@ class TestLoopControlEndpoints:
         assert client.post("/loops/ha_log_monitor/run-now").status_code == 503
 
     def test_overview_shows_controls_column(self, tmp_path, monkeypatch):
-        """Overview page renders the Controls column with Pause/Run now buttons."""
+        """Overview page renders the Controls column with Pause/Run now buttons for polling loops."""
         import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
-        fake_sv, _ = self._make_fake_sv(loop_names=("ha_log_monitor",))
+        # Use a polling loop (not a streaming loop) so it appears in the table
+        fake_sv, _ = self._make_fake_sv(loop_names=("resource_poll",))
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
         monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)

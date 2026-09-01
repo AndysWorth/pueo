@@ -41,6 +41,25 @@
   .level-error    { background: #fee2e2; color: #991b1b; }
   .level-critical { background: #dc3545; color: #fff; }
   @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+  /* Active Streams sparkline cards */
+  .stream-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .stream-card { flex: 1 1 280px; border: 1px solid #eee; border-radius: 6px;
+    padding: 0.75rem 1rem; background: #fafafa; }
+  .stream-card.unconfigured { opacity: 0.45; }
+  .stream-card-header { display: flex; align-items: center; gap: 0.5rem;
+    margin-bottom: 0.4rem; font-size: 0.82rem; font-weight: 600; }
+  .stream-card-meta { font-size: 0.75rem; color: #666; margin-bottom: 0.5rem; }
+  .stream-card-meta span { display: inline-block; margin-right: 1rem; }
+  .stream-sparkline { width: 100%; height: 36px; display: block; }
+  .stream-card-controls { margin-top: 0.5rem; }
+  /* Loop group headers */
+  tr.loop-group-header td { background: #f8f9fa; font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em; color: #999;
+    padding: 0.25rem 0.5rem; border-bottom: 1px solid #eee; }
+  /* Next run countdown */
+  .loop-next-run-cadence { color: #888; font-size: 0.78rem; }
+  .loop-next-run-countdown { color: #444; font-size: 0.78rem; }
+  .loop-next-run-disabled { color: #bbb; font-size: 0.78rem; font-style: italic; }
 </style>
 
 <div class="overview-grid">
@@ -112,48 +131,209 @@
     {% endif %}
   </div>
 
-  <!-- Loop Health -->
+  <!-- Active Streams (streaming loops with sparklines) -->
+  <div class="card full-width">
+    <div class="section-title">Active Streams</div>
+    <div class="stream-cards">
+      <!-- HA Log Monitor -->
+      {% set ha_stream = loop_statuses | selectattr("name", "equalto", "ha_log_monitor") | first | default(none) %}
+      <div class="stream-card" id="stream-card-ha_log_monitor">
+        <div class="stream-card-header">
+          <span class="status-dot dot-{{ ha_stream.status if ha_stream else 'disabled' }}" id="stream-dot-ha_log_monitor"></span>
+          HA Log Monitor
+          <span class="stream-card-controls" style="margin-left:auto;">
+            {% if ha_stream and ha_stream.paused %}
+            <button class="loop-ctrl-btn" onclick="loopControl('ha_log_monitor','resume')">Resume</button>
+            {% elif ha_stream %}
+            <button class="loop-ctrl-btn" onclick="loopControl('ha_log_monitor','pause')">Pause</button>
+            {% endif %}
+            {% if ha_stream %}
+            <button class="loop-ctrl-btn run-now" onclick="loopControl('ha_log_monitor','run-now')">Run now</button>
+            {% endif %}
+          </span>
+        </div>
+        <div class="stream-card-meta">
+          <span>Last line: <span id="stream-line-ha_log_monitor">—</span></span>
+          <span>Last triage: <span id="stream-match-ha_log_monitor">—</span></span>
+        </div>
+        <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+      </div>
+      <!-- NetAlertX -->
+      {% set nax_stream = loop_statuses | selectattr("name", "equalto", "netalertx") | first | default(none) %}
+      <div class="stream-card{{ ' unconfigured' if not nax_stream }}" id="stream-card-netalertx">
+        <div class="stream-card-header">
+          <span class="status-dot dot-{{ nax_stream.status if nax_stream else 'disabled' }}" id="stream-dot-netalertx"></span>
+          NetAlertX{% if not nax_stream %} <span style="font-size:0.7rem;font-weight:400;color:#aaa;">— not configured</span>{% endif %}
+          <span class="stream-card-controls" style="margin-left:auto;">
+            {% if nax_stream and nax_stream.paused %}
+            <button class="loop-ctrl-btn" onclick="loopControl('netalertx','resume')">Resume</button>
+            {% elif nax_stream %}
+            <button class="loop-ctrl-btn" onclick="loopControl('netalertx','pause')">Pause</button>
+            {% endif %}
+            {% if nax_stream %}
+            <button class="loop-ctrl-btn run-now" onclick="loopControl('netalertx','run-now')">Run now</button>
+            {% endif %}
+          </span>
+        </div>
+        {% if nax_stream %}
+        <div class="stream-card-meta">
+          <span>Last line: <span id="stream-line-netalertx">—</span></span>
+          <span>Last scan: <span id="stream-scan-netalertx">—</span></span>
+        </div>
+        <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        {% else %}
+        <div class="stream-card-meta" style="color:#aaa;">Enable NetAlertX in config to see stream data.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Monitoring Loops table (polling loops only) -->
   <div class="card full-width">
     <div class="section-title">Monitoring Loops</div>
-    {% if loop_statuses %}
+    {% set SKIP = ["ha_log_monitor", "netalertx", "netalertx_setup"] %}
+    {% set FAST_ORDER = ["resource_poll", "disk_usage_poll", "notification_poll", "repair_poll", "lovelace_poll"] %}
+    {% set INFREQ_ORDER = ["embed_episodes", "backup_sync", "known_issues_poll", "profile_refresh", "update_check", "rag_refresh"] %}
+    {% set status_map = {} %}
+    {% for ls in loop_statuses %}{% if ls.name not in SKIP %}{% set _ = status_map.update({ls.name: ls}) %}{% endif %}{% endfor %}
+    {% set has_rows = status_map | length > 0 %}
+    {% if has_rows %}
     <table class="loop-table">
       <thead>
         <tr>
           <th>Loop</th>
           <th>Status</th>
           <th>Last run</th>
-          <th>Restart at</th>
-          <th>Errors</th>
+          <th>Next run</th>
           <th>Controls</th>
         </tr>
       </thead>
       <tbody>
-        {% for ls in loop_statuses %}
-        <tr id="loop-{{ ls.name }}">
-          <td>{{ ls.name }}</td>
-          <td>
-            <span class="status-dot dot-{{ ls.status }}"></span>
-            <span class="loop-status">{{ ls.status }}</span>
-          </td>
-          <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
-          <td class="loop-next-run">{{ ls.next_run|epoch_to_iso if ls.next_run and ls.status == "error" else "—" }}</td>
-          <td class="loop-errors">{{ ls.error_count }}</td>
-          <td class="loop-controls">
-            {% if ls.paused %}
-            <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','resume')">Resume</button>
-            {% else %}
-            <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
-            {% endif %}
-            <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
-          </td>
-        </tr>
-        {% if ls.last_error %}
-        <tr>
-          <td colspan="6" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
-            <span class="loop-error-msg">{{ ls.last_error }}</span>
-          </td>
-        </tr>
+        {# Fast group #}
+        {% set fast_visible = FAST_ORDER | selectattr("__class__") | list %}
+        {% set ns = namespace(fast_count=0) %}
+        {% for name in FAST_ORDER %}{% if name in status_map %}{% set ns.fast_count = ns.fast_count + 1 %}{% endif %}{% endfor %}
+        {% if ns.fast_count > 0 %}
+        <tr class="loop-group-header"><td colspan="5">Fast</td></tr>
+        {% for name in FAST_ORDER %}
+          {% if name in status_map %}{% set ls = status_map[name] %}
+          <tr id="loop-{{ ls.name }}">
+            <td>{{ ls.name }}</td>
+            <td>
+              <span class="status-dot dot-{{ ls.status }}"></span>
+              <span class="loop-status">{{ ls.status }}</span>
+            </td>
+            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-next-run">
+              {% if ls.status == "error" and ls.next_run %}
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+              {% elif ls.interval_seconds %}
+                {% set mins = (ls.interval_seconds // 60) | int %}
+                <span class="loop-next-run-cadence">every {% if mins < 60 %}{{ mins }} min{% else %}{{ (mins // 60) | int }}h{% if mins % 60 %} {{ mins % 60 }}m{% endif %}{% endif %}</span>
+              {% else %}
+                <span class="loop-next-run-cadence">—</span>
+              {% endif %}
+            </td>
+            <td class="loop-controls">
+              {% if ls.paused %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','resume')">Resume</button>
+              {% else %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
+              {% endif %}
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+            </td>
+          </tr>
+          {% if ls.last_error %}
+          <tr>
+            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+              <span class="loop-error-msg">{{ ls.last_error }}</span>
+            </td>
+          </tr>
+          {% endif %}
+          {% endif %}
+        {% endfor %}
         {% endif %}
+        {# Infrequent group #}
+        {% set ns2 = namespace(infreq_count=0) %}
+        {% for name in INFREQ_ORDER %}{% if name in status_map %}{% set ns2.infreq_count = ns2.infreq_count + 1 %}{% endif %}{% endfor %}
+        {% if ns2.infreq_count > 0 %}
+        <tr class="loop-group-header"><td colspan="5">Infrequent</td></tr>
+        {% for name in INFREQ_ORDER %}
+          {% if name in status_map %}{% set ls = status_map[name] %}
+          <tr id="loop-{{ ls.name }}">
+            <td>{{ ls.name }}</td>
+            <td>
+              <span class="status-dot dot-{{ ls.status }}"></span>
+              <span class="loop-status">{{ ls.status }}</span>
+            </td>
+            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-next-run">
+              {% if ls.status == "error" and ls.next_run %}
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+              {% elif ls.interval_seconds == 0 %}
+                <span class="loop-next-run-disabled">disabled</span>
+              {% elif ls.interval_seconds and ls.next_run %}
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">—</span>
+              {% elif ls.interval_seconds %}
+                {% set mins = (ls.interval_seconds // 60) | int %}
+                <span class="loop-next-run-cadence">every {% if mins < 60 %}{{ mins }} min{% elif mins < 1440 %}{{ (mins // 60) | int }}h{% else %}{{ (mins // 1440) | int }}d{% endif %}</span>
+              {% else %}
+                <span class="loop-next-run-cadence">—</span>
+              {% endif %}
+            </td>
+            <td class="loop-controls">
+              {% if ls.paused %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','resume')">Resume</button>
+              {% else %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
+              {% endif %}
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+            </td>
+          </tr>
+          {% if ls.last_error %}
+          <tr>
+            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+              <span class="loop-error-msg">{{ ls.last_error }}</span>
+            </td>
+          </tr>
+          {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% endif %}
+        {# Any unknown loops not in either group #}
+        {% for ls in loop_statuses %}
+          {% if ls.name not in SKIP and ls.name not in FAST_ORDER and ls.name not in INFREQ_ORDER %}
+          <tr id="loop-{{ ls.name }}">
+            <td>{{ ls.name }}</td>
+            <td>
+              <span class="status-dot dot-{{ ls.status }}"></span>
+              <span class="loop-status">{{ ls.status }}</span>
+            </td>
+            <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
+            <td class="loop-next-run">
+              {% if ls.status == "error" and ls.next_run %}
+                <span class="loop-next-run-countdown" data-next="{{ ls.next_run }}">{{ ls.next_run|epoch_to_iso }}</span>
+              {% else %}
+                <span class="loop-next-run-cadence">—</span>
+              {% endif %}
+            </td>
+            <td class="loop-controls">
+              {% if ls.paused %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','resume')">Resume</button>
+              {% else %}
+              <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
+              {% endif %}
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+            </td>
+          </tr>
+          {% if ls.last_error %}
+          <tr>
+            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+              <span class="loop-error-msg">{{ ls.last_error }}</span>
+            </td>
+          </tr>
+          {% endif %}
+          {% endif %}
         {% endfor %}
       </tbody>
     </table>
@@ -222,10 +402,80 @@
     return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
   }
 
+  function fmtAgo(epoch) {
+    if (!epoch) return '—';
+    var secs = Math.floor(Date.now() / 1000 - epoch);
+    if (secs < 5) return 'just now';
+    if (secs < 60) return secs + 's ago';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'min ago';
+    var hrs = Math.floor(mins / 60);
+    return hrs + 'h ' + (mins % 60) + 'm ago';
+  }
+
+  function fmtCountdown(epoch) {
+    if (!epoch) return '—';
+    var secs = Math.floor(epoch - Date.now() / 1000);
+    if (secs <= 0) return 'now';
+    if (secs < 60) return 'in ' + secs + 's';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return 'in ' + mins + 'min';
+    var hrs = Math.floor(mins / 60);
+    var remMins = mins % 60;
+    return 'in ' + hrs + 'h' + (remMins ? ' ' + remMins + 'm' : '');
+  }
+
+  function renderSparkline(svgId, buckets) {
+    var svg = document.getElementById(svgId);
+    if (!svg || !buckets || !buckets.length) return;
+    var maxTotal = 1;
+    for (var i = 0; i < buckets.length; i++) {
+      if (buckets[i][0] > maxTotal) maxTotal = buckets[i][0];
+    }
+    var barW = 2, barMaxH = 28, dotR = 1.5;
+    var html = '';
+    for (var i = 0; i < buckets.length; i++) {
+      var total = buckets[i][0], matches = buckets[i][1];
+      var x = i * barW;
+      if (total > 0) {
+        var barH = Math.max(2, Math.round((total / maxTotal) * barMaxH));
+        html += '<rect x="' + x + '" y="' + (36 - barH) + '" width="1.5" height="' + barH + '" fill="#c8d4e3"/>';
+        if (matches > 0) {
+          var dotY = 36 - barH - dotR - 1;
+          if (dotY < dotR) dotY = dotR;
+          html += '<circle cx="' + (x + 1) + '" cy="' + dotY + '" r="' + dotR + '" fill="' + (matches >= 2 ? '#dc3545' : '#fd7e14') + '"/>';
+        }
+      }
+    }
+    svg.innerHTML = html;
+  }
+
+  function fetchSparkline(loopName) {
+    fetch('/loops/' + loopName + '/sparkline')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        renderSparkline('sparkline-' + loopName, d.buckets || []);
+        if (loopName === 'ha_log_monitor') {
+          var el = document.getElementById('stream-line-ha_log_monitor');
+          if (el) el.textContent = fmtAgo(d.last_line_at);
+          el = document.getElementById('stream-match-ha_log_monitor');
+          if (el) el.textContent = fmtAgo(d.last_match_at);
+        } else if (loopName === 'netalertx') {
+          var el = document.getElementById('stream-line-netalertx');
+          if (el) el.textContent = fmtAgo(d.last_line_at);
+          el = document.getElementById('stream-scan-netalertx');
+          if (el) el.textContent = fmtAgo(d.last_scan_at);
+        }
+      })
+      .catch(function() {});
+  }
+
   function updateLoopRow(evt) {
     var row = document.getElementById('loop-' + evt.loop);
     if (!row) {
-      // New loop appeared after page load — reload to show it
+      // Streaming loops use stream cards, not table rows
+      var dotEl = document.getElementById('stream-dot-' + evt.loop);
+      if (dotEl) dotEl.className = 'status-dot ' + (statusDotClass[evt.status] || '');
       return;
     }
     var dotEl = row.querySelector('.status-dot');
@@ -236,17 +486,24 @@
     }
     var lastRunEl = row.querySelector('.loop-last-run');
     if (lastRunEl) lastRunEl.textContent = fmtTime(evt.last_run);
+    // Smart next-run: update countdown spans; static cadence spans are left alone
     var nextRunEl = row.querySelector('.loop-next-run');
-    if (nextRunEl) nextRunEl.textContent = (evt.next_run && evt.status === 'error') ? fmtTime(evt.next_run) : '—';
-    var errEl = row.querySelector('.loop-errors');
-    if (errEl) errEl.textContent = evt.error_count;
-    // Update error message row if it follows this row
+    if (nextRunEl) {
+      var countdown = nextRunEl.querySelector('.loop-next-run-countdown');
+      if (evt.next_run) {
+        if (countdown) {
+          countdown.setAttribute('data-next', evt.next_run);
+          countdown.textContent = fmtCountdown(evt.next_run);
+        } else if (evt.status === 'error') {
+          nextRunEl.innerHTML = '<span class="loop-next-run-countdown" data-next="' + evt.next_run + '">' + fmtCountdown(evt.next_run) + '</span>';
+        }
+      }
+    }
     var next = row.nextElementSibling;
     if (next && next.querySelector('.loop-error-msg')) {
       next.querySelector('.loop-error-msg').textContent = evt.last_error || '';
       next.style.display = evt.last_error ? '' : 'none';
     }
-    // Update pause/resume button based on paused flag
     var ctrlCell = row.querySelector('.loop-controls');
     if (ctrlCell) {
       var pauseBtn = ctrlCell.querySelector('.loop-ctrl-btn:not(.run-now)');
@@ -303,7 +560,6 @@
     var body = document.getElementById('recent-events-body');
     var empty = document.getElementById('recent-events-empty');
     if (empty) {
-      // Replace placeholder with table structure
       var wrap = empty.parentElement;
       empty.remove();
       var tbl = document.createElement('table');
@@ -322,7 +578,6 @@
       + '<td><a href="' + (evt.detail_url || '#') + '" style="color:#222;text-decoration:none;font-size:0.85rem;">'
       + (evt.message || '') + '</a></td>';
     body.insertBefore(tr, body.firstChild);
-    // Cap at 10 rows
     while (body.rows.length > 10) body.deleteRow(body.rows.length - 1);
   }
 
@@ -344,6 +599,22 @@
     }, 3000);
   }
 
+  // Initial sparkline fetch + 60s polling
+  fetchSparkline('ha_log_monitor');
+  fetchSparkline('netalertx');
+  setInterval(function() {
+    fetchSparkline('ha_log_monitor');
+    fetchSparkline('netalertx');
+  }, 60000);
+
+  // Countdown ticker for infrequent loop next-run timestamps
+  setInterval(function() {
+    var els = document.querySelectorAll('.loop-next-run-countdown[data-next]');
+    for (var i = 0; i < els.length; i++) {
+      els[i].textContent = fmtCountdown(parseFloat(els[i].getAttribute('data-next')));
+    }
+  }, 30000);
+
   var es = new EventSource('/events');
   es.onmessage = function (e) {
     try {
@@ -355,9 +626,7 @@
       else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideRepairWidget();
     } catch (_) {}
   };
-  es.onerror = function () {
-    // Browser reconnects automatically; no action needed
-  };
+  es.onerror = function () {};
 })();
 </script>
 {% endblock %}
