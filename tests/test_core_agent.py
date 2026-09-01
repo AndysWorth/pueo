@@ -2015,9 +2015,9 @@ class TestSupervisorMain:
 
         orig_start = LoopSupervisor.start
 
-        def _tracking_start(self, name, factory):
+        def _tracking_start(self, name, factory, interval_seconds=None, **kwargs):
             started.append(name)
-            orig_start(self, name, factory)
+            orig_start(self, name, factory, interval_seconds=interval_seconds)
 
         monkeypatch.setattr(LoopSupervisor, "start", _tracking_start)
         return started

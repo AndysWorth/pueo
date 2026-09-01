@@ -793,6 +793,14 @@ async def poll_for_updates(
                 _resolve_externally_applied_update(_abs_key, NOTIFY_WATCH_DIR)
                 _update_gone.pop(_abs_key, None)
 
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv_inst = _get_sv()
+            if _sv_inst is not None:
+                _sv_inst.touch("update_check")
+        except Exception:  # nosec B110
+            pass
         await asyncio.sleep(interval)
 
 
@@ -920,6 +928,15 @@ async def poll_for_notifications(
                     payload=payload,
                 )
                 mark_notification_hitl_sent(nid, db_path=db_path)
+
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv_inst = _get_sv()
+            if _sv_inst is not None:
+                _sv_inst.touch("notification_poll")
+        except Exception:  # nosec B110
+            pass
 
 
 async def poll_for_repairs(
@@ -1069,6 +1086,15 @@ async def poll_for_repairs(
                     )
                 except Exception:  # nosec B110
                     pass
+
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv_inst = _get_sv()
+            if _sv_inst is not None:
+                _sv_inst.touch("repair_poll")
+        except Exception:  # nosec B110
+            pass
 
 
 async def trigger_remediation_pipeline() -> None:

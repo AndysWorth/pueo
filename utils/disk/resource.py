@@ -175,6 +175,14 @@ class ResourcePoller:
                 raise
             except Exception as e:
                 log.error("resource_poll_failed", error=str(e))
+            try:
+                from utils.agent.supervisor import get_supervisor_instance
+
+                _sv = get_supervisor_instance()
+                if _sv is not None:
+                    _sv.touch("resource_poll")
+            except Exception:  # nosec B110
+                pass
             await asyncio.sleep(self._interval)
 
     async def _check_and_alert(self, status: ResourceStatus) -> None:
