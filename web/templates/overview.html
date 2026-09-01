@@ -236,7 +236,7 @@
               {% else %}
               <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
               {% endif %}
-              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now',this)">Run now</button>
             </td>
           </tr>
           {% if ls.last_error %}
@@ -284,7 +284,7 @@
               {% else %}
               <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
               {% endif %}
-              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now',this)">Run now</button>
             </td>
           </tr>
           {% if ls.last_error %}
@@ -321,7 +321,7 @@
               {% else %}
               <button class="loop-ctrl-btn" onclick="loopControl('{{ ls.name }}','pause')">Pause</button>
               {% endif %}
-              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now')">Run now</button>
+              <button class="loop-ctrl-btn run-now" onclick="loopControl('{{ ls.name }}','run-now',this)">Run now</button>
             </td>
           </tr>
           {% if ls.last_error %}
@@ -519,10 +519,17 @@
     }
   }
 
-  function loopControl(name, action) {
+  function loopControl(name, action, btn) {
     fetch('/loops/' + name + '/' + action, {method: 'POST'})
       .then(function(r) {
-        if (!r.ok) { r.json().then(function(d) { alert('Error: ' + (d.detail || r.status)); }); }
+        if (!r.ok) {
+          r.json().then(function(d) { alert('Error: ' + (d.detail || r.status)); });
+        } else if (action === 'run-now' && btn) {
+          var orig = btn.textContent;
+          btn.textContent = '✓ Triggered';
+          btn.disabled = true;
+          setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 2000);
+        }
       })
       .catch(function(e) { alert('Request failed: ' + e); });
   }

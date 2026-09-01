@@ -2560,6 +2560,7 @@ async def loop_run_now(loop_name: str) -> JSONResponse:
         sv.run_now(loop_name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
+    log.info("loop_run_now", loop=loop_name)
     return JSONResponse({"ok": True})
 
 

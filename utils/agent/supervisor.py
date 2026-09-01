@@ -231,6 +231,7 @@ class LoopSupervisor:
                     continue  # pause() called while running → enter paused state
                 if status.run_now_pending:
                     status.run_now_pending = False
+                    log.info("loop_restarting", name=name, reason="run_now")
                     continue  # run_now() called while running → restart immediately
                 status.status = "disabled"
                 self._emit(name)
@@ -260,6 +261,7 @@ class LoopSupervisor:
                         continue  # pause() during backoff → paused state
                     if status.run_now_pending:
                         status.run_now_pending = False
+                        log.info("loop_restarting", name=name, reason="run_now")
                         continue  # run_now() during backoff → restart immediately
                     return  # clean cancel during backoff
                 delay = min(delay * 2, self._backoff_cap)
