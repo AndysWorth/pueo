@@ -3835,12 +3835,13 @@ class TestLoopControlEndpoints:
         assert client.post("/loops/ha_log_monitor/run-now").status_code == 503
 
     def test_overview_shows_controls_column(self, tmp_path, monkeypatch):
-        """Overview page renders the Controls column with Pause/Run now buttons."""
+        """Overview page renders the Controls column with Pause/Run now buttons for polling loops."""
         import utils.agent.supervisor as sup_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
-        fake_sv, _ = self._make_fake_sv(loop_names=("ha_log_monitor",))
+        # Use a polling loop (not a streaming loop) so it appears in the table
+        fake_sv, _ = self._make_fake_sv(loop_names=("resource_poll",))
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
         monkeypatch.setattr(sup_mod, "_supervisor_instance", fake_sv)
@@ -6459,3 +6460,102 @@ class TestApproveUnregisteredEntity:
         assert response.status_code == 303
         assert len(executed) == 1
         assert executed[0]["payload"]["unique_id_override"] == "my_custom_id"
+
+
+class TestSparklineEndpoints:
+    """Tests for GET /loops/{name}/sparkline endpoints."""
+
+    def test_ha_log_monitor_sparkline_returns_data(self, tmp_path, monkeypatch):
+        """GET /loops/ha_log_monitor/sparkline returns buckets + timestamps."""
+        import agents.ha_log_monitor as log_mon
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(
+            log_mon,
+            "get_ha_log_sparkline_data",
+            lambda: {
+                "buckets": [(10, 0)] * 60,
+                "last_line_at": 1000.0,
+                "last_match_at": 900.0,
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        r = client.get("/loops/ha_log_monitor/sparkline")
+        assert r.status_code == 200
+        data = r.json()
+        assert "buckets" in data
+        assert len(data["buckets"]) == 60
+        assert data["last_line_at"] == 1000.0
+        assert data["last_match_at"] == 900.0
+
+    def test_netalertx_sparkline_returns_data_with_configured_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """GET /loops/netalertx/sparkline returns buckets + configured flag."""
+        import netalertx.log_monitor as nax_mon
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(
+            nax_mon,
+            "get_netalertx_sparkline_data",
+            lambda: {
+                "buckets": [(5, 1)] * 60,
+                "last_line_at": 2000.0,
+                "last_match_at": 1800.0,
+                "last_scan_at": 1950.0,
+                "configured": True,
+            },
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        r = client.get("/loops/netalertx/sparkline")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["configured"] is True
+        assert "last_scan_at" in data
+        assert len(data["buckets"]) == 60
+
+    def test_sparkline_bucket_rolls_at_minute_boundary(self):
+        """_record_sparkline_line() appends a bucket when the minute changes."""
+        import agents.ha_log_monitor as log_mon
+        import time
+
+        # Reset module state
+        log_mon._sparkline_buckets = __import__("collections").deque(
+            [(0, 0)] * 60, maxlen=60
+        )
+        log_mon._sparkline_bucket_total = 0
+        log_mon._sparkline_bucket_matches = 0
+        log_mon._sparkline_current_minute = 0
+
+        # Record a line in minute=0 context
+        now_min = int(time.time() // 60)
+        log_mon._sparkline_current_minute = now_min
+        log_mon._record_sparkline_line(matched=False)
+        assert log_mon._sparkline_bucket_total == 1
+
+        # Simulate advancing to the next minute
+        log_mon._sparkline_current_minute = now_min - 1
+        log_mon._record_sparkline_line(matched=True)
+        # The old bucket should have been appended; new bucket started with 1 line
+        assert log_mon._sparkline_bucket_total == 1
+        assert log_mon._sparkline_bucket_matches == 1
+
+    def test_get_ha_log_sparkline_data_includes_current_bucket(self):
+        """get_ha_log_sparkline_data() appends the in-progress bucket."""
+        import agents.ha_log_monitor as log_mon
+        import collections
+
+        log_mon._sparkline_buckets = collections.deque([(0, 0)] * 59, maxlen=60)
+        log_mon._sparkline_bucket_total = 7
+        log_mon._sparkline_bucket_matches = 2
+
+        data = log_mon.get_ha_log_sparkline_data()
+        # Last bucket should be the in-progress one
+        assert data["buckets"][-1] == (7, 2)
+        assert len(data["buckets"]) == 60

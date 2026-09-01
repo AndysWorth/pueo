@@ -3179,6 +3179,119 @@ class TestLoopSupervisor:
         sup = LoopSupervisor()
         sup.touch("nonexistent")  # must not raise
 
+    def test_interval_seconds_stored_on_start(self):
+        """interval_seconds passed to start() is stored in LoopStatus."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus)
+            sup.start("d", daemon, interval_seconds=300)
+            await asyncio.sleep(0.05)
+
+            status = sup._handles["d"]
+            assert status.interval_seconds == 300
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_touch_sets_next_run_when_interval_set(self):
+        """touch() populates next_run = last_run + interval_seconds when interval is set."""
+        import asyncio
+        import time
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon, interval_seconds=600)
+            await asyncio.sleep(0.05)
+
+            before = time.time()
+            sup.touch("d")
+            after = time.time()
+
+            status = sup._handles["d"]
+            assert status.next_run is not None
+            assert before + 600 <= status.next_run <= after + 600
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_touch_does_not_set_next_run_without_interval(self):
+        """touch() does not overwrite next_run when interval_seconds is None."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)  # no interval_seconds
+            await asyncio.sleep(0.05)
+
+            sup.touch("d")
+
+            status = sup._handles["d"]
+            # next_run should not be set by touch() when interval_seconds is None
+            assert status.interval_seconds is None
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_interval_seconds_in_emit_event(self):
+        """SSE event emitted by touch() includes interval_seconds field."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon, interval_seconds=120)
+            await asyncio.sleep(0.05)
+            # drain startup events
+            while not bus.empty():
+                bus.get_nowait()
+
+            sup.touch("d")
+
+            events = []
+            while not bus.empty():
+                events.append(bus.get_nowait())
+            loop_events = [
+                e
+                for e in events
+                if e.get("event_type") == "loop_status" and e.get("loop") == "d"
+            ]
+            assert any(e.get("interval_seconds") == 120 for e in loop_events)
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 

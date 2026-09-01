@@ -162,6 +162,7 @@ class LoopStatus:
     next_run: float | None = None
     paused: bool = False
     run_now_pending: bool = False
+    interval_seconds: int | float | None = None
 
 
 class LoopSupervisor:
@@ -184,9 +185,10 @@ class LoopSupervisor:
         self,
         name: str,
         coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+        interval_seconds: int | float | None = None,
     ) -> None:
         """Register and start a named loop. Call from inside a running event loop."""
-        status = LoopStatus(name=name)
+        status = LoopStatus(name=name, interval_seconds=interval_seconds)
         self._handles[name] = status
         task: asyncio.Task[None] = asyncio.create_task(
             self._run_with_restart(name, coro_factory),
@@ -272,6 +274,7 @@ class LoopSupervisor:
             "last_run": status.last_run,
             "next_run": status.next_run,
             "paused": status.paused,
+            "interval_seconds": status.interval_seconds,
         }
         # Write to self._bus (may be a test-injected queue distinct from event_bus)
         if self._bus is not event_bus:
@@ -325,9 +328,15 @@ class LoopSupervisor:
         Call this at the end of each internal iteration in a long-running loop
         so the Overview page shows when meaningful work last happened, not just
         when the coroutine was first started by the supervisor.
+
+        If interval_seconds is set on the loop, next_run is also updated so
+        the frontend can show a countdown for infrequent loops.
         """
         if name in self._handles:
-            self._handles[name].last_run = time.time()
+            status = self._handles[name]
+            status.last_run = time.time()
+            if status.interval_seconds is not None:
+                status.next_run = status.last_run + status.interval_seconds
             self._emit(name)
 
     def get_statuses(self) -> list[LoopStatus]:

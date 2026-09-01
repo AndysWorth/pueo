@@ -386,4 +386,12 @@ class DiskUsagePoller:
                 raise
             except Exception as e:
                 log.error("disk_usage_poll_failed", error=str(e))
+            try:
+                from utils.agent.supervisor import get_supervisor_instance
+
+                _sv = get_supervisor_instance()
+                if _sv is not None:
+                    _sv.touch("disk_usage_poll")
+            except Exception:  # nosec B110
+                pass
             await asyncio.sleep(self._interval)

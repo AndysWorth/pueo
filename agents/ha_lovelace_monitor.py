@@ -371,4 +371,12 @@ async def poll_for_dashboard_entity_issues(
                     entity_id=pending_entity_id,
                 )
 
+        try:
+            from utils.agent.supervisor import get_supervisor_instance as _get_sv
+
+            _sv_inst = _get_sv()
+            if _sv_inst is not None:
+                _sv_inst.touch("lovelace_poll")
+        except Exception:  # nosec B110
+            pass
         await asyncio.sleep(_interval * 60)

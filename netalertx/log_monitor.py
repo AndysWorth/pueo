@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import re
+import time
 from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
@@ -48,10 +49,63 @@ _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
 _log_buffer: collections.deque[str] = collections.deque(maxlen=50)
 
+# Sparkline state — 60-minute ring buffer; each bucket is (total_lines, match_lines).
+_sparkline_buckets: collections.deque = collections.deque([(0, 0)] * 60, maxlen=60)
+_sparkline_current_minute: int = 0
+_sparkline_bucket_total: int = 0
+_sparkline_bucket_matches: int = 0
+_last_line_at: float = 0.0  # epoch of most recent received line
+_last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
+_last_scan_at: float = 0.0  # epoch of most recent scan-detected log line
+
 CRITICAL_LOG_PATTERN = re.compile(
     r"(ERROR|CRITICAL|Exception|Traceback).*(scan|MQTT|plugin|broker|arp|database)",
     re.IGNORECASE,
 )
+
+# Matches log lines indicating a NetAlertX scan cycle completed or found devices.
+_SCAN_LOG_PATTERN = re.compile(
+    r"(scan.*(start|complet|done|finish|found)|arp.*(start|complet|done)|"
+    r"devices.*found|new.*device|scanning)",
+    re.IGNORECASE,
+)
+
+
+def _record_sparkline_line(matched: bool, scan: bool) -> None:
+    """Update sparkline ring buffer for one received NetAlertX log line."""
+    global _sparkline_current_minute, _sparkline_bucket_total, _sparkline_bucket_matches
+    global _last_line_at, _last_match_at, _last_scan_at
+
+    now = time.time()
+    _last_line_at = now
+    if matched:
+        _last_match_at = now
+    if scan:
+        _last_scan_at = now
+
+    current_min = int(now // 60)
+    if current_min != _sparkline_current_minute:
+        _sparkline_buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
+        _sparkline_bucket_total = 0
+        _sparkline_bucket_matches = 0
+        _sparkline_current_minute = current_min
+
+    _sparkline_bucket_total += 1
+    if matched:
+        _sparkline_bucket_matches += 1
+
+
+def get_netalertx_sparkline_data() -> dict:
+    """Return sparkline snapshot for the /loops/netalertx/sparkline endpoint."""
+    buckets = list(_sparkline_buckets)
+    buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
+    return {
+        "buckets": buckets[-60:],
+        "last_line_at": _last_line_at,
+        "last_match_at": _last_match_at,
+        "last_scan_at": _last_scan_at,
+        "configured": bool(_config.NETALERTX_HOST),
+    }
 
 
 class LogEvaluation(BaseModel):
@@ -208,7 +262,11 @@ async def tail_netalertx_log_stream(
             clean_line = line.strip()
             _log_buffer.append(clean_line)
 
-            if CRITICAL_LOG_PATTERN.search(clean_line):
+            _matched = bool(CRITICAL_LOG_PATTERN.search(clean_line))
+            _scan = bool(_SCAN_LOG_PATTERN.search(clean_line))
+            _record_sparkline_line(_matched, _scan)
+
+            if _matched:
                 log.warning("netalertx_log_intercepted", line=clean_line)
                 evaluation, llm_trace = await analyze_log_line_with_ai(
                     list(_log_buffer), llm_client=llm_client

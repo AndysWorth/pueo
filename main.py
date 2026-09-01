@@ -568,7 +568,11 @@ async def supervisor_main(config_path: Path) -> None:
                 supervisor.touch("profile_refresh")
                 await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
 
-        supervisor.start("profile_refresh", _profile_refresh_loop)
+        supervisor.start(
+            "profile_refresh",
+            _profile_refresh_loop,
+            interval_seconds=int(cfg.HA_PROFILE_REFRESH_HOURS * 3600),
+        )
 
     # Periodic backup reconciliation and offload loop — keeps inventory in sync and
     # ensures new HA-side backups (including automatic daily ones) are pulled locally.
@@ -602,9 +606,9 @@ async def supervisor_main(config_path: Path) -> None:
                 _log.warning("archive_retention_loop_failed", error=str(e))
             supervisor.touch("backup_sync")
 
-    supervisor.start("backup_sync", _backup_reconcile_loop)
+    supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
 
-    # HA log monitor loop (SSH tail + AI triage)
+    # HA log monitor loop (SSH tail + AI triage) — streaming, no fixed interval
     supervisor.start(
         "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)
     )
@@ -635,16 +639,19 @@ async def supervisor_main(config_path: Path) -> None:
             knowledge_store=knowledge_store,
             db_path=cfg.DB_PATH,
         ).run(),
+        interval_seconds=cfg.RESOURCE_POLL_INTERVAL_SECONDS,
     )
 
     if knowledge_store is not None:
         supervisor.start(
             "embed_episodes",
             lambda: _embed_episodes_loop(cfg.DB_PATH, knowledge_store),
+            interval_seconds=600,
         )
         supervisor.start(
             "rag_refresh",
             lambda: _rag_refresh_loop(knowledge_store, cfg.RAG_REFRESH_INTERVAL_HOURS),
+            interval_seconds=int(cfg.RAG_REFRESH_INTERVAL_HOURS * 3600),
         )
 
     # Per-path disk usage polling loop
@@ -656,6 +663,7 @@ async def supervisor_main(config_path: Path) -> None:
             ssh_client=AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH),
             interval_seconds=cfg.DISK_USAGE_POLL_INTERVAL_SECONDS,
         ).run(),
+        interval_seconds=cfg.DISK_USAGE_POLL_INTERVAL_SECONDS,
     )
 
     # Update check loop (only if interval > 0 and token is configured)
@@ -665,6 +673,7 @@ async def supervisor_main(config_path: Path) -> None:
             lambda: poll_for_updates(
                 notifier=notifier, knowledge_store=knowledge_store
             ),
+            interval_seconds=int(cfg.HA_UPDATE_CHECK_INTERVAL_HOURS * 3600),
         )
 
     # Notification polling loop (only if interval > 0 and token is configured)
@@ -672,6 +681,7 @@ async def supervisor_main(config_path: Path) -> None:
         supervisor.start(
             "notification_poll",
             lambda: poll_for_notifications(notifier=notifier),
+            interval_seconds=cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60,
         )
 
     # HA Repairs polling loop (only if interval > 0 and token is configured)
@@ -679,6 +689,7 @@ async def supervisor_main(config_path: Path) -> None:
         supervisor.start(
             "repair_poll",
             lambda: poll_for_repairs(notifier=notifier),
+            interval_seconds=cfg.HA_REPAIR_POLL_INTERVAL_MINUTES * 60,
         )
 
     # Lovelace dashboard entity health check (only if interval > 0 and token is configured)
@@ -688,6 +699,7 @@ async def supervisor_main(config_path: Path) -> None:
         supervisor.start(
             "lovelace_poll",
             lambda: poll_for_dashboard_entity_issues(notifier=notifier),
+            interval_seconds=cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES * 60,
         )
 
     # Known Issues reminder loop — checks hourly for suppressed issues older than
@@ -697,6 +709,7 @@ async def supervisor_main(config_path: Path) -> None:
         lambda: _known_issues_poll_loop(
             cfg.DB_PATH, cfg.KNOWN_ISSUE_REMINDER_DAYS, notifier
         ),
+        interval_seconds=3600,
     )
 
     # NetAlertX log monitor (only if host is configured — non-empty means NetAlertX active)
