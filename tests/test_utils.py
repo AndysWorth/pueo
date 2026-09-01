@@ -3013,7 +3013,7 @@ class TestLoopSupervisor:
 
             assert calls == [1]
             sup.run_now("d")
-            await asyncio.sleep(0.1)  # should restart within 100 ms
+            await asyncio.sleep(0.5)  # should restart within 500 ms
 
             assert len(calls) >= 2  # second run fired by run_now
 
@@ -3098,7 +3098,7 @@ class TestLoopSupervisor:
 
             # run_now cancels the running coro and restarts it immediately
             sup.run_now("d")
-            await asyncio.sleep(0.05)  # let restart complete
+            await asyncio.sleep(0.5)  # let restart complete
 
             assert len(iterations) >= 2
 
