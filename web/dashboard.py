@@ -2505,6 +2505,22 @@ async def model_refresh_cache() -> JSONResponse:
     )
 
 
+@app.get("/loops/ha_log_monitor/sparkline")
+async def ha_log_monitor_sparkline() -> JSONResponse:
+    """Return 60-minute sparkline data for the HA log monitor stream."""
+    from agents.ha_log_monitor import get_ha_log_sparkline_data
+
+    return JSONResponse(get_ha_log_sparkline_data())
+
+
+@app.get("/loops/netalertx/sparkline")
+async def netalertx_sparkline() -> JSONResponse:
+    """Return 60-minute sparkline data for the NetAlertX log monitor stream."""
+    from netalertx.log_monitor import get_netalertx_sparkline_data
+
+    return JSONResponse(get_netalertx_sparkline_data())
+
+
 @app.post("/loops/{loop_name}/pause")
 async def loop_pause(loop_name: str) -> JSONResponse:
     from utils.agent.supervisor import get_supervisor_instance

@@ -73,6 +73,52 @@ _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
 _log_buffer: collections.deque[str] = collections.deque(maxlen=50)
 
+# Sparkline state — 60-minute ring buffer; each bucket is (total_lines, match_lines).
+# Updated on every received line; minute boundary rolls to a new bucket.
+_sparkline_buckets: collections.deque = collections.deque([(0, 0)] * 60, maxlen=60)
+_sparkline_current_minute: int = 0  # calendar minute of the current open bucket
+_sparkline_bucket_total: int = 0
+_sparkline_bucket_matches: int = 0
+_last_line_at: float = 0.0  # epoch of most recent received line
+_last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
+
+
+def _record_sparkline_line(matched: bool) -> None:
+    """Update sparkline ring buffer for one received log line."""
+    global _sparkline_current_minute, _sparkline_bucket_total, _sparkline_bucket_matches
+    global _last_line_at, _last_match_at
+
+    now = time.time()
+    _last_line_at = now
+    if matched:
+        _last_match_at = now
+
+    current_min = int(now // 60)
+    if current_min != _sparkline_current_minute:
+        # Roll current bucket into ring and open a new one.
+        _sparkline_buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
+        _sparkline_bucket_total = 0
+        _sparkline_bucket_matches = 0
+        _sparkline_current_minute = current_min
+
+    _sparkline_bucket_total += 1
+    if matched:
+        _sparkline_bucket_matches += 1
+
+
+def get_ha_log_sparkline_data() -> dict:
+    """Return sparkline snapshot for the /loops/ha_log_monitor/sparkline endpoint."""
+    buckets = list(_sparkline_buckets)
+    # Append the in-progress current bucket as the most recent entry.
+    buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
+    # Keep only the last 60 buckets.
+    return {
+        "buckets": buckets[-60:],
+        "last_line_at": _last_line_at,
+        "last_match_at": _last_match_at,
+    }
+
+
 # High-priority regex to capture structural components collapsing or syntax crashes
 CRITICAL_LOG_PATTERN = re.compile(
     r"(ERROR|CRITICAL).*?(Component error|Failed to initialize|Traceback|Invalid config|Error doing job)",
@@ -270,7 +316,10 @@ async def tail_remote_log_stream(
             clean_line = line.strip()
             _log_buffer.append(clean_line)
 
-            if CRITICAL_LOG_PATTERN.search(clean_line):
+            _matched = bool(CRITICAL_LOG_PATTERN.search(clean_line))
+            _record_sparkline_line(_matched)
+
+            if _matched:
                 log.warning("log_line_intercepted", line=clean_line)
 
                 context_snapshot = "\n".join(_log_buffer)
