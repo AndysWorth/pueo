@@ -204,7 +204,14 @@ class LoopSupervisor:
     ) -> None:
         status = self._handles[name]
         delay = self._backoff_start
+        _restarted_by_run_now = False
         while True:
+            # Emit log outside any except-CancelledError handler to avoid
+            # interactions between Python logging and active exceptions.
+            if _restarted_by_run_now:
+                _restarted_by_run_now = False
+                log.info("loop_restarting", loop=name, reason="run_now")
+
             # --- Paused state: sleep 1 s per tick until resumed ---
             if status.paused:
                 if status.status != "paused":
@@ -231,7 +238,7 @@ class LoopSupervisor:
                     continue  # pause() called while running → enter paused state
                 if status.run_now_pending:
                     status.run_now_pending = False
-                    log.info("loop_restarting", name=name, reason="run_now")
+                    _restarted_by_run_now = True
                     continue  # run_now() called while running → restart immediately
                 status.status = "disabled"
                 self._emit(name)
@@ -261,7 +268,7 @@ class LoopSupervisor:
                         continue  # pause() during backoff → paused state
                     if status.run_now_pending:
                         status.run_now_pending = False
-                        log.info("loop_restarting", name=name, reason="run_now")
+                        _restarted_by_run_now = True
                         continue  # run_now() during backoff → restart immediately
                     return  # clean cancel during backoff
                 delay = min(delay * 2, self._backoff_cap)
