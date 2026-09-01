@@ -539,6 +539,7 @@
       })
       .catch(function(e) { alert('Request failed: ' + e); });
   }
+  window.loopControl = loopControl;
 
   function updateGauges(evt) {
     var diskBar = document.getElementById('disk-bar');
