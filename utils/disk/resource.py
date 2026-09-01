@@ -133,6 +133,7 @@ class ResourcePoller:
     async def run(self) -> None:
         """Poll indefinitely — start via asyncio.create_task()."""
         while True:
+            _outcome = ""
             try:
                 status = await poll_host_resources(
                     self._ssh,
@@ -141,6 +142,12 @@ class ResourcePoller:
                     self._mem_warn_mb,
                 )
                 update_resource_status(status)
+                _pct = (
+                    round(100 * status.disk_used_gb / status.disk_total_gb, 1)
+                    if status.disk_total_gb
+                    else 0
+                )
+                _outcome = f"Disk {_pct}% ({status.disk_free_gb:.1f} GB free)"
                 try:
                     from utils.agent.supervisor import publish_event
 
@@ -180,7 +187,7 @@ class ResourcePoller:
 
                 _sv = get_supervisor_instance()
                 if _sv is not None:
-                    _sv.touch("resource_poll")
+                    _sv.touch("resource_poll", outcome=_outcome)
             except Exception:  # nosec B110
                 pass
             await asyncio.sleep(self._interval)

@@ -158,6 +158,7 @@ class LoopStatus:
     )
     error_count: int = 0
     last_error: str = ""
+    last_outcome: str = ""
     last_run: float | None = None
     next_run: float | None = None
     paused: bool = False
@@ -271,6 +272,7 @@ class LoopSupervisor:
             "status": status.status,
             "error_count": status.error_count,
             "last_error": status.last_error,
+            "last_outcome": status.last_outcome,
             "last_run": status.last_run,
             "next_run": status.next_run,
             "paused": status.paused,
@@ -322,7 +324,7 @@ class LoopSupervisor:
         for task in self._tasks.values():
             task.cancel()
 
-    def touch(self, name: str) -> None:
+    def touch(self, name: str, outcome: str = "") -> None:
         """Update last_run to now after a loop completes one work cycle.
 
         Call this at the end of each internal iteration in a long-running loop
@@ -331,12 +333,19 @@ class LoopSupervisor:
 
         If interval_seconds is set on the loop, next_run is also updated so
         the frontend can show a countdown for infrequent loops.
+
+        Pass outcome= with a short human-readable summary of what the iteration
+        found or did (e.g. "No issues", "3 update(s) available"). Empty string
+        preserves the previous outcome so a crash mid-iteration doesn't wipe the
+        last good result.
         """
         if name in self._handles:
             status = self._handles[name]
             status.last_run = time.time()
             if status.interval_seconds is not None:
                 status.next_run = status.last_run + status.interval_seconds
+            if outcome:
+                status.last_outcome = outcome
             self._emit(name)
 
     def get_statuses(self) -> list[LoopStatus]:

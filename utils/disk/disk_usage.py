@@ -362,9 +362,11 @@ class DiskUsagePoller:
 
     async def run(self) -> None:
         while True:
+            _outcome = ""
             try:
                 breakdown = await fetch_disk_breakdown(self._ssh)
                 update_disk_breakdown(breakdown)
+                _outcome = f"Scanned {len(breakdown.sections)} paths"
                 try:
                     from utils.agent.supervisor import publish_event
 
@@ -391,7 +393,7 @@ class DiskUsagePoller:
 
                 _sv = get_supervisor_instance()
                 if _sv is not None:
-                    _sv.touch("disk_usage_poll")
+                    _sv.touch("disk_usage_poll", outcome=_outcome)
             except Exception:  # nosec B110
                 pass
             await asyncio.sleep(self._interval)
