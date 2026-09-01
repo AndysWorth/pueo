@@ -147,9 +147,6 @@
             {% elif ha_stream %}
             <button class="loop-ctrl-btn" onclick="loopControl('ha_log_monitor','pause')">Pause</button>
             {% endif %}
-            {% if ha_stream %}
-            <button class="loop-ctrl-btn run-now" onclick="loopControl('ha_log_monitor','run-now')">Run now</button>
-            {% endif %}
           </span>
         </div>
         <div class="stream-card-meta">
@@ -169,9 +166,6 @@
             <button class="loop-ctrl-btn" onclick="loopControl('netalertx','resume')">Resume</button>
             {% elif nax_stream %}
             <button class="loop-ctrl-btn" onclick="loopControl('netalertx','pause')">Pause</button>
-            {% endif %}
-            {% if nax_stream %}
-            <button class="loop-ctrl-btn run-now" onclick="loopControl('netalertx','run-now')">Run now</button>
             {% endif %}
           </span>
         </div>
