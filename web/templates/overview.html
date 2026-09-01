@@ -21,11 +21,13 @@
   .dot-paused     { background: #6c757d; }
   .dot-disabled   { background: #adb5bd; }
   .dot-starting   { background: #17a2b8; }
+  .loop-table-wrap { overflow-x: auto; }
   table.loop-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   table.loop-table th { text-align: left; padding: 0.3rem 0.5rem; color: #888;
     font-weight: 600; font-size: 0.72rem; text-transform: uppercase; border-bottom: 1px solid #eee; }
   table.loop-table td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #f0f0f0; color: #333; }
   table.loop-table tr:last-child td { border-bottom: none; }
+  table.loop-table td.loop-controls { white-space: nowrap; }
   .loop-ctrl-btn { font-size: 0.72rem; padding: 0.15rem 0.5rem; border: 1px solid #ccc;
     border-radius: 3px; background: #fff; cursor: pointer; margin-right: 2px; }
   .loop-ctrl-btn:hover { background: #f0f0f0; }
@@ -192,6 +194,7 @@
     {% for ls in loop_statuses %}{% if ls.name not in SKIP %}{% set _ = status_map.update({ls.name: ls}) %}{% endif %}{% endfor %}
     {% set has_rows = status_map | length > 0 %}
     {% if has_rows %}
+    <div class="loop-table-wrap">
     <table class="loop-table">
       <thead>
         <tr>
@@ -335,6 +338,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="no-loops">No loops running — start Pueo in supervisor mode (<code>python main.py</code>).</p>
     {% endif %}
@@ -356,6 +360,7 @@
       <a href="/timeline" style="font-size:0.78rem;color:#1a73e8;font-weight:400;">View all →</a>
     </div>
     {% if recent_events %}
+    <div class="loop-table-wrap">
     <table class="loop-table" id="recent-events-table">
       <thead>
         <tr>
@@ -376,6 +381,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="no-loops" id="recent-events-empty">No events yet — Pueo will log significant actions here.</p>
     {% endif %}
@@ -569,12 +575,15 @@
     if (empty) {
       var wrap = empty.parentElement;
       empty.remove();
+      var tblWrap = document.createElement('div');
+      tblWrap.className = 'loop-table-wrap';
       var tbl = document.createElement('table');
       tbl.className = 'loop-table';
       tbl.id = 'recent-events-table';
       tbl.innerHTML = '<thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>'
         + '<tbody id="recent-events-body"></tbody>';
-      wrap.appendChild(tbl);
+      tblWrap.appendChild(tbl);
+      wrap.appendChild(tblWrap);
       body = document.getElementById('recent-events-body');
     }
     if (!body) return;
