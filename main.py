@@ -260,7 +260,12 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
             await embed_local_episode(ep, knowledge_store, db_path)
         _sv = get_supervisor_instance()
         if _sv:
-            _sv.touch("embed_episodes")
+            _ep_outcome = (
+                "No new episodes"
+                if not episodes
+                else f"Embedded {len(episodes)} episode(s)"
+            )
+            _sv.touch("embed_episodes", outcome=_ep_outcome)
         await asyncio.sleep(600)
 
 
@@ -309,7 +314,12 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
             _sv = get_supervisor_instance()
             if _sv:
-                _sv.touch("rag_refresh")
+                try:
+                    _rag_total = knowledge_store.total_count()
+                    _rag_outcome = f"Refreshed ({_rag_total} docs)"
+                except Exception:  # nosec B110
+                    _rag_outcome = "Refreshed"
+                _sv.touch("rag_refresh", outcome=_rag_outcome)
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
@@ -341,7 +351,12 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
             _sv = get_supervisor_instance()
             if _sv:
-                _sv.touch("rag_refresh")
+                try:
+                    _rag_total = knowledge_store.total_count()
+                    _rag_outcome = f"Refreshed ({_rag_total} docs)"
+                except Exception:  # nosec B110
+                    _rag_outcome = "Refreshed"
+                _sv.touch("rag_refresh", outcome=_rag_outcome)
         except Exception as exc:  # pragma: no cover  # nosec B110
             _log.warning("rag_refresh_failed", error=str(exc))
             write_timeline_event(
@@ -387,9 +402,13 @@ async def _known_issues_poll_loop(
                     touch_reminder_sent(conn, issue["card_key"])
         except Exception as exc:
             _log.warning("known_issues_poll_failed", error=str(exc))
+            due = []
         _sv = get_supervisor_instance()
         if _sv:
-            _sv.touch("known_issues_poll")
+            _ki_outcome = (
+                "No reminders due" if not due else f"{len(due)} reminder(s) sent"
+            )
+            _sv.touch("known_issues_poll", outcome=_ki_outcome)
 
 
 async def supervisor_main(config_path: Path) -> None:
@@ -551,6 +570,7 @@ async def supervisor_main(config_path: Path) -> None:
 
         async def _profile_refresh_loop() -> None:
             while True:
+                _p = None
                 try:
                     _p = await build_environment_profile(
                         ssh_client=_profile_ssh,
@@ -565,7 +585,12 @@ async def supervisor_main(config_path: Path) -> None:
                     from utils.core.logging import get_logger as _gl
 
                     _gl("main").warning("ha_profile_refresh_failed", exc=str(exc))
-                supervisor.touch("profile_refresh")
+                _prof_outcome = (
+                    f"Core {_p.ha_version}"
+                    if _p and _p.ha_version
+                    else "Profile refreshed"
+                )
+                supervisor.touch("profile_refresh", outcome=_prof_outcome)
                 await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
 
         supervisor.start(
@@ -604,7 +629,17 @@ async def supervisor_main(config_path: Path) -> None:
                 )
             except Exception as e:  # pragma: no cover  # nosec B110
                 _log.warning("archive_retention_loop_failed", error=str(e))
-            supervisor.touch("backup_sync")
+            import sqlite3 as _sqlite3
+
+            try:
+                with _sqlite3.connect(cfg.DB_PATH) as _bc:
+                    _bn = _bc.execute(
+                        "SELECT COUNT(*) FROM backup_registry WHERE deleted_from_ha_at IS NULL"
+                    ).fetchone()[0]
+                _bs_outcome = f"In sync ({_bn} backup{'s' if _bn != 1 else ''})"
+            except Exception:  # nosec B110
+                _bs_outcome = "In sync"
+            supervisor.touch("backup_sync", outcome=_bs_outcome)
 
     supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
 

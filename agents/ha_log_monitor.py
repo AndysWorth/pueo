@@ -825,6 +825,10 @@ async def poll_for_updates(
                         )
                         _update_gone.pop(suppression_key, None)
 
+        _n_avail = sum(1 for u in updates if u.update_available)
+        _update_outcome = (
+            "No updates" if _n_avail == 0 else f"{_n_avail} update(s) available"
+        )
         # Reconcile: pending update cards for entities entirely absent from HA response.
         seen_keys = {f"update:{u.entity_id}" for u in updates}
         with sqlite3.connect(DB_PATH) as _sweep_conn:
@@ -847,7 +851,7 @@ async def poll_for_updates(
 
             _sv_inst = _get_sv()
             if _sv_inst is not None:
-                _sv_inst.touch("update_check")
+                _sv_inst.touch("update_check", outcome=_update_outcome)
         except Exception:  # nosec B110
             pass
         await asyncio.sleep(interval)
@@ -900,6 +904,7 @@ async def poll_for_notifications(
             backoff = min(backoff * 2 if backoff else 30, 120)
             continue
 
+        _new_notif_count = 0
         for notif in notifications:
             nid: str = notif.get("notification_id", "")
             if not nid:
@@ -977,13 +982,19 @@ async def poll_for_notifications(
                     payload=payload,
                 )
                 mark_notification_hitl_sent(nid, db_path=db_path)
+                _new_notif_count += 1
 
+        _notif_outcome = (
+            "No new notifications"
+            if _new_notif_count == 0
+            else f"{_new_notif_count} new"
+        )
         try:
             from utils.agent.supervisor import get_supervisor_instance as _get_sv
 
             _sv_inst = _get_sv()
             if _sv_inst is not None:
-                _sv_inst.touch("notification_poll")
+                _sv_inst.touch("notification_poll", outcome=_notif_outcome)
         except Exception:  # nosec B110
             pass
 
@@ -1136,12 +1147,15 @@ async def poll_for_repairs(
                 except Exception:  # nosec B110
                     pass
 
+        _repair_outcome = (
+            "No issues" if not active_keys else f"{len(active_keys)} issue(s) found"
+        )
         try:
             from utils.agent.supervisor import get_supervisor_instance as _get_sv
 
             _sv_inst = _get_sv()
             if _sv_inst is not None:
-                _sv_inst.touch("repair_poll")
+                _sv_inst.touch("repair_poll", outcome=_repair_outcome)
         except Exception:  # nosec B110
             pass
 

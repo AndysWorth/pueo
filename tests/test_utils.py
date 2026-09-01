@@ -3292,6 +3292,121 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_loop_status_last_outcome_default(self):
+        """LoopStatus initializes last_outcome as an empty string."""
+        from utils.agent.supervisor import LoopStatus
+
+        s = LoopStatus(name="x")
+        assert s.last_outcome == ""
+
+    def test_touch_with_outcome_sets_last_outcome(self):
+        """touch(name, outcome=...) stores the outcome string on the status."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+
+            sup.touch("d", outcome="Disk 45%")
+
+            assert sup._handles["d"].last_outcome == "Disk 45%"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_touch_without_outcome_preserves_last_outcome(self):
+        """touch(name) with no outcome arg does not overwrite a prior last_outcome."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+
+            sup._handles["d"].last_outcome = "previous"
+            sup.touch("d")
+
+            assert sup._handles["d"].last_outcome == "previous"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_touch_empty_string_does_not_overwrite(self):
+        """touch(name, outcome='') does not overwrite a prior last_outcome."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+
+            sup._handles["d"].last_outcome = "preserved"
+            sup.touch("d", outcome="")
+
+            assert sup._handles["d"].last_outcome == "preserved"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_emit_includes_last_outcome_in_sse_event(self):
+        """SSE event emitted by touch() includes the last_outcome field."""
+        import asyncio
+
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)
+            while not bus.empty():
+                bus.get_nowait()
+
+            sup.touch("d", outcome="No issues")
+
+            events = []
+            while not bus.empty():
+                events.append(bus.get_nowait())
+            loop_events = [
+                e
+                for e in events
+                if e.get("event_type") == "loop_status" and e.get("loop") == "d"
+            ]
+            assert any(e.get("last_outcome") == "No issues" for e in loop_events)
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 

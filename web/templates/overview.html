@@ -203,6 +203,7 @@
         <tr>
           <th>Loop</th>
           <th>Status</th>
+          <th>Last outcome</th>
           <th>Last run</th>
           <th>Next run</th>
           <th>Controls</th>
@@ -214,7 +215,7 @@
         {% set ns = namespace(fast_count=0) %}
         {% for name in FAST_ORDER %}{% if name in status_map %}{% set ns.fast_count = ns.fast_count + 1 %}{% endif %}{% endfor %}
         {% if ns.fast_count > 0 %}
-        <tr class="loop-group-header"><td colspan="5">Fast</td></tr>
+        <tr class="loop-group-header"><td colspan="6">Fast</td></tr>
         {% for name in FAST_ORDER %}
           {% if name in status_map %}{% set ls = status_map[name] %}
           <tr id="loop-{{ ls.name }}">
@@ -223,6 +224,7 @@
               <span class="status-dot dot-{{ ls.status }}"></span>
               <span class="loop-status">{{ ls.status }}</span>
             </td>
+            <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
             <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
@@ -245,7 +247,7 @@
           </tr>
           {% if ls.last_error %}
           <tr>
-            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+            <td colspan="6" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
               <span class="loop-error-msg">{{ ls.last_error }}</span>
             </td>
           </tr>
@@ -257,7 +259,7 @@
         {% set ns2 = namespace(infreq_count=0) %}
         {% for name in INFREQ_ORDER %}{% if name in status_map %}{% set ns2.infreq_count = ns2.infreq_count + 1 %}{% endif %}{% endfor %}
         {% if ns2.infreq_count > 0 %}
-        <tr class="loop-group-header"><td colspan="5">Infrequent</td></tr>
+        <tr class="loop-group-header"><td colspan="6">Infrequent</td></tr>
         {% for name in INFREQ_ORDER %}
           {% if name in status_map %}{% set ls = status_map[name] %}
           <tr id="loop-{{ ls.name }}">
@@ -266,6 +268,7 @@
               <span class="status-dot dot-{{ ls.status }}"></span>
               <span class="loop-status">{{ ls.status }}</span>
             </td>
+            <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
             <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
@@ -292,7 +295,7 @@
           </tr>
           {% if ls.last_error %}
           <tr>
-            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+            <td colspan="6" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
               <span class="loop-error-msg">{{ ls.last_error }}</span>
             </td>
           </tr>
@@ -309,6 +312,7 @@
               <span class="status-dot dot-{{ ls.status }}"></span>
               <span class="loop-status">{{ ls.status }}</span>
             </td>
+            <td class="loop-outcome" style="color:#666;">{{ ls.last_outcome or "—" }}</td>
             <td class="loop-last-run">{{ ls.last_run|epoch_to_iso if ls.last_run else "—" }}</td>
             <td class="loop-next-run">
               {% if ls.status == "error" and ls.next_run %}
@@ -328,7 +332,7 @@
           </tr>
           {% if ls.last_error %}
           <tr>
-            <td colspan="5" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
+            <td colspan="6" style="padding-left:1.5rem;color:#dc3545;font-size:0.78rem;">
               <span class="loop-error-msg">{{ ls.last_error }}</span>
             </td>
           </tr>
@@ -484,6 +488,8 @@
       dotEl.className = 'status-dot ' + (statusDotClass[evt.status] || '');
       statusEl.textContent = evt.status;
     }
+    var outcomeEl = row.querySelector('.loop-outcome');
+    if (outcomeEl) outcomeEl.textContent = evt.last_outcome || '—';
     var lastRunEl = row.querySelector('.loop-last-run');
     if (lastRunEl) lastRunEl.textContent = fmtTime(evt.last_run);
     // Smart next-run: update countdown spans; static cadence spans are left alone
