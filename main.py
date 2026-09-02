@@ -770,8 +770,8 @@ async def supervisor_main(config_path: Path) -> None:
         interval_seconds=3600,
     )
 
-    # NetAlertX log monitor (only if host is configured — non-empty means NetAlertX active)
-    if cfg.NETALERTX_HOST:
+    # NetAlertX log monitor (only if user opted in via netalertx.enabled)
+    if cfg.NETALERTX_ENABLED:
         from netalertx.log_monitor import tail_netalertx_log_stream
 
         supervisor.start(

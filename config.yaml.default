@@ -34,6 +34,7 @@ cloud:
   # ANTHROPIC_API_KEY must be exported in ~/.zshenv — never written here
 
 netalertx:
+  enabled: false                              # set true once NetAlertX is installed and you want Pueo to monitor it
   setup_desired: false                        # set true to have Pueo install and configure NetAlertX automatically
   deployment: "auto"                          # auto | addon | docker — how NetAlertX is deployed
   host: ""                                    # NetAlertX host (default: same as home_assistant.host)

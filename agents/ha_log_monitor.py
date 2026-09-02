@@ -73,14 +73,50 @@ _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
 _log_buffer: collections.deque[str] = collections.deque(maxlen=50)
 
-# Sparkline state — 60-minute ring buffer; each bucket is (total_lines, match_lines).
+# Sparkline state — 60-minute ring buffer; each bucket is (bucket_ts, total_lines, match_lines).
 # Updated on every received line; minute boundary rolls to a new bucket.
-_sparkline_buckets: collections.deque = collections.deque([(0, 0)] * 60, maxlen=60)
+_LOOP_NAME = "ha_log_monitor"
+_RETENTION_SECONDS = 31 * 24 * 3600  # 31 days
+
+_sparkline_buckets: collections.deque = collections.deque(maxlen=60)
 _sparkline_current_minute: int = 0  # calendar minute of the current open bucket
 _sparkline_bucket_total: int = 0
 _sparkline_bucket_matches: int = 0
 _last_line_at: float = 0.0  # epoch of most recent received line
 _last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
+
+
+def _init_sparkline_db() -> None:
+    """Pre-populate ring buffer from SQLite and prune old rows."""
+    global _sparkline_current_minute
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            conn.execute(
+                "DELETE FROM stream_metrics WHERE loop_name = ? AND bucket_ts < ?",
+                (_LOOP_NAME, int(time.time()) - _RETENTION_SECONDS),
+            )
+            rows = conn.execute(
+                "SELECT bucket_ts, total_lines, match_lines FROM stream_metrics "
+                "WHERE loop_name = ? ORDER BY bucket_ts DESC LIMIT 60",
+                (_LOOP_NAME,),
+            ).fetchall()
+        for row in reversed(rows):
+            _sparkline_buckets.append((row[0], row[1], row[2]))
+        _sparkline_current_minute = int(time.time() // 60)
+    except Exception:  # nosec B110
+        pass
+
+
+def _persist_sparkline_bucket(bucket_ts: int, total: int, matches: int) -> None:
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO stream_metrics "
+                "(loop_name, bucket_ts, total_lines, match_lines) VALUES (?, ?, ?, ?)",
+                (_LOOP_NAME, bucket_ts, total, matches),
+            )
+    except Exception:  # nosec B110
+        pass
 
 
 def _record_sparkline_line(matched: bool) -> None:
@@ -95,8 +131,13 @@ def _record_sparkline_line(matched: bool) -> None:
 
     current_min = int(now // 60)
     if current_min != _sparkline_current_minute:
-        # Roll current bucket into ring and open a new one.
-        _sparkline_buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
+        completed_ts = _sparkline_current_minute * 60
+        _sparkline_buckets.append(
+            (completed_ts, _sparkline_bucket_total, _sparkline_bucket_matches)
+        )
+        _persist_sparkline_bucket(
+            completed_ts, _sparkline_bucket_total, _sparkline_bucket_matches
+        )
         _sparkline_bucket_total = 0
         _sparkline_bucket_matches = 0
         _sparkline_current_minute = current_min
@@ -106,14 +147,50 @@ def _record_sparkline_line(matched: bool) -> None:
         _sparkline_bucket_matches += 1
 
 
-def get_ha_log_sparkline_data() -> dict:
-    """Return sparkline snapshot for the /loops/ha_log_monitor/sparkline endpoint."""
-    buckets = list(_sparkline_buckets)
-    # Append the in-progress current bucket as the most recent entry.
-    buckets.append((_sparkline_bucket_total, _sparkline_bucket_matches))
-    # Keep only the last 60 buckets.
+def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -> dict:
+    """Return sparkline data for the /loops/ha_log_monitor/sparkline endpoint."""
+    now_ts = int(time.time())
+    range_seconds = {
+        "1h": 3600,
+        "6h": 6 * 3600,
+        "24h": 24 * 3600,
+        "7d": 7 * 86400,
+        "30d": 30 * 86400,
+    }.get(time_range, 3600)
+    bucket_seconds = {"1m": 60, "1h": 3600, "1d": 86400}.get(bucket_size, 60)
+    cutoff_ts = now_ts - range_seconds
+
+    try:
+        with sqlite3.connect(_config.DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT bucket_ts, total_lines, match_lines FROM stream_metrics "
+                "WHERE loop_name = ? AND bucket_ts >= ? ORDER BY bucket_ts",
+                (_LOOP_NAME, cutoff_ts),
+            ).fetchall()
+    except Exception:  # nosec B110
+        rows = []
+
+    # Aggregate into requested bucket size
+    agg: dict = {}
+    for row_ts, row_total, row_matches in rows:
+        key = (row_ts // bucket_seconds) * bucket_seconds
+        if key not in agg:
+            agg[key] = [0, 0]
+        agg[key][0] += row_total
+        agg[key][1] += row_matches
+
+    # Append the in-progress current bucket
+    cur_key = (_sparkline_current_minute * 60 // bucket_seconds) * bucket_seconds
+    if cur_key not in agg:
+        agg[cur_key] = [0, 0]
+    agg[cur_key][0] += _sparkline_bucket_total
+    agg[cur_key][1] += _sparkline_bucket_matches
+
+    buckets = [[k, v[0], v[1]] for k, v in sorted(agg.items())]
     return {
-        "buckets": buckets[-60:],
+        "buckets": buckets,
+        "bucket_size": bucket_size,
+        "time_range": time_range,
         "last_line_at": _last_line_at,
         "last_match_at": _last_match_at,
     }
@@ -307,6 +384,7 @@ async def tail_remote_log_stream(
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    _init_sparkline_db()
     log.info("log_stream_start", host=HA_HOST)
 
     tail_command = "ha core logs --follow"

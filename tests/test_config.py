@@ -355,6 +355,26 @@ class TestDashboardConfig:
 
 
 class TestNetAlertXConfigKeys:
+    def test_netalertx_enabled_default_false(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ENABLED is False
+
+    def test_netalertx_enabled_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"netalertx": {"enabled": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ENABLED is True
+
+    def test_netalertx_enabled_falls_back_to_setup_desired(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"netalertx": {"setup_desired": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.NETALERTX_ENABLED is True
+
     def test_netalertx_setup_desired_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

@@ -6476,8 +6476,10 @@ class TestSparklineEndpoints:
         monkeypatch.setattr(
             log_mon,
             "get_ha_log_sparkline_data",
-            lambda: {
-                "buckets": [(10, 0)] * 60,
+            lambda bucket_size="1m", time_range="1h": {
+                "buckets": [[1000 + i * 60, 10, 0] for i in range(60)],
+                "bucket_size": bucket_size,
+                "time_range": time_range,
                 "last_line_at": 1000.0,
                 "last_match_at": 900.0,
             },
@@ -6490,6 +6492,7 @@ class TestSparklineEndpoints:
         assert len(data["buckets"]) == 60
         assert data["last_line_at"] == 1000.0
         assert data["last_match_at"] == 900.0
+        assert data["bucket_size"] == "1m"
 
     def test_netalertx_sparkline_returns_data_with_configured_flag(
         self, tmp_path, monkeypatch
@@ -6504,8 +6507,10 @@ class TestSparklineEndpoints:
         monkeypatch.setattr(
             nax_mon,
             "get_netalertx_sparkline_data",
-            lambda: {
-                "buckets": [(5, 1)] * 60,
+            lambda bucket_size="1m", time_range="1h": {
+                "buckets": [[2000 + i * 60, 5, 1] for i in range(60)],
+                "bucket_size": bucket_size,
+                "time_range": time_range,
                 "last_line_at": 2000.0,
                 "last_match_at": 1800.0,
                 "last_scan_at": 1950.0,
@@ -6526,9 +6531,7 @@ class TestSparklineEndpoints:
         import time
 
         # Reset module state
-        log_mon._sparkline_buckets = __import__("collections").deque(
-            [(0, 0)] * 60, maxlen=60
-        )
+        log_mon._sparkline_buckets = __import__("collections").deque(maxlen=60)
         log_mon._sparkline_bucket_total = 0
         log_mon._sparkline_bucket_matches = 0
         log_mon._sparkline_current_minute = 0
@@ -6547,15 +6550,17 @@ class TestSparklineEndpoints:
         assert log_mon._sparkline_bucket_matches == 1
 
     def test_get_ha_log_sparkline_data_includes_current_bucket(self):
-        """get_ha_log_sparkline_data() appends the in-progress bucket."""
+        """get_ha_log_sparkline_data() includes the in-progress bucket in results."""
         import agents.ha_log_monitor as log_mon
         import collections
+        import time
 
-        log_mon._sparkline_buckets = collections.deque([(0, 0)] * 59, maxlen=60)
+        log_mon._sparkline_buckets = collections.deque(maxlen=60)
         log_mon._sparkline_bucket_total = 7
         log_mon._sparkline_bucket_matches = 2
+        log_mon._sparkline_current_minute = int(time.time() // 60)
 
         data = log_mon.get_ha_log_sparkline_data()
-        # Last bucket should be the in-progress one
-        assert data["buckets"][-1] == (7, 2)
-        assert len(data["buckets"]) == 60
+        # The current in-progress bucket should appear (with 7 total and 2 matches)
+        found = any(b[1] == 7 and b[2] == 2 for b in data["buckets"])
+        assert found

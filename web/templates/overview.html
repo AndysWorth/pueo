@@ -54,6 +54,9 @@
   .stream-card-meta span { display: inline-block; margin-right: 1rem; }
   .stream-sparkline { width: 100%; height: 36px; display: block; }
   .stream-card-controls { margin-top: 0.5rem; }
+  .sparkline-controls { display: flex; gap: 1rem; margin-top: 0.35rem; font-size: 11px; color: #666; }
+  .sparkline-select { font-size: 11px; border: 1px solid #ccc; border-radius: 3px; padding: 1px 2px; background: var(--bg, #fff); color: inherit; }
+  #sparkline-tooltip { background: rgba(30,30,30,0.92); color: #fff; font-size: 11px; padding: 5px 8px; border-radius: 4px; pointer-events: none; z-index: 9999; white-space: nowrap; line-height: 1.5; }
   /* Loop group headers */
   tr.loop-group-header td { background: #f8f9fa; font-size: 0.7rem; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.08em; color: #999;
@@ -156,13 +159,27 @@
           <span>Last triage: <span id="stream-match-ha_log_monitor">—</span></span>
         </div>
         <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="sparkline-controls">
+          <label>Bucket <select id="sparkline-bucket-ha_log_monitor" class="sparkline-select">
+            <option value="1m">1m</option>
+            <option value="1h">1h</option>
+            <option value="1d">1d</option>
+          </select></label>
+          <label>Show <select id="sparkline-range-ha_log_monitor" class="sparkline-select">
+            <option value="1h">1 hour</option>
+            <option value="6h">6 hours</option>
+            <option value="24h">24 hours</option>
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
+          </select></label>
+        </div>
       </div>
       <!-- NetAlertX -->
       {% set nax_stream = loop_statuses | selectattr("name", "equalto", "netalertx") | first | default(none) %}
       <div class="stream-card{{ ' unconfigured' if not nax_stream }}" id="stream-card-netalertx">
         <div class="stream-card-header">
           <span class="status-dot dot-{{ nax_stream.status if nax_stream else 'disabled' }}" id="stream-dot-netalertx"></span>
-          NetAlertX{% if not nax_stream %} <span style="font-size:0.7rem;font-weight:400;color:#aaa;">— not configured</span>{% endif %}
+          NetAlertX{% if not nax_stream %} <span style="font-size:0.7rem;font-weight:400;color:#aaa;">— not installed</span>{% endif %}
           <span class="stream-card-controls" style="margin-left:auto;">
             {% if nax_stream and nax_stream.paused %}
             <button class="loop-ctrl-btn" onclick="loopControl('netalertx','resume')">Resume</button>
@@ -177,8 +194,22 @@
           <span>Last scan: <span id="stream-scan-netalertx">—</span></span>
         </div>
         <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="sparkline-controls">
+          <label>Bucket <select id="sparkline-bucket-netalertx" class="sparkline-select">
+            <option value="1m">1m</option>
+            <option value="1h">1h</option>
+            <option value="1d">1d</option>
+          </select></label>
+          <label>Show <select id="sparkline-range-netalertx" class="sparkline-select">
+            <option value="1h">1 hour</option>
+            <option value="6h">6 hours</option>
+            <option value="24h">24 hours</option>
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
+          </select></label>
+        </div>
         {% else %}
-        <div class="stream-card-meta" style="color:#aaa;">Enable NetAlertX in config to see stream data.</div>
+        <div class="stream-card-meta" style="color:#aaa;">NetAlertX is not installed. Enable it in Settings to start monitoring.</div>
         {% endif %}
       </div>
     </div>
@@ -429,36 +460,106 @@
     return 'in ' + hrs + 'h' + (remMins ? ' ' + remMins + 'm' : '');
   }
 
-  function renderSparkline(svgId, buckets) {
+  var _sparklineTip = null;
+
+  function _fmtBucketTime(ts, bucketSize) {
+    var d = new Date(ts * 1000);
+    if (bucketSize === '1d') {
+      return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+    } else if (bucketSize === '1h') {
+      return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
+             d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+    } else {
+      return d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+    }
+  }
+
+  function renderSparkline(svgId, buckets, bucketSize) {
     var svg = document.getElementById(svgId);
     if (!svg || !buckets || !buckets.length) return;
+    bucketSize = bucketSize || '1m';
     var maxTotal = 1;
     for (var i = 0; i < buckets.length; i++) {
-      if (buckets[i][0] > maxTotal) maxTotal = buckets[i][0];
+      var t = Array.isArray(buckets[i]) && buckets[i].length === 3 ? buckets[i][1] : buckets[i][0];
+      if (t > maxTotal) maxTotal = t;
     }
     var barW = 2, barMaxH = 28, dotR = 1.5;
-    var html = '';
+    var svgEls = [];
     for (var i = 0; i < buckets.length; i++) {
-      var total = buckets[i][0], matches = buckets[i][1];
+      var bucket = buckets[i];
+      var ts, total, matches;
+      if (Array.isArray(bucket) && bucket.length === 3) {
+        ts = bucket[0]; total = bucket[1]; matches = bucket[2];
+      } else {
+        ts = null; total = bucket[0]; matches = bucket[1];
+      }
       var x = i * barW;
       if (total > 0) {
         var barH = Math.max(2, Math.round((total / maxTotal) * barMaxH));
-        html += '<rect x="' + x + '" y="' + (36 - barH) + '" width="1.5" height="' + barH + '" fill="#c8d4e3"/>';
+        var rectEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rectEl.setAttribute('x', x);
+        rectEl.setAttribute('y', 36 - barH);
+        rectEl.setAttribute('width', '1.5');
+        rectEl.setAttribute('height', barH);
+        rectEl.setAttribute('fill', '#c8d4e3');
+        if (ts !== null) {
+          (function(rEl, rTs, rTotal, rMatches) {
+            rEl.addEventListener('mouseenter', function(e) {
+              var tip = document.getElementById('sparkline-tooltip');
+              if (!tip) return;
+              tip.innerHTML = '<div style="font-weight:600;margin-bottom:2px">' + _fmtBucketTime(rTs, bucketSize) + '</div>' +
+                '<div>Lines: ' + rTotal + '</div>' +
+                '<div>Matches: ' + rMatches + '</div>';
+              tip.hidden = false;
+              tip.style.left = (e.clientX + 12) + 'px';
+              tip.style.top = (e.clientY - 8) + 'px';
+            });
+            rEl.addEventListener('mousemove', function(e) {
+              var tip = document.getElementById('sparkline-tooltip');
+              if (tip) { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 8) + 'px'; }
+            });
+            rEl.addEventListener('mouseleave', function() {
+              var tip = document.getElementById('sparkline-tooltip');
+              if (tip) tip.hidden = true;
+            });
+          })(rectEl, ts, total, matches);
+        }
+        svgEls.push(rectEl);
         if (matches > 0) {
           var dotY = 36 - barH - dotR - 1;
           if (dotY < dotR) dotY = dotR;
-          html += '<circle cx="' + (x + 1) + '" cy="' + dotY + '" r="' + dotR + '" fill="' + (matches >= 2 ? '#dc3545' : '#fd7e14') + '"/>';
+          var circEl = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          circEl.setAttribute('cx', x + 1);
+          circEl.setAttribute('cy', dotY);
+          circEl.setAttribute('r', dotR);
+          circEl.setAttribute('fill', matches >= 2 ? '#dc3545' : '#fd7e14');
+          svgEls.push(circEl);
         }
       }
     }
-    svg.innerHTML = html;
+    svg.innerHTML = '';
+    for (var j = 0; j < svgEls.length; j++) svg.appendChild(svgEls[j]);
+  }
+
+  function _getSparklinePrefs(loopName) {
+    try {
+      var raw = localStorage.getItem('pueo_sparkline_' + loopName);
+      if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    return {bucket_size: '1m', time_range: '1h'};
+  }
+
+  function _setSparklinePrefs(loopName, prefs) {
+    try { localStorage.setItem('pueo_sparkline_' + loopName, JSON.stringify(prefs)); } catch (_) {}
   }
 
   function fetchSparkline(loopName) {
-    fetch('/loops/' + loopName + '/sparkline')
+    var prefs = _getSparklinePrefs(loopName);
+    var qs = '?bucket_size=' + prefs.bucket_size + '&time_range=' + prefs.time_range;
+    fetch('/loops/' + loopName + '/sparkline' + qs)
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        renderSparkline('sparkline-' + loopName, d.buckets || []);
+        renderSparkline('sparkline-' + loopName, d.buckets || [], d.bucket_size);
         if (loopName === 'ha_log_monitor') {
           var el = document.getElementById('stream-line-ha_log_monitor');
           if (el) el.textContent = fmtAgo(d.last_line_at);
@@ -472,6 +573,24 @@
         }
       })
       .catch(function() {});
+  }
+
+  function initSparklineControls(loopName) {
+    var prefs = _getSparklinePrefs(loopName);
+    var bsEl = document.getElementById('sparkline-bucket-' + loopName);
+    var trEl = document.getElementById('sparkline-range-' + loopName);
+    if (bsEl) bsEl.value = prefs.bucket_size;
+    if (trEl) trEl.value = prefs.time_range;
+    function onChange() {
+      var newPrefs = {
+        bucket_size: bsEl ? bsEl.value : prefs.bucket_size,
+        time_range: trEl ? trEl.value : prefs.time_range,
+      };
+      _setSparklinePrefs(loopName, newPrefs);
+      fetchSparkline(loopName);
+    }
+    if (bsEl) bsEl.addEventListener('change', onChange);
+    if (trEl) trEl.addEventListener('change', onChange);
   }
 
   function updateLoopRow(evt) {
@@ -616,6 +735,10 @@
     }, 3000);
   }
 
+  // Wire sparkline controls (reads localStorage prefs and attaches change handlers)
+  initSparklineControls('ha_log_monitor');
+  initSparklineControls('netalertx');
+
   // Initial sparkline fetch + 60s polling
   fetchSparkline('ha_log_monitor');
   fetchSparkline('netalertx');
@@ -646,4 +769,5 @@
   es.onerror = function () {};
 })();
 </script>
+<div id="sparkline-tooltip" hidden style="position:fixed;"></div>
 {% endblock %}
