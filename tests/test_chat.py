@@ -2399,7 +2399,10 @@ class TestPreInjectChatContext:
         result = asyncio.run(
             _pre_inject_chat_context("What caused the error?", executor)
         )
-        assert result == "What caused the error?"
+        # Runtime paths always injected; no recall memories block
+        assert "[Pueo runtime directories" in result
+        assert "Relevant memories:" not in result
+        assert "What caused the error?" in result
 
     def test_returns_original_when_no_memories_sentinel(self):
         from web.dashboard import _pre_inject_chat_context
@@ -2410,7 +2413,10 @@ class TestPreInjectChatContext:
         result = asyncio.run(
             _pre_inject_chat_context("What caused the error?", executor)
         )
-        assert result == "What caused the error?"
+        # Runtime paths always injected; sentinel suppresses memories block
+        assert "[Pueo runtime directories" in result
+        assert "Relevant memories:" not in result
+        assert "What caused the error?" in result
 
     def test_survives_executor_exception(self):
         from web.dashboard import _pre_inject_chat_context
@@ -2421,14 +2427,18 @@ class TestPreInjectChatContext:
         mock = MagicMock()
         mock.execute = boom
         result = asyncio.run(_pre_inject_chat_context("What caused the error?", mock))
-        assert result == "What caused the error?"
+        # Runtime paths still injected even when recall raises
+        assert "[Pueo runtime directories" in result
+        assert "What caused the error?" in result
 
     def test_returns_original_when_recall_returns_nothing_found(self):
         from web.dashboard import _pre_inject_chat_context
 
         executor = self._make_mock_executor(recall_output="Nothing found.")
         result = asyncio.run(_pre_inject_chat_context("anything", executor))
-        assert result == "anything"
+        # Runtime paths always injected; sentinel suppresses memories block
+        assert "[Pueo runtime directories" in result
+        assert "anything" in result
 
 
 # ---------------------------------------------------------------------------
