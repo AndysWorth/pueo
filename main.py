@@ -433,6 +433,45 @@ async def _known_issues_poll_loop(
             _sv.touch("known_issues_poll", outcome=_ki_outcome)
 
 
+async def _ollama_monitor_loop() -> None:
+    """15-second poll of GET /api/ps to track which models are loaded in Ollama."""
+    import config as _cfg
+    from utils.llm.ollama_monitor import poll_ollama_ps
+    from utils.agent.supervisor import (
+        get_active_llm_calls,
+        get_supervisor_instance,
+        publish_event,
+        update_ollama_status_cache,
+    )
+
+    while True:
+        await asyncio.sleep(15)
+        models = await asyncio.to_thread(poll_ollama_ps, _cfg.OLLAMA_ENDPOINT)
+        active_calls = get_active_llm_calls()
+        status = {
+            "models": [
+                {
+                    "name": m.name,
+                    "size_bytes": m.size_bytes,
+                    "size_vram_bytes": m.size_vram_bytes,
+                    "attribution": m.attribution,
+                }
+                for m in models
+            ],
+            "active_calls": active_calls,
+            "unavailable": False,
+        }
+        update_ollama_status_cache(status)
+        publish_event({"type": "ollama_status", "data": status})
+        _sv = get_supervisor_instance()
+        if _sv:
+            loaded = len(models)
+            _sv.touch(
+                "ollama_monitor",
+                outcome=f"{loaded} model(s) loaded" if loaded else "idle",
+            )
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     _write_pid_file()
@@ -665,6 +704,9 @@ async def supervisor_main(config_path: Path) -> None:
             supervisor.touch("backup_sync", outcome=_bs_outcome)
 
     supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
+
+    # Ollama real-time model monitor (15-second poll of /api/ps)
+    supervisor.start("ollama_monitor", _ollama_monitor_loop, interval_seconds=15)
 
     # HA log monitor loop (SSH tail + AI triage) — streaming, no fixed interval
     supervisor.start(

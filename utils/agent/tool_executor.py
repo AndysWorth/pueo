@@ -246,6 +246,8 @@ class ToolExecutor:
                 return await self._search_integrations(args.get("query", ""))
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
+            if name == "get_ollama_status":
+                return await self._get_ollama_status()
             if name == "fetch_ha_docs":
                 return await self._fetch_ha_docs(
                     args.get("domain", ""), args.get("filename", "")
@@ -692,6 +694,24 @@ class ToolExecutor:
             success=True,
             output="\n".join(lines),
         )
+
+    async def _get_ollama_status(self) -> ToolResult:
+        """Return current Ollama loaded models and active calls."""
+        import config as _cfg
+        from utils.llm.ollama_monitor import poll_ollama_ps
+
+        models = await asyncio.to_thread(poll_ollama_ps, _cfg.OLLAMA_ENDPOINT)
+        if not models:
+            output = (
+                "Ollama: no models currently loaded in memory (idle or unreachable)."
+            )
+        else:
+            lines = ["Ollama loaded models:"]
+            for m in models:
+                gb = m.size_bytes / 1073741824
+                lines.append(f"  {m.name}  —  {gb:.1f} GB  [{m.attribution}]")
+            output = "\n".join(lines)
+        return ToolResult(tool_name="get_ollama_status", success=True, output=output)
 
     # ------------------------------------------------------------------
     # Code sandbox tools (item 70)

@@ -147,6 +147,22 @@ async def _diagnose_with_agent_loop(
         notifier=FakeNotifier(),
     )
     registry = build_health_diagnosis_registry()
+    try:
+        from utils.agent.supervisor import (
+            clear_llm_active as _clr_llm,
+            set_llm_active as _set_llm,
+        )
+
+        def _on_diag_start(m: str, t: str) -> None:
+            _set_llm("netalertx_diagnosis", m)
+
+        def _on_diag_done(m: str, lat: float) -> None:
+            _clr_llm("netalertx_diagnosis")
+
+    except Exception:  # nosec B110
+        _on_diag_start = None  # type: ignore[assignment]
+        _on_diag_done = None  # type: ignore[assignment]
+
     loop = AgentLoop(
         llm_client=client,
         tool_executor=executor,
@@ -155,6 +171,8 @@ async def _diagnose_with_agent_loop(
         terminal_tool_name="finish_health_diagnosis",
         trigger="health_diagnosis",
         knowledge_store=knowledge_store,
+        on_llm_call_start=_on_diag_start,
+        on_llm_call_done=_on_diag_done,
     )
 
     try:

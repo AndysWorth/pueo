@@ -40,6 +40,12 @@ _active_chat_count: int = 0
 # True while run_rag_refresh() is executing
 _rag_refreshing: bool = False
 
+# Active LLM calls: maps loop_name → model (set by on_llm_call_start, cleared by on_llm_call_done)
+_active_llm_calls: dict[str, str] = {}
+
+# Last result from poll_ollama_ps() — cached for the /api/ollama-status endpoint
+_ollama_status_cache: dict = {"models": [], "unavailable": False}
+
 
 def set_active_repair_loop(loop: Any) -> None:
     global _active_repair_loop
@@ -85,6 +91,32 @@ def set_rag_refreshing(value: bool) -> None:
 
 def get_rag_refreshing() -> bool:
     return _rag_refreshing
+
+
+def set_llm_active(loop_name: str, model: str) -> None:
+    """Record that an LLM call is in flight for the named loop."""
+    _active_llm_calls[loop_name] = model
+
+
+def clear_llm_active(loop_name: str) -> None:
+    """Clear the in-flight LLM call record for the named loop."""
+    _active_llm_calls.pop(loop_name, None)
+
+
+def get_active_llm_calls() -> dict[str, str]:
+    """Return a snapshot of active LLM calls {loop_name: model}."""
+    return dict(_active_llm_calls)
+
+
+def update_ollama_status_cache(status: dict) -> None:
+    """Update the cached Ollama status (from the ollama_monitor loop)."""
+    global _ollama_status_cache
+    _ollama_status_cache = status
+
+
+def get_ollama_status_cache() -> dict:
+    """Return the last known Ollama status."""
+    return dict(_ollama_status_cache)
 
 
 def publish_event(event: dict) -> None:
