@@ -85,6 +85,52 @@
     .pueo-status-error      { background: #f8d7da; color: #58151c; border-color: #dc3545; }
     .pueo-status-error::before      { background: #dc3545; }
     @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .ollama-pill { font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.55rem;
+      border-radius: 10px; display: inline-flex; align-items: center; gap: 0.35rem;
+      white-space: nowrap; border: 1px solid; cursor: default; position: relative; }
+    .ollama-pill::before { content: ''; display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; flex-shrink: 0; }
+    .ollama-idle     { background: #e9ecef; color: #555;    border-color: #adb5bd; }
+    .ollama-idle::before     { background: #adb5bd; }
+    .ollama-active   { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
+    .ollama-active::before   { background: #28a745; animation: pulse-dot 1.2s infinite; }
+    .ollama-ready    { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
+    .ollama-ready::before    { background: #28a745; }
+    .ollama-external { background: #fff3cd; color: #856404; border-color: #ffc107; }
+    .ollama-external::before { background: #ffc107; }
+    .ollama-embed    { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
+    .ollama-embed::before    { background: #3b82f6; }
+    .ollama-unavailable { background: #e9ecef; color: #555; border-color: #adb5bd; }
+    .ollama-unavailable::before { background: #adb5bd; }
+    /* Hover popover */
+    .ollama-pill .ollama-popover { display: none; position: absolute; top: calc(100% + 6px);
+      right: 0; background: #fff; border: 1px solid #dee2e6; border-radius: 6px;
+      padding: 0.5rem 0.75rem; min-width: 260px; z-index: 9999;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12); font-size: 0.72rem; color: #333;
+      white-space: nowrap; }
+    .ollama-pill:hover .ollama-popover { display: block; }
+    .ollama-popover table { border-collapse: collapse; width: 100%; }
+    .ollama-popover td { padding: 0.15rem 0.4rem; }
+    .ollama-popover td:first-child { font-weight: 600; }
+    .ollama-popover td:last-child { color: #666; }
+    @media (prefers-color-scheme: dark) {
+      .ollama-idle, .ollama-unavailable { background: #2b2d2f; color: #aaa; border-color: #555; }
+      .ollama-active, .ollama-ready { background: #0a3622; color: #a8d5ba; border-color: #28a745; }
+      .ollama-external { background: #3d2f00; color: #ffd166; border-color: #ffc107; }
+      .ollama-embed { background: #0d1a40; color: #93c5fd; border-color: #3b82f6; }
+      .ollama-pill .ollama-popover { background: #222; border-color: #444; color: #ddd; }
+      .ollama-popover td:last-child { color: #aaa; }
+    }
+    :root[data-theme="dark"] .ollama-idle, :root[data-theme="dark"] .ollama-unavailable { background: #2b2d2f; color: #aaa; border-color: #555; }
+    :root[data-theme="dark"] .ollama-active, :root[data-theme="dark"] .ollama-ready { background: #0a3622; color: #a8d5ba; border-color: #28a745; }
+    :root[data-theme="dark"] .ollama-external { background: #3d2f00; color: #ffd166; border-color: #ffc107; }
+    :root[data-theme="dark"] .ollama-embed { background: #0d1a40; color: #93c5fd; border-color: #3b82f6; }
+    :root[data-theme="dark"] .ollama-pill .ollama-popover { background: #222; border-color: #444; color: #ddd; }
+    :root[data-theme="light"] .ollama-idle, :root[data-theme="light"] .ollama-unavailable { background: #e9ecef; color: #555; border-color: #adb5bd; }
+    :root[data-theme="light"] .ollama-active, :root[data-theme="light"] .ollama-ready { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
+    :root[data-theme="light"] .ollama-external { background: #fff3cd; color: #856404; border-color: #ffc107; }
+    :root[data-theme="light"] .ollama-embed { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
+    :root[data-theme="light"] .ollama-pill .ollama-popover { background: #fff; border-color: #dee2e6; color: #333; }
   </style>
   </head>
   <body>
@@ -105,6 +151,7 @@
       <span style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;">
         <span id="pueo-status-badge" class="pueo-status pueo-status-monitoring">Monitoring</span>
         <span id="ha-status-badge" class="ha-badge ha-badge-unknown">HA ?</span>
+        <span id="ollama-pill" class="ollama-pill ollama-idle">Ollama: idle<span class="ollama-popover"><table id="ollama-popover-table"><tr><td colspan="3" style="color:#999">Loading…</td></tr></table></span></span>
       </span>
     </nav>
     {% block content %}{% endblock %}
@@ -190,6 +237,78 @@
       });
       ces.addEventListener('chat_done', function () { clearTimeout(chatTimer); if (state === 'chatting') setState('monitoring'); });
       ces.addEventListener('chat_error', function () { clearTimeout(chatTimer); if (state === 'chatting') setState('monitoring'); });
+    })();
+    (function () {
+      function fmtGB(bytes) {
+        var gb = bytes / 1073741824;
+        return gb >= 0.1 ? gb.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
+      }
+
+      function attrLabel(a) {
+        return a === 'inference' ? '[Pueo]' : a === 'embedding' ? '[emb]' : '[ext]';
+      }
+
+      function updateOllamaPill(data) {
+        var pill = document.getElementById('ollama-pill');
+        var tbl = document.getElementById('ollama-popover-table');
+        if (!pill) return;
+        var models = data.models || [];
+        var active = data.active_calls || {};
+        var unavail = data.unavailable || false;
+        var hasActive = Object.keys(active).length > 0;
+        var totalBytes = models.reduce(function(s, m) { return s + (m.size_bytes || 0); }, 0);
+        var totalStr = totalBytes > 0 ? ' · ' + fmtGB(totalBytes) : '';
+
+        var cls, txt;
+        if (unavail) {
+          cls = 'ollama-unavailable'; txt = 'Ollama: unavailable';
+        } else if (hasActive) {
+          cls = 'ollama-active'; txt = 'Ollama: active' + totalStr;
+        } else {
+          var attrs = models.map(function(m) { return m.attribution; });
+          var hasExt = attrs.indexOf('external') >= 0;
+          var hasInf = attrs.indexOf('inference') >= 0;
+          var hasEmb = attrs.indexOf('embedding') >= 0;
+          if (hasExt) {
+            cls = 'ollama-external'; txt = 'Ollama: ' + models.length + ' model' + (models.length !== 1 ? 's' : '') + totalStr;
+          } else if (hasInf) {
+            cls = 'ollama-ready'; txt = 'Ollama: ready' + totalStr;
+          } else if (hasEmb) {
+            cls = 'ollama-embed'; txt = 'Ollama: embed' + totalStr;
+          } else {
+            cls = 'ollama-idle'; txt = 'Ollama: idle';
+          }
+        }
+
+        pill.className = 'ollama-pill ' + cls;
+        var popover = pill.querySelector('.ollama-popover');
+        pill.textContent = txt;
+        pill.appendChild(popover);
+
+        if (!tbl) return;
+        if (!models.length) {
+          tbl.innerHTML = '<tr><td colspan="3" style="color:#999">No models loaded</td></tr>';
+          return;
+        }
+        tbl.innerHTML = models.map(function(m) {
+          var activeFor = '';
+          for (var k in active) { if (active[k] === m.name) { activeFor = ' ●'; break; } }
+          return '<tr><td>' + m.name + activeFor + '</td><td>' + fmtGB(m.size_bytes) + '</td><td>' + attrLabel(m.attribution) + '</td></tr>';
+        }).join('');
+      }
+
+      function fetchOllamaStatus() {
+        fetch('/api/ollama-status')
+          .then(function(r) { return r.json(); })
+          .then(function(d) { updateOllamaPill(d); })
+          .catch(function() {
+            var pill = document.getElementById('ollama-pill');
+            if (pill) { pill.className = 'ollama-pill ollama-unavailable'; }
+          });
+      }
+
+      fetchOllamaStatus();
+      setInterval(fetchOllamaStatus, 5000);
     })();
     </script>
   </body>

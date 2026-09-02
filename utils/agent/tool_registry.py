@@ -1067,6 +1067,17 @@ FINISH_HEALTH_DIAGNOSIS = ToolDefinition(
 )
 
 
+GET_OLLAMA_STATUS = ToolDefinition(
+    name="get_ollama_status",
+    description=(
+        "Get the current Ollama status: which models are loaded in memory, their VRAM usage, "
+        "and whether external processes are using Ollama alongside Pueo. "
+        "Use this to understand resource constraints before deciding whether to run a heavy operation."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
+
 def build_ha_tool_registry() -> ToolRegistry:
     """HA repair registry.
 
@@ -1097,6 +1108,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         LIST_LOG_SOURCES,
         GET_HA_PROFILE,
         SEARCH_INTEGRATIONS,
+        GET_OLLAMA_STATUS,
     ):
         reg.register(tool)
     return reg
@@ -1118,6 +1130,7 @@ def build_code_proposal_registry() -> ToolRegistry:
         SEARCH_INTEGRATIONS,
         SEARCH_HA_DOCS,
         FINISH_REPAIR,
+        GET_OLLAMA_STATUS,
     ):
         reg.register(tool)
     return reg
@@ -1143,6 +1156,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         SEARCH_LOG,
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
+        GET_OLLAMA_STATUS,
     ):
         reg.register(tool)
     return reg
@@ -1187,6 +1201,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_DASHBOARD_ENTITY_HEALTH,
         EXECUTE_LOCAL_PYTHON,
         FINISH_CHAT,
+        GET_OLLAMA_STATUS,
     ):
         reg.register(tool)
     return reg

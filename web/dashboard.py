@@ -490,6 +490,16 @@ async def pueo_status() -> JSONResponse:
     return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
 
 
+@app.get("/api/ollama-status")
+async def ollama_status_api() -> JSONResponse:
+    """Return cached Ollama status (loaded models + active calls) for the navbar pill."""
+    from utils.agent.supervisor import get_active_llm_calls, get_ollama_status_cache
+
+    cached = get_ollama_status_cache()
+    cached["active_calls"] = get_active_llm_calls()
+    return JSONResponse(cached)
+
+
 @app.get("/events")
 async def sse_events() -> StreamingResponse:
     """Server-Sent Events stream — pushes loop_status and resource events to the browser."""
@@ -3094,6 +3104,22 @@ async def _run_chat_loop(
         history_turns=len(prior_messages),
     )
     try:
+        try:
+            from utils.agent.supervisor import (
+                clear_llm_active as _clr_llm,
+                set_llm_active as _set_llm,
+            )
+
+            def _on_chat_llm_start(model: str, trigger: str) -> None:
+                _set_llm("chat", model)
+
+            def _on_chat_llm_done(model: str, latency_ms: float) -> None:
+                _clr_llm("chat")
+
+        except Exception:  # nosec B110
+            _on_chat_llm_start = None  # type: ignore[assignment]
+            _on_chat_llm_done = None  # type: ignore[assignment]
+
         agent_loop = AgentLoop(
             llm_client=make_llm_client(),
             tool_executor=executor,
@@ -3106,6 +3132,8 @@ async def _run_chat_loop(
             knowledge_store=getattr(executor, "_knowledge_store", None),
             context_inject_callback=_store_pre_inject,
             db_path=DB_PATH,
+            on_llm_call_start=_on_chat_llm_start,
+            on_llm_call_done=_on_chat_llm_done,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:

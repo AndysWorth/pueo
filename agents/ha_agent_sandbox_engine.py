@@ -708,6 +708,22 @@ async def main(
         except RuntimeError:
             pass  # no event loop running
 
+    try:
+        from utils.agent.supervisor import (
+            clear_llm_active as _clear_llm_active,
+            set_llm_active as _set_llm_active,
+        )
+
+        def _on_llm_start(model: str, trigger: str) -> None:
+            _set_llm_active("ha_repair", model)
+
+        def _on_llm_done(model: str, latency_ms: float) -> None:
+            _clear_llm_active("ha_repair")
+
+    except Exception:  # nosec B110
+        _on_llm_start = None  # type: ignore[assignment]
+        _on_llm_done = None  # type: ignore[assignment]
+
     loop = AgentLoop(
         llm_client=_llm,
         tool_executor=executor,
@@ -717,6 +733,8 @@ async def main(
         timeline_callback=_on_repair_timeline,
         knowledge_store=_knowledge_store,
         context_inject_callback=_on_knowledge_inject,
+        on_llm_call_start=_on_llm_start,
+        on_llm_call_done=_on_llm_done,
     )
 
     initial_context = (

@@ -271,6 +271,9 @@ class TestChatToolRegistry:
     def test_contains_get_disk_usage(self):
         assert "get_disk_usage" in self._registry
 
+    def test_contains_get_ollama_status(self):
+        assert "get_ollama_status" in self._registry
+
     def test_does_not_contain_finish_repair(self):
         assert "finish_repair" not in self._registry
 

@@ -8827,6 +8827,24 @@ class TestToolRegistrySchemas:
         assert "rewrite_netalertx_conf" in reg
         assert "finish_repair" in reg
 
+    def test_get_ollama_status_in_ha_registry(self):
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        reg = build_ha_tool_registry()
+        assert "get_ollama_status" in reg
+
+    def test_get_ollama_status_in_netalertx_registry(self):
+        from utils.agent.tool_registry import build_netalertx_tool_registry
+
+        reg = build_netalertx_tool_registry()
+        assert "get_ollama_status" in reg
+
+    def test_get_ollama_status_in_code_proposal_registry(self):
+        from utils.agent.tool_registry import build_code_proposal_registry
+
+        reg = build_code_proposal_registry()
+        assert "get_ollama_status" in reg
+
 
 # ── Tool Executor — item 43 ─────────────────────────────────────────────────────
 
@@ -9804,6 +9822,64 @@ class TestToolExecutor:
         )
         assert result.success
         assert "not yet available" in result.output
+
+    def test_get_ollama_status_returns_formatted_output(self, monkeypatch):
+        """get_ollama_status calls poll_ollama_ps and formats the result."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+        from utils.llm.ollama_monitor import OllamaRunningModel
+
+        _fake_models = [
+            OllamaRunningModel(
+                name="qwen2.5-coder:7b",
+                size_bytes=5_000_000_000,
+                size_vram_bytes=4_500_000_000,
+                attribution="inference",
+            )
+        ]
+        monkeypatch.setattr(
+            "utils.llm.ollama_monitor.poll_ollama_ps",
+            lambda endpoint: _fake_models,
+        )
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_ollama_status", arguments={}))
+        )
+        assert result.success
+        assert "qwen2.5-coder:7b" in result.output
+        assert "inference" in result.output
+
+    def test_get_ollama_status_idle(self, monkeypatch):
+        """get_ollama_status returns idle message when no models loaded."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        monkeypatch.setattr(
+            "utils.llm.ollama_monitor.poll_ollama_ps",
+            lambda endpoint: [],
+        )
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_ollama_status", arguments={}))
+        )
+        assert result.success
+        assert "no models" in result.output.lower() or "idle" in result.output.lower()
 
     # -- apply_fix HITL non-blocking queuing path --------------------------------
 
@@ -15010,3 +15086,94 @@ class TestRepairLoopKnowledgeInjectCallback:
         asyncio.run(loop.run("check logs for errors"))
         assert len(injected_calls) >= 1
         assert "known fix" in injected_calls[0]
+
+
+class TestAgentLoopLLMCallbacks:
+    """AgentLoop on_llm_call_start / on_llm_call_done callbacks fire around chat_with_tools."""
+
+    def _make_finish_llm(self):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+
+    def test_on_llm_call_start_fires(self):
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        started: list[tuple] = []
+
+        def _on_start(model: str, trigger: str) -> None:
+            started.append((model, trigger))
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            on_llm_call_start=_on_start,
+        )
+        asyncio.run(loop.run("check config"))
+        assert len(started) >= 1
+        assert started[0][1] == "manual"  # default trigger
+
+    def test_on_llm_call_done_fires_with_latency(self):
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        done: list[tuple] = []
+
+        def _on_done(model: str, latency_ms: float) -> None:
+            done.append((model, latency_ms))
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            on_llm_call_done=_on_done,
+        )
+        asyncio.run(loop.run("check config"))
+        assert len(done) >= 1
+        assert done[0][1] >= 0  # latency is non-negative
+
+    def test_callbacks_default_none_no_regression(self):
+        """Loop runs correctly with no callbacks (backward-compatible default)."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+        )
+        result = asyncio.run(loop.run("check config"))
+        assert result.outcome in ("success", "exhausted", "timeout", "stuck", "error")

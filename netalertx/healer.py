@@ -197,6 +197,22 @@ class NetAlertXHealer:
             netalertx_container_name=self._container,
         )
         registry = build_netalertx_tool_registry()
+        try:
+            from utils.agent.supervisor import (
+                clear_llm_active as _clear_llm,
+                set_llm_active as _set_llm,
+            )
+
+            def _on_nax_llm_start(model: str, trigger: str) -> None:
+                _set_llm("netalertx_repair", model)
+
+            def _on_nax_llm_done(model: str, latency_ms: float) -> None:
+                _clear_llm("netalertx_repair")
+
+        except Exception:  # nosec B110
+            _on_nax_llm_start = None  # type: ignore[assignment]
+            _on_nax_llm_done = None  # type: ignore[assignment]
+
         loop = AgentLoop(
             llm_client=llm_client,
             tool_executor=executor,
@@ -205,6 +221,8 @@ class NetAlertXHealer:
             trigger="netalertx",
             db_path=self._db_path,
             knowledge_store=self._knowledge_store,
+            on_llm_call_start=_on_nax_llm_start,
+            on_llm_call_done=_on_nax_llm_done,
         )
 
         initial_context = (

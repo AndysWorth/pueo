@@ -131,6 +131,8 @@ class AgentLoop:
         escalated: bool = False,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
         context_inject_callback: Optional[Callable[[str], None]] = None,
+        on_llm_call_start: Optional[Callable[[str, str], None]] = None,
+        on_llm_call_done: Optional[Callable[[str, float], None]] = None,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -155,6 +157,8 @@ class AgentLoop:
         self._escalated = escalated
         self._knowledge_store = knowledge_store
         self._context_inject_callback = context_inject_callback
+        self._on_llm_call_start = on_llm_call_start
+        self._on_llm_call_done = on_llm_call_done
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
 
@@ -549,6 +553,11 @@ class AgentLoop:
 
             per_call_secs = self._per_call_timeout_seconds()
             _t0 = time.monotonic()
+            if self._on_llm_call_start is not None:
+                try:
+                    self._on_llm_call_start(self._model, self._trigger)
+                except Exception:  # nosec B110
+                    pass
             try:
                 response = await asyncio.wait_for(
                     self._llm.chat_with_tools(
@@ -566,6 +575,11 @@ class AgentLoop:
                 )
                 raise  # propagates to run() as outcome="stuck"
             _latency_ms = (time.monotonic() - _t0) * 1000.0
+            if self._on_llm_call_done is not None:
+                try:
+                    self._on_llm_call_done(self._model, _latency_ms)
+                except Exception:  # nosec B110
+                    pass
             _timing = (
                 response.pop("_ollama_timing", {}) if isinstance(response, dict) else {}
             )
