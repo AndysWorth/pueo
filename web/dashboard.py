@@ -2753,6 +2753,78 @@ async def delete_chat_session(session_id: int) -> Response:
     return Response(status_code=204)
 
 
+_LLM_DIVIDER = "─" * 56
+
+
+def _format_llm_request(entry: dict) -> str:
+    """Pretty-print an llm_request_full log entry for the debug download."""
+    ts = entry.get("timestamp", "")[-8:] if entry.get("timestamp") else ""
+    msgs = entry.get("messages") or entry.get("anthropic_messages") or []
+    tools = entry.get("tools") or []
+    system = entry.get("system", "")
+    parts = [
+        "",
+        _LLM_DIVIDER,
+        f"[LLM REQUEST] {ts} | {len(msgs)} messages | tools: {tools or '(none)'}",
+    ]
+    if system:
+        parts.append(f"  [system]: {system[:200]}")
+    for i, m in enumerate(msgs):
+        role = m.get("role", "?") if isinstance(m, dict) else "?"
+        content = m.get("content", "") if isinstance(m, dict) else str(m)
+        if isinstance(content, list):
+            content = json.dumps(content)
+        preview = str(content)[:400].replace("\n", " ↵ ")
+        parts.append(f"  [{i}] {role}: {preview}")
+    parts.append(_LLM_DIVIDER)
+    return "\n".join(parts)
+
+
+def _format_llm_response(entry: dict) -> str:
+    """Pretty-print an llm_response_full log entry for the debug download."""
+    ts = entry.get("timestamp", "")[-8:] if entry.get("timestamp") else ""
+    duration = entry.get("duration_ms", "")
+    in_tok = entry.get("input_tokens", "")
+    out_tok = entry.get("output_tokens", "")
+    tok_str = f" | tokens=in:{in_tok} out:{out_tok}" if in_tok != "" else ""
+    dur_str = f" | duration={duration}ms" if duration != "" else ""
+    thinking = entry.get("thinking")
+    content = entry.get("content", "")
+    tool_calls = entry.get("tool_calls") or []
+    parts = [
+        f"[LLM RESPONSE] {ts}{dur_str}{tok_str}",
+    ]
+    if thinking:
+        thinking_text = thinking if isinstance(thinking, str) else "\n".join(thinking)
+        parts.append("  THINKING:")
+        for line in thinking_text.splitlines()[:20]:
+            parts.append(f"    {line}")
+    if content:
+        content_str = (
+            content if isinstance(content, str) else " ".join(str(c) for c in content)
+        )
+        parts.append(f"  CONTENT: {content_str[:300]}")
+    else:
+        parts.append("  CONTENT: (empty — tool call)")
+    if tool_calls:
+        parts.append("  TOOL CALLS:")
+        for tc in tool_calls:
+            if isinstance(tc, dict) and "function" in tc:
+                name = tc["function"].get("name", "?")
+                args = tc["function"].get("arguments", {})
+            else:
+                name = tc.get("name", "?") if isinstance(tc, dict) else str(tc)
+                args = (
+                    tc.get("arguments", tc.get("input", {}))
+                    if isinstance(tc, dict)
+                    else {}
+                )
+            args_str = json.dumps(args)[:200] if args else "()"
+            parts.append(f"    {name}({args_str})")
+    parts.append(_LLM_DIVIDER)
+    return "\n".join(parts)
+
+
 @app.get("/chat/sessions/{session_id}/debug-log")
 async def chat_debug_log(session_id: int) -> Response:
     """Download a plain-text reconstruction of a chat session for debugging."""
@@ -2866,7 +2938,19 @@ async def chat_debug_log(session_id: int) -> Response:
             if log_lines:
                 lines.append("")
                 lines.append("=== LOG FILE ENTRIES (debug mode) ===")
-                lines.extend(log_lines)
+                for raw_line in log_lines:
+                    try:
+                        entry = json.loads(raw_line)
+                        event = entry.get("event", "")
+                        if event == "llm_request_full":
+                            lines.append(_format_llm_request(entry))
+                            continue
+                        if event == "llm_response_full":
+                            lines.append(_format_llm_response(entry))
+                            continue
+                    except Exception:  # nosec B110 — malformed entry falls back to raw
+                        pass
+                    lines.append(raw_line)
         except Exception:
             pass  # nosec B110 — missing log file is not an error
 
