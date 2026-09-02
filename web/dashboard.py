@@ -2993,8 +2993,28 @@ async def _pre_inject_chat_context(
     Best-effort — any failure or empty result returns the original message unchanged.
     """
     from utils.agent.tool_registry import ToolCall
+    import paths as _paths
 
     blocks: list[str] = []
+
+    # Always inject runtime directory paths so the agent knows where to find
+    # live data (hitl cards, SQLite DB, logs) vs the repo source checkout.
+    try:
+        dirs = _paths.get_dirs()
+        hitl_dir = dirs.state_dir / "hitl"
+        db_path = dirs.state_dir / "ha_agent_state.db"
+        blocks.append(
+            "[Pueo runtime directories on this machine]\n"
+            f"  hitl cards:  {hitl_dir}\n"
+            f"  SQLite DB:   {db_path}\n"
+            f"  logs:        {dirs.log_dir}\n"
+            f"  cache:       {dirs.cache_dir}\n"
+            f"  data:        {dirs.data_dir}\n"
+            "(Source code lives in the working directory, not these paths.)"
+        )
+    except Exception:  # nosec B110
+        pass
+
     try:
         r = await executor.execute(
             ToolCall(name="recall", arguments={"query": message})
@@ -3142,7 +3162,7 @@ async def _run_chat_loop(
             tool_executor=executor,
             tool_registry=build_chat_tool_registry(),
             terminal_tool_name="finish_chat",
-            max_tool_calls=10,
+            max_tool_calls=20,
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
             step_callback=on_step,
             pre_step_callback=on_pre_step,
@@ -3166,15 +3186,27 @@ async def _run_chat_loop(
                     summary = step.tool_call.arguments.get("summary", "")
                     break
         if not summary:
-            if result.outcome == "timeout":
-                completed = [s.tool_call.name for s in result.steps]
+            # Build a partial-findings summary from accumulated steps.
+            # Handles both "exhausted" and "stuck" outcomes without an extra LLM call.
+            evidence_parts = []
+            for step in result.steps:
+                out = (step.tool_result.output or "").strip()
+                if out and step.tool_call.name not in ("recall",):
+                    snippet = out[:300].rstrip()
+                    evidence_parts.append(f"**{step.tool_call.name}**: {snippet}")
+            if evidence_parts:
+                findings = "\n\n".join(evidence_parts[-4:])
                 summary = (
-                    f"Timed out after {len(result.steps)} step(s): "
-                    f"{', '.join(completed) or 'none completed'}. "
-                    "Check /backups to see current backup state."
+                    f"I ran out of budget ({len(result.steps)} tool calls, "
+                    f"outcome: {result.outcome}) before completing my investigation. "
+                    f"Here is what I found:\n\n{findings}\n\n"
+                    "_(Ask again and I'll build on this context to finish the answer.)_"
                 )
             else:
-                summary = f"(Loop ended: {result.outcome})"
+                summary = (
+                    f"I ran into a problem ({result.outcome}) and could not complete "
+                    "my investigation. Please try again."
+                )
 
         with sqlite3.connect(DB_PATH) as conn:
             for step in result.steps:
