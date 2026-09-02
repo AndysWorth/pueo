@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 
@@ -41,6 +42,8 @@ class OllamaClient:
                 for m in messages
             ],
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            log.debug("llm_request_full", messages=messages, tools=[])
         resp = await asyncio.to_thread(
             lambda: self._client.chat(
                 model=model,
@@ -49,15 +52,29 @@ class OllamaClient:
                 format=format,
             )
         )
+        content = str(getattr(getattr(resp, "message", None), "content", "") or "")
+        duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
             "llm_response",
             model=model,
             call_type="chat",
-            content_preview=str(
-                getattr(getattr(resp, "message", None), "content", "") or ""
-            )[:300],
-            duration_ms=round((time.monotonic() - t0) * 1000),
+            content_preview=content[:300],
+            duration_ms=duration_ms,
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            thinking = getattr(getattr(resp, "message", None), "thinking", None)
+            if thinking is None and "<think>" in content:
+                import re as _re
+
+                m = _re.search(r"<think>(.*?)</think>", content, _re.DOTALL)
+                thinking = m.group(1).strip() if m else None
+            log.debug(
+                "llm_response_full",
+                content=content,
+                thinking=thinking,
+                tool_calls=[],
+                duration_ms=duration_ms,
+            )
         return resp
 
     async def chat_with_tools(
@@ -81,6 +98,12 @@ class OllamaClient:
                 for m in messages
             ],
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "llm_request_full",
+                messages=messages,
+                tools=[t["function"]["name"] for t in (tools or [])],
+            )
         resp = await asyncio.to_thread(
             lambda: self._client.chat(
                 model=model,
@@ -113,13 +136,37 @@ class OllamaClient:
             "load_ms": load_ns / 1_000_000 if load_ns else None,
         }
         tool_calls = result.get("tool_calls", [])
+        duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
             "llm_response",
             model=model,
             tool_calls=[tc["function"]["name"] for tc in tool_calls],
             content_preview=str(result.get("content", ""))[:300],
-            duration_ms=round((time.monotonic() - t0) * 1000),
+            duration_ms=duration_ms,
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            content = result.get("content", "")
+            thinking = getattr(msg, "thinking", None)
+            if thinking is None and "<think>" in str(content):
+                import re as _re
+
+                m = _re.search(r"<think>(.*?)</think>", str(content), _re.DOTALL)
+                thinking = m.group(1).strip() if m else None
+            log.debug(
+                "llm_response_full",
+                content=content,
+                thinking=thinking,
+                tool_calls=[
+                    {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    }
+                    for tc in tool_calls
+                ],
+                eval_ms=result["_ollama_timing"].get("eval_ms"),
+                prompt_eval_ms=result["_ollama_timing"].get("load_ms"),
+                duration_ms=duration_ms,
+            )
         return result
 
 

@@ -838,3 +838,123 @@ class TestClaudeAPIClientBilling:
                     [],
                 )
             )
+
+
+# ── full-payload DEBUG events ─────────────────────────────────────────────────
+
+
+class TestClaudeAPIClientFullPayloadDebug:
+    """ClaudeAPIClient emits llm_request_full / llm_response_full at DEBUG."""
+
+    def _make_client(self, response: MagicMock) -> Any:
+        from utils.llm.cloud_client import ClaudeAPIClient
+
+        client = ClaudeAPIClient.__new__(ClaudeAPIClient)
+        client._client = FakeAnthropicClient(response)  # type: ignore[assignment]
+        client._incident_id = ""
+        return client
+
+    def test_chat_with_tools_emits_request_full_with_anthropic_messages(
+        self, monkeypatch, caplog
+    ):
+        """chat_with_tools() logs anthropic_messages post-translation at DEBUG."""
+        import logging
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        tool_use = _make_content_block(
+            "tool_use", name="run_ha_command", id="t1", input={"command": "df"}
+        )
+        resp = _make_anthropic_response(tool_use)
+        client = self._make_client(resp)
+
+        with caplog.at_level(logging.DEBUG, logger="pueo.llm.cloud"):
+            asyncio.run(
+                client.chat_with_tools(
+                    "claude-test",
+                    [{"role": "user", "content": "check disk"}],
+                    [],
+                )
+            )
+
+        req_full = next(r for r in caplog.records if r.msg == "llm_request_full")
+        assert hasattr(req_full, "anthropic_messages")  # type: ignore[attr-defined]
+        assert isinstance(req_full.anthropic_messages, list)  # type: ignore[attr-defined]
+
+    def test_chat_with_tools_emits_response_full_with_token_counts(
+        self, monkeypatch, caplog
+    ):
+        """chat_with_tools() logs input/output token counts in llm_response_full."""
+        import logging
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        tool_use = _make_content_block(
+            "tool_use", name="finish_repair", id="t1", input={}
+        )
+        resp = _make_anthropic_response(tool_use)
+        resp.usage.input_tokens = 42
+        resp.usage.output_tokens = 17
+        client = self._make_client(resp)
+
+        with caplog.at_level(logging.DEBUG, logger="pueo.llm.cloud"):
+            asyncio.run(
+                client.chat_with_tools(
+                    "claude-test",
+                    [{"role": "user", "content": "go"}],
+                    [],
+                )
+            )
+
+        resp_full = next(r for r in caplog.records if r.msg == "llm_response_full")
+        assert resp_full.input_tokens == 42  # type: ignore[attr-defined]
+        assert resp_full.output_tokens == 17  # type: ignore[attr-defined]
+
+    def test_chat_with_tools_no_full_events_at_info(self, monkeypatch, caplog):
+        """chat_with_tools() does NOT emit full events at INFO level."""
+        import logging
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        tool_use = _make_content_block(
+            "tool_use", name="finish_repair", id="t1", input={}
+        )
+        resp = _make_anthropic_response(tool_use)
+        client = self._make_client(resp)
+
+        with caplog.at_level(logging.INFO, logger="pueo.llm.cloud"):
+            asyncio.run(
+                client.chat_with_tools(
+                    "claude-test",
+                    [{"role": "user", "content": "hi"}],
+                    [],
+                )
+            )
+
+        events = [r.msg for r in caplog.records]
+        assert "llm_request_full" not in events
+        assert "llm_response_full" not in events
+
+    def test_chat_emits_response_full_with_token_counts(self, monkeypatch, caplog):
+        """chat() logs token counts in llm_response_full at DEBUG."""
+        import logging
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        tool_use = _make_content_block(
+            "tool_use", name="structured_output", id="t1", input={"field": "val"}
+        )
+        resp = _make_anthropic_response(tool_use)
+        resp.usage.input_tokens = 100
+        resp.usage.output_tokens = 50
+        client = self._make_client(resp)
+
+        with caplog.at_level(logging.DEBUG, logger="pueo.llm.cloud"):
+            asyncio.run(
+                client.chat(
+                    "claude-test",
+                    [{"role": "user", "content": "hi"}],
+                    {},
+                    {"type": "object"},
+                )
+            )
+
+        resp_full = next(r for r in caplog.records if r.msg == "llm_response_full")
+        assert resp_full.input_tokens == 100  # type: ignore[attr-defined]
+        assert resp_full.output_tokens == 50  # type: ignore[attr-defined]

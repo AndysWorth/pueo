@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 
@@ -216,6 +217,13 @@ class ClaudeAPIClient:
         ]
         self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
+        if log._logger.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "llm_request_full",
+                anthropic_messages=anthropic_messages,
+                system=system,
+                tools=[_SCHEMA_TOOL_NAME],
+            )
         kwargs: dict = dict(
             model=model,
             messages=anthropic_messages,
@@ -234,26 +242,53 @@ class ClaudeAPIClient:
             getattr(response.usage, "input_tokens", 0),
             getattr(response.usage, "output_tokens", 0),
         )
+        duration_ms = round((time.monotonic() - t0) * 1000)
 
         for block in response.content:
             if getattr(block, "type", "") == "tool_use":
-                content_preview = json.dumps(block.input)[:300]
+                result_json = json.dumps(block.input)
                 log.debug(
                     "llm_response",
                     model=model,
                     call_type="chat",
-                    content_preview=content_preview,
-                    duration_ms=round((time.monotonic() - t0) * 1000),
+                    content_preview=result_json[:300],
+                    duration_ms=duration_ms,
                 )
-                return {"message": {"content": json.dumps(block.input)}}
+                if log._logger.isEnabledFor(logging.DEBUG):
+                    log.debug(
+                        "llm_response_full",
+                        thinking=None,
+                        content=[result_json],
+                        tool_calls=[],
+                        input_tokens=getattr(response.usage, "input_tokens", None),
+                        output_tokens=getattr(response.usage, "output_tokens", None),
+                        cache_read_tokens=getattr(
+                            response.usage, "cache_read_input_tokens", None
+                        ),
+                        duration_ms=duration_ms,
+                    )
+                return {"message": {"content": result_json}}
 
         log.debug(
             "llm_response",
             model=model,
             call_type="chat",
             content_preview="{}",
-            duration_ms=round((time.monotonic() - t0) * 1000),
+            duration_ms=duration_ms,
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "llm_response_full",
+                thinking=None,
+                content=["{}"],
+                tool_calls=[],
+                input_tokens=getattr(response.usage, "input_tokens", None),
+                output_tokens=getattr(response.usage, "output_tokens", None),
+                cache_read_tokens=getattr(
+                    response.usage, "cache_read_input_tokens", None
+                ),
+                duration_ms=duration_ms,
+            )
         return {"message": {"content": "{}"}}
 
     async def chat_with_tools(
@@ -286,6 +321,13 @@ class ClaudeAPIClient:
         self._billing_preflight(model, messages, tools)
         system, anthropic_messages = _translate_history(messages)
         anthropic_tools = [_adapt_tool_schema(t) for t in tools]
+        if log._logger.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "llm_request_full",
+                anthropic_messages=anthropic_messages,
+                system=system,
+                tools=[t["name"] for t in anthropic_tools],
+            )
         kwargs: dict = dict(
             model=model,
             messages=anthropic_messages,
@@ -325,11 +367,40 @@ class ClaudeAPIClient:
         if tool_calls:
             result["tool_calls"] = tool_calls
 
+        duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
             "llm_response",
             model=model,
             tool_calls=[tc["function"]["name"] for tc in tool_calls],
             content_preview=str(result.get("content", ""))[:300],
-            duration_ms=round((time.monotonic() - t0) * 1000),
+            duration_ms=duration_ms,
         )
+        if log._logger.isEnabledFor(logging.DEBUG):
+            thinking_blocks = [
+                getattr(b, "thinking", "")
+                for b in response.content
+                if getattr(b, "type", "") == "thinking"
+            ]
+            text_blocks = [
+                getattr(b, "text", "")
+                for b in response.content
+                if getattr(b, "type", "") == "text"
+            ]
+            tool_use_blocks = [
+                {"name": b.name, "input": dict(b.input) if b.input else {}}
+                for b in response.content
+                if getattr(b, "type", "") == "tool_use"
+            ]
+            log.debug(
+                "llm_response_full",
+                thinking=thinking_blocks or None,
+                content=text_blocks,
+                tool_calls=tool_use_blocks,
+                input_tokens=getattr(response.usage, "input_tokens", None),
+                output_tokens=getattr(response.usage, "output_tokens", None),
+                cache_read_tokens=getattr(
+                    response.usage, "cache_read_input_tokens", None
+                ),
+                duration_ms=duration_ms,
+            )
         return result
