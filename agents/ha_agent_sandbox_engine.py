@@ -462,6 +462,9 @@ _MIGRATIONS: list[tuple[int, object]] = [
 def init_local_database() -> None:
     """Run any pending schema migrations against the local SQLite database."""
     with sqlite3.connect(DB_PATH) as conn:
+        # WAL mode allows concurrent readers during writes, preventing event-loop
+        # blocks when dashboard routes read the DB while background threads write.
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"

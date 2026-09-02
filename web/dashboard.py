@@ -1940,7 +1940,7 @@ def _load_backup_inventory() -> list[dict]:
 
 @app.get("/backups", response_class=HTMLResponse)
 async def backups(request: Request) -> HTMLResponse:
-    inventory = _load_backup_inventory()
+    inventory = await asyncio.to_thread(_load_backup_inventory)
     return templates.TemplateResponse(
         request,
         "backups.html",
