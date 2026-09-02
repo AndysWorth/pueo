@@ -277,7 +277,7 @@ async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
     from utils.repair.repair_episode import get_unembedded_successful_episodes
 
     while True:
-        episodes = get_unembedded_successful_episodes(db_path)
+        episodes = await asyncio.to_thread(get_unembedded_successful_episodes, db_path)
         for ep in episodes:
             await embed_local_episode(ep, knowledge_store, db_path)
         _sv = get_supervisor_instance()
@@ -402,8 +402,12 @@ async def _known_issues_poll_loop(
     while True:
         await asyncio.sleep(3600)
         try:
-            with sqlite3.connect(db_path) as conn:
-                due = check_reminders_due(conn, reminder_days)
+
+            def _fetch_due() -> list:
+                with sqlite3.connect(db_path) as conn:
+                    return check_reminders_due(conn, reminder_days)
+
+            due = await asyncio.to_thread(_fetch_due)
             for issue in due:
                 await notifier.send(
                     subject=f"Pueo: Known Issue reminder — {issue['description']}",
@@ -420,8 +424,12 @@ async def _known_issues_poll_loop(
                         "description": issue["description"],
                     },
                 )
-                with sqlite3.connect(db_path) as conn:
-                    touch_reminder_sent(conn, issue["card_key"])
+
+                def _touch(_key: str) -> None:
+                    with sqlite3.connect(db_path) as conn:
+                        touch_reminder_sent(conn, _key)
+
+                await asyncio.to_thread(_touch, issue["card_key"])
         except Exception as exc:
             _log.warning("known_issues_poll_failed", error=str(exc))
             due = []
@@ -694,10 +702,15 @@ async def supervisor_main(config_path: Path) -> None:
             import sqlite3 as _sqlite3
 
             try:
-                with _sqlite3.connect(cfg.DB_PATH) as _bc:
-                    _bn = _bc.execute(
-                        "SELECT COUNT(*) FROM backup_registry WHERE deleted_from_ha_at IS NULL"
-                    ).fetchone()[0]
+
+                def _count_backups() -> int:
+                    with _sqlite3.connect(cfg.DB_PATH) as _bc:
+                        return _bc.execute(
+                            "SELECT COUNT(*) FROM backup_registry"
+                            " WHERE deleted_from_ha_at IS NULL"
+                        ).fetchone()[0]
+
+                _bn = await asyncio.to_thread(_count_backups)
                 _bs_outcome = f"In sync ({_bn} backup{'s' if _bn != 1 else ''})"
             except Exception:  # nosec B110
                 _bs_outcome = "In sync"

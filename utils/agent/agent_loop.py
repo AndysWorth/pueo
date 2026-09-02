@@ -475,7 +475,9 @@ class AgentLoop:
         episode_id: Optional[str] = None
         if outcome == "success" and self._db_path is not None:
             try:
-                episode_id = self._record_episode(steps, episode_stub, start_time)
+                episode_id = await asyncio.to_thread(
+                    self._record_episode, steps, episode_stub, start_time
+                )
             except Exception as exc:  # nosec B110
                 log.error("repair_episode_record_failed", error=str(exc))
 
@@ -540,6 +542,9 @@ class AgentLoop:
         no_tool_extension_count = 0  # times budget was extended due to no_tool_streak
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
 
+        # Compute timeout once per session; P95 latency doesn't change within a run.
+        per_call_secs = await asyncio.to_thread(self._per_call_timeout_seconds)
+
         while True:
             # Budget check at top of loop so extensions can continue without restart.
             if tool_call_count >= self._max_tool_calls:
@@ -551,7 +556,6 @@ class AgentLoop:
                     continue
                 return "exhausted", episode_stub
 
-            per_call_secs = self._per_call_timeout_seconds()
             _t0 = time.monotonic()
             if self._on_llm_call_start is not None:
                 try:

@@ -86,6 +86,77 @@ _last_line_at: float = 0.0  # epoch of most recent received line
 _last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
 
 
+def _triage_check_and_record(fingerprint: str, now: float) -> bool:
+    """Return True if a new HITL card should be sent for this fingerprint.
+
+    Records the triage event and checks the cooldown window. Sync — call via
+    asyncio.to_thread from the async log-stream loop.
+    """
+    from .ha_agent_advanced import record_log_triage_seen, should_send_log_triage_hitl
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        record_log_triage_seen(_conn, fingerprint, now)
+        return bool(
+            should_send_log_triage_hitl(_conn, fingerprint, LOG_TRIAGE_COOLDOWN_HOURS)
+        )
+
+
+def _triage_mark_hitl_sent(fingerprint: str, now: float) -> None:
+    """Mark a log-triage fingerprint as HITL-sent. Sync — call via asyncio.to_thread."""
+    from .ha_agent_advanced import mark_log_triage_hitl_sent
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        mark_log_triage_hitl_sent(_conn, fingerprint, now)
+
+
+def _update_check_should_send(suppression_key: str) -> bool:
+    """Return True if an update card should be sent for suppression_key."""
+    from utils.hitl.hitl_tracker import should_send_card
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        return bool(should_send_card(_conn, suppression_key))
+
+
+def _update_mark_card_sent(
+    suppression_key: str, card_type: str, description: str
+) -> None:
+    """Mark an update card as sent in hitl_suppression."""
+    from utils.hitl.hitl_tracker import mark_card_sent
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        mark_card_sent(_conn, suppression_key, card_type, description)
+
+
+def _update_check_pending(suppression_key: str) -> bool:
+    """Return True if an update card for suppression_key is currently pending."""
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        row = _conn.execute(
+            "SELECT send_count, last_action, resolved_at"
+            " FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+    return row is not None and row[0] > 0 and row[1] is None and row[2] is None
+
+
+def _update_resolve_card(suppression_key: str) -> None:
+    """Mark an update card as resolved in hitl_suppression."""
+    from utils.hitl.hitl_tracker import mark_card_resolved
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        mark_card_resolved(_conn, suppression_key)
+
+
+def _update_sweep_absent_pending(seen_keys: set) -> list:
+    """Return (card_key,) rows for update cards no longer present in HA."""
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        rows = _conn.execute(
+            "SELECT card_key FROM hitl_suppression"
+            " WHERE card_key LIKE 'update:%'"
+            "   AND send_count > 0 AND last_action IS NULL AND resolved_at IS NULL"
+        ).fetchall()
+    return rows
+
+
 def _init_sparkline_db() -> None:
     """Pre-populate ring buffer from SQLite and prune old rows."""
     global _sparkline_current_minute
@@ -395,7 +466,7 @@ async def tail_remote_log_stream(
             _log_buffer.append(clean_line)
 
             _matched = bool(CRITICAL_LOG_PATTERN.search(clean_line))
-            _record_sparkline_line(_matched)
+            await asyncio.to_thread(_record_sparkline_line, _matched)
 
             if _matched:
                 log.warning("log_line_intercepted", line=clean_line)
@@ -410,7 +481,8 @@ async def tail_remote_log_stream(
                     try:  # pragma: no cover
                         from utils.core.timeline import write_timeline_event
 
-                        write_timeline_event(
+                        await asyncio.to_thread(
+                            write_timeline_event,
                             "WARNING",
                             "ha_log_monitor",
                             f"Transient external error (auto-resolved): {clean_line[:120]}",
@@ -438,7 +510,8 @@ async def tail_remote_log_stream(
                     try:  # pragma: no cover
                         from utils.core.timeline import write_timeline_event
 
-                        write_timeline_event(
+                        await asyncio.to_thread(
+                            write_timeline_event,
                             "ERROR",
                             "ha_log_monitor",
                             evaluation.root_cause_summary,
@@ -467,27 +540,20 @@ async def tail_remote_log_stream(
                     # Persistent dedup: skip if we already sent an approval card for this
                     # error pattern within the cooldown window. Survives daemon restarts
                     # unlike the in-memory _debouncer.
-                    from .ha_agent_advanced import (
-                        mark_log_triage_hitl_sent,
-                        record_log_triage_seen,
-                        should_send_log_triage_hitl,
-                    )
-
                     _fingerprint = hashlib.sha256(
                         evaluation.root_cause_summary.encode()
                     ).hexdigest()[:16]
                     _now = time.time()
-                    with sqlite3.connect(DB_PATH) as _triage_conn:
-                        record_log_triage_seen(_triage_conn, _fingerprint, _now)
-                        if not should_send_log_triage_hitl(
-                            _triage_conn, _fingerprint, LOG_TRIAGE_COOLDOWN_HOURS
-                        ):
-                            log.info(
-                                "log_triage_cooldown",
-                                fingerprint=_fingerprint,
-                                cause=evaluation.root_cause_summary,
-                            )
-                            continue
+                    _should_send = await asyncio.to_thread(
+                        _triage_check_and_record, _fingerprint, _now
+                    )
+                    if not _should_send:
+                        log.info(
+                            "log_triage_cooldown",
+                            fingerprint=_fingerprint,
+                            cause=evaluation.root_cause_summary,
+                        )
+                        continue
                     if not _gate.should_auto_execute(RiskLevel.HIGH):
                         log.info(
                             "autonomy_gate_blocked",
@@ -496,8 +562,9 @@ async def tail_remote_log_stream(
                         _suppression_key = f"log_triage:{_fingerprint}"
                         from utils.hitl.hitl_tracker import stable_nid
 
-                        with sqlite3.connect(DB_PATH) as _triage_conn:
-                            mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
+                        await asyncio.to_thread(
+                            _triage_mark_hitl_sent, _fingerprint, _now
+                        )
                         await _notifier.send(
                             subject="Pueo: Actionable log event — approval required",
                             body=evaluation.root_cause_summary,
@@ -516,8 +583,7 @@ async def tail_remote_log_stream(
                         continue
                     log.warning("repair_triggered")
                     asyncio.create_task(trigger_remediation_pipeline())
-                    with sqlite3.connect(DB_PATH) as _triage_conn:
-                        mark_log_triage_hitl_sent(_triage_conn, _fingerprint, _now)
+                    await asyncio.to_thread(_triage_mark_hitl_sent, _fingerprint, _now)
                     log.info(
                         "repair_cooldown_start",
                         seconds=REPAIR_COOLDOWN_SECONDS,
@@ -648,10 +714,9 @@ async def poll_for_updates(
                 _update_gone.pop(
                     suppression_key, None
                 )  # update came back — reset timer
-                with sqlite3.connect(DB_PATH) as _sup_conn:
-                    from utils.hitl.hitl_tracker import mark_card_sent, should_send_card
-
-                    _should_send = should_send_card(_sup_conn, suppression_key)
+                _should_send = await asyncio.to_thread(
+                    _update_check_should_send, suppression_key
+                )
                 if not _should_send:
                     continue
                 log.info(
@@ -804,13 +869,12 @@ async def poll_for_updates(
                     # Mark sent in DB before writing file — if Pueo restarts between
                     # the two, DB says "sent" (no card visible) rather than DB saying
                     # "not sent" (duplicate card on next poll).
-                    with sqlite3.connect(DB_PATH) as _sup_conn2:
-                        mark_card_sent(
-                            _sup_conn2,
-                            suppression_key,
-                            CARD_TYPE_UPDATE,
-                            f"Update: {u.component} {u.installed_version} → {u.latest_version}",
-                        )
+                    await asyncio.to_thread(
+                        _update_mark_card_sent,
+                        suppression_key,
+                        CARD_TYPE_UPDATE,
+                        f"Update: {u.component} {u.installed_version} → {u.latest_version}",
+                    )
                     await _notifier.send(
                         subject=(
                             f"Update available: {u.component}"
@@ -858,7 +922,8 @@ async def poll_for_updates(
                 try:  # pragma: no cover
                     from utils.core.timeline import write_timeline_event
 
-                    write_timeline_event(
+                    await asyncio.to_thread(
+                        write_timeline_event,
                         "INFO",
                         "update_check",
                         f"Update available: {u.component}"
@@ -873,23 +938,12 @@ async def poll_for_updates(
                 except Exception:  # nosec B110
                     pass
             elif not u.update_available:
-                with sqlite3.connect(DB_PATH) as _sup_conn3:
-                    from utils.hitl.hitl_tracker import mark_card_resolved
-
-                    _pending_row = _sup_conn3.execute(
-                        "SELECT send_count, last_action, resolved_at"
-                        " FROM hitl_suppression WHERE card_key = ?",
-                        (suppression_key,),
-                    ).fetchone()
-                    _is_pending = (
-                        _pending_row is not None
-                        and _pending_row[0] > 0
-                        and _pending_row[1] is None
-                        and _pending_row[2] is None
-                    )
-                    if not _is_pending:
-                        _update_gone.pop(suppression_key, None)
-                        mark_card_resolved(_sup_conn3, suppression_key)
+                _is_pending = await asyncio.to_thread(
+                    _update_check_pending, suppression_key
+                )
+                if not _is_pending:
+                    _update_gone.pop(suppression_key, None)
+                    await asyncio.to_thread(_update_resolve_card, suppression_key)
                 if _is_pending:
                     if suppression_key not in _update_gone:
                         _update_gone[suppression_key] = time.monotonic()
@@ -898,8 +952,10 @@ async def poll_for_updates(
                             suppression_key=suppression_key,
                         )
                     else:
-                        _resolve_externally_applied_update(
-                            suppression_key, NOTIFY_WATCH_DIR
+                        await asyncio.to_thread(
+                            _resolve_externally_applied_update,
+                            suppression_key,
+                            NOTIFY_WATCH_DIR,
                         )
                         _update_gone.pop(suppression_key, None)
 
@@ -909,19 +965,18 @@ async def poll_for_updates(
         )
         # Reconcile: pending update cards for entities entirely absent from HA response.
         seen_keys = {f"update:{u.entity_id}" for u in updates}
-        with sqlite3.connect(DB_PATH) as _sweep_conn:
-            _absent_pending = _sweep_conn.execute(
-                "SELECT card_key FROM hitl_suppression"
-                " WHERE card_key LIKE 'update:%'"
-                "   AND send_count > 0 AND last_action IS NULL AND resolved_at IS NULL"
-            ).fetchall()
+        _absent_pending = await asyncio.to_thread(
+            _update_sweep_absent_pending, seen_keys
+        )
         for (_abs_key,) in _absent_pending:
             if _abs_key in seen_keys:
                 continue  # handled in per-entity loop above
             if _abs_key not in _update_gone:
                 _update_gone[_abs_key] = time.monotonic()
             else:
-                _resolve_externally_applied_update(_abs_key, NOTIFY_WATCH_DIR)
+                await asyncio.to_thread(
+                    _resolve_externally_applied_update, _abs_key, NOTIFY_WATCH_DIR
+                )
                 _update_gone.pop(_abs_key, None)
 
         try:
@@ -1007,12 +1062,16 @@ async def poll_for_notifications(
                 nid, category, severity, db_path=db_path, ha_created_at=ha_created_at
             )
 
-            with sqlite3.connect(db_path) as _conn:
-                _row = _conn.execute(
-                    "SELECT hitl_sent_at FROM notification_history WHERE notification_id = ?",
-                    (nid,),
-                ).fetchone()
-            should_send = _row is not None and _row[0] is None
+            def _check_notif_should_send(_nid: str) -> bool:
+                with sqlite3.connect(db_path) as _conn:
+                    _row = _conn.execute(
+                        "SELECT hitl_sent_at FROM notification_history"
+                        " WHERE notification_id = ?",
+                        (_nid,),
+                    ).fetchone()
+                return _row is not None and _row[0] is None
+
+            should_send = await asyncio.to_thread(_check_notif_should_send, nid)
 
             if should_send:
                 try:
@@ -1116,25 +1175,32 @@ async def poll_for_repairs(
             record_repair_seen(issue.issue_key, translation_key=issue.translation_key)
             import sqlite3 as _sqlite3
 
-            with _sqlite3.connect(db_path) as _conn:
-                _row = _conn.execute(
-                    "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
-                    (issue.issue_key,),
-                ).fetchone()
-                # Also check by translation_key: HA assigns new UUIDs after restart, so the
-                # same logical repair issue (e.g. "reboot_required") would bypass the
-                # issue_key check and generate a duplicate card.
-                _tkey_row = None
-                if issue.translation_key:
-                    _tkey_row = _conn.execute(
-                        "SELECT hitl_sent_at FROM ha_repair_history"
-                        " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
-                        " AND resolved_at IS NULL AND issue_key != ?",
-                        (issue.translation_key, issue.issue_key),
+            def _check_repair_already_sent(_key: str, _tkey: str) -> bool:
+                with _sqlite3.connect(db_path) as _conn:
+                    _row = _conn.execute(
+                        "SELECT hitl_sent_at FROM ha_repair_history WHERE issue_key = ?",
+                        (_key,),
                     ).fetchone()
-            already_sent = (
-                _row is not None and _row[0] is not None
-            ) or _tkey_row is not None
+                    # Also check by translation_key: HA assigns new UUIDs after restart, so
+                    # the same logical repair issue (e.g. "reboot_required") would bypass
+                    # the issue_key check and generate a duplicate card.
+                    _tkey_row = None
+                    if _tkey:
+                        _tkey_row = _conn.execute(
+                            "SELECT hitl_sent_at FROM ha_repair_history"
+                            " WHERE translation_key = ? AND hitl_sent_at IS NOT NULL"
+                            " AND resolved_at IS NULL AND issue_key != ?",
+                            (_tkey, _key),
+                        ).fetchone()
+                return (
+                    _row is not None and _row[0] is not None
+                ) or _tkey_row is not None
+
+            already_sent = await asyncio.to_thread(
+                _check_repair_already_sent,
+                issue.issue_key,
+                issue.translation_key or "",
+            )
 
             if not already_sent:
                 is_reboot = "reboot" in (issue.translation_key or "").lower()
@@ -1200,11 +1266,14 @@ async def poll_for_repairs(
         # Reconcile: mark resolved any previously-sent repairs no longer in HA's list.
         import sqlite3 as _sqlite3
 
-        with _sqlite3.connect(db_path) as _conn:
-            open_rows = _conn.execute(
-                "SELECT issue_key, translation_key FROM ha_repair_history"
-                " WHERE hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
-            ).fetchall()
+        def _fetch_open_repair_rows() -> list:
+            with _sqlite3.connect(db_path) as _conn:
+                return _conn.execute(
+                    "SELECT issue_key, translation_key FROM ha_repair_history"
+                    " WHERE hitl_sent_at IS NOT NULL AND resolved_at IS NULL",
+                ).fetchall()
+
+        open_rows = await asyncio.to_thread(_fetch_open_repair_rows)
         for issue_key, translation_key in open_rows:
             if issue_key not in active_keys:
                 mark_repair_resolved(issue_key)
@@ -1212,7 +1281,8 @@ async def poll_for_repairs(
                 try:
                     from utils.core.timeline import write_timeline_event
 
-                    write_timeline_event(
+                    await asyncio.to_thread(
+                        write_timeline_event,
                         "INFO",
                         "ha_repairs",
                         f"HA repair resolved: {translation_key or issue_key}",
