@@ -383,6 +383,12 @@ def _load_last_backup() -> dict:
     return {"slug": slug, "age": age, "location": location}
 
 
+def _hitl_write(fn: Any, *args: Any) -> None:
+    """Run a hitl_tracker write function with a fresh SQLite connection (sync; use to_thread)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        fn(conn, *args)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
     from utils.disk.resource import get_resource_status
@@ -397,8 +403,10 @@ async def overview(request: Request) -> HTMLResponse:
     sv = get_supervisor_instance()
     loop_statuses = sv.get_statuses() if sv else []
     resource = get_resource_status()
-    last_backup = _load_last_backup()
-    recent_events = load_timeline_events(limit=10)
+    last_backup, recent_events = await asyncio.gather(
+        asyncio.to_thread(_load_last_backup),
+        asyncio.to_thread(load_timeline_events, 10),
+    )
     return templates.TemplateResponse(
         request,
         "overview.html",
@@ -1569,8 +1577,7 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
             if suppression_key:
                 from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
-                with sqlite3.connect(DB_PATH) as conn:
-                    _mark_approved(conn, suppression_key)
+                await asyncio.to_thread(_hitl_write, _mark_approved, suppression_key)
             return RedirectResponse(url="/queue", status_code=303)
 
         # Update ordering guard: block approving a lower-priority update if a
@@ -1604,8 +1611,7 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
         if suppression_key:
             from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
-            with sqlite3.connect(DB_PATH) as conn:
-                _mark_approved(conn, suppression_key)
+            await asyncio.to_thread(_hitl_write, _mark_approved, suppression_key)
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -1694,8 +1700,12 @@ async def reject(nid: str) -> RedirectResponse:
         data = json.loads(json_path.read_text())
         suppression_key = data.get("payload", {}).get("suppression_key", "")
         if suppression_key:
-            with sqlite3.connect(DB_PATH) as conn:
-                mark_card_rejected(conn, suppression_key, REJECTION_COOLDOWN_HOURS)
+            await asyncio.to_thread(
+                _hitl_write,
+                mark_card_rejected,
+                suppression_key,
+                REJECTION_COOLDOWN_HOURS,
+            )
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -1808,8 +1818,9 @@ async def defer(nid: str) -> RedirectResponse:
         data = json.loads(json_path.read_text())
         suppression_key = data.get("payload", {}).get("suppression_key", "")
         if suppression_key:
-            with sqlite3.connect(DB_PATH) as conn:
-                mark_card_deferred(conn, suppression_key, hours=24.0)
+            await asyncio.to_thread(
+                _hitl_write, mark_card_deferred, suppression_key, 24.0
+            )
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -1824,8 +1835,9 @@ async def suppress(nid: str) -> RedirectResponse:
         data = json.loads(json_path.read_text())
         suppression_key = data.get("payload", {}).get("suppression_key", "")
         if suppression_key:
-            with sqlite3.connect(DB_PATH) as conn:
-                mark_card_acknowledged(conn, suppression_key)
+            await asyncio.to_thread(
+                _hitl_write, mark_card_acknowledged, suppression_key
+            )
         # Remove card from queue
         (watch_dir / f"{nid}.approved").touch()
     return RedirectResponse(url="/queue", status_code=303)
@@ -1836,8 +1848,11 @@ async def known_issues() -> JSONResponse:
     """Return all active Known Issues as JSON."""
     from utils.hitl.hitl_tracker import get_known_issues
 
-    with sqlite3.connect(DB_PATH) as conn:
-        issues = get_known_issues(conn)
+    def _load() -> list:
+        with sqlite3.connect(DB_PATH) as conn:
+            return get_known_issues(conn)
+
+    issues = await asyncio.to_thread(_load)
     return JSONResponse(issues)
 
 
@@ -1846,8 +1861,7 @@ async def resolve_known_issue(card_key: str) -> RedirectResponse:
     """Clear a Known Issue; next occurrence will start fresh."""
     from utils.hitl.hitl_tracker import mark_card_resolved
 
-    with sqlite3.connect(DB_PATH) as conn:
-        mark_card_resolved(conn, card_key)
+    await asyncio.to_thread(_hitl_write, mark_card_resolved, card_key)
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2212,11 +2226,12 @@ async def notifications_tab(
 ) -> HTMLResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
-    pending, history = _load_notification_dashboard_data(
+    pending, history = await asyncio.to_thread(
+        _load_notification_dashboard_data,
         watch_dir,
-        category_filter=category,
-        severity_filter=severity,
-        sort_by=sort_by,
+        category,
+        severity,
+        sort_by,
     )
     return templates.TemplateResponse(
         request,
@@ -2242,13 +2257,12 @@ async def timeline(
     from config import TIMELINE_PAGE_SIZE
 
     offset = (page - 1) * TIMELINE_PAGE_SIZE
-    events = load_timeline_events(
-        limit=TIMELINE_PAGE_SIZE,
-        offset=offset,
-        level_filter=level,
-        source_filter=source,
+    events, total = await asyncio.gather(
+        asyncio.to_thread(
+            load_timeline_events, TIMELINE_PAGE_SIZE, offset, level, source
+        ),
+        asyncio.to_thread(count_timeline_events, level, source),
     )
-    total = count_timeline_events(level_filter=level, source_filter=source)
     total_pages = max(1, (total + TIMELINE_PAGE_SIZE - 1) // TIMELINE_PAGE_SIZE)
     return templates.TemplateResponse(
         request,
@@ -2269,7 +2283,7 @@ async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
     from fastapi.responses import Response as _Response
     from utils.core.timeline import get_timeline_event
 
-    event = get_timeline_event(event_id)
+    event = await asyncio.to_thread(get_timeline_event, event_id)
     if event is None:
         return _Response(content="Event not found", status_code=404)  # type: ignore[return-value]
     return templates.TemplateResponse(
@@ -3365,7 +3379,7 @@ async def episodes_tab(
 ) -> HTMLResponse:
     from utils.repair.repair_episode import load_episodes
 
-    episodes = load_episodes(DB_PATH)
+    episodes = await asyncio.to_thread(load_episodes, DB_PATH)
     if trigger:
         episodes = [ep for ep in episodes if ep.trigger == trigger]
     if outcome == "passed":
