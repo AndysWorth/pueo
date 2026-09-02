@@ -3132,6 +3132,44 @@ async def _pre_inject_chat_context(
     return f"{context}\n\n---\nUser question: {message}"
 
 
+def _persist_chat_results(session_id: int, result: Any, summary: str) -> None:
+    """Sync helper: write all tool-call steps and final assistant message to DB."""
+    with sqlite3.connect(DB_PATH) as conn:
+        for step in result.steps:
+            if step.tool_call.name == "finish_chat":
+                continue
+            conn.execute(
+                "INSERT INTO chat_messages"
+                " (session_id, role, content, tool_calls_json, ts)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    "assistant",
+                    "",
+                    json.dumps(
+                        [
+                            {
+                                "name": step.tool_call.name,
+                                "arguments": step.tool_call.arguments,
+                            }
+                        ]
+                    ),
+                    step.timestamp,
+                ),
+            )
+            output = (step.tool_result.output or step.tool_result.error or "")[:4000]
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content, ts)"
+                " VALUES (?, ?, ?, ?)",
+                (session_id, "tool", output, step.timestamp + 0.0005),
+            )
+        conn.execute(
+            "INSERT INTO chat_messages (session_id, role, content, ts)"
+            " VALUES (?, ?, ?, ?)",
+            (session_id, "assistant", summary, time.time()),
+        )
+
+
 async def _run_chat_loop(
     session_id: int,
     message: str,
@@ -3272,7 +3310,7 @@ async def _run_chat_loop(
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:
-            _store_pre_inject(enriched_message)
+            await asyncio.to_thread(_store_pre_inject, enriched_message)
         result = await agent_loop.run(
             enriched_message, initial_messages=prior_messages or None
         )
@@ -3306,42 +3344,7 @@ async def _run_chat_loop(
                     "my investigation. Please try again."
                 )
 
-        with sqlite3.connect(DB_PATH) as conn:
-            for step in result.steps:
-                if step.tool_call.name == "finish_chat":
-                    continue
-                conn.execute(
-                    "INSERT INTO chat_messages"
-                    " (session_id, role, content, tool_calls_json, ts)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    (
-                        session_id,
-                        "assistant",
-                        "",
-                        json.dumps(
-                            [
-                                {
-                                    "name": step.tool_call.name,
-                                    "arguments": step.tool_call.arguments,
-                                }
-                            ]
-                        ),
-                        step.timestamp,
-                    ),
-                )
-                output = (step.tool_result.output or step.tool_result.error or "")[
-                    :4000
-                ]
-                conn.execute(
-                    "INSERT INTO chat_messages (session_id, role, content, ts)"
-                    " VALUES (?, ?, ?, ?)",
-                    (session_id, "tool", output, step.timestamp + 0.0005),
-                )
-            conn.execute(
-                "INSERT INTO chat_messages (session_id, role, content, ts)"
-                " VALUES (?, ?, ?, ?)",
-                (session_id, "assistant", summary, time.time()),
-            )
+        await asyncio.to_thread(_persist_chat_results, session_id, result, summary)
 
         log.info(
             "chat_session_complete",
@@ -3412,7 +3415,7 @@ async def export_episodes(
             since_ts = datetime.fromisoformat(since).timestamp()
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid date: {since!r}")
-    episodes = load_episodes(DB_PATH, since=since_ts)
+    episodes = await asyncio.to_thread(load_episodes, DB_PATH, since_ts)
     content = export_episodes_yaml(episodes) if episodes else "# No episodes found.\n"
     return StreamingResponse(
         iter([content]),
@@ -3429,7 +3432,7 @@ async def prepare_episode_submission(
     """Render review page for submitting an episode to the federated case library."""
     from utils.repair.repair_episode import export_single_episode_yaml, load_episode
 
-    episode = load_episode(DB_PATH, episode_id)
+    episode = await asyncio.to_thread(load_episode, DB_PATH, episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
 
@@ -3474,7 +3477,7 @@ async def submit_episode_to_case_library(
             "Add 'federated_cases_repo: owner/pueo-cases' under 'agent:' in config.yaml.",
         )
 
-    episode = load_episode(DB_PATH, episode_id)
+    episode = await asyncio.to_thread(load_episode, DB_PATH, episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
 
@@ -3509,7 +3512,7 @@ async def submit_episode_to_case_library(
             pr_title=pr_title,
             pr_body=pr_body,
         )
-        mark_episode_submitted(DB_PATH, episode.id, pr_url)
+        await asyncio.to_thread(mark_episode_submitted, DB_PATH, episode.id, pr_url)
         log.info("episode_submitted", episode_id=episode.id, pr_url=pr_url)
         return JSONResponse({"pr_url": pr_url, "already_submitted": False})
     except CaseSubmitError as exc:
