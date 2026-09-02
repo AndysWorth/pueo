@@ -2709,38 +2709,45 @@ def _load_chat_sessions() -> list[dict]:
 
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_tab(request: Request) -> HTMLResponse:
-    sessions = _load_chat_sessions()
+    sessions = await asyncio.to_thread(_load_chat_sessions)
     return templates.TemplateResponse(request, "chat.html", {"sessions": sessions})
 
 
 @app.get("/chat/sessions")
 async def chat_sessions() -> JSONResponse:
-    return JSONResponse(_load_chat_sessions())
+    return JSONResponse(await asyncio.to_thread(_load_chat_sessions))
+
+
+def _load_chat_messages(session_id: int) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT role, content, tool_calls_json, ts"
+            " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/chat/sessions/{session_id}/messages")
 async def chat_session_messages(session_id: int) -> JSONResponse:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT role, content, tool_calls_json, ts"
-                " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
-                (session_id,),
-            ).fetchall()
+        rows = await asyncio.to_thread(_load_chat_messages, session_id)
     except Exception:
         return JSONResponse([])
-    return JSONResponse([dict(r) for r in rows])
+    return JSONResponse(rows)
+
+
+def _delete_chat_session_db(session_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
 
 
 @app.delete("/chat/sessions/{session_id}")
 async def delete_chat_session(session_id: int) -> Response:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                "DELETE FROM chat_messages WHERE session_id = ?", (session_id,)
-            )
-            conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        await asyncio.to_thread(_delete_chat_session_db, session_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return Response(status_code=204)
@@ -2756,24 +2763,30 @@ async def chat_debug_log(session_id: int) -> Response:
     except Exception:
         system_prompt = "(could not load system prompt)"
 
-    try:
+    def _load_debug_session(
+        sid: int,
+    ) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
-            session = conn.execute(
+            s = conn.execute(
                 "SELECT id, title, created_at FROM chat_sessions WHERE id = ?",
-                (session_id,),
+                (sid,),
             ).fetchone()
-            if not session:
-                raise HTTPException(status_code=404, detail="Session not found")
-            messages = conn.execute(
+            if s is None:
+                return None, []
+            msgs = conn.execute(
                 "SELECT role, content, tool_calls_json, ts"
                 " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
-                (session_id,),
+                (sid,),
             ).fetchall()
-    except HTTPException:
-        raise
+        return s, msgs
+
+    try:
+        session, messages = await asyncio.to_thread(_load_debug_session, session_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     lines: list[str] = []
     lines.append("=== PUEO CHAT DEBUG LOG ===")
@@ -2920,32 +2933,36 @@ async def post_chat_message(req: ChatMessageRequest) -> JSONResponse:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
-    try:
+    def _persist_message(sid: int | None, msg: str) -> tuple[int, list[dict]]:
         with sqlite3.connect(DB_PATH) as conn:
-            if session_id is None:
-                title = message[:60]
+            if sid is None:
                 cur = conn.execute(
                     "INSERT INTO chat_sessions (created_at, title) VALUES (?, ?)",
-                    (time.time(), title),
+                    (time.time(), msg[:60]),
                 )
-                session_id = cur.lastrowid
-
+                sid = cur.lastrowid
             conn.execute(
                 "INSERT INTO chat_messages (session_id, role, content, ts)"
                 " VALUES (?, ?, ?, ?)",
-                (session_id, "user", message, time.time()),
+                (sid, "user", msg, time.time()),
             )
             history = conn.execute(
                 "SELECT role, content FROM chat_messages"
                 " WHERE session_id = ? ORDER BY ts ASC",
-                (session_id,),
+                (sid,),
             ).fetchall()
+        return sid, [{"role": r, "content": c} for r, c in history]  # type: ignore[return-value]
+
+    try:
+        session_id, history = await asyncio.to_thread(
+            _persist_message, session_id, message
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    prior = [{"role": r, "content": c} for r, c in history[:-1]]
     if session_id is None:
         raise HTTPException(status_code=500, detail="session creation failed")
+    prior = history[:-1]
     asyncio.create_task(_run_chat_loop(session_id, message, prior))
     return JSONResponse({"session_id": session_id}, status_code=202)
 
