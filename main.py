@@ -20,6 +20,28 @@ if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
 
 
+def _write_pid_file() -> None:
+    """Write our PID to the state-dir PID file; remove it on clean exit."""
+    import atexit
+
+    pid_file = _paths.get_dirs().state_dir / "pueo.pid"
+    pid_str = str(os.getpid())
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(pid_str)
+    except Exception:
+        return
+
+    def _cleanup() -> None:
+        try:
+            if pid_file.exists() and pid_file.read_text().strip() == pid_str:
+                pid_file.unlink()
+        except Exception:  # nosec B110
+            pass
+
+    atexit.register(_cleanup)
+
+
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
     from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
@@ -413,6 +435,7 @@ async def _known_issues_poll_loop(
 
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
+    _write_pid_file()
     import config as cfg
     from agents import ha_agent_advanced
     import uvicorn
