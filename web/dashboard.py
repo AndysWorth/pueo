@@ -2948,7 +2948,7 @@ async def chat_debug_log(session_id: int) -> Response:
                         if event == "llm_response_full":
                             lines.append(_format_llm_response(entry))
                             continue
-                    except Exception:
+                    except Exception:  # nosec B110 — malformed entry falls back to raw
                         pass
                     lines.append(raw_line)
         except Exception:
