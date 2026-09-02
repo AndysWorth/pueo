@@ -6988,7 +6988,7 @@ class TestPollForUpdates:
             "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
             "known_issue_note TEXT, resolved_at REAL)"
         )
-        _mem = _sq3.connect(":memory:")
+        _mem = _sq3.connect(":memory:", check_same_thread=False)
         _mem.execute(_DDL)
         _mem.commit()
         monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
@@ -13020,7 +13020,7 @@ class TestExternalUpdateResolution:
             "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
             "known_issue_note TEXT, resolved_at REAL)"
         )
-        _mem = _sq3.connect(":memory:")
+        _mem = _sq3.connect(":memory:", check_same_thread=False)
         _mem.execute(_DDL)
         _mem.commit()
         monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
@@ -14464,7 +14464,7 @@ class TestPollForUpdatesDiskHeadroomWarning:
             "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
             "known_issue_note TEXT, resolved_at REAL)"
         )
-        _mem = _sq3.connect(":memory:")
+        _mem = _sq3.connect(":memory:", check_same_thread=False)
         _mem.execute(_DDL)
         _mem.commit()
         monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
@@ -14623,7 +14623,7 @@ class TestPollForUpdatesPersonalization:
             "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
             "known_issue_note TEXT, resolved_at REAL)"
         )
-        _mem = _sq3.connect(":memory:")
+        _mem = _sq3.connect(":memory:", check_same_thread=False)
         _mem.execute(_DDL)
         _mem.commit()
         monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)

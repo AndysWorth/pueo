@@ -580,7 +580,8 @@ async def _execute_queued_update(
             try:
                 from utils.core.timeline import write_timeline_event
 
-                write_timeline_event(
+                await asyncio.to_thread(
+                    write_timeline_event,
                     "INFO",
                     "update_executor",
                     f"Update executed: {component} → {latest_version}",
@@ -597,7 +598,8 @@ async def _execute_queued_update(
             try:
                 from utils.core.timeline import write_timeline_event
 
-                write_timeline_event(
+                await asyncio.to_thread(
+                    write_timeline_event,
                     "ERROR",
                     "update_executor",
                     f"Update failed: {component} → {latest_version}",
@@ -612,7 +614,8 @@ async def _execute_queued_update(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "ERROR",
                 "update_executor",
                 f"Update error: {component} — {exc}",
@@ -766,7 +769,8 @@ async def _execute_netalertx_heal(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "INFO",
                 "netalertx_heal",
                 f"NetAlertX heal executed: {heal_action}",
@@ -781,7 +785,8 @@ async def _execute_netalertx_heal(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "ERROR",
                 "netalertx_heal",
                 f"NetAlertX heal failed: {heal_action} — {exc}",
@@ -820,11 +825,15 @@ async def _execute_resource_action(
         _force_critical = _rs is not None and _rs.disk_critical
 
         if action == "offload_backups":
-            with _sqlite3.connect(DB_PATH) as conn:
-                rows = conn.execute(
-                    "SELECT backup_slug FROM backup_registry"
-                    " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
-                ).fetchall()
+
+            def _fetch_pending_backups() -> list:
+                with _sqlite3.connect(DB_PATH) as conn:
+                    return conn.execute(
+                        "SELECT backup_slug FROM backup_registry"
+                        " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
+                    ).fetchall()
+
+            rows = await asyncio.to_thread(_fetch_pending_backups)
             fail_count = 0
             for (slug,) in rows:
                 ok = await offload_backup_to_local(slug, ssh_client=ssh)
@@ -834,7 +843,8 @@ async def _execute_resource_action(
                 try:
                     from utils.core.timeline import write_timeline_event
 
-                    write_timeline_event(
+                    await asyncio.to_thread(
+                        write_timeline_event,
                         "WARN",
                         "resource_action",
                         f"offload_backups: {fail_count}/{len(rows)} SFTP transfer(s) failed",
@@ -856,7 +866,8 @@ async def _execute_resource_action(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "INFO",
                 "resource_action",
                 f"Resource action executed: {action}",
@@ -871,7 +882,8 @@ async def _execute_resource_action(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "ERROR",
                 "resource_action",
                 f"Resource action failed: {action} — {exc}",
@@ -945,11 +957,14 @@ async def _execute_disk_recovery(
         if "offload_backups" in action_keys:
             import sqlite3 as _sqlite3
 
-            with _sqlite3.connect(DB_PATH) as conn:
-                rows = conn.execute(
-                    "SELECT backup_slug FROM backup_registry"
-                    " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
-                ).fetchall()
+            def _fetch_pending_backups_dr() -> list:
+                with _sqlite3.connect(DB_PATH) as conn:
+                    return conn.execute(
+                        "SELECT backup_slug FROM backup_registry"
+                        " WHERE location != 'both' AND deleted_from_ha_at IS NULL"
+                    ).fetchall()
+
+            rows = await asyncio.to_thread(_fetch_pending_backups_dr)
             for (slug,) in rows:
                 await offload_backup_to_local(slug, ssh_client=ssh)
             _rs = get_resource_status()
@@ -983,7 +998,8 @@ async def _execute_disk_recovery(
             try:
                 from utils.core.timeline import write_timeline_event as _write_ev
 
-                _write_ev(
+                await asyncio.to_thread(
+                    _write_ev,
                     "INFO",
                     "disk_recovery",
                     f"Orphaned add-on dirs removed: {', '.join(deleted_paths)}",
@@ -998,7 +1014,8 @@ async def _execute_disk_recovery(
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(
+            await asyncio.to_thread(
+                write_timeline_event,
                 "INFO",
                 "disk_recovery",
                 f"Disk recovery executed: {len(actions_run)} action(s)",
@@ -1069,13 +1086,18 @@ async def _execute_code_proposal(
         if sv is not None and sv._tool_executor is not None:
             sv._tool_executor.register_dynamic_tool(name, fn)
 
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO registered_tools"
-                " (name, description, parameters_json, code, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (name, description, parameters_schema, code, time.time()),
-            )
+        _tool_row = (name, description, parameters_schema, code, time.time())
+
+        def _register_tool_in_db(_row: tuple) -> None:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO registered_tools"
+                    " (name, description, parameters_json, code, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    _row,
+                )
+
+        await asyncio.to_thread(_register_tool_in_db, _tool_row)
 
         data["tool_registered"] = True
         json_path.write_text(json.dumps(data, indent=2))
@@ -1112,7 +1134,9 @@ async def _execute_cloud_escalation(
             from utils.core.timeline import write_timeline_event
             from utils.agent.supervisor import publish_event
 
-            write_timeline_event("INFO", "agent_loop", status_line)
+            await asyncio.to_thread(
+                write_timeline_event, "INFO", "agent_loop", status_line
+            )
             publish_event(
                 {
                     "event_type": "agent_step",
@@ -2536,9 +2560,10 @@ async def ha_log_monitor_sparkline(
     """Return sparkline data for the HA log monitor stream."""
     from agents.ha_log_monitor import get_ha_log_sparkline_data
 
-    return JSONResponse(
-        get_ha_log_sparkline_data(bucket_size=bucket_size, time_range=time_range)
+    data = await asyncio.to_thread(
+        get_ha_log_sparkline_data, bucket_size=bucket_size, time_range=time_range
     )
+    return JSONResponse(data)
 
 
 @app.get("/loops/netalertx/sparkline")
