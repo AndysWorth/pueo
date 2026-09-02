@@ -625,6 +625,7 @@ cloud:
   # ANTHROPIC_API_KEY must be exported in the environment — never written here
 
 netalertx:
+  enabled: ${NAX_SETUP_DESIRED}
   setup_desired: ${NAX_SETUP_DESIRED}
   api_token: "${NAX_API_TOKEN}"
   deploy_target: "${NAX_DEPLOY_TARGET}"

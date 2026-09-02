@@ -513,7 +513,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 25
+        assert version == 26
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -523,7 +523,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 25
+        assert rows[0][0] == 26
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -552,7 +552,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 25
+        assert version == 26
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1430,7 +1430,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 25
+        assert version == 26
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1440,7 +1440,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 25
+        assert rows[0][0] == 26
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1468,7 +1468,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 25
+        assert version == 26
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1944,6 +1944,7 @@ class TestSupervisorMain:
         update_interval_h: float = 0.0,
         notif_interval_m: float = 0.0,
         netalertx_host: str = "",
+        netalertx_enabled: bool = False,
     ) -> Path:
         cfg = {
             "home_assistant": {"host": "ha.local", "api_token": api_token},
@@ -1952,7 +1953,7 @@ class TestSupervisorMain:
                 "notification_poll_interval_minutes": notif_interval_m,
                 "notify_watch_dir": str(tmp_path / "hitl"),
             },
-            "netalertx": {"host": netalertx_host},
+            "netalertx": {"host": netalertx_host, "enabled": netalertx_enabled},
         }
         p = tmp_path / "config.yaml"
         p.write_text(yaml.dump(cfg))
@@ -2082,9 +2083,9 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "notification_poll" in started
 
-    def test_netalertx_loop_disabled_when_host_empty(self, monkeypatch, tmp_path):
-        """netalertx loop doesn't start when NETALERTX_HOST resolves to empty string."""
-        config_path = self._make_config(tmp_path, netalertx_host="")
+    def test_netalertx_loop_disabled_when_not_enabled(self, monkeypatch, tmp_path):
+        """netalertx loop doesn't start when netalertx.enabled is false."""
+        config_path = self._make_config(tmp_path, netalertx_enabled=False)
         started = self._patch_all(monkeypatch, config_path)
 
         import main as m
@@ -2092,9 +2093,11 @@ class TestSupervisorMain:
         asyncio.run(m.supervisor_main(config_path))
         assert "netalertx" not in started
 
-    def test_netalertx_loop_starts_when_host_set(self, monkeypatch, tmp_path):
-        """netalertx loop starts when netalertx.host is configured."""
-        config_path = self._make_config(tmp_path, netalertx_host="ha.local")
+    def test_netalertx_loop_starts_when_enabled(self, monkeypatch, tmp_path):
+        """netalertx loop starts when netalertx.enabled is true."""
+        config_path = self._make_config(
+            tmp_path, netalertx_host="ha.local", netalertx_enabled=True
+        )
         started = self._patch_all(monkeypatch, config_path)
 
         import main as m

@@ -413,6 +413,22 @@ def _migrate_v25(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v26(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS stream_metrics ("
+        "loop_name TEXT NOT NULL, "
+        "bucket_ts INTEGER NOT NULL, "
+        "total_lines INTEGER NOT NULL DEFAULT 0, "
+        "match_lines INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (loop_name, bucket_ts)"
+        ")"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stream_metrics_ts "
+        "ON stream_metrics(loop_name, bucket_ts)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -439,6 +455,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (23, _migrate_v23),
     (24, _migrate_v24),
     (25, _migrate_v25),
+    (26, _migrate_v26),
 ]
 
 
