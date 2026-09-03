@@ -266,15 +266,27 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
             if agg[key][2] is None or row_min_ts < agg[key][2]:
                 agg[key][2] = row_min_ts
 
-    # Append the in-progress current bucket
-    cur_key = (_sparkline_current_minute * 60 // bucket_seconds) * bucket_seconds
-    if cur_key not in agg:
-        agg[cur_key] = [0, 0, None]
-    agg[cur_key][0] += _sparkline_bucket_total
-    agg[cur_key][1] += _sparkline_bucket_matches
-    if _sparkline_bucket_min_ts:
-        if agg[cur_key][2] is None or _sparkline_bucket_min_ts < agg[cur_key][2]:
-            agg[cur_key][2] = _sparkline_bucket_min_ts
+    # Append the in-progress current bucket (only when the minute tracker is initialized)
+    if _sparkline_current_minute:
+        cur_key = (_sparkline_current_minute * 60 // bucket_seconds) * bucket_seconds
+        if cur_key not in agg:
+            agg[cur_key] = [0, 0, None]
+        agg[cur_key][0] += _sparkline_bucket_total
+        agg[cur_key][1] += _sparkline_bucket_matches
+        if _sparkline_bucket_min_ts:
+            if agg[cur_key][2] is None or _sparkline_bucket_min_ts < agg[cur_key][2]:
+                agg[cur_key][2] = _sparkline_bucket_min_ts
+
+    # Fill empty bucket slots so every time position is represented (cap at 1440)
+    first_key = (cutoff_ts // bucket_seconds) * bucket_seconds
+    end_key = (now_ts // bucket_seconds) * bucket_seconds
+    slot = first_key
+    slot_count = 0
+    while slot <= end_key and slot_count < 1440:
+        if slot not in agg:
+            agg[slot] = [0, 0, None]
+        slot += bucket_seconds
+        slot_count += 1
 
     # display_ts: use min_line_ts when available, else fall back to bucket key
     buckets = [
