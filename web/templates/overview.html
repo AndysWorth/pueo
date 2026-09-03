@@ -571,12 +571,14 @@
           hitEl.setAttribute('width', barW);
           hitEl.setAttribute('height', 36);
           hitEl.setAttribute('fill', 'transparent');
+          hitEl.style.cursor = 'pointer';
           hitEl.addEventListener('mouseenter', function(e) {
             var tip = document.getElementById('sparkline-tooltip');
             if (!tip) return;
             tip.innerHTML = '<div style="font-weight:600;margin-bottom:2px">' + _fmtBucketTime(hTs, bucketSize) + '</div>' +
               '<div>Lines: ' + hTotal + '</div>' +
-              '<div>Matches: ' + hMatches + '</div>';
+              '<div>Matches: ' + hMatches + '</div>' +
+              '<div style="margin-top:4px;opacity:0.6;font-size:10px">Click to analyze in Chat</div>';
             tip.hidden = false;
             tip.style.left = (e.clientX + 12) + 'px';
             tip.style.top = (e.clientY - 8) + 'px';
@@ -588,6 +590,23 @@
           hitEl.addEventListener('mouseleave', function() {
             var tip = document.getElementById('sparkline-tooltip');
             if (tip) tip.hidden = true;
+          });
+          hitEl.addEventListener('click', function() {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (tip) tip.hidden = true;
+            var fmt = function(epochSecs) {
+              var d = new Date(epochSecs * 1000);
+              return d.getFullYear() + '-' +
+                String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                String(d.getDate()).padStart(2, '0') + ' ' +
+                String(d.getHours()).padStart(2, '0') + ':' +
+                String(d.getMinutes()).padStart(2, '0') + ':' +
+                String(d.getSeconds()).padStart(2, '0');
+            };
+            var q = 'Analyze both the standard and error log lines from ' +
+              fmt(hTs) + ' to ' + fmt(hTs + bucketSize) +
+              ' and tell me what happened.';
+            window.location.href = '/chat?q=' + encodeURIComponent(q);
           });
           svgEls.push(hitEl);
         })(ts, total, matches);

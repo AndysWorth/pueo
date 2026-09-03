@@ -855,6 +855,13 @@
     {% if sessions %}
     loadSession({{ sessions[0].id }}, document.querySelector('.session-item[data-sid="{{ sessions[0].id }}"]'));
     {% endif %}
+    var _q = new URLSearchParams(location.search).get('q');
+    if (_q) {
+      var _inp = document.getElementById('chat-input');
+      _inp.value = _q;
+      _inp.dispatchEvent(new Event('input'));
+      _inp.focus();
+    }
   });
 </script>
 {% endblock %}
