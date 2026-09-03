@@ -506,6 +506,7 @@
   function renderSparkline(svgId, buckets, bucketSize) {
     var svg = document.getElementById(svgId);
     if (!svg || !buckets || !buckets.length) return;
+    var bucketSecs = (typeof bucketSize === 'number') ? bucketSize : 60;
     bucketSize = bucketSize || '1m';
     var barMaxH = 28, dotR = 2;
     var loopName = svgId.replace('sparkline-', '');
@@ -604,7 +605,7 @@
                 String(d.getSeconds()).padStart(2, '0');
             };
             var q = 'Analyze both the standard and error log lines from ' +
-              fmt(hTs) + ' to ' + fmt(hTs + bucketSize) +
+              fmt(hTs) + ' to ' + fmt(hTs + bucketSecs) +
               ' and tell me what happened.';
             window.location.href = '/chat?q=' + encodeURIComponent(q);
           });
