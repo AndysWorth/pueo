@@ -58,6 +58,9 @@ _sparkline_buckets: collections.deque = collections.deque(maxlen=60)
 _sparkline_current_minute: int = 0
 _sparkline_bucket_total: int = 0
 _sparkline_bucket_matches: int = 0
+_sparkline_bucket_min_ts: int = (
+    0  # epoch of first log line in current bucket (0 = none yet)
+)
 _last_line_at: float = 0.0  # epoch of most recent received line
 _last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
 _last_scan_at: float = 0.0  # epoch of most recent scan-detected log line
@@ -96,13 +99,16 @@ def _init_sparkline_db() -> None:
         pass
 
 
-def _persist_sparkline_bucket(bucket_ts: int, total: int, matches: int) -> None:
+def _persist_sparkline_bucket(
+    bucket_ts: int, total: int, matches: int, min_line_ts: int
+) -> None:
     try:
         with sqlite3.connect(_config.DB_PATH) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO stream_metrics "
-                "(loop_name, bucket_ts, total_lines, match_lines) VALUES (?, ?, ?, ?)",
-                (_LOOP_NAME, bucket_ts, total, matches),
+                "(loop_name, bucket_ts, total_lines, match_lines, min_line_ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (_LOOP_NAME, bucket_ts, total, matches, min_line_ts or None),
             )
     except Exception:  # nosec B110
         pass
@@ -111,7 +117,7 @@ def _persist_sparkline_bucket(bucket_ts: int, total: int, matches: int) -> None:
 def _record_sparkline_line(matched: bool, scan: bool) -> None:
     """Update sparkline ring buffer for one received NetAlertX log line."""
     global _sparkline_current_minute, _sparkline_bucket_total, _sparkline_bucket_matches
-    global _last_line_at, _last_match_at, _last_scan_at
+    global _sparkline_bucket_min_ts, _last_line_at, _last_match_at, _last_scan_at
 
     now = time.time()
     _last_line_at = now
@@ -127,12 +133,18 @@ def _record_sparkline_line(matched: bool, scan: bool) -> None:
             (completed_ts, _sparkline_bucket_total, _sparkline_bucket_matches)
         )
         _persist_sparkline_bucket(
-            completed_ts, _sparkline_bucket_total, _sparkline_bucket_matches
+            completed_ts,
+            _sparkline_bucket_total,
+            _sparkline_bucket_matches,
+            _sparkline_bucket_min_ts,
         )
         _sparkline_bucket_total = 0
         _sparkline_bucket_matches = 0
+        _sparkline_bucket_min_ts = 0
         _sparkline_current_minute = current_min
 
+    if _sparkline_bucket_total == 0:
+        _sparkline_bucket_min_ts = int(now)
     _sparkline_bucket_total += 1
     if matched:
         _sparkline_bucket_matches += 1
@@ -156,7 +168,8 @@ def get_netalertx_sparkline_data(
     try:
         with sqlite3.connect(_config.DB_PATH) as conn:
             rows = conn.execute(
-                "SELECT bucket_ts, total_lines, match_lines FROM stream_metrics "
+                "SELECT bucket_ts, total_lines, match_lines, min_line_ts "
+                "FROM stream_metrics "
                 "WHERE loop_name = ? AND bucket_ts >= ? ORDER BY bucket_ts",
                 (_LOOP_NAME, cutoff_ts),
             ).fetchall()
@@ -164,20 +177,28 @@ def get_netalertx_sparkline_data(
         rows = []
 
     agg: dict = {}
-    for row_ts, row_total, row_matches in rows:
+    for row_ts, row_total, row_matches, row_min_ts in rows:
         key = (row_ts // bucket_seconds) * bucket_seconds
         if key not in agg:
-            agg[key] = [0, 0]
+            agg[key] = [0, 0, None]
         agg[key][0] += row_total
         agg[key][1] += row_matches
+        if row_min_ts is not None:
+            if agg[key][2] is None or row_min_ts < agg[key][2]:
+                agg[key][2] = row_min_ts
 
     cur_key = (_sparkline_current_minute * 60 // bucket_seconds) * bucket_seconds
     if cur_key not in agg:
-        agg[cur_key] = [0, 0]
+        agg[cur_key] = [0, 0, None]
     agg[cur_key][0] += _sparkline_bucket_total
     agg[cur_key][1] += _sparkline_bucket_matches
+    if _sparkline_bucket_min_ts:
+        if agg[cur_key][2] is None or _sparkline_bucket_min_ts < agg[cur_key][2]:
+            agg[cur_key][2] = _sparkline_bucket_min_ts
 
-    buckets = [[k, v[0], v[1]] for k, v in sorted(agg.items())]
+    buckets = [
+        [v[2] if v[2] is not None else k, v[0], v[1]] for k, v in sorted(agg.items())
+    ]
     return {
         "buckets": buckets,
         "bucket_size": bucket_size,
