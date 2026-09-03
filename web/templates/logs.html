@@ -1,0 +1,724 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  .logs-page { display: flex; flex-direction: column; gap: 1rem; }
+
+  /* Source panel */
+  .source-panel { background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd);
+    border-radius: 6px; padding: 0.75rem 1rem; }
+  .source-panel-title { font-weight: 600; margin-bottom: 0.5rem; font-size: 0.92rem; }
+  .source-list { list-style: none; margin: 0 0 0.5rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .source-chip { display: flex; align-items: center; gap: 0.35rem; background: var(--chip-bg, #e8f0fe);
+    border-radius: 20px; padding: 0.2rem 0.6rem 0.2rem 0.8rem; font-size: 0.82rem; }
+  .source-chip-remove { background: none; border: none; cursor: pointer; color: #888; font-size: 1rem;
+    padding: 0; line-height: 1; }
+  .source-chip-remove:hover { color: #c00; }
+  .add-source-form { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+  .add-source-form select, .add-source-form input { font-size: 0.82rem; border: 1px solid #ccc;
+    border-radius: 4px; padding: 0.25rem 0.4rem; background: var(--bg, #fff); color: inherit; }
+  .add-source-form button { font-size: 0.82rem; padding: 0.25rem 0.65rem; border: 1px solid #1a73e8;
+    background: #1a73e8; color: #fff; border-radius: 4px; cursor: pointer; }
+  .add-source-form button:hover { background: #1558b0; }
+
+  /* Two-column layout */
+  .logs-body { display: flex; gap: 0; flex: 1; min-height: 0; }
+  .logs-left { flex: 0 0 45%; min-width: 0; display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto; }
+  .logs-right { flex: 1 1 55%; min-width: 0; display: none; border-left: 1px solid var(--border, #ddd);
+    flex-direction: column; overflow: hidden; }
+  .logs-right.open { display: flex; }
+
+  /* Source sparkline cards */
+  .source-card { background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd);
+    border-radius: 6px; padding: 0.65rem 0.8rem; }
+  .source-card-header { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem;
+    font-weight: 600; margin-bottom: 0.35rem; }
+  .source-card-meta { font-size: 0.78rem; color: #888; margin-bottom: 0.3rem; }
+  .source-refresh-btn { font-size: 0.75rem; padding: 0.15rem 0.45rem; border: 1px solid #ccc;
+    border-radius: 3px; background: var(--bg, #fff); color: inherit; cursor: pointer; margin-left: auto; }
+  .source-refresh-btn:hover { background: #eef; }
+
+  /* Sparkline (reuse overview styles) */
+  .stream-sparkline { height: 36px; display: block; }
+  .sparkline-pan-row { display: flex; align-items: stretch; gap: 0; }
+  .stream-sparkline-wrap { flex: 1 1 0; min-width: 0; height: 36px; overflow: hidden; }
+  .sparkline-nav { width: 18px; flex-shrink: 0; padding: 0; background: none; border: none;
+    cursor: pointer; font-size: 12px; color: #555; display: flex; align-items: center; justify-content: center; }
+  .sparkline-nav.disabled { opacity: 0.25; cursor: default; pointer-events: none; }
+  .sparkline-daterange { font-size: 11px; color: #555; }
+  .sparkline-controls { display: flex; gap: 1rem; margin-top: 0.35rem; font-size: 11px; color: #666; }
+  .sparkline-select { font-size: 11px; border: 1px solid #ccc; border-radius: 3px; padding: 1px 2px;
+    background: var(--bg, #fff); color: inherit; }
+
+  /* Log viewer */
+  .viewer-header { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border, #ddd); font-size: 0.82rem; background: var(--card-bg, #fff); flex-shrink: 0; }
+  .viewer-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .viewer-filter-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border, #ddd); flex-shrink: 0; }
+  .viewer-filter { flex: 1; font-size: 0.82rem; border: 1px solid #ccc; border-radius: 4px;
+    padding: 0.2rem 0.4rem; background: var(--bg, #fff); color: inherit; }
+  .viewer-tail-btn { font-size: 0.78rem; padding: 0.15rem 0.4rem; border: 1px solid #ccc;
+    border-radius: 3px; background: var(--bg, #fff); color: inherit; cursor: pointer; white-space: nowrap; }
+  .viewer-tail-btn.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  .viewer-lines { flex: 1; overflow-y: auto; font-family: monospace; font-size: 0.75rem; }
+  .log-line { display: flex; align-items: baseline; gap: 0.4rem; padding: 1px 0.75rem;
+    border-bottom: 1px solid transparent; cursor: pointer; }
+  .log-line:hover { background: var(--hover-bg, rgba(0,0,0,0.04)); }
+  .log-line.selected { background: var(--sel-bg, #e8f0fe); }
+  .log-line.hidden { display: none; }
+  .log-line.match { background: rgba(220,53,69,0.07); }
+  .log-line.match.selected { background: rgba(220,53,69,0.18); }
+  .log-ts { color: #888; flex-shrink: 0; font-size: 0.7rem; }
+  .log-text { flex: 1; word-break: break-all; white-space: pre-wrap; }
+  .log-match-badge { flex-shrink: 0; color: #dc3545; font-size: 0.8rem; cursor: pointer;
+    text-decoration: none; }
+  .log-match-badge:hover { color: #a00; }
+  .log-suppress-badge { flex-shrink: 0; color: #aaa; font-size: 0.8rem; }
+  .viewer-footer { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem;
+    border-top: 1px solid var(--border, #ddd); flex-shrink: 0; font-size: 0.8rem; }
+  .send-chat-btn { font-size: 0.78rem; padding: 0.2rem 0.6rem; border: 1px solid #1a73e8;
+    background: #1a73e8; color: #fff; border-radius: 4px; cursor: pointer; }
+  .send-chat-btn:disabled { opacity: 0.4; cursor: default; }
+  .send-chat-btn:not(:disabled):hover { background: #1558b0; }
+  .close-viewer-btn { margin-left: auto; background: none; border: none; cursor: pointer;
+    font-size: 1rem; color: #888; padding: 0; }
+  .close-viewer-btn:hover { color: #000; }
+
+  #sparkline-tooltip { background: rgba(30,30,30,0.92); color: #fff; font-size: 11px;
+    padding: 5px 8px; border-radius: 4px; pointer-events: none; z-index: 9999;
+    white-space: nowrap; line-height: 1.5; position: fixed; }
+
+  /* Empty state */
+  .logs-empty { color: #888; font-size: 0.9rem; padding: 1.5rem 0.5rem; }
+
+  /* Dark-mode tokens */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --card-bg: #1e1e1e; --border: #333; --hover-bg: rgba(255,255,255,0.06);
+      --sel-bg: #1e3a5f; --chip-bg: #1e3a5f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --card-bg: #1e1e1e; --border: #333; --hover-bg: rgba(255,255,255,0.06);
+    --sel-bg: #1e3a5f; --chip-bg: #1e3a5f;
+  }
+  :root[data-theme="light"] {
+    --card-bg: #fff; --border: #ddd; --hover-bg: rgba(0,0,0,0.04);
+    --sel-bg: #e8f0fe; --chip-bg: #e8f0fe;
+  }
+</style>
+
+<div class="logs-page">
+  <div id="sparkline-tooltip" hidden></div>
+
+  <!-- Source panel -->
+  <div class="source-panel">
+    <div class="source-panel-title">Log Sources</div>
+    <ul class="source-list" id="source-chip-list"></ul>
+    <div class="add-source-form">
+      <select id="add-source-type" onchange="window._logsUpdateSlugPlaceholder()">
+        <option value="apps">HA App</option>
+        <option value="netalertx">NetAlertX</option>
+      </select>
+      <input id="add-source-slug" type="text" placeholder="app slug (e.g. mosquitto)" style="width:160px">
+      <button onclick="window._logsAddSource()">Add</button>
+    </div>
+  </div>
+
+  <!-- Body: sparklines left, viewer right -->
+  <div class="logs-body" id="logs-body">
+    <div class="logs-left" id="logs-left">
+      <p class="logs-empty" id="logs-empty">No sources yet — add one above to explore logs.</p>
+    </div>
+    <div class="logs-right" id="logs-right">
+      <div class="viewer-header">
+        <span class="viewer-title" id="viewer-title">—</span>
+        <button class="close-viewer-btn" title="Close viewer" onclick="window._logsCloseViewer()">✕</button>
+      </div>
+      <div class="viewer-filter-row">
+        <input class="viewer-filter" id="viewer-filter" type="text" placeholder="Filter lines…" oninput="window._logsApplyFilter()">
+        <button class="viewer-tail-btn" id="viewer-tail-btn" onclick="window._logsTailToggle()">⏸ Tail</button>
+      </div>
+      <div class="viewer-lines" id="viewer-lines"></div>
+      <div class="viewer-footer">
+        <span id="viewer-line-count" style="color:#888"></span>
+        <button class="send-chat-btn" id="send-chat-btn" disabled onclick="window._logsSendToChat()">Send to Chat (0 selected)</button>
+        <button class="close-viewer-btn" onclick="window._logsCloseViewer()">✕</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── state ─────────────────────────────────────────────────────────────── */
+  var _sources = [];          // list of source strings
+  var _fetched = {};          // source -> {lines, fetched_at, fetch_duration_ms}
+  var _sparkData = {};        // source -> {buckets, bucketSize, barW}
+  var _viewerSource = null;   // currently shown source
+  var _selectedLines = new Set();
+  var _tailInterval = null;
+  var _tailActive = false;
+
+  /* ── helpers ───────────────────────────────────────────────────────────── */
+  function _fmtTs(epoch) {
+    if (!epoch) return '—';
+    var d = new Date(epoch * 1000);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+  }
+  function _fmtAgo(epoch) {
+    if (!epoch) return '—';
+    var secs = Math.floor(Date.now() / 1000 - epoch);
+    if (secs < 5) return 'just now';
+    if (secs < 60) return secs + 's ago';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'min ago';
+    return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm ago';
+  }
+  function _fmtBucketTime(ts, bucketSize) {
+    var d = new Date(ts * 1000);
+    if (bucketSize === '1d') return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+    return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
+      d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+
+  function _sourceId(source) {
+    return source.replace(/[^a-zA-Z0-9_]/g, '_');
+  }
+
+  /* ── prefs persistence (SQLite via backend) ────────────────────────────── */
+  function _savePrefs() {
+    fetch('/logs/prefs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sources: _sources}),
+    }).catch(function(){});
+  }
+
+  function _loadPrefs(cb) {
+    fetch('/logs/prefs').then(function(r){ return r.json(); })
+      .then(function(d){ cb(d.sources || []); })
+      .catch(function(){ cb([]); });
+  }
+
+  /* ── sparkline ──────────────────────────────────────────────────────────── */
+  var _bsMap = {'1m': 60, '1h': 3600, '1d': 86400};
+
+  function _sparkPrefsKey(source) { return 'pueo_logs_sparkline_' + source; }
+
+  function _getSparkPrefs(source) {
+    try {
+      var raw = localStorage.getItem(_sparkPrefsKey(source));
+      if (raw) return JSON.parse(raw);
+    } catch(_){}
+    return {bucket_size: '1m', time_range: '1h'};
+  }
+
+  function _setSparkPrefs(source, prefs) {
+    try { localStorage.setItem(_sparkPrefsKey(source), JSON.stringify(prefs)); } catch(_){}
+  }
+
+  function _computeSparkBuckets(lines, bucketSize) {
+    var bs = _bsMap[bucketSize] || 60;
+    var agg = {};
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (!line.ts) continue;
+      var key = (Math.floor(line.ts / bs)) * bs;
+      if (!agg[key]) agg[key] = [0, 0, key];
+      agg[key][0]++;
+      if (line.is_match) agg[key][1]++;
+      if (line.ts < agg[key][2]) agg[key][2] = line.ts;
+    }
+    var keys = Object.keys(agg).map(Number).sort();
+    if (!keys.length) return [];
+    var first = (Math.floor(keys[0] / bs)) * bs;
+    var last  = (Math.floor(keys[keys.length-1] / bs)) * bs;
+    var result = [];
+    for (var k = first; k <= last; k += bs) {
+      if (agg[k]) result.push([agg[k][2], agg[k][0], agg[k][1]]);
+      else result.push([k, 0, 0]);
+    }
+    return result;
+  }
+
+  function _renderSparkline(source, buckets, bucketSize) {
+    var sid = _sourceId(source);
+    var svgId = 'sparkline-' + sid;
+    var svg = document.getElementById(svgId);
+    if (!svg) return;
+    var bucketSecs = _bsMap[bucketSize] || 60;
+    var barMaxH = 28, dotR = 2;
+    var wrap = document.getElementById('sparkline-wrap-' + sid);
+    var minBarW = bucketSize === '1d' ? 16 : bucketSize === '1h' ? 6 : 4;
+    var barW = minBarW;
+    if (wrap && wrap.clientWidth > 0)
+      barW = Math.max(minBarW, Math.ceil(wrap.clientWidth * 1.2 / Math.max(1, buckets.length)));
+    var rectW = Math.max(3, barW - 2);
+    var totalW = Math.max(120, buckets.length * barW);
+    svg.setAttribute('viewBox', '0 0 ' + totalW + ' 36');
+    svg.style.width = totalW + 'px';
+    _sparkData[source] = {buckets: buckets, bucketSize: bucketSize, barW: barW};
+    var visibleCount = wrap && wrap.clientWidth > 0
+      ? Math.max(1, Math.floor(wrap.clientWidth / barW)) : buckets.length;
+    var visibleStart = Math.max(0, buckets.length - visibleCount);
+    var maxTotal = 1;
+    for (var i = visibleStart; i < buckets.length; i++) {
+      var t = buckets[i][1];
+      if (t > maxTotal) maxTotal = t;
+    }
+    var els = [];
+    for (var i = 0; i < buckets.length; i++) {
+      var b = buckets[i];
+      var ts = b[0], total = b[1], matches = b[2];
+      var x = i * barW;
+      if (total > 0) {
+        var barH = Math.max(2, Math.round((total / maxTotal) * barMaxH));
+        var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', x); rect.setAttribute('y', 36 - barH);
+        rect.setAttribute('width', rectW); rect.setAttribute('height', barH);
+        rect.setAttribute('fill', '#c8d4e3');
+        els.push(rect);
+        if (matches > 0) {
+          var dotY = 36 - barH - dotR - 1;
+          if (dotY < dotR) dotY = dotR;
+          var circ = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          circ.setAttribute('cx', x + 1); circ.setAttribute('cy', dotY);
+          circ.setAttribute('r', dotR); circ.setAttribute('fill', matches >= 2 ? '#dc3545' : '#fd7e14');
+          els.push(circ);
+        }
+      }
+      if (ts !== null) {
+        (function(hTs, hTotal, hMatches) {
+          var hit = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          hit.setAttribute('x', x); hit.setAttribute('y', 0);
+          hit.setAttribute('width', barW); hit.setAttribute('height', 36);
+          hit.setAttribute('fill', 'transparent');
+          hit.style.cursor = 'pointer';
+          hit.addEventListener('mouseenter', function(e) {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (!tip) return;
+            tip.innerHTML = '<div style="font-weight:600;margin-bottom:2px">' + _fmtBucketTime(hTs, bucketSize) + '</div>' +
+              '<div>Lines: ' + hTotal + '</div><div>Matches: ' + hMatches + '</div>' +
+              '<div style="margin-top:4px;opacity:0.6;font-size:10px">Click to jump to this window</div>';
+            tip.hidden = false;
+            tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 8) + 'px';
+          });
+          hit.addEventListener('mousemove', function(e) {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (tip) { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 8) + 'px'; }
+          });
+          hit.addEventListener('mouseleave', function() {
+            var tip = document.getElementById('sparkline-tooltip'); if (tip) tip.hidden = true;
+          });
+          hit.addEventListener('click', function() {
+            var tip = document.getElementById('sparkline-tooltip'); if (tip) tip.hidden = true;
+            _openViewer(source, hTs, hTs + bucketSecs);
+          });
+          els.push(hit);
+        })(ts, total, matches);
+      }
+    }
+    svg.innerHTML = '';
+    for (var j = 0; j < els.length; j++) svg.appendChild(els[j]);
+    if (wrap) {
+      var atRight = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 5;
+      if (atRight || wrap.scrollLeft === 0) wrap.scrollLeft = wrap.scrollWidth;
+    }
+    _updateSparkNav(source, sid);
+    _updateSparkDateRange(source, sid);
+  }
+
+  function _updateSparkNav(source, sid) {
+    var wrap = document.getElementById('sparkline-wrap-' + sid);
+    if (!wrap) return;
+    var atStart = wrap.scrollLeft <= 0;
+    var atEnd   = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 1;
+    ['left','right','start','end'].forEach(function(d) {
+      var el = document.getElementById('sparkline-nav-' + d + '-' + sid);
+      if (!el) return;
+      if (d === 'left' || d === 'start') el.classList.toggle('disabled', atStart);
+      else el.classList.toggle('disabled', atEnd);
+    });
+  }
+
+  function _updateSparkDateRange(source, sid) {
+    var drEl = document.getElementById('sparkline-daterange-' + sid);
+    if (!drEl) return;
+    var data = _sparkData[source];
+    if (!data || !data.buckets.length) { drEl.textContent = ''; return; }
+    var wrap = document.getElementById('sparkline-wrap-' + sid);
+    var barW = data.barW || 4;
+    var firstIdx = wrap ? Math.floor(wrap.scrollLeft / barW) : 0;
+    var lastIdx = wrap
+      ? Math.min(data.buckets.length - 1, Math.floor((wrap.scrollLeft + wrap.clientWidth - 1) / barW))
+      : data.buckets.length - 1;
+    firstIdx = Math.max(0, firstIdx);
+    var firstTs = data.buckets[firstIdx] ? data.buckets[firstIdx][0] : null;
+    var lastTs  = data.buckets[lastIdx]  ? data.buckets[lastIdx][0]  : null;
+    drEl.textContent = (firstTs && lastTs)
+      ? _fmtBucketTime(firstTs, data.bucketSize) + ' — ' + _fmtBucketTime(lastTs, data.bucketSize) : '';
+  }
+
+  /* ── fetch ──────────────────────────────────────────────────────────────── */
+  function _fetchSource(source) {
+    var sid = _sourceId(source);
+    var metaEl = document.getElementById('source-meta-' + sid);
+    if (metaEl) metaEl.textContent = 'Fetching…';
+    fetch('/logs/fetch?source=' + encodeURIComponent(source) + '&limit=5000')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _fetched[source] = d;
+        if (metaEl) {
+          metaEl.textContent = 'Fetched ' + _fmtAgo(d.fetched_at) +
+            ' · ' + d.lines.length + ' lines · ' + d.fetch_duration_ms + 'ms';
+        }
+        var prefs = _getSparkPrefs(source);
+        var buckets = _computeSparkBuckets(d.lines, prefs.bucket_size);
+        _renderSparkline(source, buckets, prefs.bucket_size);
+        // If viewer is open for this source, refresh it
+        if (_viewerSource === source) _populateViewer(source, null, null);
+      })
+      .catch(function(err) {
+        if (metaEl) metaEl.textContent = 'Fetch failed: ' + err;
+      });
+  }
+
+  /* ── source panel ─────────────────────────────────────────────────────── */
+  window._logsUpdateSlugPlaceholder = function() {
+    var type = document.getElementById('add-source-type').value;
+    var slug = document.getElementById('add-source-slug');
+    if (type === 'netalertx') { slug.value = ''; slug.disabled = true; slug.placeholder = '(no slug needed)'; }
+    else { slug.disabled = false; slug.placeholder = 'app slug (e.g. mosquitto)'; }
+  };
+
+  window._logsAddSource = function() {
+    var type = document.getElementById('add-source-type').value;
+    var slug = document.getElementById('add-source-slug').value.trim();
+    var source = type === 'netalertx' ? 'netalertx' : ('apps:' + slug);
+    if (type !== 'netalertx' && !slug) { alert('Enter a slug'); return; }
+    if (_sources.indexOf(source) !== -1) { alert('Source already added'); return; }
+    _sources.push(source);
+    _savePrefs();
+    _renderSourceChips();
+    _renderSourceCard(source);
+    _fetchSource(source);
+  };
+
+  function _removeSource(source) {
+    _sources = _sources.filter(function(s){ return s !== source; });
+    _savePrefs();
+    var sid = _sourceId(source);
+    var card = document.getElementById('source-card-' + sid);
+    if (card) card.remove();
+    delete _fetched[source]; delete _sparkData[source];
+    _renderSourceChips();
+    if (_viewerSource === source) _closeViewer();
+    _updateEmptyState();
+  }
+
+  function _renderSourceChips() {
+    var ul = document.getElementById('source-chip-list');
+    ul.innerHTML = '';
+    _sources.forEach(function(source) {
+      var li = document.createElement('li');
+      li.className = 'source-chip';
+      li.textContent = source;
+      var btn = document.createElement('button');
+      btn.className = 'source-chip-remove';
+      btn.textContent = '✕';
+      btn.title = 'Remove ' + source;
+      btn.onclick = (function(s){ return function(){ _removeSource(s); }; })(source);
+      li.appendChild(btn);
+      ul.appendChild(li);
+    });
+  }
+
+  function _updateEmptyState() {
+    var el = document.getElementById('logs-empty');
+    if (el) el.style.display = _sources.length ? 'none' : '';
+  }
+
+  function _renderSourceCard(source) {
+    var sid = _sourceId(source);
+    var left = document.getElementById('logs-left');
+    var empty = document.getElementById('logs-empty');
+    if (empty) empty.style.display = 'none';
+    var card = document.createElement('div');
+    card.className = 'source-card'; card.id = 'source-card-' + sid;
+    card.innerHTML = [
+      '<div class="source-card-header">',
+        '<span>' + _escHtml(source) + '</span>',
+        '<button class="source-refresh-btn" onclick="window._logsRefresh(' + JSON.stringify(source) + ')">Refresh</button>',
+      '</div>',
+      '<div class="source-card-meta" id="source-meta-' + sid + '">Not yet fetched</div>',
+      '<span class="sparkline-daterange" id="sparkline-daterange-' + sid + '"></span>',
+      '<div class="sparkline-pan-row">',
+        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-start-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'start\')">&#9198;</button>',
+        '<button class="sparkline-nav disabled" id="sparkline-nav-left-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'left\')">&#9664;</button>',
+        '<div class="stream-sparkline-wrap" id="sparkline-wrap-' + sid + '">',
+          '<svg class="stream-sparkline" id="sparkline-' + sid + '" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>',
+        '</div>',
+        '<button class="sparkline-nav disabled" id="sparkline-nav-right-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'right\')">&#9654;</button>',
+        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-end-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'end\')">&#9197;</button>',
+      '</div>',
+      '<div class="sparkline-controls">',
+        '<label>Bucket <select id="sparkline-bucket-' + sid + '" class="sparkline-select" onchange="window._logsRebucketSource(' + JSON.stringify(source) + ')">',
+          '<option value="1m">1m</option><option value="1h">1h</option><option value="1d">1d</option>',
+        '</select></label>',
+      '</div>',
+    ].join('');
+    left.appendChild(card);
+    // Restore localStorage prefs
+    var prefs = _getSparkPrefs(source);
+    var bsEl = document.getElementById('sparkline-bucket-' + sid);
+    if (bsEl) bsEl.value = prefs.bucket_size;
+    // Scroll-linked nav update
+    var wrap = document.getElementById('sparkline-wrap-' + sid);
+    if (wrap) {
+      wrap.addEventListener('scroll', function() {
+        _updateSparkNav(source, sid); _updateSparkDateRange(source, sid);
+      });
+      wrap.addEventListener('wheel', function(e) {
+        e.preventDefault(); wrap.scrollLeft += e.deltaY || e.deltaX;
+        _updateSparkNav(source, sid); _updateSparkDateRange(source, sid);
+      }, {passive: false});
+    }
+  }
+
+  window._logsRefresh = function(source) { _fetchSource(source); };
+
+  window._logsRebucketSource = function(source) {
+    var sid = _sourceId(source);
+    var bsEl = document.getElementById('sparkline-bucket-' + sid);
+    var bs = bsEl ? bsEl.value : '1m';
+    _setSparkPrefs(source, {bucket_size: bs, time_range: '1h'});
+    var data = _fetched[source];
+    if (!data) return;
+    var buckets = _computeSparkBuckets(data.lines, bs);
+    _renderSparkline(source, buckets, bs);
+  };
+
+  window._logsNavSpark = function(source, dir) {
+    var sid = _sourceId(source);
+    var wrap = document.getElementById('sparkline-wrap-' + sid);
+    if (!wrap) return;
+    if (dir === 'start') wrap.scrollLeft = 0;
+    else if (dir === 'end') wrap.scrollLeft = wrap.scrollWidth;
+    else if (dir === 'left') wrap.scrollLeft -= wrap.clientWidth * 0.8;
+    else wrap.scrollLeft += wrap.clientWidth * 0.8;
+    _updateSparkNav(source, sid); _updateSparkDateRange(source, sid);
+  };
+
+  /* ── viewer ─────────────────────────────────────────────────────────────── */
+  function _openViewer(source, tsFrom, tsTo) {
+    _viewerSource = source;
+    var right = document.getElementById('logs-right');
+    right.classList.add('open');
+    var titleEl = document.getElementById('viewer-title');
+    if (tsFrom && tsTo) {
+      titleEl.textContent = source + ' · ' + new Date(tsFrom*1000).toLocaleTimeString() +
+        '–' + new Date(tsTo*1000).toLocaleTimeString();
+    } else {
+      titleEl.textContent = source;
+    }
+    _populateViewer(source, tsFrom, tsTo);
+  }
+
+  function _populateViewer(source, tsFrom, tsTo) {
+    _selectedLines.clear();
+    _updateSendChatBtn();
+    var container = document.getElementById('viewer-lines');
+    container.innerHTML = '';
+    var data = _fetched[source];
+    if (!data) {
+      container.innerHTML = '<div style="padding:1rem;color:#888">No data — click Refresh to fetch.</div>';
+      return;
+    }
+    var lines = data.lines;
+    var filterText = (document.getElementById('viewer-filter') || {}).value || '';
+    var filterRe = null;
+    try { if (filterText) filterRe = new RegExp(filterText, 'i'); } catch(_){}
+    var shown = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var inWindow = (!tsFrom || !tsTo || (line.ts >= tsFrom && line.ts < tsTo));
+      var frag = document.createElement('div');
+      frag.className = 'log-line' + (line.is_match ? ' match' : '');
+      frag.dataset.idx = i;
+      frag.dataset.ts = line.ts;
+      frag.innerHTML =
+        '<span class="log-ts">' + _fmtTs(line.ts) + '</span>' +
+        '<span class="log-text">' + _escHtml(line.text) + '</span>' +
+        (line.is_match
+          ? '<a class="log-match-badge" title="Analyze in Chat" onclick="window._logsInvestigateLine(' + JSON.stringify(line.text) + ')">🔴⚡</a>'
+          : '') +
+        (line.is_match ? '<span class="log-suppress-badge" title="Matched CRITICAL_LOG_PATTERN">🔕</span>' : '');
+      // Click to toggle selection
+      (function(el, idx) {
+        el.addEventListener('click', function(e) {
+          if (e.target.tagName === 'A') return;
+          if (_selectedLines.has(idx)) { _selectedLines.delete(idx); el.classList.remove('selected'); }
+          else { _selectedLines.add(idx); el.classList.add('selected'); }
+          _updateSendChatBtn();
+        });
+      })(frag, i);
+      if (filterRe && !filterRe.test(line.text)) frag.classList.add('hidden');
+      if (inWindow) { shown++; frag.dataset.inWindow = '1'; }
+      container.appendChild(frag);
+    }
+    // Scroll to the first in-window line
+    if (tsFrom) {
+      var firstInWindow = container.querySelector('[data-in-window="1"]');
+      if (firstInWindow) firstInWindow.scrollIntoView({block: 'start'});
+    }
+    var cntEl = document.getElementById('viewer-line-count');
+    if (cntEl) cntEl.textContent = lines.length + ' lines' + (tsFrom ? ', ' + shown + ' in window' : '');
+  }
+
+  window._logsCloseViewer = function() {
+    _viewerSource = null;
+    document.getElementById('logs-right').classList.remove('open');
+    _stopTail();
+  };
+
+  window._logsApplyFilter = function() {
+    if (!_viewerSource) return;
+    var filterText = document.getElementById('viewer-filter').value;
+    var filterRe = null;
+    try { if (filterText) filterRe = new RegExp(filterText, 'i'); } catch(_){}
+    var lines = document.querySelectorAll('#viewer-lines .log-line');
+    for (var i = 0; i < lines.length; i++) {
+      var text = lines[i].querySelector('.log-text');
+      var match = !filterRe || (text && filterRe.test(text.textContent));
+      lines[i].classList.toggle('hidden', !match);
+    }
+  };
+
+  /* ── tail mode ──────────────────────────────────────────────────────────── */
+  window._logsTailToggle = function() {
+    if (_tailActive) _stopTail(); else _startTail();
+  };
+
+  function _startTail() {
+    if (!_viewerSource) return;
+    _tailActive = true;
+    var btn = document.getElementById('viewer-tail-btn');
+    if (btn) { btn.textContent = '⏸ Stop Tail'; btn.classList.add('active'); }
+    _tailInterval = setInterval(function() {
+      if (!_viewerSource) { _stopTail(); return; }
+      fetch('/logs/fetch?source=' + encodeURIComponent(_viewerSource) + '&limit=5000')
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+          var prev = _fetched[_viewerSource];
+          _fetched[_viewerSource] = d;
+          var sid = _sourceId(_viewerSource);
+          var meta = document.getElementById('source-meta-' + sid);
+          if (meta) meta.textContent = 'Fetched ' + _fmtAgo(d.fetched_at) + ' · ' + d.lines.length + ' lines';
+          // Append only new lines to viewer
+          if (prev) {
+            var newLines = d.lines.slice(prev.lines.length);
+            _appendLines(newLines);
+          } else {
+            _populateViewer(_viewerSource, null, null);
+          }
+          // Refresh sparkline
+          var prefs = _getSparkPrefs(_viewerSource);
+          var buckets = _computeSparkBuckets(d.lines, prefs.bucket_size);
+          _renderSparkline(_viewerSource, buckets, prefs.bucket_size);
+        }).catch(function(){});
+    }, 30000);
+  }
+
+  function _stopTail() {
+    _tailActive = false;
+    clearInterval(_tailInterval);
+    _tailInterval = null;
+    var btn = document.getElementById('viewer-tail-btn');
+    if (btn) { btn.textContent = '⏸ Tail'; btn.classList.remove('active'); }
+  }
+
+  function _appendLines(lines) {
+    var container = document.getElementById('viewer-lines');
+    var filterText = (document.getElementById('viewer-filter') || {}).value || '';
+    var filterRe = null;
+    try { if (filterText) filterRe = new RegExp(filterText, 'i'); } catch(_){}
+    var base = container.children.length;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var frag = document.createElement('div');
+      frag.className = 'log-line' + (line.is_match ? ' match' : '');
+      var idx = base + i;
+      frag.dataset.idx = idx;
+      frag.innerHTML =
+        '<span class="log-ts">' + _fmtTs(line.ts) + '</span>' +
+        '<span class="log-text">' + _escHtml(line.text) + '</span>' +
+        (line.is_match ? '<a class="log-match-badge" onclick="window._logsInvestigateLine(' + JSON.stringify(line.text) + ')">🔴⚡</a>' : '');
+      if (filterRe && !filterRe.test(line.text)) frag.classList.add('hidden');
+      (function(el, ii) {
+        el.addEventListener('click', function(e) {
+          if (e.target.tagName === 'A') return;
+          if (_selectedLines.has(ii)) { _selectedLines.delete(ii); el.classList.remove('selected'); }
+          else { _selectedLines.add(ii); el.classList.add('selected'); }
+          _updateSendChatBtn();
+        });
+      })(frag, idx);
+      container.appendChild(frag);
+    }
+    // Auto-scroll to bottom
+    container.scrollTop = container.scrollHeight;
+  }
+
+  /* ── send to chat ───────────────────────────────────────────────────────── */
+  function _updateSendChatBtn() {
+    var btn = document.getElementById('send-chat-btn');
+    if (!btn) return;
+    var n = _selectedLines.size;
+    btn.disabled = n === 0;
+    btn.textContent = 'Send to Chat (' + n + ' selected)';
+  }
+
+  window._logsSendToChat = function() {
+    if (!_viewerSource || _selectedLines.size === 0) return;
+    var data = _fetched[_viewerSource];
+    if (!data) return;
+    var parts = [];
+    var sorted = Array.from(_selectedLines).sort(function(a,b){return a-b;});
+    for (var i = 0; i < sorted.length; i++) {
+      var line = data.lines[sorted[i]];
+      if (line) parts.push('[' + _fmtTs(line.ts) + '] ' + line.text);
+    }
+    var q = 'Analyze these log lines from ' + _viewerSource + ' and tell me what is wrong:\n' + parts.join('\n');
+    window.location.href = '/chat?q=' + encodeURIComponent(q);
+  };
+
+  window._logsInvestigateLine = function(text) {
+    var q = 'Investigate this log line: ' + text;
+    window.location.href = '/chat?q=' + encodeURIComponent(q);
+  };
+
+  /* ── util ───────────────────────────────────────────────────────────────── */
+  function _escHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  /* ── init ───────────────────────────────────────────────────────────────── */
+  window._logsUpdateSlugPlaceholder();
+  _loadPrefs(function(savedSources) {
+    _sources = savedSources;
+    _renderSourceChips();
+    _updateEmptyState();
+    _sources.forEach(function(source) {
+      _renderSourceCard(source);
+      _fetchSource(source);
+    });
+  });
+
+})();
+</script>
+{% endblock %}

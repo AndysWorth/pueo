@@ -193,42 +193,41 @@
           </select></label>
         </div>
       </div>
-      <!-- NetAlertX -->
-      {% set nax_stream = loop_statuses | selectattr("name", "equalto", "netalertx") | first | default(none) %}
-      <div class="stream-card{{ ' unconfigured' if not nax_stream }}" id="stream-card-netalertx">
+      <!-- HA Supervisor -->
+      {% set sv_stream = loop_statuses | selectattr("name", "equalto", "ha_log_monitor_supervisor") | first | default(none) %}
+      <div class="stream-card" id="stream-card-ha_log_monitor_supervisor">
         <div class="stream-card-header">
-          <span class="status-dot dot-{{ nax_stream.status if nax_stream else 'disabled' }}" id="stream-dot-netalertx"></span>
-          NetAlertX{% if not nax_stream %} <span style="font-size:0.7rem;font-weight:400;color:#aaa;">— not installed</span>{% endif %}
+          <span class="status-dot dot-{{ sv_stream.status if sv_stream else 'disabled' }}" id="stream-dot-ha_log_monitor_supervisor"></span>
+          HA Supervisor Log
           <span class="stream-card-controls" style="margin-left:auto;">
-            {% if nax_stream and nax_stream.paused %}
-            <button class="loop-ctrl-btn" onclick="loopControl('netalertx','resume')">Resume</button>
-            {% elif nax_stream %}
-            <button class="loop-ctrl-btn" onclick="loopControl('netalertx','pause')">Pause</button>
+            {% if sv_stream and sv_stream.paused %}
+            <button class="loop-ctrl-btn" onclick="loopControl('ha_log_monitor_supervisor','resume')">Resume</button>
+            {% elif sv_stream %}
+            <button class="loop-ctrl-btn" onclick="loopControl('ha_log_monitor_supervisor','pause')">Pause</button>
             {% endif %}
           </span>
         </div>
-        {% if nax_stream %}
         <div class="stream-card-meta">
-          <span>Last line: <span id="stream-line-netalertx">—</span></span>
-          <span>Last scan: <span id="stream-scan-netalertx">—</span></span>
-          <span class="sparkline-daterange" id="sparkline-daterange-netalertx"></span>
+          <span>Last line: <span id="stream-line-ha_log_monitor_supervisor">—</span></span>
+          <span>Last triage: <span id="stream-match-ha_log_monitor_supervisor">—</span></span>
+          <span class="sparkline-daterange" id="sparkline-daterange-ha_log_monitor_supervisor"></span>
         </div>
         <div class="sparkline-pan-row">
-          <button class="sparkline-nav endstop disabled" id="sparkline-nav-start-netalertx" onclick="sparklineGoToStart('netalertx')">&#9198;</button>
-          <button class="sparkline-nav disabled" id="sparkline-nav-left-netalertx" onclick="sparklineScroll('netalertx',-1)">&#9664;</button>
-          <div class="stream-sparkline-wrap" id="sparkline-wrap-netalertx">
-            <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-start-ha_log_monitor_supervisor" onclick="sparklineGoToStart('ha_log_monitor_supervisor')">&#9198;</button>
+          <button class="sparkline-nav disabled" id="sparkline-nav-left-ha_log_monitor_supervisor" onclick="sparklineScroll('ha_log_monitor_supervisor',-1)">&#9664;</button>
+          <div class="stream-sparkline-wrap" id="sparkline-wrap-ha_log_monitor_supervisor">
+            <svg class="stream-sparkline" id="sparkline-ha_log_monitor_supervisor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
           </div>
-          <button class="sparkline-nav disabled" id="sparkline-nav-right-netalertx" onclick="sparklineScroll('netalertx',1)">&#9654;</button>
-          <button class="sparkline-nav endstop disabled" id="sparkline-nav-end-netalertx" onclick="sparklineGoToEnd('netalertx')">&#9197;</button>
+          <button class="sparkline-nav disabled" id="sparkline-nav-right-ha_log_monitor_supervisor" onclick="sparklineScroll('ha_log_monitor_supervisor',1)">&#9654;</button>
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-end-ha_log_monitor_supervisor" onclick="sparklineGoToEnd('ha_log_monitor_supervisor')">&#9197;</button>
         </div>
         <div class="sparkline-controls">
-          <label>Bucket <select id="sparkline-bucket-netalertx" class="sparkline-select">
+          <label>Bucket <select id="sparkline-bucket-ha_log_monitor_supervisor" class="sparkline-select">
             <option value="1m">1m</option>
             <option value="1h">1h</option>
             <option value="1d">1d</option>
           </select></label>
-          <label>Show <select id="sparkline-range-netalertx" class="sparkline-select">
+          <label>Show <select id="sparkline-range-ha_log_monitor_supervisor" class="sparkline-select">
             <option value="1h">1 hour</option>
             <option value="6h">6 hours</option>
             <option value="24h">24 hours</option>
@@ -236,9 +235,6 @@
             <option value="30d">30 days</option>
           </select></label>
         </div>
-        {% else %}
-        <div class="stream-card-meta" style="color:#aaa;">NetAlertX is not installed. Enable it in Settings to start monitoring.</div>
-        {% endif %}
       </div>
     </div>
   </div>
@@ -246,7 +242,7 @@
   <!-- Monitoring Loops table (polling loops only) -->
   <div class="card full-width">
     <div class="section-title">Monitoring Loops</div>
-    {% set SKIP = ["ha_log_monitor", "netalertx", "netalertx_setup"] %}
+    {% set SKIP = ["ha_log_monitor", "ha_log_monitor_supervisor", "netalertx", "netalertx_setup"] %}
     {% set FAST_ORDER = ["resource_poll", "disk_usage_poll", "notification_poll", "repair_poll", "lovelace_poll"] %}
     {% set INFREQ_ORDER = ["embed_episodes", "backup_sync", "known_issues_poll", "profile_refresh", "update_check", "rag_refresh"] %}
     {% set status_map = {} %}
@@ -506,7 +502,8 @@
   function renderSparkline(svgId, buckets, bucketSize) {
     var svg = document.getElementById(svgId);
     if (!svg || !buckets || !buckets.length) return;
-    var bucketSecs = (typeof bucketSize === 'number') ? bucketSize : 60;
+    var _bsMap = {'1m': 60, '1h': 3600, '1d': 86400};
+    var bucketSecs = (typeof bucketSize === 'number') ? bucketSize : (_bsMap[bucketSize] || 60);
     bucketSize = bucketSize || '1m';
     var barMaxH = 28, dotR = 2;
     var loopName = svgId.replace('sparkline-', '');
@@ -642,16 +639,11 @@
       .then(function(r) { return r.json(); })
       .then(function(d) {
         renderSparkline('sparkline-' + loopName, d.buckets || [], d.bucket_size);
-        if (loopName === 'ha_log_monitor') {
-          var el = document.getElementById('stream-line-ha_log_monitor');
+        if (loopName === 'ha_log_monitor' || loopName === 'ha_log_monitor_supervisor') {
+          var el = document.getElementById('stream-line-' + loopName);
           if (el) el.textContent = fmtAgo(d.last_line_at);
-          el = document.getElementById('stream-match-ha_log_monitor');
+          el = document.getElementById('stream-match-' + loopName);
           if (el) el.textContent = fmtAgo(d.last_match_at);
-        } else if (loopName === 'netalertx') {
-          var el = document.getElementById('stream-line-netalertx');
-          if (el) el.textContent = fmtAgo(d.last_line_at);
-          el = document.getElementById('stream-scan-netalertx');
-          if (el) el.textContent = fmtAgo(d.last_scan_at);
         }
       })
       .catch(function() {});
@@ -891,14 +883,14 @@
 
   // Wire sparkline controls (reads localStorage prefs and attaches change handlers)
   initSparklineControls('ha_log_monitor');
-  initSparklineControls('netalertx');
+  initSparklineControls('ha_log_monitor_supervisor');
 
   // Initial sparkline fetch + 60s polling
   fetchSparkline('ha_log_monitor');
-  fetchSparkline('netalertx');
+  fetchSparkline('ha_log_monitor_supervisor');
   setInterval(function() {
     fetchSparkline('ha_log_monitor');
-    fetchSparkline('netalertx');
+    fetchSparkline('ha_log_monitor_supervisor');
   }, 60000);
 
   // Countdown ticker for infrequent loop next-run timestamps

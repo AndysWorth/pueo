@@ -50,10 +50,10 @@ class TestHALogSparklineMinLineTs:
         self._seed(db_path, mod._LOOP_NAME, bucket_ts, 10, 2, actual_first_line)
 
         # Suppress the in-progress bucket from affecting the test
-        monkeypatch.setattr(mod, "_sparkline_bucket_total", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_matches", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_min_ts", 0)
-        monkeypatch.setattr(mod, "_sparkline_current_minute", now // 60)
+        mod._core_state.bucket_total = 0
+        mod._core_state.bucket_matches = 0
+        mod._core_state.bucket_min_ts = 0
+        mod._core_state.current_minute = now // 60
 
         result = mod.get_ha_log_sparkline_data(bucket_size="1m", time_range="1h")
         past = [b for b in result["buckets"] if b[0] == actual_first_line]
@@ -68,10 +68,10 @@ class TestHALogSparklineMinLineTs:
         bucket_ts = (now // 60) * 60 - 120
         self._seed(db_path, mod._LOOP_NAME, bucket_ts, 7, 1, None)
 
-        monkeypatch.setattr(mod, "_sparkline_bucket_total", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_matches", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_min_ts", 0)
-        monkeypatch.setattr(mod, "_sparkline_current_minute", now // 60)
+        mod._core_state.bucket_total = 0
+        mod._core_state.bucket_matches = 0
+        mod._core_state.bucket_min_ts = 0
+        mod._core_state.current_minute = now // 60
 
         result = mod.get_ha_log_sparkline_data(bucket_size="1m", time_range="1h")
         past = [b for b in result["buckets"] if b[0] == bucket_ts]
@@ -93,10 +93,10 @@ class TestHALogSparklineMinLineTs:
         for ts, total, mts in [(ts_a, 5, min_a), (ts_b, 3, min_b), (ts_c, 8, min_c)]:
             self._seed(db_path, mod._LOOP_NAME, ts, total, 0, mts)
 
-        monkeypatch.setattr(mod, "_sparkline_bucket_total", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_matches", 0)
-        monkeypatch.setattr(mod, "_sparkline_bucket_min_ts", 0)
-        monkeypatch.setattr(mod, "_sparkline_current_minute", now // 60)
+        mod._core_state.bucket_total = 0
+        mod._core_state.bucket_matches = 0
+        mod._core_state.bucket_min_ts = 0
+        mod._core_state.current_minute = now // 60
 
         result = mod.get_ha_log_sparkline_data(bucket_size="1h", time_range="6h")
         # All three 1m rows collapse into a single 1h bucket

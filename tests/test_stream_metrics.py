@@ -89,7 +89,7 @@ class TestPersistSparklineBucket:
         _imp.reload(mon)
 
         bucket_ts = int(time.time() // 60) * 60
-        mon._persist_sparkline_bucket(bucket_ts, 42, 3, 0)
+        mon._persist_sparkline_bucket("ha_log_monitor", bucket_ts, 42, 3, 0)
 
         with sqlite3.connect(cfg.DB_PATH) as conn:
             row = conn.execute(
@@ -140,11 +140,11 @@ class TestInitSparklineDb:
                     ("ha_log_monitor", base_ts + i * 60, 10 + i, i),
                 )
 
-        mon._sparkline_buckets.clear()
-        mon._init_sparkline_db()
+        mon._core_state.buckets.clear()
+        mon._init_sparkline_db(mon._core_state)
 
-        assert len(mon._sparkline_buckets) == 5
-        ts_vals = [b[0] for b in mon._sparkline_buckets]
+        assert len(mon._core_state.buckets) == 5
+        ts_vals = [b[0] for b in mon._core_state.buckets]
         assert ts_vals == sorted(ts_vals)
 
     def test_graceful_if_table_missing(self, pueo_dirs, isolated_config):
@@ -155,7 +155,7 @@ class TestInitSparklineDb:
 
         _imp.reload(mon)
         # DB has no tables at all — should not raise
-        mon._init_sparkline_db()
+        mon._init_sparkline_db(mon._core_state)
 
 
 # ── get_ha_log_sparkline_data ─────────────────────────────────────────────────
@@ -194,8 +194,8 @@ class TestGetHaLogSparklineData:
         import agents.ha_log_monitor as mon
 
         _imp.reload(mon)
-        mon._sparkline_bucket_total = 0
-        mon._sparkline_bucket_matches = 0
+        mon._core_state.bucket_total = 0
+        mon._core_state.bucket_matches = 0
 
         hour_ts = (int(time.time()) // 3600) * 3600 - 3600
         with sqlite3.connect(cfg.DB_PATH) as conn:
@@ -218,8 +218,8 @@ class TestGetHaLogSparklineData:
         import agents.ha_log_monitor as mon
 
         _imp.reload(mon)
-        mon._sparkline_bucket_total = 0
-        mon._sparkline_bucket_matches = 0
+        mon._core_state.bucket_total = 0
+        mon._core_state.bucket_matches = 0
 
         old_ts = int(time.time()) - 8 * 24 * 3600  # 8 days ago — beyond time_range=7d
         with sqlite3.connect(cfg.DB_PATH) as conn:
@@ -242,9 +242,9 @@ class TestGetHaLogSparklineData:
         import agents.ha_log_monitor as mon
 
         _imp.reload(mon)
-        mon._sparkline_bucket_total = 0
-        mon._sparkline_bucket_matches = 0
-        mon._sparkline_current_minute = 0
+        mon._core_state.bucket_total = 0
+        mon._core_state.bucket_matches = 0
+        mon._core_state.current_minute = 0
 
         data = mon.get_ha_log_sparkline_data(bucket_size="1h", time_range="6h")
         # 6h / 1h = 6 slots minimum

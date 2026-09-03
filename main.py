@@ -721,9 +721,14 @@ async def supervisor_main(config_path: Path) -> None:
     # Ollama real-time model monitor (15-second poll of /api/ps)
     supervisor.start("ollama_monitor", _ollama_monitor_loop, interval_seconds=15)
 
-    # HA log monitor loop (SSH tail + AI triage) — streaming, no fixed interval
+    # HA log monitor loops (SSH tail + AI triage) — streaming, no fixed interval
     supervisor.start(
-        "ha_log_monitor", lambda: tail_remote_log_stream(notifier=notifier)
+        "ha_log_monitor",
+        lambda: tail_remote_log_stream(source="core", notifier=notifier),
+    )
+    supervisor.start(
+        "ha_log_monitor_supervisor",
+        lambda: tail_remote_log_stream(source="supervisor", notifier=notifier),
     )
 
     # Resource polling loop — create a fresh poller on each supervisor restart.

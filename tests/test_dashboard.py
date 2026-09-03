@@ -6475,8 +6475,8 @@ class TestSparklineEndpoints:
         monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "x.db"))
         monkeypatch.setattr(
             log_mon,
-            "get_ha_log_sparkline_data",
-            lambda bucket_size="1m", time_range="1h": {
+            "get_sparkline_data_for_loop",
+            lambda loop_name, bucket_size="1m", time_range="1h": {
                 "buckets": [[1000 + i * 60, 10, 0] for i in range(60)],
                 "bucket_size": bucket_size,
                 "time_range": time_range,
@@ -6527,38 +6527,39 @@ class TestSparklineEndpoints:
 
     def test_sparkline_bucket_rolls_at_minute_boundary(self):
         """_record_sparkline_line() appends a bucket when the minute changes."""
-        import agents.ha_log_monitor as log_mon
         import time
 
-        # Reset module state
-        log_mon._sparkline_buckets = __import__("collections").deque(maxlen=60)
-        log_mon._sparkline_bucket_total = 0
-        log_mon._sparkline_bucket_matches = 0
-        log_mon._sparkline_current_minute = 0
+        import agents.ha_log_monitor as log_mon
+        from agents.ha_log_monitor import _LogStreamState
 
-        # Record a line in minute=0 context
+        # Use a fresh state object so we don't pollute module-level state
+        state = _LogStreamState(loop_name="test_roll")
+        state.bucket_total = 0
+        state.bucket_matches = 0
+
         now_min = int(time.time() // 60)
-        log_mon._sparkline_current_minute = now_min
-        log_mon._record_sparkline_line(matched=False)
-        assert log_mon._sparkline_bucket_total == 1
+        state.current_minute = now_min
+        log_mon._record_sparkline_line(state, matched=False)
+        assert state.bucket_total == 1
 
         # Simulate advancing to the next minute
-        log_mon._sparkline_current_minute = now_min - 1
-        log_mon._record_sparkline_line(matched=True)
+        state.current_minute = now_min - 1
+        log_mon._record_sparkline_line(state, matched=True)
         # The old bucket should have been appended; new bucket started with 1 line
-        assert log_mon._sparkline_bucket_total == 1
-        assert log_mon._sparkline_bucket_matches == 1
+        assert state.bucket_total == 1
+        assert state.bucket_matches == 1
 
     def test_get_ha_log_sparkline_data_includes_current_bucket(self):
         """get_ha_log_sparkline_data() includes the in-progress bucket in results."""
-        import agents.ha_log_monitor as log_mon
         import collections
         import time
 
-        log_mon._sparkline_buckets = collections.deque(maxlen=60)
-        log_mon._sparkline_bucket_total = 7
-        log_mon._sparkline_bucket_matches = 2
-        log_mon._sparkline_current_minute = int(time.time() // 60)
+        import agents.ha_log_monitor as log_mon
+
+        log_mon._core_state.buckets = collections.deque(maxlen=60)
+        log_mon._core_state.bucket_total = 7
+        log_mon._core_state.bucket_matches = 2
+        log_mon._core_state.current_minute = int(time.time() // 60)
 
         data = log_mon.get_ha_log_sparkline_data()
         # The current in-progress bucket should appear (with 7 total and 2 matches)
