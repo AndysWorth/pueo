@@ -45,7 +45,7 @@
   @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
   /* Active Streams sparkline cards */
   .stream-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  .stream-card { flex: 1 1 280px; border: 1px solid #eee; border-radius: 6px;
+  .stream-card { flex: 1 1 280px; min-width: 0; border: 1px solid #eee; border-radius: 6px;
     padding: 0.75rem 1rem; background: #fafafa; }
   .stream-card.unconfigured { opacity: 0.45; }
   .stream-card-header { display: flex; align-items: center; gap: 0.5rem;
@@ -53,7 +53,14 @@
   .stream-card-meta { font-size: 0.75rem; color: #666; margin-bottom: 0.5rem; }
   .stream-card-meta span { display: inline-block; margin-right: 1rem; }
   .stream-sparkline { height: 36px; display: block; }
-  .stream-sparkline-wrap { width: 100%; overflow-x: auto; }
+  .sparkline-pan-row { display: flex; align-items: stretch; gap: 0; }
+  .stream-sparkline-wrap { flex: 1 1 0; min-width: 0; height: 36px; overflow: hidden; }
+  .sparkline-nav { width: 18px; flex-shrink: 0; padding: 0;
+    background: rgba(200,212,227,0.75); border: 1px solid #ccc; cursor: pointer;
+    font-size: 9px; display: flex; align-items: center; justify-content: center;
+    border-radius: 2px; }
+  .sparkline-nav.disabled { opacity: 0.25; cursor: default; pointer-events: none; }
+  .sparkline-daterange { font-size: 11px; color: #555; }
   .stream-card-controls { margin-top: 0.5rem; }
   .sparkline-controls { display: flex; gap: 1rem; margin-top: 0.35rem; font-size: 11px; color: #666; }
   .sparkline-select { font-size: 11px; border: 1px solid #ccc; border-radius: 3px; padding: 1px 2px; background: var(--bg, #fff); color: inherit; }
@@ -158,9 +165,14 @@
         <div class="stream-card-meta">
           <span>Last line: <span id="stream-line-ha_log_monitor">—</span></span>
           <span>Last triage: <span id="stream-match-ha_log_monitor">—</span></span>
+          <span class="sparkline-daterange" id="sparkline-daterange-ha_log_monitor"></span>
         </div>
-        <div class="stream-sparkline-wrap">
-          <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="sparkline-pan-row">
+          <button class="sparkline-nav disabled" id="sparkline-nav-left-ha_log_monitor" onclick="sparklineScroll('ha_log_monitor',-1)">&#9664;</button>
+          <div class="stream-sparkline-wrap" id="sparkline-wrap-ha_log_monitor">
+            <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+          </div>
+          <button class="sparkline-nav disabled" id="sparkline-nav-right-ha_log_monitor" onclick="sparklineScroll('ha_log_monitor',1)">&#9654;</button>
         </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-ha_log_monitor" class="sparkline-select">
@@ -195,9 +207,14 @@
         <div class="stream-card-meta">
           <span>Last line: <span id="stream-line-netalertx">—</span></span>
           <span>Last scan: <span id="stream-scan-netalertx">—</span></span>
+          <span class="sparkline-daterange" id="sparkline-daterange-netalertx"></span>
         </div>
-        <div class="stream-sparkline-wrap">
-          <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="sparkline-pan-row">
+          <button class="sparkline-nav disabled" id="sparkline-nav-left-netalertx" onclick="sparklineScroll('netalertx',-1)">&#9664;</button>
+          <div class="stream-sparkline-wrap" id="sparkline-wrap-netalertx">
+            <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+          </div>
+          <button class="sparkline-nav disabled" id="sparkline-nav-right-netalertx" onclick="sparklineScroll('netalertx',1)">&#9654;</button>
         </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-netalertx" class="sparkline-select">
@@ -427,6 +444,8 @@
 
 <script>
 (function () {
+  var _sparklineData = {}; // loopName -> {buckets, bucketSize, barW}
+
   var statusDotClass = {
     running:    'dot-running',
     error:      'dot-error',
@@ -471,11 +490,10 @@
     var d = new Date(ts * 1000);
     if (bucketSize === '1d') {
       return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
-    } else if (bucketSize === '1h') {
+    } else {
+      // 1m and 1h both show date+time; range can span multiple days
       return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
              d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-    } else {
-      return d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
     }
   }
 
@@ -483,15 +501,31 @@
     var svg = document.getElementById(svgId);
     if (!svg || !buckets || !buckets.length) return;
     bucketSize = bucketSize || '1m';
-    var maxTotal = 1;
-    for (var i = 0; i < buckets.length; i++) {
-      var t = Array.isArray(buckets[i]) && buckets[i].length === 3 ? buckets[i][1] : buckets[i][0];
-      if (t > maxTotal) maxTotal = t;
+    var barMaxH = 28, dotR = 2;
+    var loopName = svgId.replace('sparkline-', '');
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    // Dynamic bar width: at least minBarW, but wide enough that the SVG overflows
+    // the wrap container so pan buttons are always active.
+    var minBarW = bucketSize === '1d' ? 16 : bucketSize === '1h' ? 6 : 4;
+    var barW = minBarW;
+    if (wrap && wrap.clientWidth > 0) {
+      barW = Math.max(minBarW, Math.ceil(wrap.clientWidth * 1.2 / buckets.length));
     }
-    var barW = 2, barMaxH = 28, dotR = 1.5;
+    var rectW = Math.max(3, barW - 2);
     var totalW = Math.max(120, buckets.length * barW);
     svg.setAttribute('viewBox', '0 0 ' + totalW + ' 36');
     svg.style.width = totalW + 'px';
+    // Normalize bar heights to the visible window (rightmost clientWidth/barW buckets)
+    // so the same time period looks the same regardless of Show setting.
+    _sparklineData[loopName] = {buckets: buckets, bucketSize: bucketSize, barW: barW};
+    var visibleCount = wrap && wrap.clientWidth > 0
+      ? Math.max(1, Math.floor(wrap.clientWidth / barW)) : buckets.length;
+    var visibleStart = Math.max(0, buckets.length - visibleCount);
+    var maxTotal = 1;
+    for (var i = visibleStart; i < buckets.length; i++) {
+      var t = Array.isArray(buckets[i]) && buckets[i].length === 3 ? buckets[i][1] : buckets[i][0];
+      if (t > maxTotal) maxTotal = t;
+    }
     var svgEls = [];
     for (var i = 0; i < buckets.length; i++) {
       var bucket = buckets[i];
@@ -507,31 +541,9 @@
         var rectEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         rectEl.setAttribute('x', x);
         rectEl.setAttribute('y', 36 - barH);
-        rectEl.setAttribute('width', '1.5');
+        rectEl.setAttribute('width', rectW);
         rectEl.setAttribute('height', barH);
         rectEl.setAttribute('fill', '#c8d4e3');
-        if (ts !== null) {
-          (function(rEl, rTs, rTotal, rMatches) {
-            rEl.addEventListener('mouseenter', function(e) {
-              var tip = document.getElementById('sparkline-tooltip');
-              if (!tip) return;
-              tip.innerHTML = '<div style="font-weight:600;margin-bottom:2px">' + _fmtBucketTime(rTs, bucketSize) + '</div>' +
-                '<div>Lines: ' + rTotal + '</div>' +
-                '<div>Matches: ' + rMatches + '</div>';
-              tip.hidden = false;
-              tip.style.left = (e.clientX + 12) + 'px';
-              tip.style.top = (e.clientY - 8) + 'px';
-            });
-            rEl.addEventListener('mousemove', function(e) {
-              var tip = document.getElementById('sparkline-tooltip');
-              if (tip) { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 8) + 'px'; }
-            });
-            rEl.addEventListener('mouseleave', function() {
-              var tip = document.getElementById('sparkline-tooltip');
-              if (tip) tip.hidden = true;
-            });
-          })(rectEl, ts, total, matches);
-        }
         svgEls.push(rectEl);
         if (matches > 0) {
           var dotY = 36 - barH - dotR - 1;
@@ -544,15 +556,45 @@
           svgEls.push(circEl);
         }
       }
+      // Full-slot transparent hit zone so thin bars are easy to hover
+      if (ts !== null) {
+        (function(hTs, hTotal, hMatches) {
+          var hitEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          hitEl.setAttribute('x', x);
+          hitEl.setAttribute('y', 0);
+          hitEl.setAttribute('width', barW);
+          hitEl.setAttribute('height', 36);
+          hitEl.setAttribute('fill', 'transparent');
+          hitEl.addEventListener('mouseenter', function(e) {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (!tip) return;
+            tip.innerHTML = '<div style="font-weight:600;margin-bottom:2px">' + _fmtBucketTime(hTs, bucketSize) + '</div>' +
+              '<div>Lines: ' + hTotal + '</div>' +
+              '<div>Matches: ' + hMatches + '</div>';
+            tip.hidden = false;
+            tip.style.left = (e.clientX + 12) + 'px';
+            tip.style.top = (e.clientY - 8) + 'px';
+          });
+          hitEl.addEventListener('mousemove', function(e) {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (tip) { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 8) + 'px'; }
+          });
+          hitEl.addEventListener('mouseleave', function() {
+            var tip = document.getElementById('sparkline-tooltip');
+            if (tip) tip.hidden = true;
+          });
+          svgEls.push(hitEl);
+        })(ts, total, matches);
+      }
     }
     svg.innerHTML = '';
     for (var j = 0; j < svgEls.length; j++) svg.appendChild(svgEls[j]);
-    // Scroll to newest (rightmost) bars unless user has scrolled left to browse history
-    var wrap = svg.parentElement;
     if (wrap) {
-      var atRight = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 10;
-      if (atRight || wrap.scrollLeft === 0) { wrap.scrollLeft = wrap.scrollWidth; }
+      var atRight = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 5;
+      if (atRight || wrap.scrollLeft === 0) wrap.scrollLeft = wrap.scrollWidth;
     }
+    updateSparklineNav(loopName);
+    updateSparklineDateRange(loopName);
   }
 
   function _getSparklinePrefs(loopName) {
@@ -589,6 +631,46 @@
       .catch(function() {});
   }
 
+  function updateSparklineNav(loopName) {
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    if (!wrap) return;
+    var l = document.getElementById('sparkline-nav-left-' + loopName);
+    var r = document.getElementById('sparkline-nav-right-' + loopName);
+    if (l) l.classList.toggle('disabled', wrap.scrollLeft <= 0);
+    if (r) r.classList.toggle('disabled',
+          wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 1);
+  }
+
+  function updateSparklineDateRange(loopName) {
+    var drEl = document.getElementById('sparkline-daterange-' + loopName);
+    if (!drEl) return;
+    var data = _sparklineData[loopName];
+    if (!data || !data.buckets || !data.buckets.length) { drEl.textContent = ''; return; }
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    var barW = data.barW || 4;
+    var firstIdx = wrap ? Math.floor(wrap.scrollLeft / barW) : 0;
+    var lastIdx = wrap
+      ? Math.min(data.buckets.length - 1, Math.floor((wrap.scrollLeft + wrap.clientWidth - 1) / barW))
+      : data.buckets.length - 1;
+    firstIdx = Math.max(0, firstIdx);
+    var firstTs = Array.isArray(data.buckets[firstIdx]) && data.buckets[firstIdx].length === 3
+      ? data.buckets[firstIdx][0] : null;
+    var lastTs = Array.isArray(data.buckets[lastIdx]) && data.buckets[lastIdx].length === 3
+      ? data.buckets[lastIdx][0] : null;
+    drEl.textContent = (firstTs && lastTs)
+      ? _fmtBucketTime(firstTs, data.bucketSize) + ' — ' + _fmtBucketTime(lastTs, data.bucketSize)
+      : '';
+  }
+
+  function sparklineScroll(loopName, dir) {
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    if (!wrap) return;
+    wrap.scrollLeft += dir * wrap.clientWidth * 0.8;
+    updateSparklineNav(loopName);
+    updateSparklineDateRange(loopName);
+  }
+  window.sparklineScroll = sparklineScroll;
+
   function initSparklineControls(loopName) {
     var prefs = _getSparklinePrefs(loopName);
     var bsEl = document.getElementById('sparkline-bucket-' + loopName);
@@ -605,6 +687,15 @@
     }
     if (bsEl) bsEl.addEventListener('change', onChange);
     if (trEl) trEl.addEventListener('change', onChange);
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    if (wrap) {
+      wrap.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        wrap.scrollLeft += e.deltaY || e.deltaX;
+        updateSparklineNav(loopName);
+        updateSparklineDateRange(loopName);
+      }, { passive: false });
+    }
   }
 
   function updateLoopRow(evt) {
