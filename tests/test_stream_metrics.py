@@ -89,7 +89,7 @@ class TestPersistSparklineBucket:
         _imp.reload(mon)
 
         bucket_ts = int(time.time() // 60) * 60
-        mon._persist_sparkline_bucket(bucket_ts, 42, 3)
+        mon._persist_sparkline_bucket(bucket_ts, 42, 3, 0)
 
         with sqlite3.connect(cfg.DB_PATH) as conn:
             row = conn.execute(
@@ -108,7 +108,7 @@ class TestPersistSparklineBucket:
         _imp.reload(nax_mon)
 
         bucket_ts = int(time.time() // 60) * 60 - 60
-        nax_mon._persist_sparkline_bucket(bucket_ts, 10, 1)
+        nax_mon._persist_sparkline_bucket(bucket_ts, 10, 1, 0)
 
         with sqlite3.connect(cfg.DB_PATH) as conn:
             row = conn.execute(
@@ -173,7 +173,8 @@ class TestGetHaLogSparklineData:
         now_min = (int(time.time()) // 60) * 60
         with sqlite3.connect(cfg.DB_PATH) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO stream_metrics VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO stream_metrics "
+                "(loop_name, bucket_ts, total_lines, match_lines) VALUES (?, ?, ?, ?)",
                 ("ha_log_monitor", now_min - 60, 5, 1),
             )
 
@@ -200,7 +201,8 @@ class TestGetHaLogSparklineData:
         with sqlite3.connect(cfg.DB_PATH) as conn:
             for i in range(6):
                 conn.execute(
-                    "INSERT OR REPLACE INTO stream_metrics VALUES (?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO stream_metrics "
+                    "(loop_name, bucket_ts, total_lines, match_lines) VALUES (?, ?, ?, ?)",
                     ("ha_log_monitor", hour_ts + i * 60, 10, 1),
                 )
 
@@ -221,7 +223,8 @@ class TestGetHaLogSparklineData:
         old_ts = int(time.time()) - 8 * 24 * 3600  # 8 days ago
         with sqlite3.connect(cfg.DB_PATH) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO stream_metrics VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO stream_metrics "
+                "(loop_name, bucket_ts, total_lines, match_lines) VALUES (?, ?, ?, ?)",
                 ("ha_log_monitor", old_ts, 99, 0),
             )
 

@@ -52,7 +52,8 @@
     margin-bottom: 0.4rem; font-size: 0.82rem; font-weight: 600; }
   .stream-card-meta { font-size: 0.75rem; color: #666; margin-bottom: 0.5rem; }
   .stream-card-meta span { display: inline-block; margin-right: 1rem; }
-  .stream-sparkline { width: 100%; height: 36px; display: block; }
+  .stream-sparkline { height: 36px; display: block; }
+  .stream-sparkline-wrap { width: 100%; overflow-x: auto; }
   .stream-card-controls { margin-top: 0.5rem; }
   .sparkline-controls { display: flex; gap: 1rem; margin-top: 0.35rem; font-size: 11px; color: #666; }
   .sparkline-select { font-size: 11px; border: 1px solid #ccc; border-radius: 3px; padding: 1px 2px; background: var(--bg, #fff); color: inherit; }
@@ -158,7 +159,9 @@
           <span>Last line: <span id="stream-line-ha_log_monitor">—</span></span>
           <span>Last triage: <span id="stream-match-ha_log_monitor">—</span></span>
         </div>
-        <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="stream-sparkline-wrap">
+          <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-ha_log_monitor" class="sparkline-select">
             <option value="1m">1m</option>
@@ -193,7 +196,9 @@
           <span>Last line: <span id="stream-line-netalertx">—</span></span>
           <span>Last scan: <span id="stream-scan-netalertx">—</span></span>
         </div>
-        <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        <div class="stream-sparkline-wrap">
+          <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
+        </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-netalertx" class="sparkline-select">
             <option value="1m">1m</option>
@@ -468,9 +473,9 @@
       return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
     } else if (bucketSize === '1h') {
       return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' ' +
-             d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+             d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
     } else {
-      return d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+      return d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit', second:'2-digit'});
     }
   }
 
@@ -484,6 +489,9 @@
       if (t > maxTotal) maxTotal = t;
     }
     var barW = 2, barMaxH = 28, dotR = 1.5;
+    var totalW = Math.max(120, buckets.length * barW);
+    svg.setAttribute('viewBox', '0 0 ' + totalW + ' 36');
+    svg.style.width = totalW + 'px';
     var svgEls = [];
     for (var i = 0; i < buckets.length; i++) {
       var bucket = buckets[i];
@@ -539,6 +547,12 @@
     }
     svg.innerHTML = '';
     for (var j = 0; j < svgEls.length; j++) svg.appendChild(svgEls[j]);
+    // Scroll to newest (rightmost) bars unless user has scrolled left to browse history
+    var wrap = svg.parentElement;
+    if (wrap) {
+      var atRight = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 10;
+      if (atRight || wrap.scrollLeft === 0) { wrap.scrollLeft = wrap.scrollWidth; }
+    }
   }
 
   function _getSparklinePrefs(loopName) {
