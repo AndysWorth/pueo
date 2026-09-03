@@ -248,8 +248,8 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
             rows = conn.execute(
                 "SELECT bucket_ts, total_lines, match_lines, min_line_ts "
                 "FROM stream_metrics "
-                "WHERE loop_name = ? AND bucket_ts >= ? ORDER BY bucket_ts",
-                (_LOOP_NAME, cutoff_ts),
+                "WHERE loop_name = ? ORDER BY bucket_ts",
+                (_LOOP_NAME,),
             ).fetchall()
     except Exception:  # nosec B110
         rows = []
@@ -277,8 +277,13 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
             if agg[cur_key][2] is None or _sparkline_bucket_min_ts < agg[cur_key][2]:
                 agg[cur_key][2] = _sparkline_bucket_min_ts
 
-    # Fill empty bucket slots so every time position is represented (cap at 1440)
-    first_key = (cutoff_ts // bucket_seconds) * bucket_seconds
+    # Fill empty bucket slots so every time position is represented (cap at 1440).
+    # Start from the earliest actual data so panning can reach all history.
+    first_key = (
+        (min(agg.keys()) // bucket_seconds) * bucket_seconds
+        if agg
+        else (cutoff_ts // bucket_seconds) * bucket_seconds
+    )
     end_key = (now_ts // bucket_seconds) * bucket_seconds
     slot = first_key
     slot_count = 0

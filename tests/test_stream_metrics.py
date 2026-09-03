@@ -210,7 +210,8 @@ class TestGetHaLogSparklineData:
         agg_totals = {b[0]: b[1] for b in data["buckets"]}
         assert agg_totals.get(hour_ts, 0) == 60  # 6 minutes × 10 lines each
 
-    def test_time_range_filters_old_rows(self, pueo_dirs, isolated_config):
+    def test_pan_reaches_data_older_than_time_range(self, pueo_dirs, isolated_config):
+        """All historical data is returned so pan buttons can reach it."""
         import importlib as _imp
 
         cfg = _reload_and_init_db(pueo_dirs)
@@ -220,7 +221,7 @@ class TestGetHaLogSparklineData:
         mon._sparkline_bucket_total = 0
         mon._sparkline_bucket_matches = 0
 
-        old_ts = int(time.time()) - 8 * 24 * 3600  # 8 days ago
+        old_ts = int(time.time()) - 8 * 24 * 3600  # 8 days ago — beyond time_range=7d
         with sqlite3.connect(cfg.DB_PATH) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO stream_metrics "
@@ -230,4 +231,21 @@ class TestGetHaLogSparklineData:
 
         data = mon.get_ha_log_sparkline_data(bucket_size="1d", time_range="7d")
         ts_vals = [b[0] for b in data["buckets"]]
-        assert old_ts not in ts_vals
+        # Old row must be present so the pan button can reach it
+        assert any(abs(t - old_ts) < 86400 for t in ts_vals)
+
+    def test_empty_db_returns_slots_for_time_range(self, pueo_dirs, isolated_config):
+        """With no DB rows, returned buckets still cover at least time_range slots."""
+        import importlib as _imp
+
+        _reload_and_init_db(pueo_dirs)
+        import agents.ha_log_monitor as mon
+
+        _imp.reload(mon)
+        mon._sparkline_bucket_total = 0
+        mon._sparkline_bucket_matches = 0
+        mon._sparkline_current_minute = 0
+
+        data = mon.get_ha_log_sparkline_data(bucket_size="1h", time_range="6h")
+        # 6h / 1h = 6 slots minimum
+        assert len(data["buckets"]) >= 6
