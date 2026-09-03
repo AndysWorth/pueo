@@ -60,6 +60,8 @@
     font-size: 9px; display: flex; align-items: center; justify-content: center;
     border-radius: 2px; }
   .sparkline-nav.disabled { opacity: 0.25; cursor: default; pointer-events: none; }
+  .sparkline-nav.endstop { opacity: 0.6; }
+  .sparkline-nav.endstop:not(.disabled) { opacity: 0.9; }
   .sparkline-daterange { font-size: 11px; color: #555; }
   .stream-card-controls { margin-top: 0.5rem; }
   .sparkline-controls { display: flex; gap: 1rem; margin-top: 0.35rem; font-size: 11px; color: #666; }
@@ -168,11 +170,13 @@
           <span class="sparkline-daterange" id="sparkline-daterange-ha_log_monitor"></span>
         </div>
         <div class="sparkline-pan-row">
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-start-ha_log_monitor" onclick="sparklineGoToStart('ha_log_monitor')">&#9198;</button>
           <button class="sparkline-nav disabled" id="sparkline-nav-left-ha_log_monitor" onclick="sparklineScroll('ha_log_monitor',-1)">&#9664;</button>
           <div class="stream-sparkline-wrap" id="sparkline-wrap-ha_log_monitor">
             <svg class="stream-sparkline" id="sparkline-ha_log_monitor" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
           </div>
           <button class="sparkline-nav disabled" id="sparkline-nav-right-ha_log_monitor" onclick="sparklineScroll('ha_log_monitor',1)">&#9654;</button>
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-end-ha_log_monitor" onclick="sparklineGoToEnd('ha_log_monitor')">&#9197;</button>
         </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-ha_log_monitor" class="sparkline-select">
@@ -210,11 +214,13 @@
           <span class="sparkline-daterange" id="sparkline-daterange-netalertx"></span>
         </div>
         <div class="sparkline-pan-row">
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-start-netalertx" onclick="sparklineGoToStart('netalertx')">&#9198;</button>
           <button class="sparkline-nav disabled" id="sparkline-nav-left-netalertx" onclick="sparklineScroll('netalertx',-1)">&#9664;</button>
           <div class="stream-sparkline-wrap" id="sparkline-wrap-netalertx">
             <svg class="stream-sparkline" id="sparkline-netalertx" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>
           </div>
           <button class="sparkline-nav disabled" id="sparkline-nav-right-netalertx" onclick="sparklineScroll('netalertx',1)">&#9654;</button>
+          <button class="sparkline-nav endstop disabled" id="sparkline-nav-end-netalertx" onclick="sparklineGoToEnd('netalertx')">&#9197;</button>
         </div>
         <div class="sparkline-controls">
           <label>Bucket <select id="sparkline-bucket-netalertx" class="sparkline-select">
@@ -634,11 +640,16 @@
   function updateSparklineNav(loopName) {
     var wrap = document.getElementById('sparkline-wrap-' + loopName);
     if (!wrap) return;
-    var l = document.getElementById('sparkline-nav-left-' + loopName);
-    var r = document.getElementById('sparkline-nav-right-' + loopName);
-    if (l) l.classList.toggle('disabled', wrap.scrollLeft <= 0);
-    if (r) r.classList.toggle('disabled',
-          wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 1);
+    var atStart = wrap.scrollLeft <= 0;
+    var atEnd   = wrap.scrollLeft >= wrap.scrollWidth - wrap.clientWidth - 1;
+    var l  = document.getElementById('sparkline-nav-left-'  + loopName);
+    var r  = document.getElementById('sparkline-nav-right-' + loopName);
+    var ls = document.getElementById('sparkline-nav-start-' + loopName);
+    var re = document.getElementById('sparkline-nav-end-'   + loopName);
+    if (l)  l.classList.toggle('disabled', atStart);
+    if (r)  r.classList.toggle('disabled', atEnd);
+    if (ls) ls.classList.toggle('disabled', atStart);
+    if (re) re.classList.toggle('disabled', atEnd);
   }
 
   function updateSparklineDateRange(loopName) {
@@ -670,6 +681,24 @@
     updateSparklineDateRange(loopName);
   }
   window.sparklineScroll = sparklineScroll;
+
+  function sparklineGoToStart(loopName) {
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    if (!wrap) return;
+    wrap.scrollLeft = 0;
+    updateSparklineNav(loopName);
+    updateSparklineDateRange(loopName);
+  }
+  window.sparklineGoToStart = sparklineGoToStart;
+
+  function sparklineGoToEnd(loopName) {
+    var wrap = document.getElementById('sparkline-wrap-' + loopName);
+    if (!wrap) return;
+    wrap.scrollLeft = wrap.scrollWidth;
+    updateSparklineNav(loopName);
+    updateSparklineDateRange(loopName);
+  }
+  window.sparklineGoToEnd = sparklineGoToEnd;
 
   function initSparklineControls(loopName) {
     var prefs = _getSparklinePrefs(loopName);
