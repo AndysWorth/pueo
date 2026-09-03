@@ -410,6 +410,13 @@ def _migrate_v27(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE stream_metrics ADD COLUMN min_line_ts INTEGER")
 
 
+def _migrate_v28(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS user_prefs "
+        "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -438,6 +445,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (25, _migrate_v25),
     (26, _migrate_v26),
     (27, _migrate_v27),
+    (28, _migrate_v28),
 ]
 
 

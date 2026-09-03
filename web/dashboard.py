@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -2553,29 +2554,26 @@ async def model_refresh_cache() -> JSONResponse:
     )
 
 
-@app.get("/loops/ha_log_monitor/sparkline")
-async def ha_log_monitor_sparkline(
-    bucket_size: str = "1m", time_range: str = "1h"
+@app.get("/loops/{loop_name}/sparkline")
+async def loop_sparkline(
+    loop_name: str, bucket_size: str = "1m", time_range: str = "1h"
 ) -> JSONResponse:
-    """Return sparkline data for the HA log monitor stream."""
-    from agents.ha_log_monitor import get_ha_log_sparkline_data
+    """Return sparkline data for any stream-metrics loop."""
+    if loop_name == "netalertx":
+        from netalertx.log_monitor import get_netalertx_sparkline_data
+
+        return JSONResponse(
+            get_netalertx_sparkline_data(bucket_size=bucket_size, time_range=time_range)
+        )
+    from agents.ha_log_monitor import get_sparkline_data_for_loop
 
     data = await asyncio.to_thread(
-        get_ha_log_sparkline_data, bucket_size=bucket_size, time_range=time_range
+        get_sparkline_data_for_loop,
+        loop_name,
+        bucket_size=bucket_size,
+        time_range=time_range,
     )
     return JSONResponse(data)
-
-
-@app.get("/loops/netalertx/sparkline")
-async def netalertx_sparkline(
-    bucket_size: str = "1m", time_range: str = "1h"
-) -> JSONResponse:
-    """Return sparkline data for the NetAlertX log monitor stream."""
-    from netalertx.log_monitor import get_netalertx_sparkline_data
-
-    return JSONResponse(
-        get_netalertx_sparkline_data(bucket_size=bucket_size, time_range=time_range)
-    )
 
 
 @app.post("/loops/{loop_name}/pause")
@@ -3543,6 +3541,121 @@ async def submit_episode_to_case_library(
     except CaseSubmitError as exc:
         log.error("episode_submit_failed", episode_id=episode.id, error=str(exc))
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_tab(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "logs.html", {})
+
+
+# ─── timestamp regex for HA log lines ────────────────────────────────────────
+# Matches: "2026-09-03 14:22:15.123 INFO ..." or "2026-09-03T14:22:15+00:00 ..."
+_HA_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
+)
+
+
+def _parse_log_line_ts(text: str) -> int:
+    """Return Unix epoch for the log line's timestamp, or 0 on failure."""
+    import datetime as _dt
+
+    m = _HA_TS_RE.match(text)
+    if not m:
+        return 0
+    raw = m.group(1).replace("T", " ")
+    # Strip fractional seconds and timezone for uniform parse
+    raw_clean = raw[:19]
+    try:
+        return int(_dt.datetime.strptime(raw_clean, "%Y-%m-%d %H:%M:%S").timestamp())
+    except Exception:  # nosec B110
+        return 0
+
+
+def _logs_source_to_command(source: str, limit: int) -> str:
+    """Return the SSH command to fetch logs for the given source."""
+    if source.startswith("apps:"):
+        slug = source[5:]
+        return f"ha apps logs {slug} 2>&1 | tail -n {limit}"
+    if source == "netalertx":
+        return f"tail -n {limit} /data/netalertx/db/app.log 2>/dev/null || tail -n {limit} /netalertx/db/app.log 2>/dev/null || echo ''"
+    return f"tail -n {limit} /var/log/messages 2>/dev/null"
+
+
+@app.get("/logs/fetch")
+async def logs_fetch(source: str, limit: int = 5000) -> JSONResponse:
+    """SSH one-shot fetch of log lines for the given source."""
+    import config as _config
+    import time as _time
+    from agents.ha_log_monitor import CRITICAL_LOG_PATTERN
+    from utils.ha.ssh_client import AsyncSSHClient
+
+    if not source:
+        raise HTTPException(status_code=400, detail="source required")
+    limit = min(max(1, limit), 20000)
+    start = _time.monotonic()
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    cmd = _logs_source_to_command(source, limit)
+    try:
+        _, stdout, _ = await ssh.run(cmd, check=False)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"SSH error: {exc}") from exc
+    elapsed_ms = int((_time.monotonic() - start) * 1000)
+    fetched_at = int(_time.time())
+
+    lines = []
+    for raw in (stdout or "").splitlines():
+        ts = _parse_log_line_ts(raw)
+        is_match = bool(CRITICAL_LOG_PATTERN.search(raw))
+        lines.append(
+            {"ts": ts if ts else fetched_at, "text": raw, "is_match": is_match}
+        )
+    return JSONResponse(
+        {
+            "lines": lines,
+            "source": source,
+            "fetched_at": fetched_at,
+            "fetch_duration_ms": elapsed_ms,
+        }
+    )
+
+
+@app.get("/logs/prefs")
+async def logs_prefs_get() -> JSONResponse:
+    """Return saved log source list from user_prefs."""
+
+    def _read() -> str:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = 'logs_sources'"
+            ).fetchone()
+        return row[0] if row else "[]"
+
+    raw = await asyncio.to_thread(_read)
+    try:
+        sources = json.loads(raw)
+    except Exception:  # nosec B110
+        sources = []
+    return JSONResponse({"sources": sources})
+
+
+class _LogsPrefsBody(BaseModel):
+    sources: list[str]
+
+
+@app.post("/logs/prefs")
+async def logs_prefs_set(body: _LogsPrefsBody) -> JSONResponse:
+    """Save log source list to user_prefs."""
+    raw = json.dumps(body.sources)
+
+    def _write() -> None:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_prefs (key, value) VALUES ('logs_sources', ?)",
+                (raw,),
+            )
+
+    await asyncio.to_thread(_write)
+    return JSONResponse({"ok": True})
 
 
 def run_dashboard() -> None:

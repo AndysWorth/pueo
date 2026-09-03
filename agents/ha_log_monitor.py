@@ -3,6 +3,7 @@
 
 import asyncio
 import collections
+import dataclasses
 import datetime
 import hashlib
 import json
@@ -73,20 +74,44 @@ _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
 _log_buffer: collections.deque[str] = collections.deque(maxlen=50)
 
-# Sparkline state — 60-minute ring buffer; each bucket is (bucket_ts, total_lines, match_lines).
-# Updated on every received line; minute boundary rolls to a new bucket.
 _LOOP_NAME = "ha_log_monitor"
 _RETENTION_SECONDS = 31 * 24 * 3600  # 31 days
 
-_sparkline_buckets: collections.deque = collections.deque(maxlen=60)
-_sparkline_current_minute: int = 0  # calendar minute of the current open bucket
-_sparkline_bucket_total: int = 0
-_sparkline_bucket_matches: int = 0
-_sparkline_bucket_min_ts: int = (
-    0  # epoch of first log line in current bucket (0 = none yet)
-)
-_last_line_at: float = 0.0  # epoch of most recent received line
-_last_match_at: float = 0.0  # epoch of most recent CRITICAL_LOG_PATTERN match
+
+@dataclasses.dataclass
+class _LogStreamState:
+    """Per-source sparkline state — one instance per always-on SSH tail stream."""
+
+    loop_name: str
+    buckets: collections.deque = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=60)
+    )
+    current_minute: int = 0
+    bucket_total: int = 0
+    bucket_matches: int = 0
+    bucket_min_ts: int = 0  # epoch of first log line in current bucket (0 = none yet)
+    last_line_at: float = 0.0
+    last_match_at: float = 0.0
+
+
+_core_state = _LogStreamState(loop_name=_LOOP_NAME)
+_supervisor_state = _LogStreamState(loop_name="ha_log_monitor_supervisor")
+
+
+def _get_stream_state(source: str) -> _LogStreamState:
+    return _supervisor_state if source == "supervisor" else _core_state
+
+
+def _source_to_command(source: str) -> str:
+    return (
+        "ha supervisor logs --follow"
+        if source == "supervisor"
+        else "ha core logs --follow"
+    )
+
+
+def _source_to_loop_name(source: str) -> str:
+    return "ha_log_monitor_supervisor" if source == "supervisor" else _LOOP_NAME
 
 
 def _triage_check_and_record(fingerprint: str, now: float) -> bool:
@@ -160,29 +185,28 @@ def _update_sweep_absent_pending(seen_keys: set) -> list:
     return rows
 
 
-def _init_sparkline_db() -> None:
+def _init_sparkline_db(state: _LogStreamState) -> None:
     """Pre-populate ring buffer from SQLite and prune old rows."""
-    global _sparkline_current_minute
     try:
         with sqlite3.connect(_config.DB_PATH) as conn:
             conn.execute(
                 "DELETE FROM stream_metrics WHERE loop_name = ? AND bucket_ts < ?",
-                (_LOOP_NAME, int(time.time()) - _RETENTION_SECONDS),
+                (state.loop_name, int(time.time()) - _RETENTION_SECONDS),
             )
             rows = conn.execute(
                 "SELECT bucket_ts, total_lines, match_lines FROM stream_metrics "
                 "WHERE loop_name = ? ORDER BY bucket_ts DESC LIMIT 60",
-                (_LOOP_NAME,),
+                (state.loop_name,),
             ).fetchall()
         for row in reversed(rows):
-            _sparkline_buckets.append((row[0], row[1], row[2]))
-        _sparkline_current_minute = int(time.time() // 60)
+            state.buckets.append((row[0], row[1], row[2]))
+        state.current_minute = int(time.time() // 60)
     except Exception:  # nosec B110
         pass
 
 
 def _persist_sparkline_bucket(
-    bucket_ts: int, total: int, matches: int, min_line_ts: int
+    loop_name: str, bucket_ts: int, total: int, matches: int, min_line_ts: int
 ) -> None:
     try:
         with sqlite3.connect(_config.DB_PATH) as conn:
@@ -190,48 +214,46 @@ def _persist_sparkline_bucket(
                 "INSERT OR REPLACE INTO stream_metrics "
                 "(loop_name, bucket_ts, total_lines, match_lines, min_line_ts) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (_LOOP_NAME, bucket_ts, total, matches, min_line_ts or None),
+                (loop_name, bucket_ts, total, matches, min_line_ts or None),
             )
     except Exception:  # nosec B110
         pass
 
 
-def _record_sparkline_line(matched: bool) -> None:
+def _record_sparkline_line(state: _LogStreamState, matched: bool) -> None:
     """Update sparkline ring buffer for one received log line."""
-    global _sparkline_current_minute, _sparkline_bucket_total, _sparkline_bucket_matches
-    global _sparkline_bucket_min_ts, _last_line_at, _last_match_at
-
     now = time.time()
-    _last_line_at = now
+    state.last_line_at = now
     if matched:
-        _last_match_at = now
+        state.last_match_at = now
 
     current_min = int(now // 60)
-    if current_min != _sparkline_current_minute:
-        completed_ts = _sparkline_current_minute * 60
-        _sparkline_buckets.append(
-            (completed_ts, _sparkline_bucket_total, _sparkline_bucket_matches)
-        )
+    if current_min != state.current_minute:
+        completed_ts = state.current_minute * 60
+        state.buckets.append((completed_ts, state.bucket_total, state.bucket_matches))
         _persist_sparkline_bucket(
+            state.loop_name,
             completed_ts,
-            _sparkline_bucket_total,
-            _sparkline_bucket_matches,
-            _sparkline_bucket_min_ts,
+            state.bucket_total,
+            state.bucket_matches,
+            state.bucket_min_ts,
         )
-        _sparkline_bucket_total = 0
-        _sparkline_bucket_matches = 0
-        _sparkline_bucket_min_ts = 0
-        _sparkline_current_minute = current_min
+        state.bucket_total = 0
+        state.bucket_matches = 0
+        state.bucket_min_ts = 0
+        state.current_minute = current_min
 
-    if _sparkline_bucket_total == 0:
-        _sparkline_bucket_min_ts = int(now)
-    _sparkline_bucket_total += 1
+    if state.bucket_total == 0:
+        state.bucket_min_ts = int(now)
+    state.bucket_total += 1
     if matched:
-        _sparkline_bucket_matches += 1
+        state.bucket_matches += 1
 
 
-def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -> dict:
-    """Return sparkline data for the /loops/ha_log_monitor/sparkline endpoint."""
+def get_sparkline_data_for_loop(
+    loop_name: str, bucket_size: str = "1m", time_range: str = "1h"
+) -> dict:
+    """Return sparkline data for any stream_metrics loop_name."""
     now_ts = int(time.time())
     range_seconds = {
         "1h": 3600,
@@ -249,7 +271,7 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
                 "SELECT bucket_ts, total_lines, match_lines, min_line_ts "
                 "FROM stream_metrics "
                 "WHERE loop_name = ? ORDER BY bucket_ts",
-                (_LOOP_NAME,),
+                (loop_name,),
             ).fetchall()
     except Exception:  # nosec B110
         rows = []
@@ -266,16 +288,21 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
             if agg[key][2] is None or row_min_ts < agg[key][2]:
                 agg[key][2] = row_min_ts
 
-    # Append the in-progress current bucket (only when the minute tracker is initialized)
-    if _sparkline_current_minute:
-        cur_key = (_sparkline_current_minute * 60 // bucket_seconds) * bucket_seconds
+    # Append the in-progress current bucket from the matching state object
+    state: Optional[_LogStreamState] = None
+    if loop_name == _LOOP_NAME:
+        state = _core_state
+    elif loop_name == "ha_log_monitor_supervisor":
+        state = _supervisor_state
+    if state is not None and state.current_minute:
+        cur_key = (state.current_minute * 60 // bucket_seconds) * bucket_seconds
         if cur_key not in agg:
             agg[cur_key] = [0, 0, None]
-        agg[cur_key][0] += _sparkline_bucket_total
-        agg[cur_key][1] += _sparkline_bucket_matches
-        if _sparkline_bucket_min_ts:
-            if agg[cur_key][2] is None or _sparkline_bucket_min_ts < agg[cur_key][2]:
-                agg[cur_key][2] = _sparkline_bucket_min_ts
+        agg[cur_key][0] += state.bucket_total
+        agg[cur_key][1] += state.bucket_matches
+        if state.bucket_min_ts:
+            if agg[cur_key][2] is None or state.bucket_min_ts < agg[cur_key][2]:
+                agg[cur_key][2] = state.bucket_min_ts
 
     # Fill empty bucket slots so every time position is represented (cap at 1440).
     # Start from the earliest actual data so panning can reach all history.
@@ -297,13 +324,22 @@ def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -
     buckets = [
         [v[2] if v[2] is not None else k, v[0], v[1]] for k, v in sorted(agg.items())
     ]
+    last_line_at = state.last_line_at if state is not None else 0.0
+    last_match_at = state.last_match_at if state is not None else 0.0
     return {
         "buckets": buckets,
         "bucket_size": bucket_size,
         "time_range": time_range,
-        "last_line_at": _last_line_at,
-        "last_match_at": _last_match_at,
+        "last_line_at": last_line_at,
+        "last_match_at": last_match_at,
     }
+
+
+def get_ha_log_sparkline_data(bucket_size: str = "1m", time_range: str = "1h") -> dict:
+    """Return sparkline data for the HA core log monitor (backward-compat wrapper)."""
+    return get_sparkline_data_for_loop(
+        _LOOP_NAME, bucket_size=bucket_size, time_range=time_range
+    )
 
 
 # High-priority regex to capture structural components collapsing or syntax crashes
@@ -485,19 +521,21 @@ async def analyze_repair_issue(
 # ==========================================
 @async_retry(max_attempts=0, base_delay=SSH_RETRY_BASE_DELAY, exceptions=(OSError,))
 async def tail_remote_log_stream(
+    source: str = "core",
     ssh_client: Optional[SSHClientProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     gate: Optional[AutonomyGate] = None,
     notifier: Optional[NotifierProtocol] = None,
 ) -> None:
-    """Streams live HA logs via 'ha core logs --follow' over SSH."""
+    """Streams live HA logs over SSH. source='core' tails ha core; source='supervisor' tails ha supervisor."""
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
-    _init_sparkline_db()
-    log.info("log_stream_start", host=HA_HOST)
+    state = _get_stream_state(source)
+    await asyncio.to_thread(_init_sparkline_db, state)
+    log.info("log_stream_start", host=HA_HOST, source=source)
 
-    tail_command = "ha core logs --follow"
+    tail_command = _source_to_command(source)
 
     try:
         async for line in client.stream_lines(tail_command):
@@ -505,7 +543,7 @@ async def tail_remote_log_stream(
             _log_buffer.append(clean_line)
 
             _matched = bool(CRITICAL_LOG_PATTERN.search(clean_line))
-            await asyncio.to_thread(_record_sparkline_line, _matched)
+            await asyncio.to_thread(_record_sparkline_line, state, _matched)
 
             if _matched:
                 log.warning("log_line_intercepted", line=clean_line)
@@ -523,7 +561,7 @@ async def tail_remote_log_stream(
                         await asyncio.to_thread(
                             write_timeline_event,
                             "WARNING",
-                            "ha_log_monitor",
+                            state.loop_name,
                             f"Transient external error (auto-resolved): {clean_line[:120]}",
                             {"transient": True, "log_line": clean_line},
                         )
@@ -552,7 +590,7 @@ async def tail_remote_log_stream(
                         await asyncio.to_thread(
                             write_timeline_event,
                             "ERROR",
-                            "ha_log_monitor",
+                            state.loop_name,
                             evaluation.root_cause_summary,
                             {
                                 "confidence": evaluation.confidence_score,
