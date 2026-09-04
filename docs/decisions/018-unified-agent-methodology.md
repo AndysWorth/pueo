@@ -52,6 +52,48 @@ Two new tools address the missing Pueo self-log capability:
 
 Both are registered in all agent registries.
 
+## Runbook-Driven Planning
+
+### Shift in framing: query_knowledge as plan retrieval
+
+Phase 1 (`query_knowledge`) is not just a context lookup — it is a **plan retrieval call**. The `strategies` ChromaDB collection is Pueo's expert memory. When a runbook exists for the current situation, the agent follows it. When none exists, the agent reasons from first principles but always records the outcome for future sessions. Over time the knowledge base grows richer with each novel investigation, making Pueo an expert on the specific HA installation it manages.
+
+### Three runbook states
+
+| State | Created by | Definition |
+|---|---|---|
+| `seed` | Human-curated at development time | Authoritative starting point for a known query class. Pre-embedded at RAG refresh via `strategy_seeder.py`. |
+| `candidate` | LLM via `save_runbook(type="candidate")` during a successful session | Novel approach that worked; not yet community-validated. Surfaces in dashboard for human review. |
+| `gap` | LLM via `save_runbook(type="gap")` on any failure or empty KB result | Investigation record: what was tried, what was ruled out, why stuck. Tells future sessions what NOT to try and surfaces coverage holes to developers. |
+
+Runbooks are rich prose (natural language). A YAML frontmatter header (`trigger_pattern`, `recommended_tools`, `state`) enables filtering and dashboard display. LLMs interpret and adapt the prose — no rigid schema required.
+
+### Multi-phase query_knowledge
+
+The agent may call `query_knowledge` at any phase, not only Phase 1. Additional calls are appropriate when:
+- Initial evidence narrows the problem to a specific sub-domain — query with that sub-domain as the question
+- Confidence is low after Phase 3 — try a differently-framed query
+- About to try a novel approach — check whether a similar approach has been tried before
+- Stuck — "pop up" to a higher-level framing and re-query broadly
+
+### Confidence-based stopping (not count-based)
+
+The agent does not give up because it has hit an arbitrary tool count. It stops only when it has genuinely exhausted all reasonable investigative paths and can document why. When stuck, the agent must:
+1. Call `save_runbook(type="gap")` documenting what was tried, what was ruled out, and the best current understanding even if confidence is low
+2. Call `request_escalation(reason)` — infrastructure routes per `ESCALATION_PREFERENCE`
+
+### Runbook gap mandate
+
+Any session that (a) had `query_knowledge` return nothing relevant, OR (b) ended with `outcome=failed`, ALWAYS saves a gap runbook. This applies to all agent modes (chat, repair, NetAlertX).
+
+### LLM as KB contributor (with human gate)
+
+When the agent uses a novel approach that worked, it calls `save_runbook(type="candidate")`. The candidate enters the KB tagged as "proposed by LLM, not yet community-validated." Humans can promote to `validated` or discard via the dashboard runbook review UI. Repeated success by multiple sessions auto-promotes the runbook.
+
+### Escalation mechanism
+
+New config key `ESCALATION_PREFERENCE: "hitl" | "cloud" | "cloud_then_hitl"` (default `"hitl"`). When stuck, the agent calls `request_escalation(reason)` and infrastructure routes per config — surfacing a HITL card, starting a cloud escalation loop, or doing both in sequence.
+
 ## What to leave as one-shot
 
 These remain one-shot calls and should not be converted to AgentLoop sessions:
@@ -76,10 +118,13 @@ The log reading tools fix the most obvious gap directly rather than requiring wo
 
 - `prompts/agent_loop_base.md` is the canonical statement of Pueo's investigation pattern; all prompt files that implement agent sessions must follow this structure
 - `COLLECTIONS` in `knowledge_store.py` now has 5 entries; `ChromaKnowledgeStore` creates all 5 at startup
-- `agent_strategies` SQLite table is migration v24 in both migration files (see ADR 001 migration dual-file rule)
-- `save_strategy` in all three non-code-proposal registries — any future registry must include it
-- Future `AgentLoop`-based sessions must pass a `knowledge_store` to the `ToolExecutor` so `save_strategy` can embed into ChromaDB; SQLite fallback fires when `knowledge_store` is None
+- `agent_strategies` SQLite table is migration v24 in both migration files (see ADR 001 migration dual-file rule); the table gains a `runbook_state` column (Phase 2) to record seed/candidate/gap
+- `save_runbook` (renamed from `save_strategy`) in all three non-code-proposal registries — any future registry must include it; `type` parameter (`seed`/`candidate`/`gap`) stored in `runbook_state` column
+- Future `AgentLoop`-based sessions must pass a `knowledge_store` to the `ToolExecutor` so `save_runbook` can embed into ChromaDB; SQLite fallback fires when `knowledge_store` is None
 - `seed_strategies()` is idempotent — re-seeding at RAG refresh is safe and keeps strategy content current as prompt files change
+- Dashboard gains a runbook review UI (Phase 2): promote candidate → validated, discard, view gap runbooks
+- `ESCALATION_PREFERENCE` config key (Phase 2): triple-update rule (`config.py` + `config.yaml.default` + `setup.sh`); values `hitl` (default), `cloud`, `cloud_then_hitl`
+- Candidate runbooks are flagged in `query_knowledge` results so the agent knows which approaches are LLM-proposed vs. human-validated
 
 ## Related decisions
 - [ADR 012 — Hypothesis-driven repair cycle](012-hypothesis-driven-repair.md): superseded and generalized by this ADR. The 5-phase repair cycle becomes the 6-phase universal cycle by adding Phase 1 (retrieve context).

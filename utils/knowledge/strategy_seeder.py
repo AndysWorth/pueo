@@ -73,6 +73,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA configuration error investigation",
         "HA config invalid, yaml error, ha core check failing, configuration.yaml problem",
     ),
+    (
+        "seed_log_analysis.md",
+        "Time-range log analysis",
+        "analyze log lines from time range, what happened in the log, log analysis HH:MM, sparkline click, log window",
+    ),
 ]
 
 
