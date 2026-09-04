@@ -57,6 +57,7 @@ app.mount(
     name="static",
 )
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.globals["dev_mode"] = DEVELOPMENT_MODE
 templates.env.filters["epoch_to_iso"] = lambda ts: (
     datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
 )
@@ -3664,6 +3665,119 @@ async def logs_prefs_set(body: _LogsPrefsBody) -> JSONResponse:
 
     await asyncio.to_thread(_write)
     return JSONResponse({"ok": True})
+
+
+@app.get("/runbooks", response_class=HTMLResponse)
+async def runbooks_tab(request: Request) -> HTMLResponse:
+    """Runbook Review tab — gated by DEVELOPMENT_MODE."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(
+            status_code=404,
+            detail="Runbook Review requires development_mode: true in config.yaml.",
+        )
+    from utils.knowledge.kb_meta_analyzer import analyze_local_runbooks
+
+    report = await asyncio.to_thread(analyze_local_runbooks, DB_PATH)
+    return templates.TemplateResponse(
+        request,
+        "runbooks.html",
+        {"report": report},
+    )
+
+
+class _RunbookPromoteBody(BaseModel):
+    pass
+
+
+@app.post("/runbooks/{runbook_id}/promote")
+async def promote_runbook(runbook_id: str) -> JSONResponse:
+    """Promote a candidate runbook to seed state."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(status_code=404)
+
+    now = datetime.utcnow().isoformat()
+
+    def _promote() -> bool:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE agent_strategies"
+                " SET runbook_state='seed', promoted_at=?, reviewed_at=COALESCE(reviewed_at, ?)"
+                " WHERE id=? AND runbook_state='candidate'",
+                (now, now, runbook_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    updated = await asyncio.to_thread(_promote)
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Runbook {runbook_id!r} not found or not a candidate.",
+        )
+    return JSONResponse({"ok": True, "promoted_at": now})
+
+
+@app.post("/runbooks/{runbook_id}/review")
+async def review_runbook(runbook_id: str) -> JSONResponse:
+    """Mark a runbook as reviewed (sets reviewed_at) without promoting."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(status_code=404)
+
+    now = datetime.utcnow().isoformat()
+
+    def _review() -> bool:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE agent_strategies SET reviewed_at=? WHERE id=?",
+                (now, runbook_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    updated = await asyncio.to_thread(_review)
+    if not updated:
+        raise HTTPException(
+            status_code=404, detail=f"Runbook {runbook_id!r} not found."
+        )
+    return JSONResponse({"ok": True, "reviewed_at": now})
+
+
+@app.post("/runbooks/{runbook_id}/mark-contribution")
+async def mark_runbook_contribution(runbook_id: str) -> JSONResponse:
+    """Queue a reviewed runbook for KB contribution (sets contributed_at)."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(status_code=404)
+
+    def _check_reviewed() -> bool:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT reviewed_at FROM agent_strategies WHERE id=?", (runbook_id,)
+            ).fetchone()
+            return row is not None and row[0] is not None
+
+    if not await asyncio.to_thread(_check_reviewed):
+        raise HTTPException(
+            status_code=400,
+            detail="Runbook must be reviewed before marking for contribution.",
+        )
+
+    now = datetime.utcnow().isoformat()
+
+    def _mark() -> bool:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE agent_strategies SET contributed_at=? WHERE id=?",
+                (now, runbook_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    updated = await asyncio.to_thread(_mark)
+    if not updated:
+        raise HTTPException(
+            status_code=404, detail=f"Runbook {runbook_id!r} not found."
+        )
+    return JSONResponse({"ok": True, "contributed_at": now})
 
 
 def run_dashboard() -> None:

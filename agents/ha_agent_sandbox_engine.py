@@ -447,6 +447,12 @@ def _migrate_v29(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v30(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN reviewed_at TEXT")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN promoted_at TEXT")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN contributed_at TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -477,6 +483,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (27, _migrate_v27),
     (28, _migrate_v28),
     (29, _migrate_v29),
+    (30, _migrate_v30),
 ]
 
 

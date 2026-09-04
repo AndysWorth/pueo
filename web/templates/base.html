@@ -149,6 +149,7 @@
       <a class="nav-link{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>
       <a class="nav-link{% if p.startswith('/logs') %} active{% endif %}" href="/logs">Logs</a>
       <a class="nav-link{% if p.startswith('/chat') %} active{% endif %}" href="/chat">Chat</a>
+      {% if dev_mode %}<a class="nav-link{% if p.startswith('/runbooks') %} active{% endif %}" href="/runbooks">Runbooks</a>{% endif %}
       <span style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;">
         <span id="pueo-status-badge" class="pueo-status pueo-status-monitoring">Monitoring</span>
         <span id="ha-status-badge" class="ha-badge ha-badge-unknown">HA ?</span>

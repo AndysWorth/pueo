@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .rb-state-candidate { background:#fff3cd;color:#856404;border:1px solid #ffc107; }
+  .rb-state-gap       { background:#f8d7da;color:#58151c;border:1px solid #dc3545; }
+  .rb-state-seed      { background:#d1e7dd;color:#0a3622;border:1px solid #28a745; }
+  .rb-actions { display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.6rem; }
+  .rb-btn { padding:0.3rem 0.75rem;font-size:0.8rem;border:none;border-radius:4px;cursor:pointer;font-weight:600; }
+  .rb-btn-promote { background:#28a745;color:#fff; }
+  .rb-btn-promote:hover { background:#218838; }
+  .rb-btn-review  { background:#6366f1;color:#fff; }
+  .rb-btn-review:hover  { background:#4f46e5; }
+  .rb-btn-contrib { background:#0d6efd;color:#fff; }
+  .rb-btn-contrib:hover { background:#0b5ed7; }
+  .rb-btn:disabled { opacity:0.5;cursor:default; }
+  .dup-warning { background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.5rem 0.75rem;font-size:0.82rem;margin-bottom:0.75rem;color:#856404; }
+  .rb-meta { font-size:0.75rem;color:#888;margin-top:0.25rem; }
+  .rb-approach { font-size:0.82rem;color:#444;margin-top:0.35rem;white-space:pre-wrap;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:4px;padding:0.5rem;max-height:10rem;overflow-y:auto; }
+  .section-header { font-size:0.95rem;font-weight:700;color:#333;margin:1.25rem 0 0.5rem; }
+  .flash { display:none;font-size:0.8rem;margin-left:0.5rem;color:#28a745; }
+</style>
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
+  <h2 style="font-size:1rem;color:#555;margin:0;">Runbook Review <span style="font-size:0.8rem;font-weight:400;color:#888;">(dev mode)</span></h2>
+</div>
+
+{% if report.duplicate_pairs %}
+  <div class="section-header">⚠ Near-duplicate pairs detected</div>
+  {% for pair in report.duplicate_pairs %}
+  <div class="dup-warning">
+    <strong>{{ pair.title_a }}</strong> and <strong>{{ pair.title_b }}</strong>
+    &nbsp;— similarity {{ "%.0f"|format(pair.score * 100) }}%
+    <span style="font-size:0.72rem;color:#6b5f00;">(consider consolidating)</span>
+  </div>
+  {% endfor %}
+{% endif %}
+
+<div class="section-header">Candidates ({{ report.candidates|length }})</div>
+
+{% if not report.candidates %}
+  <p class="empty">No candidate runbooks yet. Pueo will add them as it discovers novel repair approaches.</p>
+{% else %}
+  {% for rb in report.candidates %}
+  <div class="card" id="rb-{{ rb.id }}">
+    <div class="card-header">
+      <span class="badge rb-state-candidate">candidate</span>
+      <span class="subject">{{ rb.title }}</span>
+    </div>
+    <div class="rb-meta">
+      Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
+      &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
+      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      {% if rb.contributed_at %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+    </div>
+    <details style="margin-top:0.4rem;">
+      <summary>Approach</summary>
+      <div class="rb-approach">{{ rb.approach }}</div>
+    </details>
+    <div class="rb-actions">
+      {% if not rb.reviewed_at %}
+      <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
+      {% endif %}
+      <button class="rb-btn rb-btn-promote" onclick="promoteRunbook('{{ rb.id }}', this)">Promote → seed</button>
+      {% if rb.reviewed_at and not rb.contributed_at %}
+      <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
+      {% endif %}
+      <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
+    </div>
+  </div>
+  {% endfor %}
+{% endif %}
+
+<div class="section-header">Gaps ({{ report.gaps|length }})</div>
+
+{% if not report.gaps %}
+  <p class="empty">No gap runbooks. Gaps are recorded when an agent session exhausts its budget without a fix.</p>
+{% else %}
+  {% for rb in report.gaps %}
+  <div class="card" id="rb-{{ rb.id }}">
+    <div class="card-header">
+      <span class="badge rb-state-gap">gap</span>
+      <span class="subject">{{ rb.title }}</span>
+    </div>
+    <div class="rb-meta">
+      Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
+      &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
+      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      {% if rb.contributed_at %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+    </div>
+    <details style="margin-top:0.4rem;">
+      <summary>What was tried</summary>
+      <div class="rb-approach">{{ rb.approach }}</div>
+    </details>
+    <div class="rb-actions">
+      {% if not rb.reviewed_at %}
+      <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
+      {% endif %}
+      {% if rb.reviewed_at and not rb.contributed_at %}
+      <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
+      {% endif %}
+      <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
+    </div>
+  </div>
+  {% endfor %}
+{% endif %}
+
+<script>
+function flash(id) {
+  var el = document.getElementById('flash-' + id);
+  if (el) { el.style.display = 'inline'; setTimeout(function() { el.style.display = 'none'; }, 2000); }
+}
+
+function reviewRunbook(id, btn) {
+  btn.disabled = true;
+  fetch('/runbooks/' + id + '/review', {method:'POST'})
+    .then(function(r) { return r.json(); })
+    .then(function() { flash(id); location.reload(); })
+    .catch(function() { btn.disabled = false; });
+}
+
+function promoteRunbook(id, btn) {
+  btn.disabled = true;
+  fetch('/runbooks/' + id + '/promote', {method:'POST'})
+    .then(function(r) {
+      if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Error'); btn.disabled = false; }); }
+      return r.json().then(function() {
+        flash(id);
+        var card = document.getElementById('rb-' + id);
+        if (card) { card.style.opacity = '0.5'; }
+        setTimeout(function() { location.reload(); }, 800);
+      });
+    })
+    .catch(function() { btn.disabled = false; });
+}
+
+function markContribution(id, btn) {
+  btn.disabled = true;
+  fetch('/runbooks/' + id + '/mark-contribution', {method:'POST'})
+    .then(function(r) {
+      if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Error'); btn.disabled = false; }); }
+      return r.json().then(function() { flash(id); location.reload(); });
+    })
+    .catch(function() { btn.disabled = false; });
+}
+</script>
+{% endblock %}
