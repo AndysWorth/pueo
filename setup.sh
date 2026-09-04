@@ -672,6 +672,7 @@ agent:
   notify_url: "${NOTIFY_URL}"
   notify_watch_dir: "${NOTIFY_WATCH_DIR}"
   # Advanced tuning — edit config.yaml directly to override these defaults:
+  # agent_max_tool_result_tokens: 4000  # Guardrail: truncate tool outputs exceeding this token count
   # ssh_retry_attempts: 3
   # ssh_retry_base_delay: 2.0
   # debounce_window_seconds: 30

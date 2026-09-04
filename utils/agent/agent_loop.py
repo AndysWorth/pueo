@@ -21,6 +21,7 @@ from config import (
     AGENT_LLM_LATENCY_PERCENTILE,
     AGENT_MAX_EXTENSION_CALLS,
     AGENT_MAX_TOOL_CALLS,
+    AGENT_MAX_TOOL_RESULT_TOKENS,
     AGENT_MAX_TOTAL_CALLS,
     AGENT_PER_CALL_MAX_TIMEOUT_SECONDS,
     AGENT_PER_CALL_MIN_TIMEOUT_SECONDS,
@@ -29,6 +30,7 @@ from config import (
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
+from utils.agent.tool_result_guardrail import ToolResultGuardrail
 
 _UNSET = object()  # sentinel for provider-aware model default
 
@@ -542,6 +544,13 @@ class AgentLoop:
         no_tool_extension_count = 0  # times budget was extended due to no_tool_streak
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
 
+        known_tool_names = {t["function"]["name"] for t in tools}
+        guardrail = ToolResultGuardrail(
+            max_result_tokens=AGENT_MAX_TOOL_RESULT_TOKENS,
+            max_tool_calls=self._max_tool_calls,
+            known_tool_names=known_tool_names,
+        )
+
         # Compute timeout once per session; P95 latency doesn't change within a run.
         per_call_secs = await asyncio.to_thread(self._per_call_timeout_seconds)
 
@@ -741,11 +750,19 @@ class AgentLoop:
                     status_line = f"step {tool_call_count} — {tool_call.name}: {status}"
                     await self._timeline_callback(tool_call.name, status_line)
 
-                # Feed tool result back to the conversation.
+                # Feed tool result back to the conversation (with guardrail inspection).
                 result_text = (
                     tool_result.output
                     if tool_result.success
                     else f"Error: {tool_result.error}"
+                )
+                remaining_budget = self._max_tool_calls - tool_call_count
+                result_text = guardrail.process(
+                    tool_name=tool_call.name,
+                    tool_args=tool_call.arguments,
+                    raw_output=result_text,
+                    success=tool_result.success,
+                    remaining_budget=remaining_budget,
                 )
                 messages.append(
                     {

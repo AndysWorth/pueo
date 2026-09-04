@@ -156,6 +156,9 @@ AGENT_LLM_LATENCY_LOOKBACK: int = int(_agent.get("agent_llm_latency_lookback", 1
 AGENT_LLM_LATENCY_PERCENTILE: float = float(
     _agent.get("agent_llm_latency_percentile", 95.0)
 )
+AGENT_MAX_TOOL_RESULT_TOKENS: int = int(
+    _agent.get("agent_max_tool_result_tokens", 4000)
+)
 
 # Deprecated — use AGENT_PER_CALL_MIN_TIMEOUT_SECONDS instead
 AGENT_MAX_WALL_SECONDS: float = AGENT_PER_CALL_MIN_TIMEOUT_SECONDS
