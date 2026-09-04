@@ -270,3 +270,6 @@ if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
     )
     _autonomy_raw = _NETALERTX_MODE_MAP[_netalertx_mode]
 AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 2)
+
+# Escalation routing when the agent is stuck and calls request_escalation()
+ESCALATION_PREFERENCE: str = str(_agent.get("escalation_preference", "hitl"))

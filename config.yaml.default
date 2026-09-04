@@ -125,6 +125,10 @@ agent:
   # agent_llm_latency_percentile: 95         # Percentile of latency to use as baseline
   # ha_profile_refresh_hours: 24       # How often to rebuild the HA environment profile (integrations, versions)
   # chat_memory_top_k: 10             # Max memory entries returned per recall() call
+  escalation_preference: "hitl"     # Where to route when agent is stuck: "hitl" | "cloud" | "cloud_then_hitl"
+                                    # hitl: create an approval card for the user to decide how to continue
+                                    # cloud: immediately escalate to the cloud LLM (requires LLM_PROVIDER=both/cloud)
+                                    # cloud_then_hitl: try cloud first; fall back to HITL if billing cap exceeded
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
   # chromadb_path: ""           # ChromaDB vector store; default: ~/Library/Application Support/Pueo/chromadb (macOS)
   # rag_top_k: 5                # Number of knowledge chunks returned per query_knowledge call

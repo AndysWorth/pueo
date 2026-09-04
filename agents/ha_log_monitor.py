@@ -59,7 +59,7 @@ from utils.core.context import estimate_tokens, sliding_window_lines
 from utils.hitl.llm_trace import LLMTrace
 from utils.core.logging import get_logger, setup_logging, set_correlation_id
 from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
-from utils.core.prompts import load_prompt
+from utils.core.prompts import load_prompt, repeat_query
 from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.hitl.notify import NotifierProtocol, get_notifier
 from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
@@ -404,10 +404,19 @@ async def analyze_log_line_with_ai(
 
     system_prompt = load_prompt("triage_log")
     user_envelope = "Evaluate these log lines:\n```\n\n```"
-    overhead = estimate_tokens(system_prompt) + estimate_tokens(user_envelope)
+    # repeat_query appends the system prompt to the end of the user message to
+    # prevent "lost in the middle" failures when the log context is long.
+    repeated_system = repeat_query(system_prompt, "")
+    overhead = (
+        estimate_tokens(system_prompt)
+        + estimate_tokens(user_envelope)
+        + estimate_tokens(repeated_system)
+    )
     windowed = sliding_window_lines(recent_lines, MAX_PROMPT_TOKENS - overhead)
     log_context = "\n".join(windowed)
-    user_prompt = f"Evaluate these log lines:\n```\n{log_context}\n```"
+    user_prompt = repeat_query(
+        system_prompt, f"Evaluate these log lines:\n```\n{log_context}\n```"
+    )
 
     model = _default_model_for_provider()
     _triage_armed = False

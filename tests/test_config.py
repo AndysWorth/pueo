@@ -319,6 +319,21 @@ class TestAutonomyConfigKeys:
 
         assert config.AUTONOMY_LEVEL == 3
 
+    def test_escalation_preference_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ESCALATION_PREFERENCE == "hitl"
+
+    def test_escalation_preference_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"escalation_preference": "cloud"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.ESCALATION_PREFERENCE == "cloud"
+
 
 # ── Dashboard config ──────────────────────────────────────────────────────────────
 
