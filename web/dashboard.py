@@ -30,6 +30,7 @@ from config import (
     DEVELOPMENT_MODE,
     FEDERATED_CASES_REPO,
     NOTIFY_WATCH_DIR,
+    PUEO_KB_REPO,
 )
 from utils.core.logging import get_logger, set_log_level
 from utils.hitl.card_types import (
@@ -3681,7 +3682,11 @@ async def runbooks_tab(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "runbooks.html",
-        {"report": report},
+        {
+            "report": report,
+            "kb_repo_configured": bool(PUEO_KB_REPO),
+            "kb_repo": PUEO_KB_REPO,
+        },
     )
 
 
@@ -3778,6 +3783,69 @@ async def mark_runbook_contribution(runbook_id: str) -> JSONResponse:
             status_code=404, detail=f"Runbook {runbook_id!r} not found."
         )
     return JSONResponse({"ok": True, "contributed_at": now})
+
+
+@app.post("/runbooks/contribute")
+async def submit_runbooks_to_kb() -> JSONResponse:
+    """Submit all queued runbooks to pueo-kb via a single GitHub PR."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(status_code=404)
+    if not PUEO_KB_REPO:
+        raise HTTPException(
+            status_code=400,
+            detail="PUEO_KB_REPO is not configured. "
+            "Add 'pueo_kb_repo: owner/pueo-kb' under 'agent:' in config.yaml.",
+        )
+
+    def _load_queued() -> list[dict]:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, title, trigger_pattern, approach, contributed_at"
+                " FROM agent_strategies"
+                " WHERE contributed_at IS NOT NULL AND kb_pr_url IS NULL"
+                " AND runbook_state IN ('candidate', 'seed')"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    queued = await asyncio.to_thread(_load_queued)
+    if not queued:
+        return JSONResponse(
+            {
+                "ok": True,
+                "pr_url": None,
+                "count": 0,
+                "message": "No runbooks queued for contribution.",
+            }
+        )
+
+    from utils.knowledge.kb_contributor import (
+        KbContributeError,
+        prepare_contribution_batch,
+        submit_batch,
+    )
+
+    try:
+        batch = prepare_contribution_batch(queued)
+        pr_url = await submit_batch(batch, PUEO_KB_REPO)
+    except KbContributeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    now = datetime.utcnow().isoformat()
+    ids = [r["id"] for r in queued]
+
+    def _mark_submitted() -> None:
+        with sqlite3.connect(DB_PATH) as conn:
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE agent_strategies SET kb_pr_url=? WHERE id IN ({placeholders})",  # nosec B608 — placeholders built from len(ids) only, no user input
+                [now + "|" + pr_url] + ids,
+            )
+            conn.commit()
+
+    await asyncio.to_thread(_mark_submitted)
+    log.info("runbooks_contributed", count=len(queued), pr_url=pr_url)
+    return JSONResponse({"ok": True, "pr_url": pr_url, "count": len(queued)})
 
 
 def run_dashboard() -> None:

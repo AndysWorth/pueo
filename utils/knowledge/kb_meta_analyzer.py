@@ -23,6 +23,7 @@ class RunbookRow:
     reviewed_at: Optional[str]
     promoted_at: Optional[str]
     contributed_at: Optional[str]
+    kb_pr_url: Optional[str] = None
 
 
 @dataclass
@@ -47,7 +48,8 @@ def _load_runbooks(db_path: str) -> list[RunbookRow]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, title, trigger_pattern, approach, runbook_state,"
-            " created_at, reviewed_at, promoted_at, contributed_at"
+            " created_at, reviewed_at, promoted_at, contributed_at,"
+            " kb_pr_url"
             " FROM agent_strategies"
             " WHERE runbook_state IN ('candidate', 'gap')"
             " ORDER BY created_at DESC"
@@ -63,6 +65,7 @@ def _load_runbooks(db_path: str) -> list[RunbookRow]:
             reviewed_at=r["reviewed_at"],
             promoted_at=r["promoted_at"],
             contributed_at=r["contributed_at"],
+            kb_pr_url=r["kb_pr_url"],
         )
         for r in rows
     ]

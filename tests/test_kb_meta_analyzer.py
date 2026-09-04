@@ -30,16 +30,17 @@ def _seed_db(db_path: str, rows: list[dict]) -> None:
             " created_at TEXT NOT NULL,"
             " reviewed_at TEXT,"
             " promoted_at TEXT,"
-            " contributed_at TEXT"
+            " contributed_at TEXT,"
+            " kb_pr_url TEXT"
             ")"
         )
         for row in rows:
             conn.execute(
                 "INSERT INTO agent_strategies"
                 " (id, title, trigger_pattern, approach, runbook_state, created_at,"
-                "  reviewed_at, promoted_at, contributed_at)"
+                "  reviewed_at, promoted_at, contributed_at, kb_pr_url)"
                 " VALUES (:id, :title, :trigger_pattern, :approach, :runbook_state,"
-                "  :created_at, :reviewed_at, :promoted_at, :contributed_at)",
+                "  :created_at, :reviewed_at, :promoted_at, :contributed_at, :kb_pr_url)",
                 {
                     "id": row["id"],
                     "title": row["title"],
@@ -50,6 +51,7 @@ def _seed_db(db_path: str, rows: list[dict]) -> None:
                     "reviewed_at": row.get("reviewed_at"),
                     "promoted_at": row.get("promoted_at"),
                     "contributed_at": row.get("contributed_at"),
+                    "kb_pr_url": row.get("kb_pr_url"),
                 },
             )
         conn.commit()
