@@ -359,7 +359,7 @@
                 onkeydown="handleKey(event)"></textarea>
       <button id="btn-send" onclick="sendMessage()">Send</button>
       <button id="btn-tools" onclick="toggleToolCalls()" title="Show or hide tool calls in session history">Tool calls</button>
-      <button id="btn-debug-mode" onclick="toggleDebugMode()" title="Enable DEBUG logging for this session (toggle)">🐛 Debug</button>
+      {% if dev_mode %}<button id="btn-debug-mode" onclick="toggleDebugMode()" title="Enable DEBUG logging for this session (toggle)">🐛 Debug</button>{% endif %}
       <button id="btn-debug" onclick="downloadDebugLog()" title="Download full debug log (system prompt + all turns) for this session">Debug log</button>
     </div>
   </div>
@@ -660,11 +660,13 @@
   }
 
   async function syncDebugModeButton() {
+    const btn = document.getElementById('btn-debug-mode');
+    if (!btn) return;
     try {
       const r = await fetch('/chat/debug-mode');
       if (r.ok) {
         const data = await r.json();
-        document.getElementById('btn-debug-mode').classList.toggle('active', !!data.enabled);
+        btn.classList.toggle('active', !!data.enabled);
       }
     } catch (e) { /* ignore */ }
   }

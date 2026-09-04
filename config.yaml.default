@@ -129,6 +129,7 @@ agent:
                                     # hitl: create an approval card for the user to decide how to continue
                                     # cloud: immediately escalate to the cloud LLM (requires LLM_PROVIDER=both/cloud)
                                     # cloud_then_hitl: try cloud first; fall back to HITL if billing cap exceeded
+  # development_mode: false  # Unlock dev-only surfaces: Runbook Review tab, cloud escalation cards, KB submission, code proposals, debug toggle
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
   # chromadb_path: ""           # ChromaDB vector store; default: ~/Library/Application Support/Pueo/chromadb (macOS)
   # rag_top_k: 5                # Number of knowledge chunks returned per query_knowledge call

@@ -436,6 +436,11 @@ if $WRITE_CONFIG; then
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
     ask "Dashboard port"  "8080"  DASHBOARD_PORT
     echo
+    echo "  Development mode unlocks advanced surfaces: Runbook Review dashboard tab,"
+    echo "  community knowledge-base submission, cloud escalation approval cards, code"
+    echo "  proposals, and the debug logging toggle. Disable for appliance / production use."
+    ask "Enable development mode? (true/false)"  "false"  DEVELOPMENT_MODE
+    echo
     echo "  Chat tool registration allows the conversational agent to write and register"
     echo "  new Python tools at runtime. Each tool requires sandbox CI validation and"
     echo "  explicit approval before it is loaded, but the agent can still generate"
@@ -659,6 +664,7 @@ agent:
   escalation_preference: "hitl"     # hitl | cloud | cloud_then_hitl — where to route when agent is stuck
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
+  development_mode: ${DEVELOPMENT_MODE}
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
   allow_diagnostic_wan: ${ALLOW_DIAGNOSTIC_WAN}
   ha_profile_refresh_hours: 24        # How often to rebuild the HA environment profile (integrations, versions)

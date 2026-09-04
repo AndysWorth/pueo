@@ -1016,6 +1016,19 @@ class TestHAUpdateManagerConfig:
 
         assert config.CHAT_MEMORY_TOP_K == 5
 
+    def test_development_mode_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVELOPMENT_MODE is False
+
+    def test_development_mode_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"development_mode": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEVELOPMENT_MODE is True
+
     def test_chat_allow_tool_registration_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

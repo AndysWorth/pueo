@@ -27,6 +27,7 @@ from config import (
     AGENT_MAX_WALL_SECONDS,
     DASHBOARD_PORT,
     DB_PATH,
+    DEVELOPMENT_MODE,
     FEDERATED_CASES_REPO,
     NOTIFY_WATCH_DIR,
 )
@@ -2747,7 +2748,9 @@ def _load_chat_sessions() -> list[dict]:
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_tab(request: Request) -> HTMLResponse:
     sessions = await asyncio.to_thread(_load_chat_sessions)
-    return templates.TemplateResponse(request, "chat.html", {"sessions": sessions})
+    return templates.TemplateResponse(
+        request, "chat.html", {"sessions": sessions, "dev_mode": DEVELOPMENT_MODE}
+    )
 
 
 @app.get("/chat/sessions")
@@ -3493,6 +3496,11 @@ async def submit_episode_to_case_library(
         mark_episode_submitted,
     )
 
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(
+            status_code=400,
+            detail="Community KB submission requires development_mode: true in config.yaml.",
+        )
     if not FEDERATED_CASES_REPO:
         raise HTTPException(
             status_code=400,

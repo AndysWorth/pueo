@@ -660,6 +660,7 @@ class TestAddTool:
     def test_disabled_by_default(self, executor, monkeypatch):
         import config
 
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", False)
         result = asyncio.run(
             executor.execute(
@@ -680,6 +681,7 @@ class TestAddTool:
     def test_sandbox_not_run_returns_error(self, prepped_executor, monkeypatch):
         import config
 
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
         prepped_executor._sandbox_passed = False  # override back to False
         result = asyncio.run(
@@ -701,6 +703,7 @@ class TestAddTool:
     def test_valid_flow_queues_hitl_card(self, prepped_executor, monkeypatch):
         import config
 
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
         result = asyncio.run(
             prepped_executor.execute(
@@ -720,6 +723,7 @@ class TestAddTool:
     def test_valid_flow_notifier_receives_card(self, prepped_executor, monkeypatch):
         import config
 
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
         asyncio.run(
             prepped_executor.execute(
@@ -743,6 +747,7 @@ class TestAddTool:
     def test_syntax_error_in_code_returns_error(self, prepped_executor, monkeypatch):
         import config
 
+        monkeypatch.setattr(config, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(config, "CHAT_ALLOW_TOOL_REGISTRATION", True)
         result = asyncio.run(
             prepped_executor.execute(
