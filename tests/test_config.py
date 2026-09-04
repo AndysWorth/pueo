@@ -1349,6 +1349,50 @@ class TestFederatedCasesRepoConfig:
 
         assert config.CASE_INGEST_CACHE_DIR == "/tmp/my_ingest/"
 
+    def test_pueo_kb_repo_default_empty(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_KB_REPO == ""
+
+    def test_pueo_kb_repo_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"pueo_kb_repo": "owner/pueo-kb"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PUEO_KB_REPO == "owner/pueo-kb"
+
+    def test_kb_sync_interval_hours_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.KB_SYNC_INTERVAL_HOURS == 168
+
+    def test_kb_sync_interval_hours_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"kb_sync_interval_hours": 24}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.KB_SYNC_INTERVAL_HOURS == 24
+
+    def test_kb_sync_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert Path(config.KB_SYNC_CACHE_DIR).is_absolute()
+        assert Path(config.KB_SYNC_CACHE_DIR).name == "kb_sync"
+
+    def test_kb_sync_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"kb_sync_cache_dir": "/tmp/my_kb_sync/"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.KB_SYNC_CACHE_DIR == "/tmp/my_kb_sync/"
+
     def test_allow_diagnostic_wan_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

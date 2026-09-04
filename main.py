@@ -388,6 +388,47 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             set_rag_refreshing(False)
 
 
+async def _kb_sync_loop(knowledge_store: Any, interval_hours: int) -> None:
+    """Periodically sync from the federated pueo-kb: download and embed relevant entries."""
+    import config as _cfg
+    from utils.core.logging import get_logger as _gl
+    from utils.core.timeline import write_timeline_event
+
+    _log = _gl("main")
+
+    if not _cfg.PUEO_KB_REPO or not _cfg.DEVELOPMENT_MODE:
+        _log.info(
+            "kb_sync_skipped",
+            reason="not_configured" if not _cfg.PUEO_KB_REPO else "dev_mode_disabled",
+        )
+        return
+
+    _log.info("kb_sync_loop_started", next_run_hours=interval_hours)
+    while True:
+        await asyncio.sleep(interval_hours * 3600)
+        _log.info("kb_sync_start")
+        try:
+            from utils.knowledge.kb_ingester import KbIngestError, run_kb_sync
+
+            count = await asyncio.to_thread(
+                run_kb_sync,
+                _cfg.PUEO_KB_REPO,
+                _cfg.KB_SYNC_CACHE_DIR,
+                knowledge_store,
+            )
+            _log.info("kb_sync_done", embedded=count)
+            write_timeline_event(
+                "INFO",
+                "kb_sync",
+                f"KB sync complete: {count} new entries",
+            )
+        except KbIngestError as exc:
+            _log.warning("kb_sync_failed", error=str(exc))
+            write_timeline_event("WARN", "kb_sync", f"KB sync failed: {exc}")
+        except Exception as exc:  # nosec B110
+            _log.warning("kb_sync_error", error=str(exc))
+
+
 async def _known_issues_poll_loop(
     db_path: str, reminder_days: int, notifier: Any
 ) -> None:
@@ -770,6 +811,11 @@ async def supervisor_main(config_path: Path) -> None:
             "rag_refresh",
             lambda: _rag_refresh_loop(knowledge_store, cfg.RAG_REFRESH_INTERVAL_HOURS),
             interval_seconds=int(cfg.RAG_REFRESH_INTERVAL_HOURS * 3600),
+        )
+        supervisor.start(
+            "kb_sync",
+            lambda: _kb_sync_loop(knowledge_store, cfg.KB_SYNC_INTERVAL_HOURS),
+            interval_seconds=int(cfg.KB_SYNC_INTERVAL_HOURS * 3600),
         )
 
     # Per-path disk usage polling loop

@@ -12,17 +12,36 @@
   .rb-btn-review:hover  { background:#4f46e5; }
   .rb-btn-contrib { background:#0d6efd;color:#fff; }
   .rb-btn-contrib:hover { background:#0b5ed7; }
+  .rb-btn-submit  { background:#0d6efd;color:#fff;padding:0.4rem 1rem;font-size:0.85rem; }
+  .rb-btn-submit:hover  { background:#0b5ed7; }
   .rb-btn:disabled { opacity:0.5;cursor:default; }
   .dup-warning { background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.5rem 0.75rem;font-size:0.82rem;margin-bottom:0.75rem;color:#856404; }
   .rb-meta { font-size:0.75rem;color:#888;margin-top:0.25rem; }
   .rb-approach { font-size:0.82rem;color:#444;margin-top:0.35rem;white-space:pre-wrap;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:4px;padding:0.5rem;max-height:10rem;overflow-y:auto; }
   .section-header { font-size:0.95rem;font-weight:700;color:#333;margin:1.25rem 0 0.5rem; }
   .flash { display:none;font-size:0.8rem;margin-left:0.5rem;color:#28a745; }
+  .kb-bar { background:#e8f4fd;border:1px solid #b6d4fe;border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap; }
+  .kb-bar code { font-size:0.8rem;background:#fff;border:1px solid #ccc;border-radius:3px;padding:0.1rem 0.35rem; }
+  .kb-bar-count { font-size:0.82rem;color:#444; }
+  .kb-pr-link { font-size:0.75rem; }
 </style>
 
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
   <h2 style="font-size:1rem;color:#555;margin:0;">Runbook Review <span style="font-size:0.8rem;font-weight:400;color:#888;">(dev mode)</span></h2>
 </div>
+
+{% set queued_count = report.contribution_ready | length %}
+{% if kb_repo_configured and queued_count > 0 %}
+<div class="kb-bar">
+  <span class="kb-bar-count"><strong>{{ queued_count }}</strong> runbook{{ 's' if queued_count != 1 }} queued for contribution to <code>{{ kb_repo }}</code></span>
+  <button class="rb-btn rb-btn-submit" id="submit-btn" onclick="submitToKb(this)">Submit to pueo-kb</button>
+  <span class="flash" id="flash-submit" style="color:#0d6efd;"></span>
+</div>
+{% elif kb_repo_configured %}
+<div class="kb-bar" style="color:#666;">
+  <span class="kb-bar-count">No runbooks queued for contribution to <code>{{ kb_repo }}</code>. Review a candidate and click "Queue for contribution" to add it.</span>
+</div>
+{% endif %}
 
 {% if report.duplicate_pairs %}
   <div class="section-header">⚠ Near-duplicate pairs detected</div>
@@ -50,7 +69,8 @@
       Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
       &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
       {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
-      {% if rb.contributed_at %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+      {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+      {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
     </div>
     <details style="margin-top:0.4rem;">
       <summary>Approach</summary>
@@ -85,7 +105,8 @@
       Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
       &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
       {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
-      {% if rb.contributed_at %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+      {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+      {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
     </div>
     <details style="margin-top:0.4rem;">
       <summary>What was tried</summary>
@@ -139,6 +160,24 @@ function markContribution(id, btn) {
     .then(function(r) {
       if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Error'); btn.disabled = false; }); }
       return r.json().then(function() { flash(id); location.reload(); });
+    })
+    .catch(function() { btn.disabled = false; });
+}
+
+function submitToKb(btn) {
+  btn.disabled = true;
+  var flashEl = document.getElementById('flash-submit');
+  if (flashEl) { flashEl.style.display = 'none'; }
+  fetch('/runbooks/contribute', {method:'POST'})
+    .then(function(r) {
+      if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Submit failed'); btn.disabled = false; }); }
+      return r.json().then(function(d) {
+        if (flashEl) {
+          flashEl.textContent = d.pr_url ? ('✓ PR opened: ' + d.pr_url) : (d.message || '✓ Done');
+          flashEl.style.display = 'inline';
+        }
+        setTimeout(function() { location.reload(); }, 3000);
+      });
     })
     .catch(function() { btn.disabled = false; });
 }
