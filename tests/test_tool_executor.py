@@ -577,6 +577,7 @@ class TestSaveStrategy:
                 "CREATE TABLE agent_strategies ("
                 "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
                 "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "runbook_state TEXT NOT NULL DEFAULT 'candidate', "
                 "created_at TEXT NOT NULL)"
             )
             conn.commit()
@@ -629,6 +630,7 @@ class TestSaveStrategy:
                 "CREATE TABLE agent_strategies ("
                 "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
                 "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "runbook_state TEXT NOT NULL DEFAULT 'candidate', "
                 "created_at TEXT NOT NULL)"
             )
             conn.commit()
@@ -1657,3 +1659,277 @@ class TestExecuteLocalPython:
             )
         assert result.success is False
         assert "timed out" in result.error.lower()
+
+
+def _make_bare_executor():
+    """Helper: make a plain ToolExecutor with no SSH command results."""
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.hitl.notify import FakeNotifier
+    from utils.ha.ssh_client import FakeSSHClient
+    from utils.agent.tool_executor import ToolExecutor
+
+    ssh = FakeSSHClient(file_contents={}, command_results={})
+    return ToolExecutor(
+        ha_ssh_client=ssh,
+        gate=FakeAutonomyGate(auto_execute_result=False),
+        notifier=FakeNotifier(),
+    )
+
+
+class TestReadPueoLogTimeRange:
+    """Tests for after/before time-range filtering in _read_pueo_log."""
+
+    def test_after_filter_excludes_old_lines(self, tmp_path, pueo_dirs):
+        log_dir = pueo_dirs.log_dir
+        log_file = log_dir / "pueo.log"
+        log_file.write_text(
+            '{"timestamp":"2026-09-04 02:00:00","level":"INFO","msg":"early"}\n'
+            '{"timestamp":"2026-09-04 03:30:00","level":"INFO","msg":"inwindow"}\n'
+            '{"timestamp":"2026-09-04 05:00:00","level":"INFO","msg":"after"}\n'
+        )
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._read_pueo_log(
+                after="2026-09-04 03:00:00", before="2026-09-04 04:00:00"
+            )
+        )
+        assert result.success is True
+        assert "inwindow" in result.output
+        assert "early" not in result.output
+        assert "after" not in result.output
+
+    def test_no_lines_in_window_returns_empty_message(self, tmp_path, pueo_dirs):
+        log_dir = pueo_dirs.log_dir
+        log_file = log_dir / "pueo.log"
+        log_file.write_text(
+            '{"timestamp":"2026-09-04 02:00:00","level":"INFO","msg":"x"}\n'
+        )
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._read_pueo_log(
+                after="2026-09-04 10:00:00", before="2026-09-04 11:00:00"
+            )
+        )
+        assert result.success is True
+        assert "No log lines" in result.output
+
+    def test_token_cap_adds_truncation_notice(self, tmp_path, pueo_dirs):
+        log_dir = pueo_dirs.log_dir
+        # Generate a log line larger than 8000 chars total
+        big_line = (
+            '{"timestamp":"2026-09-04 03:00:00","level":"INFO","msg":"'
+            + "x" * 200
+            + '"}\n'
+        )
+        log_file = log_dir / "pueo.log"
+        log_file.write_text(big_line * 50)
+        executor = _make_bare_executor()
+        result = asyncio.run(executor._read_pueo_log(lines=500))
+        assert result.success is True
+        assert "truncated" in result.output
+
+
+class TestSummarizeLogWindow:
+    """Tests for _summarize_log_window."""
+
+    def test_counts_by_level(self, tmp_path, pueo_dirs):
+        log_dir = pueo_dirs.log_dir
+        log_file = log_dir / "pueo.log"
+        log_file.write_text(
+            '{"timestamp":"2026-09-04 03:10:00","level":"ERROR","msg":"boom"}\n'
+            '{"timestamp":"2026-09-04 03:15:00","level":"WARNING","msg":"warn"}\n'
+            '{"timestamp":"2026-09-04 03:20:00","level":"INFO","msg":"info"}\n'
+            '{"timestamp":"2026-09-04 02:00:00","level":"INFO","msg":"outside"}\n'
+        )
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._summarize_log_window(
+                "pueo", "2026-09-04 03:00:00", "2026-09-04 04:00:00"
+            )
+        )
+        assert result.success is True
+        assert "ERROR: 1" in result.output
+        assert "WARNING: 1" in result.output
+        assert "INFO: 1" in result.output
+        assert "boom" in result.output
+        assert "warn" in result.output
+        assert "outside" not in result.output
+
+    def test_empty_window_says_no_lines(self, tmp_path, pueo_dirs):
+        log_dir = pueo_dirs.log_dir
+        (log_dir / "pueo.log").write_text(
+            '{"timestamp":"2026-09-04 02:00:00","level":"INFO","msg":"x"}\n'
+        )
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._summarize_log_window(
+                "pueo", "2026-09-04 10:00:00", "2026-09-04 11:00:00"
+            )
+        )
+        assert result.success is True
+        assert "no log lines" in result.output.lower()
+
+    def test_missing_log_returns_error(self, tmp_path, pueo_dirs):
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._summarize_log_window(
+                "pueo", "2026-09-04 03:00:00", "2026-09-04 04:00:00"
+            )
+        )
+        assert result.success is False
+        assert "not found" in result.error
+
+    def test_invalid_log_name_returns_error(self, tmp_path, pueo_dirs):
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._summarize_log_window(
+                "ha_core", "2026-09-04 03:00:00", "2026-09-04 04:00:00"
+            )
+        )
+        assert result.success is False
+        assert "pueo" in result.error
+
+    def test_missing_after_or_before_returns_error(self, tmp_path, pueo_dirs):
+        executor = _make_bare_executor()
+        result = asyncio.run(
+            executor._summarize_log_window("pueo", "", "2026-09-04 04:00:00")
+        )
+        assert result.success is False
+        assert "required" in result.error
+
+
+class TestSaveRunbookType:
+    """Tests for runbook_type param in _save_strategy."""
+
+    def test_gap_type_stored_in_output(self, tmp_path):
+        import sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "runbook_state TEXT NOT NULL DEFAULT 'candidate', "
+                "created_at TEXT NOT NULL)"
+            )
+            conn.commit()
+        executor = _make_bare_executor()
+        executor._db_path = db_path
+        result = asyncio.run(
+            executor._save_strategy(
+                "stuck", "auth failure", "tried X", runbook_type="gap"
+            )
+        )
+        assert result.success is True
+        assert "gap" in result.output
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT runbook_state FROM agent_strategies").fetchone()
+        assert row[0] == "gap"
+
+    def test_invalid_type_falls_back_to_candidate(self, tmp_path):
+        import sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                "trigger_pattern TEXT NOT NULL, approach TEXT NOT NULL, "
+                "runbook_state TEXT NOT NULL DEFAULT 'candidate', "
+                "created_at TEXT NOT NULL)"
+            )
+            conn.commit()
+        executor = _make_bare_executor()
+        executor._db_path = db_path
+        result = asyncio.run(
+            executor._save_strategy(
+                "test", "trigger", "approach", runbook_type="unknown_type"
+            )
+        )
+        assert result.success is True
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT runbook_state FROM agent_strategies").fetchone()
+        assert row[0] == "candidate"
+
+
+class TestRequestEscalation:
+    """Tests for _request_escalation."""
+
+    def test_hitl_preference_sends_notification(self, tmp_path, monkeypatch):
+        import config as _config
+
+        monkeypatch.setattr(_config, "ESCALATION_PREFERENCE", "hitl")
+        notifier_calls = []
+
+        async def fake_send(subject, body, payload):
+            notifier_calls.append((subject, body, payload))
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        fake_notifier = FakeNotifier()
+        fake_notifier.send = fake_send
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=fake_notifier,
+        )
+        result = asyncio.run(
+            executor._request_escalation("stuck on auth", "maybe timeout")
+        )
+        assert result.success is True
+        assert (
+            "notification" in result.output.lower() or "sent" in result.output.lower()
+        )
+        assert len(notifier_calls) == 1
+        assert "stuck on auth" in notifier_calls[0][1]
+
+    def test_cloud_preference_returns_cloud_message(self, tmp_path, monkeypatch):
+        import config as _config
+
+        monkeypatch.setattr(_config, "ESCALATION_PREFERENCE", "cloud")
+        executor = _make_bare_executor()
+        result = asyncio.run(executor._request_escalation("no progress"))
+        assert result.success is True
+        assert "cloud" in result.output.lower()
+
+    def test_cloud_then_hitl_preference(self, tmp_path, monkeypatch):
+        import config as _config
+
+        monkeypatch.setattr(_config, "ESCALATION_PREFERENCE", "cloud_then_hitl")
+        executor = _make_bare_executor()
+        result = asyncio.run(executor._request_escalation("no progress"))
+        assert result.success is True
+        assert "cloud" in result.output.lower()
+
+
+class TestRepeatQuery:
+    """Tests for repeat_query in utils/core/prompts.py."""
+
+    def test_appends_system_prompt_after_separator(self):
+        from utils.core.prompts import repeat_query
+
+        result = repeat_query("SYSTEM", "USER CONTENT")
+        assert result.startswith("USER CONTENT")
+        assert "---" in result
+        assert result.endswith("SYSTEM")
+
+    def test_empty_user_content(self):
+        from utils.core.prompts import repeat_query
+
+        result = repeat_query("SYSTEM", "")
+        assert "SYSTEM" in result
+        assert "---" in result
+
+    def test_system_prompt_appears_twice_in_messages(self):
+        from utils.core.prompts import repeat_query
+
+        system = "You are a helpful assistant."
+        user = "What is 2+2?"
+        result = repeat_query(system, user)
+        assert user in result
+        assert system in result

@@ -779,9 +779,11 @@ REWRITE_NETALERTX_CONF = ToolDefinition(
 SAVE_RUNBOOK = ToolDefinition(
     name="save_runbook",
     description=(
-        "Record a novel investigation or repair approach in the runbook library "
-        "so future sessions can retrieve it via query_knowledge. "
-        "Call when you used an approach that worked and was not already in the knowledge base."
+        "Record an investigation approach in the runbook library so future sessions can "
+        "retrieve it via query_knowledge. Use type='candidate' when you used a novel approach "
+        "that worked. Use type='gap' when query_knowledge returned nothing relevant OR when "
+        "this session ends with outcome=failed — document what was tried and why you are stuck. "
+        "Gap runbooks are MANDATORY on failure; they surface knowledge gaps to developers."
     ),
     parameters={
         "type": "object",
@@ -799,7 +801,19 @@ SAVE_RUNBOOK = ToolDefinition(
             },
             "approach": {
                 "type": "string",
-                "description": "Step-by-step description of what worked and why",
+                "description": (
+                    "For candidate: step-by-step description of what worked and why. "
+                    "For gap: what was tried, what was ruled out, and why further progress "
+                    "was not possible."
+                ),
+            },
+            "runbook_type": {
+                "type": "string",
+                "enum": ["candidate", "gap"],
+                "description": (
+                    "'candidate' — novel approach that succeeded, pending human review. "
+                    "'gap' — failed session or empty KB result; documents what was tried."
+                ),
             },
         },
         "required": ["title", "trigger_pattern", "approach"],
@@ -810,9 +824,11 @@ READ_PUEO_LOG = ToolDefinition(
     name="read_pueo_log",
     description=(
         "Read recent lines from Pueo's own logs. "
+        "Use for recent-tail reads or level filtering. "
+        "For time-range analysis (e.g. 'what happened between 03:00 and 04:00'), "
+        "use summarize_log_window instead — it filters by timestamp and aggregates by level. "
         "Default reads the structured JSON log (loop crashes, stream resets, etc.). "
-        "Pass filename='pueo-stderr.log' to read raw uvicorn/FastAPI stderr output "
-        "(ASGI exceptions, startup errors)."
+        "Pass filename='pueo-stderr.log' to read raw uvicorn/FastAPI stderr output."
     ),
     parameters={
         "type": "object",
@@ -831,6 +847,20 @@ READ_PUEO_LOG = ToolDefinition(
                 "enum": ["pueo.log", "pueo-stderr.log"],
                 "description": "Which Pueo log file to read (default 'pueo.log')",
             },
+            "after": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp (YYYY-MM-DD HH:MM:SS or YYYY-MM-DDTHH:MM:SS): "
+                    "return only lines at or after this time (pueo.log only)"
+                ),
+            },
+            "before": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp (YYYY-MM-DD HH:MM:SS or YYYY-MM-DDTHH:MM:SS): "
+                    "return only lines strictly before this time (pueo.log only)"
+                ),
+            },
         },
         "required": [],
     },
@@ -840,6 +870,7 @@ SEARCH_LOG = ToolDefinition(
     name="search_log",
     description=(
         "Search a log for lines matching a regex pattern. Returns matching lines with context. "
+        "For time-range analysis use summarize_log_window instead. "
         "Sources: 'pueo' (Pueo JSON log), 'pueo_stderr' (Pueo uvicorn/ASGI stderr), "
         "'ha_core' (HA Core journal), 'ha_supervisor' (HA Supervisor daemon), "
         "'ha_os' (HassOS OS log), 'ha_host' (host-level log), "
@@ -879,6 +910,71 @@ SEARCH_LOG = ToolDefinition(
             },
         },
         "required": ["log_name", "pattern"],
+    },
+)
+
+SUMMARIZE_LOG_WINDOW = ToolDefinition(
+    name="summarize_log_window",
+    description=(
+        "Aggregate Pueo log lines for a specific time window. Returns counts by level, "
+        "full text of ERROR and WARNING events, and a suppressed count for INFO lines. "
+        "Output is bounded to ~400 tokens regardless of window size. "
+        "This is the correct tool for time-range log analysis (e.g. 'what happened between "
+        "03:00 and 04:00'). Use search_log for keyword/pattern search across the full log."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "log_name": {
+                "type": "string",
+                "enum": ["pueo", "pueo_stderr"],
+                "description": "Which Pueo log file to summarize",
+            },
+            "after": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp (YYYY-MM-DD HH:MM:SS or YYYY-MM-DDTHH:MM:SS): "
+                    "include lines at or after this time"
+                ),
+            },
+            "before": {
+                "type": "string",
+                "description": (
+                    "ISO timestamp (YYYY-MM-DD HH:MM:SS or YYYY-MM-DDTHH:MM:SS): "
+                    "include lines strictly before this time"
+                ),
+            },
+        },
+        "required": ["log_name", "after", "before"],
+    },
+)
+
+REQUEST_ESCALATION = ToolDefinition(
+    name="request_escalation",
+    description=(
+        "Request escalation when you have exhausted all reasonable investigative paths "
+        "and cannot make further progress. Call AFTER save_runbook(type='gap') documents "
+        "what was tried. Routes per the escalation_preference config key: "
+        "'hitl' creates an approval card for the user to continue; "
+        "'cloud' triggers a cloud LLM escalation; "
+        "'cloud_then_hitl' tries cloud first and falls back to HITL if billing is exceeded."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One sentence explaining why further progress is not possible "
+                    "(e.g. 'Evidence is contradictory and no runbook covers this combination')"
+                ),
+            },
+            "current_hypothesis": {
+                "type": "string",
+                "description": "Best current hypothesis even if low-confidence (or empty string)",
+            },
+        },
+        "required": ["reason"],
     },
 )
 
@@ -1105,6 +1201,8 @@ def build_ha_tool_registry() -> ToolRegistry:
         SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        SUMMARIZE_LOG_WINDOW,
+        REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         GET_HA_PROFILE,
         SEARCH_INTEGRATIONS,
@@ -1154,6 +1252,8 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        SUMMARIZE_LOG_WINDOW,
+        REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
         GET_OLLAMA_STATUS,
@@ -1196,6 +1296,8 @@ def build_chat_tool_registry() -> ToolRegistry:
         SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
+        SUMMARIZE_LOG_WINDOW,
+        REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
         GET_DASHBOARD_ENTITY_HEALTH,
@@ -1220,6 +1322,8 @@ def build_installer_diagnosis_registry() -> ToolRegistry:
         READ_LOGS,
         SEARCH_LOG,
         READ_PUEO_LOG,
+        SUMMARIZE_LOG_WINDOW,
+        REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         SAVE_RUNBOOK,
         FINISH_INSTALLER_DIAGNOSIS,
@@ -1240,6 +1344,8 @@ def build_health_diagnosis_registry() -> ToolRegistry:
         READ_LOGS,
         SEARCH_LOG,
         READ_PUEO_LOG,
+        SUMMARIZE_LOG_WINDOW,
+        REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         SAVE_RUNBOOK,
         FINISH_HEALTH_DIAGNOSIS,

@@ -656,6 +656,7 @@ agent:
   log_confidence_threshold: ${LOG_THRESHOLD}
   self_healing_enabled: ${SELF_HEALING}
   autonomy_level: ${AUTONOMY_LEVEL}
+  escalation_preference: "hitl"     # hitl | cloud | cloud_then_hitl — where to route when agent is stuck
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}

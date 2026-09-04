@@ -298,12 +298,15 @@ class ToolExecutor:
                     args.get("title", ""),
                     args.get("trigger_pattern", ""),
                     args.get("approach", ""),
+                    args.get("runbook_type", "candidate"),
                 )
             if name == "read_pueo_log":
                 return await self._read_pueo_log(
                     int(args.get("lines", 100)),
                     args.get("level"),
                     args.get("filename", "pueo.log"),
+                    args.get("after"),
+                    args.get("before"),
                 )
             if name == "search_log":
                 return await self._search_log(
@@ -312,6 +315,17 @@ class ToolExecutor:
                     int(args.get("context_lines", 2)),
                     int(args.get("max_matches", 20)),
                     args.get("addon_slug"),
+                )
+            if name == "summarize_log_window":
+                return await self._summarize_log_window(
+                    args.get("log_name", "pueo"),
+                    args.get("after", ""),
+                    args.get("before", ""),
+                )
+            if name == "request_escalation":
+                return await self._request_escalation(
+                    args.get("reason", ""),
+                    args.get("current_hypothesis", ""),
                 )
             if name == "finish_installer_diagnosis":
                 return ToolResult(
@@ -1785,7 +1799,11 @@ class ToolExecutor:
             )
 
     async def _save_strategy(
-        self, title: str, trigger_pattern: str, approach: str
+        self,
+        title: str,
+        trigger_pattern: str,
+        approach: str,
+        runbook_type: str = "candidate",
     ) -> ToolResult:
         if not title or not approach:
             return ToolResult(
@@ -1794,13 +1812,16 @@ class ToolExecutor:
                 output="",
                 error="title and approach are required",
             )
+        _VALID_TYPES = {"candidate", "gap", "seed"}
+        rtype = runbook_type if runbook_type in _VALID_TYPES else "candidate"
         strategy_id = str(uuid.uuid4())
-        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\n{approach}"
+        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\nType: {rtype}\n\n{approach}"
         meta = {
             "source": "agent_learned",
             "title": title,
             "trigger_pattern": trigger_pattern,
             "strategy_id": strategy_id,
+            "runbook_type": rtype,
         }
         if self._knowledge_store is not None:
             try:
@@ -1817,9 +1838,9 @@ class ToolExecutor:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO agent_strategies"
-                    " (id, title, trigger_pattern, approach, created_at)"
-                    " VALUES (?, ?, ?, ?, datetime('now'))",
-                    (strategy_id, title, trigger_pattern, approach),
+                    " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                    (strategy_id, title, trigger_pattern, approach, rtype),
                 )
                 conn.commit()
         except Exception as exc:
@@ -1827,7 +1848,7 @@ class ToolExecutor:
         return ToolResult(
             tool_name="save_runbook",
             success=True,
-            output=f"Runbook '{title}' saved (id={strategy_id})",
+            output=f"Runbook '{title}' saved as {rtype} (id={strategy_id})",
         )
 
     async def _read_pueo_log(
@@ -1835,6 +1856,8 @@ class ToolExecutor:
         lines: int = 100,
         level: Optional[str] = None,
         filename: str = "pueo.log",
+        after: Optional[str] = None,
+        before: Optional[str] = None,
     ) -> ToolResult:
         import re as _re
 
@@ -1877,16 +1900,40 @@ class ToolExecutor:
                 else:
                     # plain-text log: case-insensitive substring match
                     all_lines = [l for l in all_lines if level_upper in l.upper()]
+            # Time-range filtering (pueo.log JSON lines have a "timestamp" field)
+            if (after or before) and filename == "pueo.log":
+                after_n = after.replace("T", " ") if after else None
+                before_n = before.replace("T", " ") if before else None
+                ts_re = _re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+                filtered_ts = []
+                for line in all_lines:
+                    m = ts_re.search(line)
+                    if m:
+                        ts = m.group(1)[:19]  # YYYY-MM-DD HH:MM:SS
+                        if after_n and ts < after_n:
+                            continue
+                        if before_n and ts >= before_n:
+                            continue
+                    filtered_ts.append(line)
+                all_lines = filtered_ts
             if not all_lines:
                 return ToolResult(
                     tool_name="read_pueo_log",
                     success=True,
-                    output=f"No log lines matching level={level}",
+                    output="No log lines matching the given filters",
+                )
+            # Cap output at ~2000 tokens (≈8000 chars)
+            output = "\n".join(all_lines)
+            if len(output) > 8000:
+                output = output[-8000:]
+                output = (
+                    "[... truncated — use after/before params to narrow the window ...]\n"
+                    + output
                 )
             return ToolResult(
                 tool_name="read_pueo_log",
                 success=True,
-                output="\n".join(all_lines),
+                output=output,
             )
         except Exception as exc:
             return ToolResult(
@@ -1909,11 +1956,13 @@ class ToolExecutor:
         context_lines = max(0, min(context_lines, 10))
         max_matches = max(1, min(max_matches, 100))
 
+        # Limit HA journal fetch to the most recent 5000 lines to avoid
+        # fetching tens of thousands of lines from a long-running installation.
         _SSH_COMMANDS = {
-            "ha_core": "ha core logs --no-follow",
-            "ha_supervisor": "ha supervisor logs --no-follow",
-            "ha_os": "ha os logs --no-follow",
-            "ha_host": "ha host logs --no-follow",
+            "ha_core": "ha core logs --no-follow 2>&1 | tail -n 5000",
+            "ha_supervisor": "ha supervisor logs --no-follow 2>&1 | tail -n 5000",
+            "ha_os": "ha os logs --no-follow 2>&1 | tail -n 5000",
+            "ha_host": "ha host logs --no-follow 2>&1 | tail -n 5000",
         }
 
         if log_name in ("pueo", "pueo_stderr"):
@@ -2023,8 +2072,174 @@ class ToolExecutor:
             )
         sep = "\n---\n"
         summary = f"{match_count} match(es) for {pattern!r} in {log_name} log:\n\n"
+        output = summary + sep.join(results)
+        # Cap at ~3000 tokens (≈12000 chars)
+        if len(output) > 12000:
+            output = (
+                output[:12000]
+                + "\n[... truncated — reduce max_matches or narrow pattern ...]"
+            )
         return ToolResult(
             tool_name="search_log",
             success=True,
-            output=summary + sep.join(results),
+            output=output,
         )
+
+    async def _summarize_log_window(
+        self,
+        log_name: str,
+        after: str,
+        before: str,
+    ) -> ToolResult:
+        import re as _re
+        import json as _json
+
+        if log_name not in ("pueo", "pueo_stderr"):
+            return ToolResult(
+                tool_name="summarize_log_window",
+                success=False,
+                output="",
+                error="log_name must be 'pueo' or 'pueo_stderr'",
+            )
+        if not after or not before:
+            return ToolResult(
+                tool_name="summarize_log_window",
+                success=False,
+                output="",
+                error="both after and before are required",
+            )
+        after_n = after.replace("T", " ")[:19]
+        before_n = before.replace("T", " ")[:19]
+        fname = "pueo.log" if log_name == "pueo" else "pueo-stderr.log"
+        log_path = _get_dirs().log_dir / fname
+        if not log_path.exists():
+            return ToolResult(
+                tool_name="summarize_log_window",
+                success=False,
+                output="",
+                error=f"Log file not found: {log_path}",
+            )
+        try:
+            raw = await asyncio.to_thread(log_path.read_text, "utf-8", "replace")
+        except Exception as exc:
+            return ToolResult(
+                tool_name="summarize_log_window",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+        counts: dict[str, int] = {"ERROR": 0, "WARNING": 0, "INFO": 0, "other": 0}
+        error_lines: list[str] = []
+        warning_lines: list[str] = []
+        ts_re = _re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+        lvl_re = _re.compile(r'"level"\s*:\s*"([^"]+)"')
+
+        for line in raw.splitlines():
+            ts_m = ts_re.search(line)
+            if not ts_m:
+                continue
+            ts = ts_m.group(1)[:19]
+            if ts < after_n or ts >= before_n:
+                continue
+            lvl_m = lvl_re.search(line)
+            lvl = lvl_m.group(1).upper() if lvl_m else "other"
+            if lvl in counts:
+                counts[lvl] += 1
+            else:
+                counts["other"] += 1
+            if lvl == "ERROR" and len(error_lines) < 10:
+                error_lines.append(line[:500])
+            elif lvl == "WARNING" and len(warning_lines) < 10:
+                warning_lines.append(line[:300])
+
+        total = sum(counts.values())
+        parts = [
+            f"Log window: {after_n} → {before_n}",
+            f"Total lines: {total} "
+            f"(ERROR: {counts['ERROR']}, WARNING: {counts['WARNING']}, "
+            f"INFO: {counts['INFO']}, other: {counts['other']})",
+        ]
+        if error_lines:
+            parts.append("\n== ERRORS ==")
+            parts.extend(error_lines)
+        if warning_lines:
+            parts.append("\n== WARNINGS ==")
+            parts.extend(warning_lines)
+        if not total:
+            parts.append("(no log lines found in this window)")
+
+        return ToolResult(
+            tool_name="summarize_log_window",
+            success=True,
+            output="\n".join(parts),
+        )
+
+    async def _request_escalation(
+        self,
+        reason: str,
+        current_hypothesis: str = "",
+    ) -> ToolResult:
+        import config as _config
+
+        pref = getattr(_config, "ESCALATION_PREFERENCE", "hitl")
+        log.info(
+            "escalation_requested",
+            reason=reason,
+            preference=pref,
+            hypothesis=current_hypothesis,
+        )
+
+        if pref == "cloud":
+            return ToolResult(
+                tool_name="request_escalation",
+                success=True,
+                output=(
+                    "Escalation preference is 'cloud'. "
+                    "The supervisor will re-run this session with the cloud LLM. "
+                    f"Reason: {reason}"
+                ),
+            )
+        elif pref == "cloud_then_hitl":
+            return ToolResult(
+                tool_name="request_escalation",
+                success=True,
+                output=(
+                    "Escalation preference is 'cloud_then_hitl'. "
+                    "The supervisor will attempt cloud escalation; if billing is exceeded "
+                    "it will fall back to a HITL approval card. "
+                    f"Reason: {reason}"
+                ),
+            )
+        else:
+            # Default: hitl — notify via the configured notifier
+            if self._notifier is not None:
+                try:
+                    notify_body = (
+                        f"The agent is stuck and cannot make further progress.\n\n"
+                        f"Reason: {reason}\n"
+                    )
+                    if current_hypothesis:
+                        notify_body += (
+                            f"\nCurrent best hypothesis: {current_hypothesis}"
+                        )
+                    notify_body += (
+                        "\n\nReview the agent session and provide additional context "
+                        "or restart with a different approach."
+                    )
+                    await self._notifier.send(
+                        subject="Agent stuck — escalation requested",
+                        body=notify_body,
+                        payload={"card_type": "escalation_request", "reason": reason},
+                    )
+                except Exception as exc:
+                    log.warning("escalation_notify_failed", error=str(exc))
+            return ToolResult(
+                tool_name="request_escalation",
+                success=True,
+                output=(
+                    "Escalation notification sent. "
+                    "The user will be notified to review and provide guidance. "
+                    f"Reason: {reason}"
+                ),
+            )

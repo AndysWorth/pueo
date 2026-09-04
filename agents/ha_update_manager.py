@@ -36,7 +36,7 @@ from utils.agent.autonomy import RiskLevel
 from utils.core.context import truncate_to_budget
 from utils.ha.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.core.logging import get_logger
-from utils.core.prompts import load_prompt
+from utils.core.prompts import load_prompt, repeat_query
 
 if TYPE_CHECKING:
     from utils.agent.agent_loop import AgentLoopResult
@@ -218,14 +218,15 @@ async def analyze_breaking_changes(
         "that appear in breaking changes or migration notes.",
     ]
 
+    system_prompt = load_prompt("analyze_breaking_changes")
     messages = [
         {
             "role": "system",
-            "content": load_prompt("analyze_breaking_changes"),
+            "content": system_prompt,
         },
         {
             "role": "user",
-            "content": "\n".join(user_content_parts),
+            "content": repeat_query(system_prompt, "\n".join(user_content_parts)),
         },
     ]
 
@@ -412,14 +413,12 @@ async def _personalize_one_shot(
     )
 
     try:
+        system_prompt = load_prompt("personalize_breaking_changes")
         response = await client.chat(
             model=_config.OLLAMA_MODEL,
             messages=[
-                {
-                    "role": "system",
-                    "content": load_prompt("personalize_breaking_changes"),
-                },
-                {"role": "user", "content": user_content},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": repeat_query(system_prompt, user_content)},
             ],
             options={"temperature": 0.0},
             format=InstanceImpactReport.model_json_schema(),
