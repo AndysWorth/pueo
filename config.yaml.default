@@ -115,6 +115,7 @@ agent:
   known_issue_reminder_days: 7         # Days before a Known Issue generates a reminder card
   # notification_enrich_auth_failures: true  # Enrich http_login notifications with IP/device context
   agent_max_tool_calls: 30            # Hard cap on tool invocations per agent loop run
+  agent_max_tool_result_tokens: 4000  # Guardrail: truncate tool outputs exceeding this token count
   agent_max_extension_calls: 15       # Max additional calls the LLM may request per limit-review
   agent_max_total_calls: 60           # Absolute ceiling across base budget + all extensions
   # Adaptive per-call LLM timeout — fires only when Ollama is genuinely stuck
