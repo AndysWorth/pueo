@@ -1136,8 +1136,15 @@ class ToolExecutor:
     async def _add_tool(
         self, name: str, description: str, parameters_schema: str, code: str
     ) -> ToolResult:
-        from config import CHAT_ALLOW_TOOL_REGISTRATION
+        from config import CHAT_ALLOW_TOOL_REGISTRATION, DEVELOPMENT_MODE
 
+        if not DEVELOPMENT_MODE:
+            return ToolResult(
+                tool_name="add_tool",
+                success=False,
+                output="",
+                error="Code proposals require development_mode: true in config.yaml",
+            )
         if not CHAT_ALLOW_TOOL_REGISTRATION:
             return ToolResult(
                 tool_name="add_tool",

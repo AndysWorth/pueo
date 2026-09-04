@@ -210,6 +210,11 @@ DIAGNOSTIC_WAN_TIMEOUT_SECONDS: int = int(
     _agent.get("diagnostic_wan_timeout_seconds", 60)
 )
 
+# Development mode — unlocks dev-only dashboard surfaces (Runbook Review tab,
+# community KB submission, cloud escalation cards, code proposals, debug toggle).
+# Leave false for appliance / production operation.
+DEVELOPMENT_MODE: bool = bool(_agent.get("development_mode", False))
+
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 

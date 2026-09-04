@@ -27,6 +27,7 @@ from config import (
     CLOUD_MODEL,
     CLOUD_MAX_COST_PER_INCIDENT_USD,
     CLOUD_MAX_DAILY_SPEND_USD,
+    DEVELOPMENT_MODE,
 )
 from interfaces import (
     KnowledgeStoreClientProtocol,
@@ -803,7 +804,11 @@ async def main(
     # - Level 4 (AUTONOMOUS): auto-proceeds immediately, no approval card.
     # - Level 2–3: sends a cloud_escalation approval card and polls for approval.
     # - Level 1 (REPORT_ONLY): require_approval returns False, skip silently.
-    if result.outcome in ("exhausted", "timeout") and LLM_PROVIDER == "both":
+    if (
+        result.outcome in ("exhausted", "timeout")
+        and LLM_PROVIDER == "both"
+        and DEVELOPMENT_MODE
+    ):
         from utils.agent.agent_loop import _format_step_trace
         from utils.repair.billing import BillingCapError, estimate_cost, get_daily_spend
         from utils.hitl.card_types import CARD_TYPE_CLOUD_ESCALATION

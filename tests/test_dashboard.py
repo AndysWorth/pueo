@@ -5890,6 +5890,7 @@ class TestEpisodePrepareAndSubmit:
         from starlette.testclient import TestClient
         import web.dashboard as dashboard
 
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.post(
@@ -5903,6 +5904,7 @@ class TestEpisodePrepareAndSubmit:
         from starlette.testclient import TestClient
         import web.dashboard as dashboard
 
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
         self._insert_episode(db_path)
         # Pre-mark as submitted
@@ -5927,6 +5929,7 @@ class TestEpisodePrepareAndSubmit:
         from starlette.testclient import TestClient
         import web.dashboard as dashboard
 
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
         monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "owner/pueo-cases")
         self._insert_episode(db_path)
 
