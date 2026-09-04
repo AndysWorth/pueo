@@ -109,16 +109,18 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 **LLM-guided all actions — 6-phase methodology**: Every significant Pueo action flows through LLM tool-calling reasoning via `AgentLoop`. Infrastructure operations that bypass the LLM (scheduled scraper runs, disk-space enforcement, backup retention sweeps) are housekeeping, not decisions. The boundary rule: if a function changes HA state or makes a judgment call about what to do next, it belongs in an agent loop, not a direct call.
 
 All agent sessions follow the **6-phase investigation cycle** (encoded in `prompts/agent_loop.md`; see ADR 018):
-1. **Retrieve context** — call `query_knowledge` first with the question or trigger (surfaces relevant strategies, past cases, breaking changes)
+1. **Retrieve plan** — call `query_knowledge` first with the question or trigger. The result may include both background context and an investigation plan (runbook). If a runbook is returned, follow it as the starting point. If nothing relevant is returned, record this as a knowledge gap and proceed with first-principles reasoning.
 2. **Form a hypothesis** — one sentence before calling any tool
-3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`
+3. **Gather evidence** — `read_config`, `read_logs`, `read_file`, `run_ha_command`, `read_pueo_log`, `fetch_ha_docs`. Call `query_knowledge` again if initial evidence narrows the problem to a specific sub-domain, confidence is low, or the agent is about to try a novel approach.
 4. **Confirm root cause** — state it explicitly before acting
 5. **Act** — apply fix, recommend action, or call `save_runbook` to record a novel approach
 6. **Report** — call the terminal tool (`finish_repair`, `finish_chat`, `finish_investigation`)
 
+**Stopping condition**: the agent does not stop because it hit an arbitrary tool count. It stops only when it has genuinely exhausted all reasonable investigative paths. Before calling the terminal tool with `outcome=failed`, the agent must call `save_runbook(type="gap")` documenting what was tried and why it is stuck, then call `request_escalation(reason)` so the user can route to a stronger model.
+
 **Use `AgentLoop`** for anything that touches HA state, makes a judgment call, or could benefit from iterative evidence gathering. **Use one-shot** only for: hot streaming paths (`analyze_log_line_with_ai()`), pure text comparison (`analyze_breaking_changes()`), or post-loop enrichment where the question has a single definitive answer. See ADR 018.
 
-**Runbook library**: The `strategies` ChromaDB collection stores novel investigation approaches as runbooks. `save_runbook` (registered in all agent registries except code-proposal) embeds a new runbook into ChromaDB and records it in the `agent_strategies` SQLite table. Seed runbooks from Pueo's own prompt files are embedded at RAG refresh time by `utils/knowledge/strategy_seeder.py`.
+**Runbook library**: The `strategies` ChromaDB collection stores investigation approaches as runbooks. `save_runbook` (registered in all agent registries except code-proposal) embeds a runbook into ChromaDB and records it in the `agent_strategies` SQLite table. Three runbook states: **seed** (human-curated, embedded at RAG refresh via `strategy_seeder.py`), **candidate** (LLM-proposed during a successful session via `save_runbook(type="candidate")`, awaiting human review in the dashboard), and **gap** (failed session or empty KB result, documents what was tried and why stuck — always created on failure). Any session that gets nothing relevant from `query_knowledge` or ends with `outcome=failed` MUST save a gap runbook. See ADR 018.
 
 **Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`) in `utils/agent/tool_registry.py`. The LLM can call `read_source("utils/agent/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/hitl/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
 

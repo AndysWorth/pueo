@@ -408,6 +408,7 @@ These constraints govern all ongoing development. Evaluate every new feature aga
 | Cloud spend | Per-incident cap ($0.50) + daily cap ($5.00) | `BillingCapError` before each API call; tracked in `cloud_spend` SQLite table; caps configurable in UI |
 | HA knowledge currency | Installed integrations pre-cached at every RAG refresh; unknown domains fetchable on demand in `cloud`/`both` mode | Run RAG refresh after adding new integrations; check `.cache/ha_source/` for missing domains |
 | WAN during inference (HA lookup) | 0 when `LLM_PROVIDER=local` | `fetch_ha_docs` serves from cache only in local mode; raises `ToolError` on miss — never makes a network call |
+| Runbook coverage | Known query classes have a seed runbook; any session that fails or finds nothing in the KB saves a gap runbook | Add seed runbooks for new query classes; gap runbooks surface to developers via dashboard runbook review UI |
 
 ---
 
