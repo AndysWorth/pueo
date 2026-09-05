@@ -40,7 +40,6 @@
           <th style="padding:0.4rem 0.75rem;text-align:right;">Duration</th>
           <th style="padding:0.4rem 0.75rem;text-align:right;">Tools</th>
           <th style="padding:0.4rem 0.75rem;"></th>
-          <th style="padding:0.4rem 0.75rem;"></th>
         </tr>
       </thead>
       <tbody>
@@ -69,24 +68,9 @@
               Detail
             </button>
           </td>
-          <td style="padding:0.4rem 0.75rem;white-space:nowrap;">
-            {% if ep.submitted_at %}
-              {% if ep.pr_url %}
-                <a href="{{ ep.pr_url }}" target="_blank" rel="noopener"
-                  style="font-size:0.78rem;color:#28a745;text-decoration:none;" title="{{ ep.pr_url }}">✓ submitted</a>
-              {% else %}
-                <span style="font-size:0.78rem;color:#28a745;">✓ submitted</span>
-              {% endif %}
-            {% else %}
-              <a href="/episodes/{{ ep.id }}/prepare"
-                style="padding:0.2rem 0.6rem;font-size:0.78rem;border:1px solid #0d6efd;border-radius:3px;color:#0d6efd;text-decoration:none;background:#fff;">
-                Prepare
-              </a>
-            {% endif %}
-          </td>
         </tr>
         <tr id="detail-{{ loop.index }}" style="display:none;background:#fafafa;">
-          <td colspan="9" style="padding:0.75rem;">
+          <td colspan="8" style="padding:0.75rem;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
               <div>
                 <div style="font-size:0.75rem;font-weight:700;color:#555;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Symptoms</div>

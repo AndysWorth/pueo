@@ -182,34 +182,6 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     if concepts_ids:
         store.prune("ha_concepts", concepts_ids)
 
-    # ── 4. Community cases ───────────────────────────────────────────────────
-    n_cases = 0
-    if config.FEDERATED_CASES_REPO:
-        from utils.cases.case_ingester import CaseIngestError, ingest_community_cases
-
-        _log.info(
-            "rag_refresh_step", step="ingest_cases", repo=config.FEDERATED_CASES_REPO
-        )
-        community_scenarios_dir = str(
-            Path(__file__).parent / "evals" / "scenarios" / "community"
-        )
-        try:
-            n_cases = ingest_community_cases(
-                config.FEDERATED_CASES_REPO,
-                config.CASE_INGEST_CACHE_DIR,
-                store,
-                scenarios_dir=community_scenarios_dir,
-            )
-            _log.info("rag_refresh_step_done", step="ingest_cases", ingested=n_cases)
-        except CaseIngestError as exc:
-            _log.warning("rag_refresh_case_ingest_failed", error=str(exc))
-    else:
-        _log.info(
-            "rag_refresh_step_skipped",
-            step="ingest_cases",
-            reason="federated_cases_repo_not_configured",
-        )
-
     # ── 5. Strategy seeding ──────────────────────────────────────────────────
     from utils.knowledge.strategy_seeder import seed_strategies
 
@@ -217,14 +189,14 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     n_strategies = seed_strategies(store)
     _log.info("rag_refresh_step_done", step="seed_strategies", seeded=n_strategies)
 
-    total = n_ha + n_hacs + n_docs + n_concepts + n_cases + n_strategies
+    total = n_ha + n_hacs + n_docs + n_concepts + n_strategies
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
     )
     _log.info(
         "rag_refresh_complete",
         total_embedded=total,
-        collections=6,
+        collections=5,
     )
 
 
@@ -268,27 +240,6 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
                 log.info("dynamic_tool_loaded", tool=tool_name)
         except Exception as exc:
             log.warning("dynamic_tool_load_failed", tool=tool_name, error=str(exc))
-
-
-async def _embed_episodes_loop(db_path: str, knowledge_store: Any) -> None:
-    """Embed unembedded successful repair episodes into ChromaDB every 10 minutes."""
-    from utils.agent.supervisor import get_supervisor_instance
-    from utils.knowledge.knowledge_store import embed_local_episode
-    from utils.repair.repair_episode import get_unembedded_successful_episodes
-
-    while True:
-        episodes = await asyncio.to_thread(get_unembedded_successful_episodes, db_path)
-        for ep in episodes:
-            await embed_local_episode(ep, knowledge_store, db_path)
-        _sv = get_supervisor_instance()
-        if _sv:
-            _ep_outcome = (
-                "No new episodes"
-                if not episodes
-                else f"Embedded {len(episodes)} episode(s)"
-            )
-            _sv.touch("embed_episodes", outcome=_ep_outcome)
-        await asyncio.sleep(600)
 
 
 async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
@@ -802,11 +753,6 @@ async def supervisor_main(config_path: Path) -> None:
     )
 
     if knowledge_store is not None:
-        supervisor.start(
-            "embed_episodes",
-            lambda: _embed_episodes_loop(cfg.DB_PATH, knowledge_store),
-            interval_seconds=600,
-        )
         supervisor.start(
             "rag_refresh",
             lambda: _rag_refresh_loop(knowledge_store, cfg.RAG_REFRESH_INTERVAL_HOURS),

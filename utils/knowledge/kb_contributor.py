@@ -69,7 +69,6 @@ def _runbook_to_markdown(runbook: dict) -> str:
 
 def prepare_contribution_batch(
     reviewed_runbooks: list[dict],
-    ready_cases: Optional[list[dict]] = None,
     gap_reports: Optional[list[dict]] = None,
 ) -> list[ContributionFile]:
     """Assemble anonymized contribution files ready for submission.
@@ -90,22 +89,6 @@ def prepare_contribution_batch(
                 content=content,
                 item_id=rb_id,
                 item_type="runbook",
-            )
-        )
-
-    for case in ready_cases or []:
-        case_id = str(case.get("id", "unknown"))
-        slug = re.sub(r"[^A-Za-z0-9_-]", "_", case_id)[:48]
-        filename = f"cases/{slug}.yaml"
-        content = yaml.dump(
-            case, default_flow_style=False, sort_keys=False, allow_unicode=True
-        )
-        files.append(
-            ContributionFile(
-                filename=filename,
-                content=content,
-                item_id=case_id,
-                item_type="case",
             )
         )
 

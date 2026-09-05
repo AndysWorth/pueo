@@ -166,13 +166,7 @@ AGENT_MAX_WALL_SECONDS: float = AGENT_PER_CALL_MIN_TIMEOUT_SECONDS
 # HA environment profile
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
-# Federated case library — community repair episode sharing
-FEDERATED_CASES_REPO: str = _agent.get("federated_cases_repo", "")
-CASE_INGEST_CACHE_DIR: str = _agent.get(
-    "case_ingest_cache_dir", str(_dirs.cache_dir / "case_ingest")
-)
-
-# Federated Knowledge Base — manifest-driven runbook/case sharing (supersedes pueo-cases)
+# Federated Knowledge Base — manifest-driven runbook/case sharing
 PUEO_KB_REPO: str = _agent.get("pueo_kb_repo", "")
 KB_SYNC_INTERVAL_HOURS: int = int(_agent.get("kb_sync_interval_hours", 168))
 KB_SYNC_CACHE_DIR: str = _agent.get(
