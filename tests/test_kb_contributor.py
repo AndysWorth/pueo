@@ -108,14 +108,6 @@ class TestPrepareContributionBatch:
         assert batch[0].filename.startswith("runbooks/")
         assert batch[0].filename.endswith(".md")
 
-    def test_case_creates_yaml_file(self):
-        case = {"id": "case-001", "description": "d", "fix_applied": "f"}
-        batch = prepare_contribution_batch([], ready_cases=[case])
-        assert len(batch) == 1
-        assert batch[0].item_type == "case"
-        assert batch[0].filename.startswith("cases/")
-        assert batch[0].filename.endswith(".yaml")
-
     def test_gap_creates_yaml_file(self):
         gap = {"id": "gap-001", "description": "g"}
         batch = prepare_contribution_batch([], gap_reports=[gap])
@@ -125,12 +117,11 @@ class TestPrepareContributionBatch:
 
     def test_mixed_batch(self):
         rb = {"id": "rb-001", "approach": "a"}
-        case = {"id": "c-001"}
         gap = {"id": "g-001"}
-        batch = prepare_contribution_batch([rb], ready_cases=[case], gap_reports=[gap])
-        assert len(batch) == 3
+        batch = prepare_contribution_batch([rb], gap_reports=[gap])
+        assert len(batch) == 2
         types = {f.item_type for f in batch}
-        assert types == {"runbook", "case", "gap"}
+        assert types == {"runbook", "gap"}
 
     def test_empty_inputs_return_empty(self):
         batch = prepare_contribution_batch([])
@@ -141,9 +132,9 @@ class TestPrepareContributionBatch:
         batch = prepare_contribution_batch([rb])
         assert "/" not in batch[0].filename.split("/", 1)[1]
 
-    def test_case_content_is_valid_yaml(self):
-        case = {"id": "c-002", "trigger": "ha_log", "symptoms": ["err1", "err2"]}
-        batch = prepare_contribution_batch([], ready_cases=[case])
+    def test_gap_content_is_valid_yaml(self):
+        gap = {"id": "g-002", "trigger": "ha_log", "symptoms": ["err1", "err2"]}
+        batch = prepare_contribution_batch([], gap_reports=[gap])
         parsed = yaml.safe_load(batch[0].content)
         assert parsed["trigger"] == "ha_log"
         assert "err1" in parsed["symptoms"]

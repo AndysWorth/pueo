@@ -140,10 +140,8 @@ agent:
   # ha_source_cache_dir: ""     # HA source cache; default: ~/Library/Caches/Pueo/ha_source (macOS)
   # ha_concepts_cache_dir: ""   # HA concept docs cache; default: ~/Library/Caches/Pueo/ha_concepts (macOS)
   # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
-  # federated_cases_repo: ""  # GitHub repo for community case library (e.g. "owner/pueo-cases"); enables episode submission and ingest
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
   # diagnostic_wan_timeout_seconds: 60  # Timeout for fetch_url calls (seconds)
-  # case_ingest_cache_dir: ""  # Case ingest cache; default: ~/Library/Caches/Pueo/case_ingest (macOS)
   # pueo_kb_repo: ""           # GitHub repo for federated knowledge base (e.g. "owner/pueo-kb"); enables manifest-based selective ingestion and runbook contribution (requires development_mode: true)
   # kb_sync_interval_hours: 168  # How often to pull the pueo-kb manifest (default: weekly)
   # kb_sync_cache_dir: ""        # KB sync state cache; default: ~/Library/Caches/Pueo/kb_sync (macOS)

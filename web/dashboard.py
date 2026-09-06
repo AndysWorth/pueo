@@ -28,7 +28,6 @@ from config import (
     DASHBOARD_PORT,
     DB_PATH,
     DEVELOPMENT_MODE,
-    FEDERATED_CASES_REPO,
     NOTIFY_WATCH_DIR,
     PUEO_KB_REPO,
 )
@@ -292,6 +291,16 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "restart_required": True,
         "min_val": 1,
         "max_val": 65535,
+    },
+    # ── Developer ─────────────────────────────────────────────────────────────
+    "development_mode": {
+        "yaml_section": "agent",
+        "yaml_key": "development_mode",
+        "config_attr": "DEVELOPMENT_MODE",
+        "val_type": "bool",
+        "description": "Expose developer surfaces: Episodes tab, Runbooks tab, Debug button in Chat",
+        "group": "Developer",
+        "restart_required": True,
     },
 }
 
@@ -3408,6 +3417,12 @@ async def episodes_tab(
     trigger: str = Query(default=""),
     outcome: str = Query(default=""),
 ) -> HTMLResponse:
+    import config as _config
+
+    if not _config.DEVELOPMENT_MODE:
+        raise HTTPException(
+            status_code=404, detail="Episodes requires development_mode: true"
+        )
     from utils.repair.repair_episode import load_episodes
 
     episodes = await asyncio.to_thread(load_episodes, DB_PATH)
@@ -3433,6 +3448,12 @@ async def export_episodes(
     since: str = Query(default=""),
 ) -> StreamingResponse:
     """Return anonymized YAML of all episodes (optionally filtered by --since date)."""
+    import config as _config
+
+    if not _config.DEVELOPMENT_MODE:
+        raise HTTPException(
+            status_code=404, detail="Episodes requires development_mode: true"
+        )
     from datetime import datetime
 
     from utils.repair.repair_episode import export_episodes_yaml, load_episodes
@@ -3450,107 +3471,6 @@ async def export_episodes(
         media_type="application/x-yaml",
         headers={"Content-Disposition": "attachment; filename=repair-episodes.yaml"},
     )
-
-
-@app.get("/episodes/{episode_id}/prepare", response_class=HTMLResponse)
-async def prepare_episode_submission(
-    request: Request,
-    episode_id: str,
-) -> HTMLResponse:
-    """Render review page for submitting an episode to the federated case library."""
-    from utils.repair.repair_episode import export_single_episode_yaml, load_episode
-
-    episode = await asyncio.to_thread(load_episode, DB_PATH, episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
-
-    yaml_preview = export_single_episode_yaml(episode)
-    return templates.TemplateResponse(
-        request,
-        "episode_prepare.html",
-        {
-            "episode": episode,
-            "yaml_preview": yaml_preview,
-            "cases_repo": FEDERATED_CASES_REPO,
-            "repo_configured": bool(FEDERATED_CASES_REPO),
-        },
-    )
-
-
-class EpisodeSubmitRequest(BaseModel):
-    description: str = ""
-
-
-@app.post("/episodes/{episode_id}/submit")
-async def submit_episode_to_case_library(
-    episode_id: str,
-    body: EpisodeSubmitRequest,
-) -> JSONResponse:
-    """
-    Clone FEDERATED_CASES_REPO, commit episode YAML on a new branch, open a PR.
-
-    Returns JSON with 'pr_url' on success or 'error' on failure.
-    """
-    from utils.cases.case_submitter import CaseSubmitError, submit_episode
-    from utils.repair.repair_episode import (
-        export_single_episode_yaml,
-        load_episode,
-        mark_episode_submitted,
-    )
-
-    if not DEVELOPMENT_MODE:
-        raise HTTPException(
-            status_code=400,
-            detail="Community KB submission requires development_mode: true in config.yaml.",
-        )
-    if not FEDERATED_CASES_REPO:
-        raise HTTPException(
-            status_code=400,
-            detail="FEDERATED_CASES_REPO is not configured. "
-            "Add 'federated_cases_repo: owner/pueo-cases' under 'agent:' in config.yaml.",
-        )
-
-    episode = await asyncio.to_thread(load_episode, DB_PATH, episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
-
-    if episode.submitted_at is not None:
-        return JSONResponse({"pr_url": episode.pr_url, "already_submitted": True})
-
-    yaml_content = export_single_episode_yaml(episode, body.description)
-    pr_title = f"Repair episode: {episode.trigger} / {episode.id[:8]}"
-    pr_body_lines = [
-        f"Anonymized repair episode from Pueo.",
-        f"",
-        f"- **Trigger:** {episode.trigger}",
-        f"- **Outcome:** {'passed' if episode.verification_result else 'failed'}",
-        f"- **Tools used:** {len(episode.tool_sequence)}",
-        f"- **Duration:** {episode.duration_seconds:.1f}s",
-    ]
-    if body.description:
-        pr_body_lines = [body.description, ""] + pr_body_lines
-    pr_body_lines += [
-        "",
-        "```yaml",
-        yaml_content.strip(),
-        "```",
-    ]
-    pr_body = "\n".join(pr_body_lines)
-
-    try:
-        pr_url = await submit_episode(
-            episode_id=episode.id,
-            yaml_content=yaml_content,
-            cases_repo=FEDERATED_CASES_REPO,
-            pr_title=pr_title,
-            pr_body=pr_body,
-        )
-        await asyncio.to_thread(mark_episode_submitted, DB_PATH, episode.id, pr_url)
-        log.info("episode_submitted", episode_id=episode.id, pr_url=pr_url)
-        return JSONResponse({"pr_url": pr_url, "already_submitted": False})
-    except CaseSubmitError as exc:
-        log.error("episode_submit_failed", episode_id=episode.id, error=str(exc))
-        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @app.get("/logs", response_class=HTMLResponse)

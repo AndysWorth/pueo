@@ -1,77 +1,24 @@
-"""Tests for DEVELOPMENT_MODE gates across cloud escalation, episode submission, and add_tool."""
+"""Tests for DEVELOPMENT_MODE gates across cloud escalation, add_tool, and episodes tab."""
 
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 
 import pytest
 
 
-class TestDevelopmentModeEpisodeSubmit:
-    """Dashboard /episodes/{id}/submit returns 400 when dev mode is off."""
+class TestDevelopmentModeEpisodesGate:
+    """Episodes tab returns 404 when DEVELOPMENT_MODE is False."""
 
-    @pytest.fixture()
-    def db(self, tmp_path):
-        db_path = tmp_path / "state.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS repair_episodes (
-                id TEXT PRIMARY KEY,
-                timestamp TEXT,
-                trigger TEXT,
-                initial_context TEXT,
-                outcome TEXT,
-                fix_applied TEXT,
-                model_used TEXT,
-                tool_sequence TEXT,
-                anonymized BOOLEAN,
-                submitted_at TEXT
-            );
-            INSERT INTO repair_episodes VALUES (
-                'ep-001', '2026-09-04T00:00:00', 'test', 'ctx', 'fixed',
-                NULL, 'ollama', '[]', 0, NULL
-            );
-            """
-        )
-        conn.commit()
-        conn.close()
-        return db_path
-
-    def test_submit_blocked_in_appliance_mode(self, tmp_path, monkeypatch, db):
+    def test_episodes_tab_returns_404_when_dev_mode_false(self, monkeypatch):
+        import config as _config
+        from starlette.testclient import TestClient
         import web.dashboard as dashboard
-        from fastapi.testclient import TestClient
 
-        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", False)
-        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path / "hitl"))
-
+        monkeypatch.setattr(_config, "DEVELOPMENT_MODE", False)
         client = TestClient(dashboard.app, raise_server_exceptions=False)
-        resp = client.post(
-            "/episodes/ep-001/submit",
-            json={"redacted_yaml": "problem: test\nfix: restart"},
-        )
-        assert resp.status_code == 400
-        assert "development_mode" in resp.json().get("detail", "").lower()
-
-    def test_submit_allowed_in_dev_mode_without_repo(self, tmp_path, monkeypatch, db):
-        """With dev mode on but no repo configured, should get 400 about missing repo."""
-        import web.dashboard as dashboard
-        from fastapi.testclient import TestClient
-
-        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
-        monkeypatch.setattr(dashboard, "FEDERATED_CASES_REPO", "")
-        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path / "hitl"))
-
-        client = TestClient(dashboard.app, raise_server_exceptions=False)
-        resp = client.post(
-            "/episodes/ep-001/submit",
-            json={"redacted_yaml": "problem: test\nfix: restart"},
-        )
-        assert resp.status_code == 400
-        assert "FEDERATED_CASES_REPO" in resp.json().get("detail", "")
+        assert client.get("/episodes").status_code == 404
+        assert client.get("/episodes/export").status_code == 404
 
 
 class TestDevelopmentModeAddTool:

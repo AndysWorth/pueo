@@ -135,7 +135,7 @@ def mark_episode_submitted(db_path: str, episode_id: str, pr_url: str) -> None:
 
 def export_single_episode_yaml(episode: RepairEpisode, description: str = "") -> str:
     """Anonymize and serialize one episode to YAML, with an optional description header."""
-    from utils.cases.anonymizer import Anonymizer
+    from utils.repair.anonymizer import Anonymizer
 
     anon = Anonymizer()
     summaries = episode.tool_result_summaries or [""] * len(episode.tool_sequence)
@@ -181,28 +181,6 @@ def format_episode_for_embedding(episode: RepairEpisode) -> str:
     return "\n".join(parts)
 
 
-def get_unembedded_successful_episodes(db_path: str) -> list[RepairEpisode]:
-    """Return successful episodes that have not yet been embedded into ChromaDB."""
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM repair_episodes "
-            "WHERE verification_result = 1 AND embedded_at IS NULL "
-            "ORDER BY timestamp ASC"
-        ).fetchall()
-    return [_row_to_episode(row) for row in rows]
-
-
-def mark_episode_embedded(db_path: str, episode_id: str) -> None:
-    """Record the timestamp at which an episode was embedded into ChromaDB."""
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE repair_episodes SET embedded_at = ? WHERE id = ?",
-            (time.time(), episode_id),
-        )
-        conn.commit()
-
-
 def export_episodes_yaml(
     episodes: list[RepairEpisode],
 ) -> str:
@@ -211,7 +189,7 @@ def export_episodes_yaml(
     Each episode gets its own Anonymizer instance so placeholder numbering
     is consistent within the episode but independent across episodes.
     """
-    from utils.cases.anonymizer import Anonymizer
+    from utils.repair.anonymizer import Anonymizer
 
     records: list[dict[str, Any]] = []
     for ep in episodes:

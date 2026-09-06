@@ -1,8 +1,6 @@
-"""Tests for embedding helpers added to utils/repair_episode.py."""
+"""Tests for utils/repair_episode.py helpers."""
 
-import asyncio
 import sqlite3
-import time
 from typing import Any
 
 import pytest
@@ -10,8 +8,6 @@ import pytest
 from utils.repair.repair_episode import (
     RepairEpisode,
     format_episode_for_embedding,
-    get_unembedded_successful_episodes,
-    mark_episode_embedded,
 )
 from utils.agent.tool_registry import ToolCall
 
@@ -94,120 +90,3 @@ class TestFormatEpisodeForEmbedding:
         ep = _make_episode(verification_result=False)
         text = format_episode_for_embedding(ep)
         assert "failed" in text
-
-
-class TestGetUnembeddedSuccessfulEpisodes:
-    def test_returns_successful_unembedded(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-        results = get_unembedded_successful_episodes(db)
-        assert len(results) == 1
-        assert results[0].id == ep.id
-
-    def test_excludes_failed_verification(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=False)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-        results = get_unembedded_successful_episodes(db)
-        assert results == []
-
-    def test_excludes_already_embedded(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-        mark_episode_embedded(db, ep.id)
-        results = get_unembedded_successful_episodes(db)
-        assert results == []
-
-    def test_returns_multiple_unembedded(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        from utils.repair.repair_episode import serialize_episode
-
-        ep1 = _make_episode(verification_result=True)
-        ep2 = _make_episode(verification_result=True)
-        serialize_episode(db, ep1)
-        serialize_episode(db, ep2)
-        results = get_unembedded_successful_episodes(db)
-        assert len(results) == 2
-
-
-class TestMarkEpisodeEmbedded:
-    def test_sets_embedded_at_timestamp(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-        before = time.time()
-        mark_episode_embedded(db, ep.id)
-        after = time.time()
-
-        with sqlite3.connect(db) as conn:
-            row = conn.execute(
-                "SELECT embedded_at FROM repair_episodes WHERE id = ?", (ep.id,)
-            ).fetchone()
-        assert row is not None
-        assert before <= row[0] <= after
-
-    def test_episode_no_longer_returned_as_unembedded(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-        mark_episode_embedded(db, ep.id)
-        assert get_unembedded_successful_episodes(db) == []
-
-
-class TestEmbedLocalEpisode:
-    def test_upserts_to_community_cases_and_marks_embedded(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-        from utils.repair.repair_episode import serialize_episode
-
-        serialize_episode(db, ep)
-
-        from utils.knowledge.knowledge_store import (
-            FakeKnowledgeStore,
-            embed_local_episode,
-        )
-
-        store = FakeKnowledgeStore()
-        result = asyncio.run(embed_local_episode(ep, store, db))
-
-        assert result is True
-        # Episode should now be marked embedded
-        assert get_unembedded_successful_episodes(db) == []
-        # Document should be in community_cases
-        chunks = store.query(
-            query_text="recorder", top_k=5, collections=["community_cases"]
-        )
-        assert any(c.metadata.get("episode_id") == ep.id for c in chunks)
-
-    def test_returns_false_on_store_error(self, tmp_path):
-        db = str(tmp_path / "test.db")
-        _init_db(db)
-        ep = _make_episode(verification_result=True)
-
-        class _FailStore:
-            def upsert(self, **_):
-                raise RuntimeError("store broken")
-
-        from utils.knowledge.knowledge_store import embed_local_episode
-
-        result = asyncio.run(embed_local_episode(ep, _FailStore(), db))
-        assert result is False

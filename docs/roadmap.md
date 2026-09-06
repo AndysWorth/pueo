@@ -22,7 +22,7 @@ Strategic capabilities in delivery order.
 | 6.6. Conversational Agent                     | ✅ Complete (2026-07-31) | `web/templates/chat.html`, `utils/tool_executor.py` |
 | 7. Configurable LLM Provider + Cloud Escalation | ✅ Complete (2026-08-07) | `utils/cloud_client.py`, `utils/llm_factory.py`, `utils/billing.py` |
 | 8. Repair episode recording                   | ✅ Complete (2026-08-10) | `utils/repair_episode.py`, `utils/anonymizer.py` |
-| 9. Federated case library                     | ✅ Complete (2026-08-11) | `utils/case_submitter.py`, `utils/case_ingester.py` |
+| 9. Federated case library                     | ♻️ Superseded (2026-09-05) — case/episode pipeline removed; runbooks are the single KB signal | — |
 | 10. Self-improving code proposals *(stretch)* | ✅ Complete (2026-08-11) | `utils/tool_executor.py`, `utils/agent_loop.py` |
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
 | 12. Agent self-knowledge + HA live lookup     | ✅ Complete (2026-08-18)  | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
@@ -54,7 +54,7 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 | Phase 17.5: Conversational Agent                   | ✅ Complete (2026-07-31) | 65–72   |
 | Phase 18: Configurable LLM Provider + Cloud Escalation | ✅ Complete (2026-08-07) | 73–76   |
 | Phase 19: Repair Episode Recording                 | ✅ Complete (2026-08-10) | 77–79   |
-| Phase 20: Federated Case Library                   | ✅ Complete (2026-08-11)    | 80–82   |
+| Phase 20: Federated Case Library                   | ♻️ Superseded (2026-09-05) — case/episode pipeline removed; runbooks are the single KB signal | 80–82   |
 | Phase 21: Code Proposals *(stretch)*               | ✅ Complete (2026-08-11) | 83–86   |
 | Phase 22: HA RAG Strategy                          | ✅ Complete (2026-08-06) | 87–93   |
 | Phase 23: Disk Usage Tab                           | ✅ Complete (2026-08-07) | DU-1–6  |

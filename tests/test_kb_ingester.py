@@ -34,8 +34,8 @@ class TestManifestEntry:
     def test_custom_fields(self):
         e = ManifestEntry(
             id="y",
-            type="case",
-            path="cases/y.yaml",
+            type="gap",
+            path="gaps/y.yaml",
             sha256="def",
             integrations=["zha", "mqtt"],
             tags=["tag1"],
@@ -202,14 +202,11 @@ class TestCollectionForType:
     def test_runbook_maps_to_strategies(self):
         assert _collection_for_type("runbook") == "strategies"
 
-    def test_case_maps_to_community_cases(self):
-        assert _collection_for_type("case") == "community_cases"
+    def test_gap_maps_to_strategies(self):
+        assert _collection_for_type("gap") == "strategies"
 
-    def test_gap_maps_to_community_cases(self):
-        assert _collection_for_type("gap") == "community_cases"
-
-    def test_unknown_maps_to_community_cases(self):
-        assert _collection_for_type("unknown") == "community_cases"
+    def test_unknown_maps_to_strategies(self):
+        assert _collection_for_type("unknown") == "strategies"
 
 
 # ── download_and_embed ────────────────────────────────────────────────────────
@@ -261,14 +258,14 @@ class TestDownloadAndEmbed:
             count, sha256s = download_and_embed(entries, "owner/pueo-kb", store)
         assert count == 0
 
-    def test_case_goes_to_community_cases(self):
-        entries = [_entry(id="c1", sha256="h5", type="case", integrations=["all"])]
+    def test_gap_goes_to_strategies(self):
+        entries = [_entry(id="g1", sha256="h5", type="gap", integrations=["all"])]
         store = self._fake_store()
-        raw = _make_gh_response("case content")
+        raw = _make_gh_response("gap content")
         with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
             download_and_embed(entries, "owner/pueo-kb", store)
         call_args = store.upsert.call_args
-        assert call_args[0][0] == "community_cases"
+        assert call_args[0][0] == "strategies"
 
 
 # ── load/save sync state ──────────────────────────────────────────────────────

@@ -1318,37 +1318,6 @@ class TestLLMProviderStartupGuards:
 
 
 class TestFederatedCasesRepoConfig:
-    def test_federated_cases_repo_default_empty(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.FEDERATED_CASES_REPO == ""
-
-    def test_federated_cases_repo_from_yaml(self, isolated_config):
-        isolated_config.write_text(
-            yaml.dump({"agent": {"federated_cases_repo": "myorg/pueo-cases"}})
-        )
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.FEDERATED_CASES_REPO == "myorg/pueo-cases"
-
-    def test_case_ingest_cache_dir_default(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert Path(config.CASE_INGEST_CACHE_DIR).is_absolute()
-        assert Path(config.CASE_INGEST_CACHE_DIR).name == "case_ingest"
-
-    def test_case_ingest_cache_dir_from_yaml(self, isolated_config):
-        isolated_config.write_text(
-            yaml.dump({"agent": {"case_ingest_cache_dir": "/tmp/my_ingest/"}})
-        )
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.CASE_INGEST_CACHE_DIR == "/tmp/my_ingest/"
-
     def test_pueo_kb_repo_default_empty(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

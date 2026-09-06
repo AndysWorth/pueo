@@ -146,7 +146,7 @@
       <a class="nav-link{% if p.startswith('/notifications') %} active{% endif %}" href="/notifications">Notifications</a>
       <a class="nav-link{% if p.startswith('/settings') %} active{% endif %}" href="/settings">Settings</a>
       <a class="nav-link{% if p.startswith('/control') %} active{% endif %}" href="/control">Control</a>
-      <a class="nav-link{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>
+      {% if dev_mode %}<a class="nav-link{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>{% endif %}
       <a class="nav-link{% if p.startswith('/logs') %} active{% endif %}" href="/logs">Logs</a>
       <a class="nav-link{% if p.startswith('/chat') %} active{% endif %}" href="/chat">Chat</a>
       {% if dev_mode %}<a class="nav-link{% if p.startswith('/runbooks') %} active{% endif %}" href="/runbooks">Runbooks</a>{% endif %}

@@ -24,7 +24,7 @@ class KbIngestError(Exception):
 @dataclass
 class ManifestEntry:
     id: str
-    type: str  # "runbook" | "case" | "gap"
+    type: str  # "runbook" | "gap"
     path: str
     sha256: str
     tags: list[str] = field(default_factory=list)
@@ -118,7 +118,7 @@ def _fetch_file_content(repo: str, path: str) -> str:
 
 
 def _collection_for_type(entry_type: str) -> str:
-    return "strategies" if entry_type == "runbook" else "community_cases"
+    return "strategies"
 
 
 def download_and_embed(
