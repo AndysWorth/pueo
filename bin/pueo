@@ -23,7 +23,20 @@ PID_FILE="$PUEO_STATE_DIR/pueo.pid"
 CMD="${1:-start}"
 
 _running() {
-    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        return 0
+    fi
+    # PID file missing or stale — fall back to process scan.
+    # Matches the exact main.py path so pytest / other Python invocations
+    # in the project directory are not confused for the supervisor.
+    local pid
+    pid=$(pgrep -f "${PROJECT_DIR}/main.py" 2>/dev/null | head -1)
+    if [ -n "$pid" ]; then
+        # Rewrite the PID file so subsequent stop/status calls work normally.
+        echo "$pid" > "$PID_FILE"
+        return 0
+    fi
+    return 1
 }
 
 case "$CMD" in

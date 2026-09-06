@@ -21,25 +21,21 @@ if TYPE_CHECKING:
 
 
 def _write_pid_file() -> None:
-    """Write our PID to the state-dir PID file; remove it on clean exit."""
-    import atexit
+    """Write our PID to the state-dir PID file.
 
+    bin/pueo is the sole authority on PID file lifecycle — it writes the file
+    on start and removes it on stop.  We update it here so that direct
+    ``python main.py`` invocations also produce a readable PID file, but we
+    do NOT register an atexit cleanup: deleting the file on Python exit can
+    race with the process staying alive (e.g. daemon threads) and leave
+    bin/pueo unable to find a running process.
+    """
     pid_file = _paths.get_dirs().state_dir / "pueo.pid"
-    pid_str = str(os.getpid())
     try:
         pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text(pid_str)
-    except Exception:
-        return
-
-    def _cleanup() -> None:
-        try:
-            if pid_file.exists() and pid_file.read_text().strip() == pid_str:
-                pid_file.unlink()
-        except Exception:  # nosec B110
-            pass
-
-    atexit.register(_cleanup)
+        pid_file.write_text(str(os.getpid()))
+    except Exception:  # nosec B110
+        pass
 
 
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
