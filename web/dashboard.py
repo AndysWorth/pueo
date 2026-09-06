@@ -437,7 +437,7 @@ async def overview(request: Request) -> HTMLResponse:
 async def queue(request: Request, order_error: str = "") -> HTMLResponse:
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
-    hitl_requests = _load_requests(watch_dir)
+    hitl_requests = await asyncio.to_thread(_load_requests, watch_dir)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -2091,7 +2091,7 @@ async def disk_tab(request: Request) -> HTMLResponse:
         disk_critical = breakdown.disk_free_gb < HA_DISK_CRITICAL_GB
 
     try:
-        pueo_footprint = measure_pueo_footprint()
+        pueo_footprint = await asyncio.to_thread(measure_pueo_footprint)
     except Exception:
         pueo_footprint = None
 
@@ -2351,7 +2351,6 @@ def _build_settings_groups() -> list[dict]:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_tab(request: Request) -> HTMLResponse:
-    import asyncio as _asyncio
     import config as _config
     from utils.disk.hardware import (
         detect_local_hardware,
@@ -2360,8 +2359,11 @@ async def settings_tab(request: Request) -> HTMLResponse:
     )
     from utils.system.service import service_status
 
-    profile = await _asyncio.to_thread(detect_local_hardware)
-    available = await _asyncio.to_thread(list_ollama_models)
+    profile, available, svc = await asyncio.gather(
+        asyncio.to_thread(detect_local_hardware),
+        asyncio.to_thread(list_ollama_models),
+        asyncio.to_thread(service_status),
+    )
     recommended = recommend_model(profile, available)
 
     return templates.TemplateResponse(
@@ -2369,7 +2371,7 @@ async def settings_tab(request: Request) -> HTMLResponse:
         "settings.html",
         {
             "groups": _build_settings_groups(),
-            "service": service_status(),
+            "service": svc,
             "api_key_set": bool(_config.ANTHROPIC_API_KEY),
             "model_info": {
                 "current": _config.OLLAMA_MODEL,
@@ -2635,7 +2637,7 @@ async def loop_run_now(loop_name: str) -> JSONResponse:
 async def service_status_endpoint() -> JSONResponse:
     from utils.system.service import service_status
 
-    return JSONResponse(service_status())
+    return JSONResponse(await asyncio.to_thread(service_status))
 
 
 @app.post("/service/install")
@@ -2704,7 +2706,7 @@ _PUEO_DIR = _get_dirs().resources_dir
 async def control_tab(request: Request) -> HTMLResponse:
     from utils.system.service import PLIST_TARGET, service_status
 
-    svc = service_status()
+    svc = await asyncio.to_thread(service_status)
     svc["plist_exists"] = PLIST_TARGET.exists()
     return templates.TemplateResponse(
         request,

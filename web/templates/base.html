@@ -131,9 +131,24 @@
     :root[data-theme="light"] .ollama-external { background: #fff3cd; color: #856404; border-color: #ffc107; }
     :root[data-theme="light"] .ollama-embed { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
     :root[data-theme="light"] .ollama-pill .ollama-popover { background: #fff; border-color: #dee2e6; color: #333; }
+    /* Navigation progress bar */
+    #nav-progress {
+      position: fixed; top: 0; left: 0; height: 3px; width: 0%;
+      background: #1a73e8; z-index: 10000; opacity: 0;
+      transition: width 0.2s ease, opacity 0.15s ease; pointer-events: none;
+    }
+    #nav-progress.nav-loading {
+      opacity: 1; width: 85%;
+      transition: width 8s cubic-bezier(0.1, 0.05, 0.0, 1.0), opacity 0.15s ease;
+    }
+    #nav-progress.nav-done {
+      width: 100%; opacity: 0;
+      transition: width 0.15s ease, opacity 0.3s ease 0.15s;
+    }
   </style>
   </head>
   <body>
+    <div id="nav-progress"></div>
     <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
         height="32">&nbsp;Pueo</h1>
     {% set p = request.url.path %}
@@ -311,6 +326,27 @@
 
       fetchOllamaStatus();
       setInterval(fetchOllamaStatus, 5000);
+    })();
+
+    (function () {
+      var bar = document.getElementById('nav-progress');
+      if (!bar) return;
+      function startProgress() {
+        bar.className = '';
+        void bar.offsetWidth;
+        bar.className = 'nav-loading';
+      }
+      document.querySelectorAll('a.nav-link').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+          if (!e.defaultPrevented && e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            var href = link.getAttribute('href');
+            if (href && !href.startsWith('#') && href !== window.location.pathname) {
+              startProgress();
+            }
+          }
+        });
+      });
+      window.addEventListener('pageshow', function () { bar.className = 'nav-done'; });
     })();
     </script>
   </body>
