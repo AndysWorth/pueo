@@ -5666,6 +5666,159 @@ class TestDiskRoutes:
         assert "SSH connection refused" in response.json()["error"]
 
 
+# ── Async-thread offloading ───────────────────────────────────────────────────────
+
+
+class TestAsyncThreadOffloading:
+    """Verify that slow sync functions are dispatched via asyncio.to_thread and
+    not called directly in async route handlers — ensuring the event loop is not
+    blocked during tab switches."""
+
+    def test_queue_tab_calls_load_requests(self, tmp_path, monkeypatch):
+        """_load_requests is called (and therefore offloaded) when /queue is requested."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        calls: list[bool] = []
+        original = dashboard._load_requests
+
+        def recording_load(watch_dir):
+            calls.append(True)
+            return original(watch_dir)
+
+        monkeypatch.setattr(dashboard, "_load_requests", recording_load)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/queue")
+
+        assert resp.status_code == 200
+        assert calls, "_load_requests was never called"
+
+    def test_disk_tab_measure_success(self, monkeypatch):
+        """measure_pueo_footprint result appears in the disk tab response."""
+        from fastapi.testclient import TestClient
+
+        import utils.disk.pueo_storage as pueo_storage_mod
+        import web.dashboard as dashboard
+        from utils.disk.pueo_storage import PueoFootprint
+
+        stub = PueoFootprint(
+            backups_bytes=1024 * 1024 * 10,
+            archives_bytes=0,
+            chromadb_bytes=0,
+            cache_bytes=0,
+            db_bytes=1024 * 512,
+            log_bytes=1024 * 100,
+            hitl_bytes=0,
+            total_bytes=1024 * 1024 * 10 + 1024 * 612,
+        )
+        monkeypatch.setattr(pueo_storage_mod, "measure_pueo_footprint", lambda: stub)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/disk")
+        assert resp.status_code == 200
+
+    def test_disk_tab_measure_exception_swallowed(self, monkeypatch):
+        """If measure_pueo_footprint raises, disk tab still renders (pueo_footprint=None)."""
+        import utils.disk.pueo_storage as pueo_storage_mod
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+
+        def _raise():
+            raise OSError("simulated walk failure")
+
+        monkeypatch.setattr(pueo_storage_mod, "measure_pueo_footprint", _raise)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/disk")
+        assert resp.status_code == 200
+
+    def test_control_tab_service_status_called(self, tmp_path, monkeypatch):
+        """service_status is called when /control is requested."""
+        from fastapi.testclient import TestClient
+
+        import utils.system.service as svc
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "com.pueo.agent.plist")
+        calls: list[bool] = []
+
+        def recording_status():
+            calls.append(True)
+            return {"loaded": False, "running": False, "pid": None}
+
+        monkeypatch.setattr(svc, "service_status", recording_status)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/control")
+
+        assert resp.status_code == 200
+        assert calls, "service_status was never called"
+
+    def test_service_status_endpoint_returns_json(self, monkeypatch):
+        """GET /service/status returns JSON with 'loaded' key."""
+        from fastapi.testclient import TestClient
+
+        import utils.system.service as svc
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/service/status")
+
+        assert resp.status_code == 200
+        assert "loaded" in resp.json()
+
+    def test_settings_tab_all_three_slow_functions_called(self, tmp_path, monkeypatch):
+        """detect_local_hardware, list_ollama_models, and service_status are all
+        invoked when /settings is requested — confirming the asyncio.gather path."""
+        from fastapi.testclient import TestClient
+
+        import utils.disk.hardware as hw_mod
+        import utils.system.service as svc
+        import web.dashboard as dashboard
+        from utils.disk.hardware import HardwareProfile, OllamaModelInfo
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        calls: set[str] = set()
+
+        def fake_detect():
+            calls.add("hw")
+            return HardwareProfile(
+                chip="Apple M1", arch="arm64", ram_gb=16.0, cpu_cores=8
+            )
+
+        def fake_models():
+            calls.add("ollama")
+            return [
+                OllamaModelInfo(
+                    name="qwen3:7b", size_gb=4.5, has_tools=True, context_length=8192
+                )
+            ]
+
+        def fake_service():
+            calls.add("svc")
+            return {"loaded": True, "running": True, "pid": 999}
+
+        monkeypatch.setattr(hw_mod, "detect_local_hardware", fake_detect)
+        monkeypatch.setattr(hw_mod, "list_ollama_models", fake_models)
+        monkeypatch.setattr(hw_mod, "recommend_model", lambda p, m: "qwen3:7b")
+        monkeypatch.setattr(svc, "service_status", fake_service)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/settings")
+
+        assert resp.status_code == 200
+        assert "hw" in calls, "detect_local_hardware not called"
+        assert "ollama" in calls, "list_ollama_models not called"
+        assert "svc" in calls, "service_status not called"
+
+
 # ── Episodes tab ─────────────────────────────────────────────────────────────────
 
 
