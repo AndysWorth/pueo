@@ -171,7 +171,7 @@
         <span id="ollama-pill" class="ollama-pill ollama-idle">Ollama: idle<span class="ollama-popover"><table id="ollama-popover-table"><tr><td colspan="3" style="color:#999">Loading…</td></tr></table></span></span>
       </span>
     </nav>
-    {% block content %}{% endblock %}
+    <div id="main-content">{% block content %}{% endblock %}</div>
     <script>
     (function () {
       function updateHaStatus() {
@@ -347,6 +347,80 @@
         });
       });
       window.addEventListener('pageshow', function () { bar.className = 'nav-done'; });
+    })();
+    </script>
+    <script>
+    (function () {
+      /* SPA tab navigation — intercept nav-link clicks, fetch + swap content only.
+         Keeps SSE connections alive for the entire browser session so the connection
+         pool is never exhausted by tab switches. */
+      var _bar = document.getElementById('nav-progress');
+
+      function _startProgress() {
+        if (!_bar) return;
+        _bar.className = '';
+        void _bar.offsetWidth;
+        _bar.className = 'nav-loading';
+      }
+
+      function _doneProgress() {
+        if (_bar) _bar.className = 'nav-done';
+      }
+
+      function _loadTab(href) {
+        _startProgress();
+        fetch(href)
+          .then(function (res) {
+            if (!res.ok) { window.location.href = href; return null; }
+            return res.text();
+          })
+          .then(function (html) {
+            if (!html) return;
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var newMain = doc.getElementById('main-content');
+            if (!newMain) { window.location.href = href; return; }
+
+            var container = document.getElementById('main-content');
+            container.innerHTML = newMain.innerHTML;
+
+            /* Re-execute <script> tags — innerHTML does not execute them. */
+            container.querySelectorAll('script').forEach(function (s) {
+              var ns = document.createElement('script');
+              Array.from(s.attributes).forEach(function (a) { ns.setAttribute(a.name, a.value); });
+              ns.textContent = s.textContent;
+              s.parentNode.replaceChild(ns, s);
+            });
+
+            /* Sync active nav-link class. */
+            var pathname = href.split('?')[0];
+            document.querySelectorAll('a.nav-link').forEach(function (link) {
+              var h = link.getAttribute('href');
+              link.classList.toggle('active', h === '/' ? pathname === '/' : pathname.startsWith(h));
+            });
+
+            _doneProgress();
+          })
+          .catch(function () { window.location.href = href; });
+      }
+
+      /* Record initial URL so Back works from the first page. */
+      history.replaceState({href: window.location.pathname}, '', window.location.href);
+
+      document.querySelectorAll('a.nav-link').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+          if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+          var href = link.getAttribute('href');
+          if (!href || href.startsWith('#') || href.split('?')[0] === window.location.pathname) return;
+          e.preventDefault();
+          history.pushState({href: href}, '', href);
+          _loadTab(href);
+        });
+      });
+
+      window.addEventListener('popstate', function (e) {
+        var href = (e.state && e.state.href) || window.location.pathname;
+        _loadTab(href);
+      });
     })();
     </script>
   </body>

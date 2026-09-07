@@ -297,3 +297,57 @@ class TestMeasurePueoFootprint:
         assert fp.total_bytes == 0
         assert fp.backups_bytes == 0
         assert fp.archives_bytes == 0
+
+    def test_cache_returns_same_object_within_ttl(
+        self, tmp_path, isolated_config, monkeypatch
+    ):
+        import importlib
+        import sys
+
+        if "utils.disk.pueo_storage" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.pueo_storage"])
+        import utils.disk.pueo_storage as storage_mod
+        from utils.disk.pueo_storage import measure_pueo_footprint
+
+        walk_count = [0]
+        original_dir_size = storage_mod._dir_size
+
+        def counting_dir_size(path):
+            walk_count[0] += 1
+            return original_dir_size(path)
+
+        monkeypatch.setattr(storage_mod, "_dir_size", counting_dir_size)
+
+        fp1 = measure_pueo_footprint()
+        count_after_first = walk_count[0]
+        assert count_after_first > 0
+
+        fp2 = measure_pueo_footprint()
+        assert (
+            walk_count[0] == count_after_first
+        ), "second call should hit cache, not walk again"
+        assert fp1 is fp2
+
+    def test_cache_expires_after_ttl(self, tmp_path, isolated_config, monkeypatch):
+        import importlib
+        import sys
+
+        if "utils.disk.pueo_storage" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.pueo_storage"])
+        import utils.disk.pueo_storage as storage_mod
+        from utils.disk.pueo_storage import measure_pueo_footprint
+
+        measure_pueo_footprint()
+        # Force cache to appear expired
+        monkeypatch.setattr(storage_mod, "_footprint_cache_at", 0.0)
+
+        walk_count = [0]
+        original_dir_size = storage_mod._dir_size
+
+        def counting_dir_size(path):
+            walk_count[0] += 1
+            return original_dir_size(path)
+
+        monkeypatch.setattr(storage_mod, "_dir_size", counting_dir_size)
+        measure_pueo_footprint()
+        assert walk_count[0] > 0, "expired cache should trigger a fresh walk"
