@@ -6025,6 +6025,8 @@ class TestHardwareTTLCache:
             return "Chip: Apple M1 Pro\n"
 
         monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
+        monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(hw.platform, "machine", lambda: "arm64")
         monkeypatch.setattr(hw, "_hw_cache", None)
         monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
 
@@ -6055,6 +6057,8 @@ class TestHardwareTTLCache:
             return ""
 
         monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
+        monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(hw.platform, "machine", lambda: "arm64")
         monkeypatch.setattr(hw, "_hw_cache", None)
         monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
 
