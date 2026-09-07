@@ -6046,7 +6046,15 @@ class TestHardwareTTLCache:
         assert p1 is p2
 
     def test_detect_local_hardware_cache_expires(self, monkeypatch):
+        import types
         import utils.disk.hardware as hw
+
+        # Control monotonic() so we can advance time past the TTL without
+        # touching _hw_cache_at (which proved fragile across Python versions).
+        monotonic_val = [100.0]
+        monkeypatch.setattr(
+            hw, "_time", types.SimpleNamespace(monotonic=lambda: monotonic_val[0])
+        )
 
         call_count = [0]
 
@@ -6065,7 +6073,7 @@ class TestHardwareTTLCache:
         hw.detect_local_hardware()
         count_after_first = call_count[0]
 
-        hw._hw_cache_at = 0.0  # force expiry via direct assignment
+        monotonic_val[0] = 100.0 + hw._HW_CACHE_TTL + 1  # advance past TTL
         hw.detect_local_hardware()
         assert (
             call_count[0] > count_after_first
