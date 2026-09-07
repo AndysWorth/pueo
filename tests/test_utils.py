@@ -6006,12 +6006,21 @@ class TestSupervisorActivityCounters:
 class TestHardwareTTLCache:
     """detect_local_hardware and list_ollama_models cache results within TTL."""
 
-    def test_detect_local_hardware_cache_hit(self, monkeypatch):
-        import importlib
-        import sys
+    @pytest.fixture(autouse=True)
+    def reset_hw_cache(self):
+        import utils.disk.hardware as hw
 
-        if "utils.disk.hardware" in sys.modules:
-            importlib.reload(sys.modules["utils.disk.hardware"])
+        hw._hw_cache = None
+        hw._hw_cache_at = 0.0
+        hw._models_cache = []
+        hw._models_cache_at = 0.0
+        yield
+        hw._hw_cache = None
+        hw._hw_cache_at = 0.0
+        hw._models_cache = []
+        hw._models_cache_at = 0.0
+
+    def test_detect_local_hardware_cache_hit(self, monkeypatch):
         import utils.disk.hardware as hw
 
         call_count = [0]
@@ -6027,8 +6036,6 @@ class TestHardwareTTLCache:
         monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
         monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(hw.platform, "machine", lambda: "arm64")
-        monkeypatch.setattr(hw, "_hw_cache", None)
-        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
 
         p1 = hw.detect_local_hardware()
         count_after_first = call_count[0]
@@ -6039,11 +6046,6 @@ class TestHardwareTTLCache:
         assert p1 is p2
 
     def test_detect_local_hardware_cache_expires(self, monkeypatch):
-        import importlib
-        import sys
-
-        if "utils.disk.hardware" in sys.modules:
-            importlib.reload(sys.modules["utils.disk.hardware"])
         import utils.disk.hardware as hw
 
         call_count = [0]
@@ -6059,24 +6061,17 @@ class TestHardwareTTLCache:
         monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
         monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(hw.platform, "machine", lambda: "arm64")
-        monkeypatch.setattr(hw, "_hw_cache", None)
-        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
 
         hw.detect_local_hardware()
         count_after_first = call_count[0]
 
-        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)  # force expiry
+        hw._hw_cache_at = 0.0  # force expiry via direct assignment
         hw.detect_local_hardware()
         assert (
             call_count[0] > count_after_first
         ), "expired cache should re-run subprocess"
 
     def test_list_ollama_models_cache_hit(self, monkeypatch):
-        import importlib
-        import sys
-
-        if "utils.disk.hardware" in sys.modules:
-            importlib.reload(sys.modules["utils.disk.hardware"])
         import utils.disk.hardware as hw
 
         call_count = [0]
@@ -6089,8 +6084,6 @@ class TestHardwareTTLCache:
             return "tools\ncontext length: 8192\n"
 
         monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
-        monkeypatch.setattr(hw, "_models_cache", [])
-        monkeypatch.setattr(hw, "_models_cache_at", 0.0)
 
         m1 = hw.list_ollama_models()
         count_after_first = call_count[0]
