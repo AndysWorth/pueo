@@ -10,8 +10,10 @@ Nothing in this module makes SSH connections or network calls.
 from __future__ import annotations
 
 import os
+import time as _time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import config
 from utils.core.logging import get_logger
@@ -31,11 +33,26 @@ class PueoFootprint:
     total_bytes: int
 
 
+_footprint_cache: Optional[PueoFootprint] = None
+_footprint_cache_at: float = 0.0
+_FOOTPRINT_CACHE_TTL = (
+    60.0  # local filesystem walk; 60 s is fresh enough for the Disk tab
+)
+
+
 def measure_pueo_footprint() -> PueoFootprint:
     """Walk all Pueo-managed local paths and return per-category byte counts.
 
     Emits a warning log if total exceeds PUEO_LOCAL_MAX_GB.
+    Result is cached for _FOOTPRINT_CACHE_TTL seconds to avoid repeated directory walks.
     """
+    global _footprint_cache, _footprint_cache_at
+    if (
+        _footprint_cache is not None
+        and _time.monotonic() - _footprint_cache_at < _FOOTPRINT_CACHE_TTL
+    ):
+        return _footprint_cache
+
     backups = _dir_size(Path(config.BACKUP_LOCAL_DIR))
     archives = _dir_size(Path(config.PUEO_ARCHIVE_DIR))
     chromadb = _dir_size(Path(config.CHROMADB_PATH))
@@ -58,7 +75,7 @@ def measure_pueo_footprint() -> PueoFootprint:
             limit_gb=config.PUEO_LOCAL_MAX_GB,
         )
 
-    return PueoFootprint(
+    result = PueoFootprint(
         backups_bytes=backups,
         archives_bytes=archives,
         chromadb_bytes=chromadb,
@@ -68,6 +85,9 @@ def measure_pueo_footprint() -> PueoFootprint:
         hitl_bytes=hitl,
         total_bytes=total,
     )
+    _footprint_cache = result
+    _footprint_cache_at = _time.monotonic()
+    return result
 
 
 def _dir_size(path: Path) -> int:

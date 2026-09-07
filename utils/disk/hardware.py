@@ -9,6 +9,7 @@ from __future__ import annotations
 import platform
 import re
 import subprocess  # nosec B404 — only sysctl, system_profiler, ollama CLI; no user input
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -48,6 +49,15 @@ CANDIDATE_MODELS: list[tuple[str, int]] = [
 # Leaves headroom for the OS and other processes.
 MEMORY_BUDGET_FRAC: float = 0.65
 
+# Module-level TTL caches — avoids re-running expensive subprocesses on every Settings tab load.
+_hw_cache: Optional[HardwareProfile] = None
+_hw_cache_at: float = 0.0
+_HW_CACHE_TTL = 3600.0  # hardware changes at most on reboot
+
+_models_cache: list["OllamaModelInfo"] = []
+_models_cache_at: float = 0.0
+_MODELS_CACHE_TTL = 60.0  # models can be pulled/deleted but rarely
+
 
 @dataclass
 class HardwareProfile:
@@ -75,7 +85,12 @@ def detect_local_hardware() -> HardwareProfile:
     """Return a HardwareProfile for the machine running Pueo.
 
     Never raises — returns zero/unknown values on detection failure.
+    Result is cached for _HW_CACHE_TTL seconds (hardware rarely changes at runtime).
     """
+    global _hw_cache, _hw_cache_at
+    if _hw_cache is not None and _time.monotonic() - _hw_cache_at < _HW_CACHE_TTL:
+        return _hw_cache
+
     arch = platform.machine()  # "arm64" on Apple Silicon, "x86_64" on Intel
     cores = 0
     ram_gb = 0.0
@@ -118,9 +133,12 @@ def detect_local_hardware() -> HardwareProfile:
     except Exception as exc:  # nosec B110
         log.warning("hardware_detect_error", error=str(exc))
 
-    return HardwareProfile(
+    result = HardwareProfile(
         chip=chip, arch=arch, ram_gb=round(ram_gb, 1), cpu_cores=cores
     )
+    _hw_cache = result
+    _hw_cache_at = _time.monotonic()
+    return result
 
 
 def list_ollama_models() -> list[OllamaModelInfo]:
@@ -128,7 +146,12 @@ def list_ollama_models() -> list[OllamaModelInfo]:
 
     Returns an empty list if Ollama is not running rather than raising.
     Skips embedding-only models (name contains 'embed').
+    Result is cached for _MODELS_CACHE_TTL seconds.
     """
+    global _models_cache, _models_cache_at
+    if _models_cache and _time.monotonic() - _models_cache_at < _MODELS_CACHE_TTL:
+        return list(_models_cache)
+
     try:
         raw = subprocess.check_output(  # nosec B603 B607
             ["ollama", "list"], text=True, stderr=subprocess.DEVNULL
@@ -158,6 +181,8 @@ def list_ollama_models() -> list[OllamaModelInfo]:
             )
         )
 
+    _models_cache = models
+    _models_cache_at = _time.monotonic()
     return models
 
 

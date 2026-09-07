@@ -55,6 +55,16 @@ def _model(
 
 
 class TestDetectLocalHardware:
+    @pytest.fixture(autouse=True)
+    def reset_hw_cache(self):
+        import utils.disk.hardware as hw
+
+        hw._hw_cache = None
+        hw._hw_cache_at = 0.0
+        yield
+        hw._hw_cache = None
+        hw._hw_cache_at = 0.0
+
     def test_macos_happy_path(self):
         sysctl_results = {
             ("sysctl", "-n", "hw.memsize"): "68719476736\n",
@@ -180,6 +190,16 @@ class TestCheckModelCaps:
 
 
 class TestListOllamaModels:
+    @pytest.fixture(autouse=True)
+    def reset_models_cache(self):
+        import utils.disk.hardware as hw
+
+        hw._models_cache = []
+        hw._models_cache_at = 0.0
+        yield
+        hw._models_cache = []
+        hw._models_cache_at = 0.0
+
     def test_parses_output(self):
         ollama_list = (
             "NAME                         ID            SIZE      MODIFIED\n"

@@ -6001,3 +6001,98 @@ class TestSupervisorActivityCounters:
         assert sup.get_rag_refreshing() is True
         sup.set_rag_refreshing(False)
         assert sup.get_rag_refreshing() is False
+
+
+class TestHardwareTTLCache:
+    """detect_local_hardware and list_ollama_models cache results within TTL."""
+
+    def test_detect_local_hardware_cache_hit(self, monkeypatch):
+        import importlib
+        import sys
+
+        if "utils.disk.hardware" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.hardware"])
+        import utils.disk.hardware as hw
+
+        call_count = [0]
+
+        def fake_check_output(cmd, **kwargs):
+            call_count[0] += 1
+            if "sysctl" in cmd and "hw.memsize" in cmd:
+                return "17179869184"
+            if "sysctl" in cmd and "hw.physicalcpu" in cmd:
+                return "10"
+            return "Chip: Apple M1 Pro\n"
+
+        monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
+        monkeypatch.setattr(hw, "_hw_cache", None)
+        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
+
+        p1 = hw.detect_local_hardware()
+        count_after_first = call_count[0]
+        assert count_after_first > 0
+
+        p2 = hw.detect_local_hardware()
+        assert call_count[0] == count_after_first, "second call should use cache"
+        assert p1 is p2
+
+    def test_detect_local_hardware_cache_expires(self, monkeypatch):
+        import importlib
+        import sys
+
+        if "utils.disk.hardware" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.hardware"])
+        import utils.disk.hardware as hw
+
+        call_count = [0]
+
+        def fake_check_output(cmd, **kwargs):
+            call_count[0] += 1
+            if "sysctl" in cmd and "hw.memsize" in cmd:
+                return "17179869184"
+            if "sysctl" in cmd and "hw.physicalcpu" in cmd:
+                return "10"
+            return ""
+
+        monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
+        monkeypatch.setattr(hw, "_hw_cache", None)
+        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)
+
+        hw.detect_local_hardware()
+        count_after_first = call_count[0]
+
+        monkeypatch.setattr(hw, "_hw_cache_at", 0.0)  # force expiry
+        hw.detect_local_hardware()
+        assert (
+            call_count[0] > count_after_first
+        ), "expired cache should re-run subprocess"
+
+    def test_list_ollama_models_cache_hit(self, monkeypatch):
+        import importlib
+        import sys
+
+        if "utils.disk.hardware" in sys.modules:
+            importlib.reload(sys.modules["utils.disk.hardware"])
+        import utils.disk.hardware as hw
+
+        call_count = [0]
+
+        def fake_check_output(cmd, **kwargs):
+            call_count[0] += 1
+            if cmd[0] == "ollama" and cmd[1] == "list":
+                return "NAME\t\tID\t\tSIZE\tMODIFIED\nqwen3:7b\tabc123\t4.7 GB\t2 days ago\n"
+            # ollama show
+            return "tools\ncontext length: 8192\n"
+
+        monkeypatch.setattr(hw.subprocess, "check_output", fake_check_output)
+        monkeypatch.setattr(hw, "_models_cache", [])
+        monkeypatch.setattr(hw, "_models_cache_at", 0.0)
+
+        m1 = hw.list_ollama_models()
+        count_after_first = call_count[0]
+        assert count_after_first > 0
+        assert len(m1) == 1
+
+        m2 = hw.list_ollama_models()
+        assert call_count[0] == count_after_first, "second call should use cache"
+        assert len(m2) == 1
