@@ -416,6 +416,15 @@ async def overview(request: Request) -> HTMLResponse:
     sv = get_supervisor_instance()
     loop_statuses = sv.get_statuses() if sv else []
     resource = get_resource_status()
+    import config as _cfg
+
+    _LLM_LOCATION_LABELS = {
+        "local": "local (Ollama)",
+        "cloud": "cloud (Anthropic)",
+        "both": "both local and cloud",
+    }
+    llm_location_label = _LLM_LOCATION_LABELS.get(_cfg.LLM_PROVIDER, _cfg.LLM_PROVIDER)
+
     last_backup, recent_events = await asyncio.gather(
         asyncio.to_thread(_load_last_backup),
         asyncio.to_thread(load_timeline_events, 10),
@@ -429,6 +438,7 @@ async def overview(request: Request) -> HTMLResponse:
             "pending_count": pending_count,
             "last_backup": last_backup,
             "recent_events": recent_events,
+            "llm_location_label": llm_location_label,
         },
     )
 
@@ -3511,6 +3521,32 @@ def _logs_source_to_command(source: str, limit: int) -> str:
     if source == "netalertx":
         return f"tail -n {limit} /data/netalertx/db/app.log 2>/dev/null || tail -n {limit} /netalertx/db/app.log 2>/dev/null || echo ''"
     return f"tail -n {limit} /var/log/messages 2>/dev/null"
+
+
+@app.get("/logs/ha-apps")
+async def logs_ha_apps() -> JSONResponse:
+    """Return installed HA apps (slug + name) sorted by name, for the Logs tab dropdown."""
+    import config as _config
+    from utils.ha.ssh_client import AsyncSSHClient
+
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    try:
+        _, stdout, _ = await ssh.run("ha apps list --raw-json", check=False)
+        import json as _json
+
+        data = _json.loads(stdout)
+        addons = data.get("data", {}).get("addons", [])
+        apps = sorted(
+            [
+                {"slug": a["slug"], "name": a["name"]}
+                for a in addons
+                if "slug" in a and "name" in a
+            ],
+            key=lambda x: x["name"].lower(),
+        )
+    except Exception:  # nosec B110
+        apps = []
+    return JSONResponse({"apps": apps})
 
 
 @app.get("/logs/fetch")
