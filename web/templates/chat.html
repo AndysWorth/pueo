@@ -675,7 +675,7 @@
 
   function connectSSE() {
     if (_eventSource) return;
-    _eventSource = new EventSource('/chat/events');
+    _eventSource = window._pueoChat || new EventSource('/chat/events');
     _eventSource.onmessage = function(ev) {
       let data;
       try { data = JSON.parse(ev.data); } catch { return; }
@@ -710,7 +710,7 @@
 
   function connectGlobalSSE() {
     if (_globalEventSource) return;
-    _globalEventSource = new EventSource('/events');
+    _globalEventSource = window._pueoES || new EventSource('/events');
     _globalEventSource.onmessage = function(ev) {
       let data;
       try { data = JSON.parse(ev.data); } catch { return; }

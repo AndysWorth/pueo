@@ -287,9 +287,9 @@
   window.refreshModelCache = refreshModelCache;
 
   // SSE: flash confirmation when config_saved event arrives
-  if (window.EventSource) {
-    var es = new EventSource('/events');
-    es.onmessage = function (e) {
+  var _settingsES = window._pueoES || (window.EventSource ? new EventSource('/events') : null);
+  if (_settingsES) {
+    var _settingsMsg = function (e) {
       try {
         var evt = JSON.parse(e.data);
         if (evt.event_type === 'config_saved') {
@@ -302,7 +302,8 @@
         }
       } catch (_) {}
     };
-    es.onerror = function () {};
+    _settingsES.addEventListener('message', _settingsMsg);
+    window._pueoPageCleanup = function() { _settingsES.removeEventListener('message', _settingsMsg); };
   }
 })();
 </script>

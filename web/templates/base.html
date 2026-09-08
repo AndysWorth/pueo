@@ -218,7 +218,8 @@
         setState(d.activity);
       }).catch(function () {});
 
-      var es = new EventSource('/events');
+      window._pueoES = window._pueoES || new EventSource('/events');
+      var es = window._pueoES;
       es.addEventListener('loop_status', function (e) {
         var d = JSON.parse(e.data);
         if (d.status === 'error') {
@@ -246,7 +247,8 @@
       });
       es.addEventListener('triage_done', function () { clearTimeout(triageTimer); if (state === 'triaging') setState('monitoring'); });
 
-      var ces = new EventSource('/chat/events');
+      window._pueoChat = window._pueoChat || new EventSource('/chat/events');
+      var ces = window._pueoChat;
       ces.addEventListener('chat_pre_step', function () {
         clearTimeout(chatTimer);
         if (state !== 'repairing' && state !== 'error') setState('chatting');
@@ -368,6 +370,7 @@
       }
 
       function _loadTab(href) {
+        if (typeof window._pueoPageCleanup === 'function') { window._pueoPageCleanup(); window._pueoPageCleanup = null; }
         _startProgress();
         fetch(href)
           .then(function (res) {
