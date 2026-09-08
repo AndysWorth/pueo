@@ -3520,6 +3520,10 @@ def _logs_source_to_command(source: str, limit: int) -> str:
         return f"ha apps logs {slug} 2>&1 | tail -n {limit}"
     if source == "netalertx":
         return f"tail -n {limit} /data/netalertx/db/app.log 2>/dev/null || tail -n {limit} /netalertx/db/app.log 2>/dev/null || echo ''"
+    if source == "ha_core":
+        return f"ha core logs 2>&1 | tail -n {limit}"
+    if source == "ha_supervisor":
+        return f"ha supervisor logs 2>&1 | tail -n {limit}"
     return f"tail -n {limit} /var/log/messages 2>/dev/null"
 
 

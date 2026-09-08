@@ -7,13 +7,9 @@
   /* Source panel */
   .source-panel { background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd);
     border-radius: 6px; padding: 0.75rem 1rem; }
-  .source-panel-title { font-weight: 600; margin-bottom: 0.5rem; font-size: 0.92rem; }
-  .source-list { list-style: none; margin: 0 0 0.5rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .source-chip { display: flex; align-items: center; gap: 0.35rem; background: var(--chip-bg, #e8f0fe);
-    border-radius: 20px; padding: 0.2rem 0.6rem 0.2rem 0.8rem; font-size: 0.82rem; }
-  .source-chip-remove { background: none; border: none; cursor: pointer; color: #888; font-size: 1rem;
-    padding: 0; line-height: 1; }
-  .source-chip-remove:hover { color: #c00; }
+  .source-remove-btn { background: none; border: none; cursor: pointer; color: #aaa;
+    font-size: 0.9rem; padding: 0 0 0 0.35rem; line-height: 1; }
+  .source-remove-btn:hover { color: #c00; }
   .add-source-form { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
   .add-source-form select, .add-source-form input { font-size: 0.82rem; border: 1px solid #ccc;
     border-radius: 4px; padding: 0.25rem 0.4rem; background: var(--bg, #fff); color: inherit; }
@@ -61,7 +57,8 @@
   .viewer-tail-btn { font-size: 0.78rem; padding: 0.15rem 0.4rem; border: 1px solid #ccc;
     border-radius: 3px; background: var(--bg, #fff); color: inherit; cursor: pointer; white-space: nowrap; }
   .viewer-tail-btn.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-  .viewer-lines { flex: 1; overflow-y: auto; font-family: monospace; font-size: 0.75rem; }
+  .viewer-lines { flex: 1; overflow-y: auto; font-family: monospace; font-size: 0.75rem;
+    background: var(--card-bg, #fff); color: inherit; }
   .log-line { display: flex; align-items: baseline; gap: 0.4rem; padding: 1px 0.75rem;
     border-bottom: 1px solid transparent; cursor: pointer; }
   .log-line:hover { background: var(--hover-bg, rgba(0,0,0,0.04)); }
@@ -92,21 +89,9 @@
   /* Empty state */
   .logs-empty { color: #888; font-size: 0.9rem; padding: 1.5rem 0.5rem; }
 
-  /* Dark-mode tokens */
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --card-bg: #1e1e1e; --border: #333; --hover-bg: rgba(255,255,255,0.06);
-      --sel-bg: #1e3a5f; --chip-bg: #1e3a5f;
-    }
-  }
-  :root[data-theme="dark"] {
-    --card-bg: #1e1e1e; --border: #333; --hover-bg: rgba(255,255,255,0.06);
-    --sel-bg: #1e3a5f; --chip-bg: #1e3a5f;
-  }
-  :root[data-theme="light"] {
-    --card-bg: #fff; --border: #ddd; --hover-bg: rgba(0,0,0,0.04);
-    --sel-bg: #e8f0fe; --chip-bg: #e8f0fe;
-  }
+  /* Color tokens — light-only (base.html does not support dark mode) */
+  :root { --card-bg: #fff; --bg: #fff; --border: #ddd; --hover-bg: rgba(0,0,0,0.04);
+    --sel-bg: #e8f0fe; }
 </style>
 
 <div class="logs-page">
@@ -114,12 +99,12 @@
 
   <!-- Source panel -->
   <div class="source-panel">
-    <div class="source-panel-title">Log Sources</div>
-    <ul class="source-list" id="source-chip-list"></ul>
     <div class="add-source-form">
       <select id="add-source-type" onchange="window._logsUpdateSlugInput()">
         <option value="apps">HA App</option>
         <option value="netalertx">NetAlertX</option>
+        <option value="ha_core">HA Core Log</option>
+        <option value="ha_supervisor">HA Supervisor Log</option>
       </select>
       <select id="add-source-slug-select" style="width:170px"></select>
       <input id="add-source-slug-text" type="text" placeholder="app slug" style="width:160px;display:none">
@@ -207,6 +192,7 @@
 
   /* ── sparkline ──────────────────────────────────────────────────────────── */
   var _bsMap = {'1m': 60, '1h': 3600, '1d': 86400};
+  var _trMap = {'1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000};
 
   function _sparkPrefsKey(source) { return 'pueo_logs_sparkline_' + source; }
 
@@ -220,6 +206,23 @@
 
   function _setSparkPrefs(source, prefs) {
     try { localStorage.setItem(_sparkPrefsKey(source), JSON.stringify(prefs)); } catch(_){}
+  }
+
+  function _filteredLines(source) {
+    var data = _fetched[source];
+    if (!data) return [];
+    var prefs = _getSparkPrefs(source);
+    var secs = _trMap[prefs.time_range] || 3600;
+    var since = Math.floor(Date.now() / 1000) - secs;
+    return data.lines.filter(function(l) { return !l.ts || l.ts >= since; });
+  }
+
+  function _sourceLabel(source) {
+    if (source === 'ha_core') return 'HA Core Log';
+    if (source === 'ha_supervisor') return 'HA Supervisor Log';
+    if (source === 'netalertx') return 'NetAlertX';
+    if (source.startsWith('apps:')) return source.slice(5);
+    return source;
   }
 
   function _computeSparkBuckets(lines, bucketSize) {
@@ -378,7 +381,7 @@
             ' · ' + d.lines.length + ' lines · ' + d.fetch_duration_ms + 'ms';
         }
         var prefs = _getSparkPrefs(source);
-        var buckets = _computeSparkBuckets(d.lines, prefs.bucket_size);
+        var buckets = _computeSparkBuckets(_filteredLines(source), prefs.bucket_size);
         _renderSparkline(source, buckets, prefs.bucket_size);
         // If viewer is open for this source, refresh it
         if (_viewerSource === source) _populateViewer(source, null, null);
@@ -429,7 +432,8 @@
     var type = document.getElementById('add-source-type').value;
     var sel = document.getElementById('add-source-slug-select');
     var txt = document.getElementById('add-source-slug-text');
-    if (type === 'netalertx') {
+    var noSlug = type === 'netalertx' || type === 'ha_core' || type === 'ha_supervisor';
+    if (noSlug) {
       if (sel) { sel.disabled = true; sel.style.display = 'none'; }
       if (txt) { txt.disabled = true; txt.style.display = 'none'; }
     } else {
@@ -441,20 +445,19 @@
 
   window._logsAddSource = function() {
     var type = document.getElementById('add-source-type').value;
-    var slug;
-    if (type === 'netalertx') {
-      slug = '';
+    var source;
+    if (type === 'netalertx' || type === 'ha_core' || type === 'ha_supervisor') {
+      source = type;
     } else {
       var sel = document.getElementById('add-source-slug-select');
       var txt = document.getElementById('add-source-slug-text');
-      slug = (sel && sel.style.display !== 'none') ? sel.value.trim() : (txt ? txt.value.trim() : '');
+      var slug = (sel && sel.style.display !== 'none') ? sel.value.trim() : (txt ? txt.value.trim() : '');
+      if (!slug) { alert('Enter an app slug'); return; }
+      source = 'apps:' + slug;
     }
-    var source = type === 'netalertx' ? 'netalertx' : ('apps:' + slug);
-    if (type !== 'netalertx' && !slug) { alert('Enter an app slug'); return; }
     if (_sources.indexOf(source) !== -1) { alert('Source already added'); return; }
     _sources.push(source);
     _savePrefs();
-    _renderSourceChips();
     _renderSourceCard(source);
     _fetchSource(source);
   };
@@ -466,27 +469,10 @@
     var card = document.getElementById('source-card-' + sid);
     if (card) card.remove();
     delete _fetched[source]; delete _sparkData[source];
-    _renderSourceChips();
-    if (_viewerSource === source) _closeViewer();
+    if (_viewerSource === source) window._logsCloseViewer();
     _updateEmptyState();
   }
-
-  function _renderSourceChips() {
-    var ul = document.getElementById('source-chip-list');
-    ul.innerHTML = '';
-    _sources.forEach(function(source) {
-      var li = document.createElement('li');
-      li.className = 'source-chip';
-      li.textContent = source;
-      var btn = document.createElement('button');
-      btn.className = 'source-chip-remove';
-      btn.textContent = '✕';
-      btn.title = 'Remove ' + source;
-      btn.onclick = (function(s){ return function(){ _removeSource(s); }; })(source);
-      li.appendChild(btn);
-      ul.appendChild(li);
-    });
-  }
+  window._logsRemoveSource = _removeSource;
 
   function _updateEmptyState() {
     var el = document.getElementById('logs-empty');
@@ -502,8 +488,9 @@
     card.className = 'source-card'; card.id = 'source-card-' + sid;
     card.innerHTML = [
       '<div class="source-card-header">',
-        '<span>' + _escHtml(source) + '</span>',
+        '<span>' + _escHtml(_sourceLabel(source)) + '</span>',
         '<button class="source-refresh-btn" onclick="window._logsRefresh(' + JSON.stringify(source) + ')">Refresh</button>',
+        '<button class="source-remove-btn" title="Remove" onclick="window._logsRemoveSource(' + JSON.stringify(source) + ')">✕</button>',
       '</div>',
       '<div class="source-card-meta" id="source-meta-' + sid + '">Not yet fetched</div>',
       '<span class="sparkline-daterange" id="sparkline-daterange-' + sid + '"></span>',
@@ -520,6 +507,10 @@
         '<label>Bucket <select id="sparkline-bucket-' + sid + '" class="sparkline-select" onchange="window._logsRebucketSource(' + JSON.stringify(source) + ')">',
           '<option value="1m">1m</option><option value="1h">1h</option><option value="1d">1d</option>',
         '</select></label>',
+        '<label>Show <select id="sparkline-show-' + sid + '" class="sparkline-select" onchange="window._logsReshowSource(' + JSON.stringify(source) + ')">',
+          '<option value="1h">1 hour</option><option value="6h">6 hours</option>',
+          '<option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option>',
+        '</select></label>',
       '</div>',
     ].join('');
     left.appendChild(card);
@@ -527,6 +518,8 @@
     var prefs = _getSparkPrefs(source);
     var bsEl = document.getElementById('sparkline-bucket-' + sid);
     if (bsEl) bsEl.value = prefs.bucket_size;
+    var showEl = document.getElementById('sparkline-show-' + sid);
+    if (showEl) showEl.value = prefs.time_range || '1h';
     // Scroll-linked nav update
     var wrap = document.getElementById('sparkline-wrap-' + sid);
     if (wrap) {
@@ -546,10 +539,9 @@
     var sid = _sourceId(source);
     var bsEl = document.getElementById('sparkline-bucket-' + sid);
     var bs = bsEl ? bsEl.value : '1m';
-    _setSparkPrefs(source, {bucket_size: bs, time_range: '1h'});
-    var data = _fetched[source];
-    if (!data) return;
-    var buckets = _computeSparkBuckets(data.lines, bs);
+    var existing = _getSparkPrefs(source);
+    _setSparkPrefs(source, {bucket_size: bs, time_range: existing.time_range || '1h'});
+    var buckets = _computeSparkBuckets(_filteredLines(source), bs);
     _renderSparkline(source, buckets, bs);
   };
 
@@ -563,6 +555,88 @@
     else wrap.scrollLeft += wrap.clientWidth * 0.8;
     _updateSparkNav(source, sid); _updateSparkDateRange(source, sid);
   };
+
+  window._logsReshowSource = function(source) {
+    var sid = _sourceId(source);
+    var showEl = document.getElementById('sparkline-show-' + sid);
+    var show = showEl ? showEl.value : '1h';
+    var existing = _getSparkPrefs(source);
+    _setSparkPrefs(source, {bucket_size: existing.bucket_size || '1m', time_range: show});
+    var prefs = _getSparkPrefs(source);
+    var buckets = _computeSparkBuckets(_filteredLines(source), prefs.bucket_size);
+    _renderSparkline(source, buckets, prefs.bucket_size);
+  };
+
+  function _fetchSourceThen(source, targetTs) {
+    var sid = _sourceId(source);
+    var metaEl = document.getElementById('source-meta-' + sid);
+    if (metaEl) metaEl.textContent = 'Fetching…';
+    fetch('/logs/fetch?source=' + encodeURIComponent(source) + '&limit=5000')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _fetched[source] = d;
+        if (metaEl) {
+          metaEl.textContent = 'Fetched ' + _fmtAgo(d.fetched_at) +
+            ' · ' + d.lines.length + ' lines · ' + d.fetch_duration_ms + 'ms';
+        }
+        var prefs = _getSparkPrefs(source);
+        var buckets = _computeSparkBuckets(_filteredLines(source), prefs.bucket_size);
+        _renderSparkline(source, buckets, prefs.bucket_size);
+        if (_viewerSource === source) _populateViewer(source, null, null);
+        // Scroll sparkline wrap so targetTs is centered
+        if (targetTs) {
+          var data = _sparkData[source];
+          var wrap = document.getElementById('sparkline-wrap-' + sid);
+          if (data && wrap) {
+            var bs = _bsMap[data.bucketSize] || 60;
+            var idx = -1;
+            for (var i = 0; i < data.buckets.length; i++) {
+              if (Math.abs(data.buckets[i][0] - targetTs) < bs) { idx = i; break; }
+            }
+            if (idx >= 0) {
+              var targetX = idx * data.barW;
+              wrap.scrollLeft = Math.max(0, targetX - Math.floor(wrap.clientWidth / 2));
+              _updateSparkNav(source, sid);
+              _updateSparkDateRange(source, sid);
+            }
+          }
+        }
+      })
+      .catch(function(err) {
+        if (metaEl) metaEl.textContent = 'Fetch failed: ' + err;
+      });
+  }
+
+  function _applyNavParams() {
+    var params = new URLSearchParams(window.location.search);
+    var addSrc = params.get('add');
+    var bucket = params.get('bucket');
+    var show   = params.get('show');
+    var ts     = parseInt(params.get('ts') || '0', 10);
+    if (!addSrc) return;
+
+    if (_sources.indexOf(addSrc) === -1) {
+      _sources.push(addSrc);
+      _savePrefs();
+      _renderSourceCard(addSrc);
+      _updateEmptyState();
+    }
+
+    if (bucket || show) {
+      var existing = _getSparkPrefs(addSrc);
+      _setSparkPrefs(addSrc, {
+        bucket_size: bucket || existing.bucket_size,
+        time_range:  show   || existing.time_range,
+      });
+      var sid = _sourceId(addSrc);
+      var bsEl   = document.getElementById('sparkline-bucket-' + sid);
+      var showEl = document.getElementById('sparkline-show-'   + sid);
+      if (bsEl)   bsEl.value   = bucket || existing.bucket_size;
+      if (showEl) showEl.value = show   || existing.time_range;
+    }
+
+    _fetchSourceThen(addSrc, ts || 0);
+  }
 
   /* ── viewer ─────────────────────────────────────────────────────────────── */
   function _openViewer(source, tsFrom, tsTo) {
@@ -678,7 +752,7 @@
           }
           // Refresh sparkline
           var prefs = _getSparkPrefs(_viewerSource);
-          var buckets = _computeSparkBuckets(d.lines, prefs.bucket_size);
+          var buckets = _computeSparkBuckets(_filteredLines(_viewerSource), prefs.bucket_size);
           _renderSparkline(_viewerSource, buckets, prefs.bucket_size);
         }).catch(function(){});
     }, 30000);
@@ -762,12 +836,12 @@
   window._logsUpdateSlugInput();
   _loadPrefs(function(savedSources) {
     _sources = savedSources;
-    _renderSourceChips();
     _updateEmptyState();
     _sources.forEach(function(source) {
       _renderSourceCard(source);
       _fetchSource(source);
     });
+    _applyNavParams();
   });
 
 })();
