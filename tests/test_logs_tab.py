@@ -50,6 +50,20 @@ class TestParseLogLineTs:
         parse, _ = _get_helpers()
         assert parse("9999-99-99 99:99:99 bad") == 0
 
+    def test_journald_prefix_before_iso_timestamp(self):
+        # ha core logs output: syslog prefix, then embedded ISO timestamp
+        parse, _ = _get_helpers()
+        line = "Sep 08 13:42:00 homeassistant[1234]: 2026-09-08 13:42:00.123 INFO (MainThread) [homeassistant.bootstrap] Starting up"
+        result = parse(line)
+        assert result > 0
+
+    def test_supervisor_bracket_prefix(self):
+        # Supervisor may wrap lines with [supervisor.core] or similar prefix
+        parse, _ = _get_helpers()
+        line = "[supervisor.core] 2026-09-08 13:42:00.000 INFO something happened"
+        result = parse(line)
+        assert result > 0
+
 
 class TestLogsSourceToCommand:
     def test_apps_source(self):
