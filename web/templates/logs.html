@@ -117,11 +117,12 @@
     <div class="source-panel-title">Log Sources</div>
     <ul class="source-list" id="source-chip-list"></ul>
     <div class="add-source-form">
-      <select id="add-source-type" onchange="window._logsUpdateSlugPlaceholder()">
+      <select id="add-source-type" onchange="window._logsUpdateSlugInput()">
         <option value="apps">HA App</option>
         <option value="netalertx">NetAlertX</option>
       </select>
-      <input id="add-source-slug" type="text" placeholder="app slug (e.g. mosquitto)" style="width:160px">
+      <select id="add-source-slug-select" style="width:170px"></select>
+      <input id="add-source-slug-text" type="text" placeholder="app slug" style="width:160px;display:none">
       <button onclick="window._logsAddSource()">Add</button>
     </div>
   </div>
@@ -388,18 +389,68 @@
   }
 
   /* ── source panel ─────────────────────────────────────────────────────── */
-  window._logsUpdateSlugPlaceholder = function() {
+  /* ── HA apps dropdown ─────────────────────────────────────────────────── */
+  var _haApps = null; // cached [{slug, name}] or []
+
+  function _loadHaApps(cb) {
+    if (_haApps !== null) { cb(_haApps); return; }
+    fetch('/logs/ha-apps')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        _haApps = d.apps || [];
+        cb(_haApps);
+      })
+      .catch(function(){ _haApps = []; cb([]); });
+  }
+
+  function _populateAppSelect(apps) {
+    var sel = document.getElementById('add-source-slug-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (apps.length === 0) {
+      // fall back to text input
+      sel.style.display = 'none';
+      var txt = document.getElementById('add-source-slug-text');
+      if (txt) txt.style.display = '';
+      return;
+    }
+    apps.forEach(function(a){
+      var opt = document.createElement('option');
+      opt.value = a.slug;
+      opt.textContent = a.name + ' (' + a.slug + ')';
+      sel.appendChild(opt);
+    });
+    sel.style.display = '';
+    var txt = document.getElementById('add-source-slug-text');
+    if (txt) txt.style.display = 'none';
+  }
+
+  window._logsUpdateSlugInput = function() {
     var type = document.getElementById('add-source-type').value;
-    var slug = document.getElementById('add-source-slug');
-    if (type === 'netalertx') { slug.value = ''; slug.disabled = true; slug.placeholder = '(no slug needed)'; }
-    else { slug.disabled = false; slug.placeholder = 'app slug (e.g. mosquitto)'; }
+    var sel = document.getElementById('add-source-slug-select');
+    var txt = document.getElementById('add-source-slug-text');
+    if (type === 'netalertx') {
+      if (sel) { sel.disabled = true; sel.style.display = 'none'; }
+      if (txt) { txt.disabled = true; txt.style.display = 'none'; }
+    } else {
+      if (sel) sel.disabled = false;
+      if (txt) txt.disabled = false;
+      _loadHaApps(_populateAppSelect);
+    }
   };
 
   window._logsAddSource = function() {
     var type = document.getElementById('add-source-type').value;
-    var slug = document.getElementById('add-source-slug').value.trim();
+    var slug;
+    if (type === 'netalertx') {
+      slug = '';
+    } else {
+      var sel = document.getElementById('add-source-slug-select');
+      var txt = document.getElementById('add-source-slug-text');
+      slug = (sel && sel.style.display !== 'none') ? sel.value.trim() : (txt ? txt.value.trim() : '');
+    }
     var source = type === 'netalertx' ? 'netalertx' : ('apps:' + slug);
-    if (type !== 'netalertx' && !slug) { alert('Enter a slug'); return; }
+    if (type !== 'netalertx' && !slug) { alert('Enter an app slug'); return; }
     if (_sources.indexOf(source) !== -1) { alert('Source already added'); return; }
     _sources.push(source);
     _savePrefs();
@@ -708,7 +759,7 @@
   }
 
   /* ── init ───────────────────────────────────────────────────────────────── */
-  window._logsUpdateSlugPlaceholder();
+  window._logsUpdateSlugInput();
   _loadPrefs(function(savedSources) {
     _sources = savedSources;
     _renderSourceChips();

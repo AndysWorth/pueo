@@ -3725,6 +3725,133 @@ class TestOverviewRoute:
         assert "ha_log_monitor" in html
         assert "running" in html
 
+    def test_overview_shows_llm_location_local(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        import config as _cfg
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "local")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "LLM location" in html
+        assert "local (Ollama)" in html
+
+    def test_overview_shows_llm_location_cloud(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        import config as _cfg
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "cloud")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "cloud (Anthropic)" in html
+
+    def test_overview_shows_llm_location_both(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        import config as _cfg
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "both")
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "both local and cloud" in html
+
+
+class TestLogsHaApps:
+    """Tests for GET /logs/ha-apps."""
+
+    def test_returns_app_list(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+
+        ha_apps_json = _json.dumps(
+            {
+                "data": {
+                    "addons": [
+                        {"slug": "mosquitto", "name": "Mosquitto Broker"},
+                        {"slug": "zigbee2mqtt", "name": "Zigbee2MQTT"},
+                        {"slug": "nodered", "name": "Node-RED"},
+                    ]
+                }
+            }
+        )
+
+        async def fake_run(self, cmd, check=True):
+            return (0, ha_apps_json, "")
+
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        monkeypatch.setattr(AsyncSSHClient, "run", fake_run)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/logs/ha-apps")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "apps" in data
+        # sorted by name: Mosquitto, Node-RED, Zigbee2MQTT
+        slugs = [a["slug"] for a in data["apps"]]
+        assert slugs == ["mosquitto", "nodered", "zigbee2mqtt"]
+
+    def test_returns_empty_on_ssh_error(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+
+        async def fake_run(self, cmd, check=True):
+            raise OSError("SSH failed")
+
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        monkeypatch.setattr(AsyncSSHClient, "run", fake_run)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/logs/ha-apps")
+        assert resp.status_code == 200
+        assert resp.json() == {"apps": []}
+
+    def test_skips_addons_missing_slug_or_name(self, tmp_path, monkeypatch):
+        import json as _json
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+
+        ha_apps_json = _json.dumps(
+            {
+                "data": {
+                    "addons": [
+                        {"slug": "good", "name": "Good App"},
+                        {"name": "No Slug App"},
+                        {"slug": "no-name"},
+                    ]
+                }
+            }
+        )
+
+        async def fake_run(self, cmd, check=True):
+            return (0, ha_apps_json, "")
+
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        monkeypatch.setattr(AsyncSSHClient, "run", fake_run)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/logs/ha-apps")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["apps"]) == 1
+        assert data["apps"][0]["slug"] == "good"
+
 
 class TestLoopControlEndpoints:
     """Tests for POST /loops/{name}/pause|resume|run-now endpoints."""
