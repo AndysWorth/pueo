@@ -3493,7 +3493,7 @@ async def logs_tab(request: Request) -> HTMLResponse:
 # ─── timestamp regex for HA log lines ────────────────────────────────────────
 # Matches: "2026-09-03 14:22:15.123 INFO ..." or "2026-09-03T14:22:15+00:00 ..."
 _HA_TS_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
+    r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
 
 
@@ -3501,7 +3501,7 @@ def _parse_log_line_ts(text: str) -> int:
     """Return Unix epoch for the log line's timestamp, or 0 on failure."""
     import datetime as _dt
 
-    m = _HA_TS_RE.match(text)
+    m = _HA_TS_RE.search(text)
     if not m:
         return 0
     raw = m.group(1).replace("T", " ")
