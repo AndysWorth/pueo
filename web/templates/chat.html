@@ -64,6 +64,14 @@
     white-space: nowrap;
     color: #333;
   }
+  .session-item .session-debug-link {
+    font-size: 0.85rem;
+    text-decoration: none;
+    opacity: 0.6;
+    padding: 0.1rem 0.2rem;
+    flex-shrink: 0;
+  }
+  .session-item .session-debug-link:hover { opacity: 1; }
   .session-item .session-del {
     flex-shrink: 0;
     font-size: 0.7rem;
@@ -183,9 +191,8 @@
     padding: 0;
   }
 
-  /* Tool-history rows: hidden by default; shown when thread has .show-tools */
-  .tool-history { display: none; }
-  #message-thread.show-tools .tool-history { display: flex; }
+  /* Tool-history rows: always visible */
+  .tool-history { display: flex; }
 
   .thread-empty {
     color: #bbb;
@@ -257,33 +264,6 @@
   }
   #btn-send:hover { background: #1557b0; }
   #btn-send:disabled { background: #9ab4d8; cursor: default; }
-  #btn-tools {
-    align-self: flex-end;
-    padding: 0.5rem 0.75rem;
-    background: none;
-    color: #666;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  #btn-tools:hover { background: #f5f5f5; }
-  #btn-tools.active { color: #6366f1; border-color: #6366f1; }
-  #btn-debug-mode {
-    align-self: flex-end;
-    padding: 0.5rem 0.75rem;
-    background: none;
-    color: #666;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  #btn-debug-mode:hover { background: #f5f5f5; }
-  #btn-debug-mode.active { color: #d97706; border-color: #d97706; }
-
   /* Repair guidance banner */
   #repair-banner {
     display: none;
@@ -327,6 +307,11 @@
           <span class="session-title" title="{{ s.title or ('Session ' ~ s.id) }}">
             {{ s.title or ('Session ' ~ s.id) }}
           </span>
+          {% if s.debug_log_path %}
+          <a class="session-debug-link" href="/debug-episodes/session_{{ s.id }}/index.html"
+             target="_blank" title="View debug episode"
+             onclick="event.stopPropagation()">🐛</a>
+          {% endif %}
           <button class="session-del" title="Delete"
                   onclick="event.stopPropagation(); deleteSession({{ s.id }}, this.closest('.session-item'))">✕</button>
         </div>
@@ -358,9 +343,6 @@
       <textarea id="chat-input" rows="1" placeholder="Ask Pueo anything…"
                 onkeydown="handleKey(event)"></textarea>
       <button id="btn-send" onclick="sendMessage()">Send</button>
-      <button id="btn-tools" onclick="toggleToolCalls()" title="Show or hide tool calls in session history">Tool calls</button>
-      {% if dev_mode %}<button id="btn-debug-mode" onclick="toggleDebugMode()" title="Enable DEBUG logging for this session (toggle)">🐛 Debug</button>{% endif %}
-      <button id="btn-debug" onclick="downloadDebugLog()" title="Download full debug log (system prompt + all turns) for this session">Debug log</button>
     </div>
   </div>
 </div>
@@ -373,8 +355,6 @@
   let _thinkingEl = null;
   let _pendingSteps = []; // live trace cards awaiting resolution
   let _lastHistoryTraceCard = null; // history pairing: assistant call → tool result
-  let _showToolCalls = false;
-
   // ── Session list ────────────────────────────────────────────────────────────
 
   function newChat() {
@@ -632,45 +612,6 @@
     card.appendChild(det);
   }
 
-  function toggleToolCalls() {
-    _showToolCalls = !_showToolCalls;
-    const thread = document.getElementById('message-thread');
-    thread.classList.toggle('show-tools', _showToolCalls);
-    const btn = document.getElementById('btn-tools');
-    btn.classList.toggle('active', _showToolCalls);
-    btn.title = _showToolCalls ? 'Hide tool calls' : 'Show tool calls in session history';
-  }
-
-  function downloadDebugLog() {
-    if (!_currentSessionId) return;
-    window.location.href = '/chat/sessions/' + _currentSessionId + '/debug-log';
-  }
-
-  async function toggleDebugMode() {
-    const btn = document.getElementById('btn-debug-mode');
-    const enabling = !btn.classList.contains('active');
-    try {
-      const r = await fetch('/chat/debug-mode', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: enabling})
-      });
-      if (r.ok) btn.classList.toggle('active', enabling);
-    } catch (e) { /* ignore */ }
-  }
-
-  async function syncDebugModeButton() {
-    const btn = document.getElementById('btn-debug-mode');
-    if (!btn) return;
-    try {
-      const r = await fetch('/chat/debug-mode');
-      if (r.ok) {
-        const data = await r.json();
-        btn.classList.toggle('active', !!data.enabled);
-      }
-    } catch (e) { /* ignore */ }
-  }
-
   // ── SSE ──────────────────────────────────────────────────────────────────────
 
   function connectSSE() {
@@ -853,7 +794,6 @@
   document.addEventListener('DOMContentLoaded', function() {
     connectSSE();
     connectGlobalSSE();
-    syncDebugModeButton();
     {% if sessions %}
     loadSession({{ sessions[0].id }}, document.querySelector('.session-item[data-sid="{{ sessions[0].id }}"]'));
     {% endif %}

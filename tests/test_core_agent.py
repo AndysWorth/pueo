@@ -513,7 +513,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 31
+        assert version == 32
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -523,7 +523,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 31
+        assert rows[0][0] == 32
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -552,7 +552,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 31
+        assert version == 32
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1430,7 +1430,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 31
+        assert version == 32
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1440,7 +1440,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 31
+        assert rows[0][0] == 32
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1468,7 +1468,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 31
+        assert version == 32
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -10293,9 +10293,12 @@ class TestAgentLoop:
 
         # Third call receives the nudge (injected after read_config result + plain text).
         # max_tool_calls=5, tool_call_count=1 → calls_remaining=4 > 2 (mid-investigation).
+        # New pass-back behavior: when content is non-empty the nudge includes the model's
+        # text and asks to call the terminal tool with it as the summary field.
         nudge_text = snapshots[2][-1]["content"]
         assert "finish_repair NOW" not in nudge_text
-        assert "next appropriate tool" in nudge_text
+        # The nudge should include the model's original plain-text response
+        assert "Looks fine to me." in nudge_text
 
     def test_budget_exhaustion(self):
         # 6 read_config calls but max_tool_calls=5 → exhausted after 5

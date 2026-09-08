@@ -219,6 +219,9 @@ DIAGNOSTIC_WAN_TIMEOUT_SECONDS: int = int(
 # Leave false for appliance / production operation.
 DEVELOPMENT_MODE: bool = bool(_agent.get("development_mode", False))
 
+DEBUG_MODE: bool = bool(_agent.get("debug_mode", False))
+DEBUG_VERBOSE: bool = bool(_agent.get("debug_verbose", False))
+
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 

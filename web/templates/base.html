@@ -11,9 +11,26 @@
     <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; margin: 0; padding: 0; }
-    #site-header { position: sticky; top: 0; z-index: 200; background: #f5f5f5; padding: 1.25rem 1.5rem 0.75rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    #site-header { position: sticky; top: 0; z-index: 200; background: #f5f5f5; padding: 0.75rem 1.5rem 0; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .header-top { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+    .header-top h1 { font-size: 1.4rem; color: #333; margin: 0; }
+    .header-pills { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
     #main-content { padding: 1.5rem; }
     h1 { font-size: 1.4rem; margin-bottom: 1rem; color: #333; }
+    .debug-pill { font-size: 0.72rem; font-weight: 700; padding: 0.18rem 0.55rem;
+      border-radius: 10px; display: inline-flex; align-items: center;
+      white-space: nowrap; border: 1px solid; }
+    .debug-off  { background: #e9ecef; color: #777; border-color: #adb5bd; }
+    .debug-on   { background: #fff3cd; color: #856404; border-color: #ffc107; }
+    .debug-verbose { background: #fde9d0; color: #7c3200; border-color: #fd7e14; }
+    @media (prefers-color-scheme: dark) {
+      .debug-off { background: #2b2d2f; color: #aaa; border-color: #555; }
+      .debug-on  { background: #3d2f00; color: #ffd166; border-color: #ffc107; }
+      .debug-verbose { background: #4a1f00; color: #ffb366; border-color: #fd7e14; }
+    }
+    :root[data-theme="dark"] .debug-off { background: #2b2d2f; color: #aaa; border-color: #555; }
+    :root[data-theme="dark"] .debug-on  { background: #3d2f00; color: #ffd166; border-color: #ffc107; }
+    :root[data-theme="dark"] .debug-verbose { background: #4a1f00; color: #ffb366; border-color: #fd7e14; }
     .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
     .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
     .badge { font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -156,10 +173,18 @@
   <body>
     <div id="nav-progress"></div>
     <div id="site-header">
-    <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
-        height="32">&nbsp;Pueo</h1>
+    <div class="header-top">
+      <h1><img src="/static/nav_32.png" title="Pueo" alt="Pueo" width="32"
+          height="32">&nbsp;Pueo</h1>
+      <span class="header-pills">
+        <span id="pueo-status-badge" class="pueo-status pueo-status-monitoring">Monitoring</span>
+        <span id="ha-status-badge" class="ha-badge ha-badge-unknown">HA ?</span>
+        <span id="ollama-pill" class="ollama-pill ollama-idle">Ollama: idle<span class="ollama-popover"><table id="ollama-popover-table"><tr><td colspan="3" style="color:#999">Loading…</td></tr></table></span></span>
+        <span id="debug-pill" class="debug-pill debug-off">Debug: off</span>
+      </span>
+    </div>
     {% set p = request.url.path %}
-    <nav style="margin-bottom:0;display:flex;gap:1.25rem;align-items:center;flex-wrap:wrap;">
+    <nav style="margin-bottom:0;display:flex;gap:1.25rem;align-items:center;flex-wrap:wrap;padding-bottom:0.6rem;">
       <a class="nav-link{% if p == '/' %} active{% endif %}" href="/">Overview</a>
       <a class="nav-link{% if p.startswith('/chat') %} active{% endif %}" href="/chat">Chat</a>
       <a class="nav-link{% if p.startswith('/queue') %} active{% endif %}" href="/queue">Queue</a>
@@ -175,11 +200,6 @@
       <a class="nav-link nav-link-dev{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>
       <a class="nav-link nav-link-dev{% if p.startswith('/runbooks') %} active{% endif %}" href="/runbooks">Runbooks</a>
       {% endif %}
-      <span style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;">
-        <span id="pueo-status-badge" class="pueo-status pueo-status-monitoring">Monitoring</span>
-        <span id="ha-status-badge" class="ha-badge ha-badge-unknown">HA ?</span>
-        <span id="ollama-pill" class="ollama-pill ollama-idle">Ollama: idle<span class="ollama-popover"><table id="ollama-popover-table"><tr><td colspan="3" style="color:#999">Loading…</td></tr></table></span></span>
-      </span>
     </nav>
     </div>
     <div id="main-content">{% block content %}{% endblock %}</div>
@@ -339,6 +359,30 @@
 
       fetchOllamaStatus();
       setInterval(fetchOllamaStatus, 5000);
+    })();
+
+    (function () {
+      function updateDebugPill() {
+        fetch('/api/debug-mode')
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var pill = document.getElementById('debug-pill');
+            if (!pill) return;
+            if (d.verbose) {
+              pill.className = 'debug-pill debug-verbose';
+              pill.textContent = 'Debug: verbose';
+            } else if (d.enabled) {
+              pill.className = 'debug-pill debug-on';
+              pill.textContent = 'Debug: on';
+            } else {
+              pill.className = 'debug-pill debug-off';
+              pill.textContent = 'Debug: off';
+            }
+          })
+          .catch(function () {});
+      }
+      updateDebugPill();
+      setInterval(updateDebugPill, 10000);
     })();
 
     (function () {

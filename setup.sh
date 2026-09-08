@@ -441,6 +441,12 @@ if $WRITE_CONFIG; then
     echo "  proposals, and the debug logging toggle. Disable for appliance / production use."
     ask "Enable development mode? (true/false)"  "false"  DEVELOPMENT_MODE
     echo
+    echo "  Debug mode records full LLM interactions as HTML episode reports and emits"
+    echo "  extra structured log events. Verbose debug disables all payload truncation."
+    echo "  Both can be toggled at runtime from the Settings tab without a restart."
+    ask "Enable debug mode? (true/false)"  "false"  DEBUG_MODE
+    ask "Enable verbose debug (no truncation)? (true/false)"  "false"  DEBUG_VERBOSE
+    echo
     echo "  Chat tool registration allows the conversational agent to write and register"
     echo "  new Python tools at runtime. Each tool requires sandbox CI validation and"
     echo "  explicit approval before it is loaded, but the agent can still generate"
@@ -665,6 +671,8 @@ agent:
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   development_mode: ${DEVELOPMENT_MODE}
+  debug_mode: ${DEBUG_MODE}
+  debug_verbose: ${DEBUG_VERBOSE}
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}
   allow_diagnostic_wan: ${ALLOW_DIAGNOSTIC_WAN}
   ha_profile_refresh_hours: 24        # How often to rebuild the HA environment profile (integrations, versions)

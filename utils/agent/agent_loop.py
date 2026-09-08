@@ -135,6 +135,7 @@ class AgentLoop:
         context_inject_callback: Optional[Callable[[str], None]] = None,
         on_llm_call_start: Optional[Callable[[str, str], None]] = None,
         on_llm_call_done: Optional[Callable[[str, float], None]] = None,
+        capture_llm: bool = False,
     ) -> None:
         if model is _UNSET:
             from utils.llm.llm_factory import _default_model_for_provider
@@ -161,6 +162,8 @@ class AgentLoop:
         self._context_inject_callback = context_inject_callback
         self._on_llm_call_start = on_llm_call_start
         self._on_llm_call_done = on_llm_call_done
+        self._capture_llm = capture_llm
+        self._llm_captures: list = []
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
 
@@ -412,6 +415,7 @@ class AgentLoop:
             the model has proper multi-turn context.
         """
         self._executor.reset()
+        self._llm_captures = []
 
         # Save the raw user question before any injection so ChromaDB gets
         # user intent, not the prepended HA profile block.
@@ -484,6 +488,8 @@ class AgentLoop:
                 log.error("repair_episode_record_failed", error=str(exc))
 
         self._messages = None  # loop finished; disable inject_context
+        if self._capture_llm and self._llm_captures and outcome != "success":
+            self._llm_captures[-1].outcome_path = "exhaustion_fallback"
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
@@ -491,6 +497,7 @@ class AgentLoop:
             episode_id=episode_id,
             capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
             gap_description=(episode_stub or {}).get("gap_description", ""),
+            llm_captures=list(self._llm_captures),
         )
 
     async def _maybe_extend_budget(
@@ -543,6 +550,8 @@ class AgentLoop:
         no_tool_streak = 0  # consecutive plain-text responses with no tool calls
         no_tool_extension_count = 0  # times budget was extended due to no_tool_streak
         last_plain_text: str = ""  # most recent plain-text content (fallback summary)
+        _pending_nudges: list[str] = []  # nudges injected before the next LLM call
+        _call_seq = 0
 
         known_tool_names = {t["function"]["name"] for t in tools}
         guardrail = ToolResultGuardrail(
@@ -619,6 +628,34 @@ class AgentLoop:
                     )
                 )
 
+            if self._capture_llm:
+                from utils.debug.capture import LLMCallRecord
+
+                _call_seq += 1
+                _thinking: str | None = None
+                _resp_content = response.get("content", "") or ""
+                if "<think>" in _resp_content:
+                    import re as _re
+
+                    _m = _re.search(r"<think>(.*?)</think>", _resp_content, _re.DOTALL)
+                    _thinking = _m.group(1).strip() if _m else None
+                _tc_raw = response.get("tool_calls") or []
+                self._llm_captures.append(
+                    LLMCallRecord(
+                        seq=_call_seq,
+                        request_messages=list(messages),
+                        request_tools=[
+                            t["function"]["name"] for t in tools if "function" in t
+                        ],
+                        response_content=_resp_content,
+                        response_tool_calls=list(_tc_raw),
+                        thinking=_thinking,
+                        nudges_injected=list(_pending_nudges),
+                        duration_ms=_latency_ms,
+                    )
+                )
+                _pending_nudges = []
+
             tool_calls_raw = response.get("tool_calls")
             if not tool_calls_raw:
                 content = response.get("content", "")
@@ -693,13 +730,23 @@ class AgentLoop:
                                 f'in the "summary" field.'
                             )
                         else:
-                            nudge = (
-                                "Your response was not a valid tool call. "
-                                "The user cannot see plain text — it is not delivered. "
-                                "Call the next appropriate tool now, or if investigation "
-                                f"is complete call {self._terminal_tool_name} with "
-                                'your findings in the "summary" field.'
-                            )
+                            if content:
+                                nudge = (
+                                    "Your response was plain text and was not delivered "
+                                    "to the user. Call "
+                                    f"{self._terminal_tool_name} now with the following "
+                                    'text as the "summary" field:\n\n'
+                                    f"{content[:3000]}"
+                                )
+                            else:
+                                nudge = (
+                                    "Your response was not a valid tool call. "
+                                    "The user cannot see plain text — it is not delivered. "
+                                    "Call the next appropriate tool now, or if investigation "
+                                    f"is complete call {self._terminal_tool_name} with "
+                                    'your findings in the "summary" field.'
+                                )
+                    _pending_nudges.append(nudge)
                     messages.append({"role": "user", "content": nudge})
                     continue
 
@@ -801,6 +848,8 @@ class AgentLoop:
                             "gap_description", ""
                         ),
                     }
+                    if self._capture_llm and self._llm_captures:
+                        self._llm_captures[-1].outcome_path = self._terminal_tool_name
                     return "success", episode_stub
 
                 if tool_result.awaiting_approval:
