@@ -132,7 +132,7 @@ All mutable state lives outside the repo in macOS platform directories:
 | Directory | Contents |
 |---|---|
 | `~/Library/Application Support/Pueo/` | DB, HITL cards, backups, archives, ChromaDB, registered tools |
-| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, case_ingest |
+| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, ha_concepts |
 | `~/Library/Logs/Pueo/` | pueo.log, pueo-stderr.log |
 | `~/.config/pueo/` | config.yaml |
 
