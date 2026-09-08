@@ -481,6 +481,7 @@
 
   function _renderSourceCard(source) {
     var sid = _sourceId(source);
+    var srcQ = JSON.stringify(source).replace(/"/g, '&quot;');
     var left = document.getElementById('logs-left');
     var empty = document.getElementById('logs-empty');
     if (empty) empty.style.display = 'none';
@@ -489,25 +490,25 @@
     card.innerHTML = [
       '<div class="source-card-header">',
         '<span>' + _escHtml(_sourceLabel(source)) + '</span>',
-        '<button class="source-refresh-btn" onclick="window._logsRefresh(' + JSON.stringify(source) + ')">Refresh</button>',
-        '<button class="source-remove-btn" title="Remove" onclick="window._logsRemoveSource(' + JSON.stringify(source) + ')">✕</button>',
+        '<button class="source-refresh-btn" onclick="window._logsRefresh(' + srcQ + ')">Refresh</button>',
+        '<button class="source-remove-btn" title="Remove" onclick="window._logsRemoveSource(' + srcQ + ')">✕</button>',
       '</div>',
       '<div class="source-card-meta" id="source-meta-' + sid + '">Not yet fetched</div>',
       '<span class="sparkline-daterange" id="sparkline-daterange-' + sid + '"></span>',
       '<div class="sparkline-pan-row">',
-        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-start-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'start\')">&#9198;</button>',
-        '<button class="sparkline-nav disabled" id="sparkline-nav-left-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'left\')">&#9664;</button>',
+        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-start-' + sid + '" onclick="window._logsNavSpark(' + srcQ + ',\'start\')">&#9198;</button>',
+        '<button class="sparkline-nav disabled" id="sparkline-nav-left-' + sid + '" onclick="window._logsNavSpark(' + srcQ + ',\'left\')">&#9664;</button>',
         '<div class="stream-sparkline-wrap" id="sparkline-wrap-' + sid + '">',
           '<svg class="stream-sparkline" id="sparkline-' + sid + '" viewBox="0 0 120 36" preserveAspectRatio="none"></svg>',
         '</div>',
-        '<button class="sparkline-nav disabled" id="sparkline-nav-right-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'right\')">&#9654;</button>',
-        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-end-' + sid + '" onclick="window._logsNavSpark(' + JSON.stringify(source) + ',\'end\')">&#9197;</button>',
+        '<button class="sparkline-nav disabled" id="sparkline-nav-right-' + sid + '" onclick="window._logsNavSpark(' + srcQ + ',\'right\')">&#9654;</button>',
+        '<button class="sparkline-nav endstop disabled" id="sparkline-nav-end-' + sid + '" onclick="window._logsNavSpark(' + srcQ + ',\'end\')">&#9197;</button>',
       '</div>',
       '<div class="sparkline-controls">',
-        '<label>Bucket <select id="sparkline-bucket-' + sid + '" class="sparkline-select" onchange="window._logsRebucketSource(' + JSON.stringify(source) + ')">',
+        '<label>Bucket <select id="sparkline-bucket-' + sid + '" class="sparkline-select" onchange="window._logsRebucketSource(' + srcQ + ')">',
           '<option value="1m">1m</option><option value="1h">1h</option><option value="1d">1d</option>',
         '</select></label>',
-        '<label>Show <select id="sparkline-show-' + sid + '" class="sparkline-select" onchange="window._logsReshowSource(' + JSON.stringify(source) + ')">',
+        '<label>Show <select id="sparkline-show-' + sid + '" class="sparkline-select" onchange="window._logsReshowSource(' + srcQ + ')">',
           '<option value="1h">1 hour</option><option value="6h">6 hours</option>',
           '<option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d">30 days</option>',
         '</select></label>',
