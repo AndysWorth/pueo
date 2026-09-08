@@ -50,6 +50,10 @@ KB CONTRIBUTION: If you used a novel approach not in your Phase 1 results, call
   save_runbook(type="candidate") describing the approach and outcome before calling
   {terminal_tool}. If query_knowledge returned nothing useful, also flag the gap with
   save_runbook(type="gap") so future sessions and developers can see the coverage hole.
+  Save runbooks at the most general level that still captures the diagnostic approach.
+  Use the specific integration, entity, or error message as an *example*, not as the scope.
+  A runbook titled "Diagnosing transient cloud integration connectivity errors" is reusable
+  across all polling integrations; one titled for a single component only helps that one case.
 
 STOPPING CONDITION: Do not give up because you have hit an arbitrary call count. Stop
   only when you have genuinely exhausted all reasonable investigative paths. Before

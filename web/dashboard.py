@@ -27,6 +27,8 @@ from config import (
     AGENT_MAX_WALL_SECONDS,
     DASHBOARD_PORT,
     DB_PATH,
+    DEBUG_MODE,
+    DEBUG_VERBOSE,
     DEVELOPMENT_MODE,
     NOTIFY_WATCH_DIR,
     PUEO_KB_REPO,
@@ -63,11 +65,13 @@ templates.env.filters["epoch_to_iso"] = lambda ts: (
 )
 
 
-_debug_mode_enabled: bool = False
+_debug_mode_enabled: bool = DEBUG_MODE
+_debug_verbose_enabled: bool = DEBUG_VERBOSE
 
 
 class DebugModeRequest(BaseModel):
     enabled: bool
+    verbose: bool = False
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -301,6 +305,24 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "description": "Expose developer surfaces: Episodes tab, Runbooks tab, Debug button in Chat",
         "group": "Developer",
         "restart_required": True,
+    },
+    "debug_mode": {
+        "yaml_section": "agent",
+        "yaml_key": "debug_mode",
+        "config_attr": "DEBUG_MODE",
+        "val_type": "bool",
+        "description": "Enable debug mode: extra logs + full LLM interaction recording as HTML episode reports. Toggled at runtime via /api/debug-mode — no restart required.",
+        "group": "Developer",
+        "restart_required": False,
+    },
+    "debug_verbose": {
+        "yaml_section": "agent",
+        "yaml_key": "debug_verbose",
+        "config_attr": "DEBUG_VERBOSE",
+        "val_type": "bool",
+        "description": "Verbose debug: disable all payload truncation in captured LLM calls. Implies debug_mode.",
+        "group": "Developer",
+        "restart_required": False,
     },
 }
 
@@ -2451,6 +2473,15 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
     # Update in-memory module attribute (runtime params take effect immediately)
     setattr(_config, spec["config_attr"], value)
 
+    # Sync debug globals and log level when debug keys are toggled via Settings
+    if req.key in ("debug_mode", "debug_verbose"):
+        global _debug_mode_enabled, _debug_verbose_enabled
+        _debug_mode_enabled = bool(_config.DEBUG_MODE)
+        _debug_verbose_enabled = bool(_config.DEBUG_VERBOSE)
+        set_log_level(
+            "DEBUG" if (_debug_mode_enabled or _debug_verbose_enabled) else "INFO"
+        )
+
     # Emit SSE event so the browser can flash a confirmation
     try:
         from utils.agent.supervisor import publish_event
@@ -2756,7 +2787,7 @@ def _load_chat_sessions() -> list[dict]:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT s.id, s.created_at, s.title,"
+                "SELECT s.id, s.created_at, s.title, s.debug_log_path,"
                 " COUNT(m.id) AS message_count"
                 " FROM chat_sessions s"
                 " LEFT JOIN chat_messages m ON m.session_id = s.id"
@@ -2816,229 +2847,40 @@ async def delete_chat_session(session_id: int) -> Response:
     return Response(status_code=204)
 
 
-_LLM_DIVIDER = "─" * 56
-
-
-def _format_llm_request(entry: dict) -> str:
-    """Pretty-print an llm_request_full log entry for the debug download."""
-    ts = entry.get("timestamp", "")[-8:] if entry.get("timestamp") else ""
-    msgs = entry.get("messages") or entry.get("anthropic_messages") or []
-    tools = entry.get("tools") or []
-    system = entry.get("system", "")
-    parts = [
-        "",
-        _LLM_DIVIDER,
-        f"[LLM REQUEST] {ts} | {len(msgs)} messages | tools: {tools or '(none)'}",
-    ]
-    if system:
-        parts.append(f"  [system]: {system[:200]}")
-    for i, m in enumerate(msgs):
-        role = m.get("role", "?") if isinstance(m, dict) else "?"
-        content = m.get("content", "") if isinstance(m, dict) else str(m)
-        if isinstance(content, list):
-            content = json.dumps(content)
-        preview = str(content)[:400].replace("\n", " ↵ ")
-        parts.append(f"  [{i}] {role}: {preview}")
-    parts.append(_LLM_DIVIDER)
-    return "\n".join(parts)
-
-
-def _format_llm_response(entry: dict) -> str:
-    """Pretty-print an llm_response_full log entry for the debug download."""
-    ts = entry.get("timestamp", "")[-8:] if entry.get("timestamp") else ""
-    duration = entry.get("duration_ms", "")
-    in_tok = entry.get("input_tokens", "")
-    out_tok = entry.get("output_tokens", "")
-    tok_str = f" | tokens=in:{in_tok} out:{out_tok}" if in_tok != "" else ""
-    dur_str = f" | duration={duration}ms" if duration != "" else ""
-    thinking = entry.get("thinking")
-    content = entry.get("content", "")
-    tool_calls = entry.get("tool_calls") or []
-    parts = [
-        f"[LLM RESPONSE] {ts}{dur_str}{tok_str}",
-    ]
-    if thinking:
-        thinking_text = thinking if isinstance(thinking, str) else "\n".join(thinking)
-        parts.append("  THINKING:")
-        for line in thinking_text.splitlines()[:20]:
-            parts.append(f"    {line}")
-    if content:
-        content_str = (
-            content if isinstance(content, str) else " ".join(str(c) for c in content)
-        )
-        parts.append(f"  CONTENT: {content_str[:300]}")
-    else:
-        parts.append("  CONTENT: (empty — tool call)")
-    if tool_calls:
-        parts.append("  TOOL CALLS:")
-        for tc in tool_calls:
-            if isinstance(tc, dict) and "function" in tc:
-                name = tc["function"].get("name", "?")
-                args = tc["function"].get("arguments", {})
-            else:
-                name = tc.get("name", "?") if isinstance(tc, dict) else str(tc)
-                args = (
-                    tc.get("arguments", tc.get("input", {}))
-                    if isinstance(tc, dict)
-                    else {}
-                )
-            args_str = json.dumps(args)[:200] if args else "()"
-            parts.append(f"    {name}({args_str})")
-    parts.append(_LLM_DIVIDER)
-    return "\n".join(parts)
-
-
-@app.get("/chat/sessions/{session_id}/debug-log")
-async def chat_debug_log(session_id: int) -> Response:
-    """Download a plain-text reconstruction of a chat session for debugging."""
-    from utils.core.prompts import load_prompt
-
-    try:
-        system_prompt = load_prompt("agent_loop").format(terminal_tool="finish_chat")
-    except Exception:
-        system_prompt = "(could not load system prompt)"
-
-    def _load_debug_session(
-        sid: int,
-    ) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            s = conn.execute(
-                "SELECT id, title, created_at FROM chat_sessions WHERE id = ?",
-                (sid,),
-            ).fetchone()
-            if s is None:
-                return None, []
-            msgs = conn.execute(
-                "SELECT role, content, tool_calls_json, ts"
-                " FROM chat_messages WHERE session_id = ? ORDER BY ts ASC",
-                (sid,),
-            ).fetchall()
-        return s, msgs
-
-    try:
-        session, messages = await asyncio.to_thread(_load_debug_session, session_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    lines: list[str] = []
-    lines.append("=== PUEO CHAT DEBUG LOG ===")
-    lines.append(f"Session: {session_id}")
-    lines.append(f"Title: {session['title'] or '(untitled)'}")
-    created = session["created_at"]
-    if created:
-        lines.append(
-            f"Created: {datetime.fromtimestamp(created).strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("")
-    lines.append("=== SYSTEM PROMPT ===")
-    lines.append(system_prompt)
-
-    lines.append("")
-    lines.append("=== CONVERSATION ===")
-
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"] or ""
-        tool_calls_json = msg["tool_calls_json"]
-        ts = msg["ts"]
-        timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else ""
-        lines.append("")
-
-        if role == "pre_inject":
-            lines.append("[Pre-injected context]")
-            lines.append(content)
-        elif role == "user":
-            lines.append(f"[User] {timestamp}")
-            lines.append(content)
-        elif role == "assistant" and tool_calls_json and not content:
-            try:
-                calls = json.loads(tool_calls_json)
-                for call in calls:
-                    name = call.get("name", "?")
-                    args = call.get("arguments", {})
-                    lines.append(f"[Tool call] {name}  {timestamp}")
-                    lines.append(
-                        json.dumps(args, indent=2) if args else "(no arguments)"
-                    )
-            except Exception:
-                lines.append(f"[Tool call – parse error] {tool_calls_json}")
-        elif role == "tool":
-            lines.append("[Tool result]")
-            lines.append(content)
-        elif role == "assistant" and content:
-            lines.append(f"[Assistant] {timestamp}")
-            lines.append(content)
-
-    # Append log file entries that fall within this session's time window.
-    session_start_ts = session["created_at"]
-    if session_start_ts:
-        try:
-            log_path = _get_dirs().log_dir / "pueo.log"
-            log_lines: list[str] = []
-            with open(log_path, encoding="utf-8", errors="replace") as fh:
-                for raw in fh:
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    try:
-                        entry = json.loads(raw)
-                        ts_str = entry.get("timestamp", "")
-                        if (
-                            ts_str
-                            >= datetime.fromtimestamp(session_start_ts)
-                            .astimezone()
-                            .isoformat()
-                        ):
-                            log_lines.append(raw)
-                    except Exception:  # nosec B112 — skip malformed log lines
-                        continue
-                    if len(log_lines) >= 2000:
-                        break
-            if log_lines:
-                lines.append("")
-                lines.append("=== LOG FILE ENTRIES (debug mode) ===")
-                for raw_line in log_lines:
-                    try:
-                        entry = json.loads(raw_line)
-                        event = entry.get("event", "")
-                        if event == "llm_request_full":
-                            lines.append(_format_llm_request(entry))
-                            continue
-                        if event == "llm_response_full":
-                            lines.append(_format_llm_response(entry))
-                            continue
-                    except Exception:  # nosec B110 — malformed entry falls back to raw
-                        pass
-                    lines.append(raw_line)
-        except Exception:
-            pass  # nosec B110 — missing log file is not an error
-
-    text = "\n".join(lines) + "\n"
-    filename = f"pueo-chat-{session_id}-debug.txt"
-    return Response(
-        content=text,
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+@app.post("/api/debug-mode")
+async def set_debug_mode(body: DebugModeRequest) -> JSONResponse:
+    """Toggle debug mode and verbose debug at runtime (no restart required)."""
+    global _debug_mode_enabled, _debug_verbose_enabled
+    _debug_mode_enabled = body.enabled
+    _debug_verbose_enabled = body.verbose
+    set_log_level("DEBUG" if (body.enabled or body.verbose) else "INFO")
+    return JSONResponse(
+        {"enabled": _debug_mode_enabled, "verbose": _debug_verbose_enabled}
     )
 
 
-@app.post("/chat/debug-mode")
-async def set_chat_debug_mode(body: DebugModeRequest) -> JSONResponse:
-    """Toggle runtime DEBUG logging for the pueo logger."""
-    global _debug_mode_enabled
-    _debug_mode_enabled = body.enabled
-    set_log_level("DEBUG" if body.enabled else "INFO")
-    return JSONResponse({"enabled": _debug_mode_enabled})
-
-
-@app.get("/chat/debug-mode")
-async def get_chat_debug_mode() -> JSONResponse:
+@app.get("/api/debug-mode")
+async def get_debug_mode() -> JSONResponse:
     """Return current debug mode state."""
-    return JSONResponse({"enabled": _debug_mode_enabled})
+    return JSONResponse(
+        {"enabled": _debug_mode_enabled, "verbose": _debug_verbose_enabled}
+    )
+
+
+@app.get("/debug-episodes/session_{session_id}/{filename:path}")
+async def serve_debug_episode(session_id: int, filename: str) -> Response:
+    """Serve static HTML debug episode files."""
+    if not _debug_mode_enabled:
+        raise HTTPException(status_code=404, detail="Debug mode is off")
+    import os
+
+    safe_filename = Path(filename).name  # no path traversal
+    episode_dir = _get_dirs().data_dir / "debug_episodes" / f"session_{session_id}"
+    file_path = episode_dir / safe_filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Episode file not found")
+    content_type = "text/html; charset=utf-8"
+    return Response(content=file_path.read_bytes(), media_type=content_type)
 
 
 @app.get("/chat/events")
@@ -3356,6 +3198,7 @@ async def _run_chat_loop(
             db_path=DB_PATH,
             on_llm_call_start=_on_chat_llm_start,
             on_llm_call_done=_on_chat_llm_done,
+            capture_llm=_debug_mode_enabled,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:
@@ -3395,11 +3238,57 @@ async def _run_chat_loop(
 
         await asyncio.to_thread(_persist_chat_results, session_id, result, summary)
 
+        debug_log_path: str | None = None
+        if _debug_mode_enabled and result.llm_captures:
+            try:
+                from utils.debug.episode_writer import write_episode_html
+
+                episode_dir = (
+                    _get_dirs().data_dir / "debug_episodes" / f"session_{session_id}"
+                )
+                _session_meta = {
+                    "session_id": session_id,
+                    "outcome": result.outcome,
+                    "model": agent_loop._model,
+                    "provider": "local",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                _conv = [
+                    {"role": m.get("role"), "content": m.get("content")}
+                    for m in prior_messages
+                ] + [{"role": "user", "content": message}]
+                await asyncio.to_thread(
+                    write_episode_html,
+                    episode_dir,
+                    _session_meta,
+                    result.llm_captures,
+                    _conv,
+                )
+                debug_log_path = str(episode_dir)
+
+                def _update_debug_log_path(sid: int, path: str) -> None:
+                    with sqlite3.connect(DB_PATH) as _c:
+                        _c.execute(
+                            "UPDATE chat_sessions SET debug_log_path = ? WHERE id = ?",
+                            (path, sid),
+                        )
+
+                await asyncio.to_thread(
+                    _update_debug_log_path, session_id, debug_log_path
+                )
+            except Exception as _exc:
+                log.error("debug_episode_write_failed", error=str(_exc))
+
+        _finish_chat_called = any(
+            s.tool_call.name == "finish_chat" for s in result.steps
+        )
         log.info(
             "chat_session_complete",
             session_id=session_id,
             outcome=result.outcome,
             steps=len(result.steps),
+            finish_chat_called=_finish_chat_called,
+            debug_episode=debug_log_path is not None,
         )
         publish_chat_event(
             {

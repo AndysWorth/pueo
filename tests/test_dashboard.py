@@ -1505,7 +1505,7 @@ class TestBackupInventoryDashboard:
 
 
 class TestDebugModeEndpoints:
-    """Tests for POST/GET /chat/debug-mode."""
+    """Tests for POST/GET /api/debug-mode (moved from /chat/debug-mode in #574)."""
 
     def test_post_enable_toggles_logger_level(self, tmp_path, monkeypatch):
         import logging
@@ -1514,8 +1514,9 @@ class TestDebugModeEndpoints:
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(dashboard, "_debug_mode_enabled", False)
+        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.post("/chat/debug-mode", json={"enabled": True})
+        resp = client.post("/api/debug-mode", json={"enabled": True, "verbose": False})
         assert resp.status_code == 200
         assert resp.json()["enabled"] is True
         assert logging.getLogger("pueo").isEnabledFor(logging.DEBUG)
@@ -1527,9 +1528,10 @@ class TestDebugModeEndpoints:
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
+        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
         logging.getLogger("pueo").setLevel(logging.DEBUG)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.post("/chat/debug-mode", json={"enabled": False})
+        resp = client.post("/api/debug-mode", json={"enabled": False, "verbose": False})
         assert resp.status_code == 200
         assert resp.json()["enabled"] is False
         assert not logging.getLogger("pueo").isEnabledFor(logging.DEBUG)
@@ -1540,8 +1542,9 @@ class TestDebugModeEndpoints:
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
+        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.get("/chat/debug-mode")
+        resp = client.get("/api/debug-mode")
         assert resp.status_code == 200
         assert resp.json()["enabled"] is True
 

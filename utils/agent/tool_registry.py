@@ -55,6 +55,7 @@ class AgentLoopResult(BaseModel):
     episode_id: str | None = None
     capability_gap: bool = False
     gap_description: str = ""
+    llm_captures: list[Any] = []  # list[LLMCallRecord] when capture_llm=True
 
 
 class ToolDefinition(BaseModel):
