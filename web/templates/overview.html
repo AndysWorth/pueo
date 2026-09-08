@@ -888,21 +888,21 @@
   // Initial sparkline fetch + 60s polling
   fetchSparkline('ha_log_monitor');
   fetchSparkline('ha_log_monitor_supervisor');
-  setInterval(function() {
+  var _si1 = setInterval(function() {
     fetchSparkline('ha_log_monitor');
     fetchSparkline('ha_log_monitor_supervisor');
   }, 60000);
 
   // Countdown ticker for infrequent loop next-run timestamps
-  setInterval(function() {
+  var _si2 = setInterval(function() {
     var els = document.querySelectorAll('.loop-next-run-countdown[data-next]');
     for (var i = 0; i < els.length; i++) {
       els[i].textContent = fmtCountdown(parseFloat(els[i].getAttribute('data-next')));
     }
   }, 30000);
 
-  var es = new EventSource('/events');
-  es.onmessage = function (e) {
+  var es = window._pueoES || new EventSource('/events');
+  var _overviewMsg = function (e) {
     try {
       var evt = JSON.parse(e.data);
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
@@ -912,7 +912,11 @@
       else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideRepairWidget();
     } catch (_) {}
   };
-  es.onerror = function () {};
+  es.addEventListener('message', _overviewMsg);
+  window._pueoPageCleanup = function() {
+    clearInterval(_si1); clearInterval(_si2);
+    es.removeEventListener('message', _overviewMsg);
+  };
 })();
 </script>
 <div id="sparkline-tooltip" hidden style="position:fixed;"></div>

@@ -427,7 +427,7 @@ pueo --mode rag-refresh
 ```
 
 Optional config keys (edit `config.yaml` directly to set these):
-`rag_ha_versions_to_fetch`, `rag_hacs_cache_dir`, `rag_ha_docs_cache_dir`, `ha_source_cache_dir`, `ha_concepts_cache_dir`, `case_ingest_cache_dir`, `rag_refresh_interval_hours` (default `168` — weekly)
+`rag_ha_versions_to_fetch`, `rag_hacs_cache_dir`, `rag_ha_docs_cache_dir`, `ha_source_cache_dir`, `ha_concepts_cache_dir`, `rag_refresh_interval_hours` (default `168` — weekly)
 
 ---
 
@@ -450,7 +450,7 @@ On macOS, `platformdirs` maps all Pueo directories:
 | Directory | Contents |
 |---|---|
 | `~/Library/Application Support/Pueo/` | `config.yaml`, SQLite DB, HITL cards, backups, archives, ChromaDB, registered tools |
-| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, ha_concepts, case_ingest |
+| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, ha_concepts |
 | `~/Library/Logs/Pueo/` | `pueo.log`, `pueo-stderr.log` |
 
 > **Note:** config and state live in the same `Application Support/Pueo/` directory on macOS because `platformdirs` maps both to the same location. Override any directory with environment variables: `PUEO_CONFIG_DIR`, `PUEO_DATA_DIR`, `PUEO_STATE_DIR`, `PUEO_CACHE_DIR`, `PUEO_LOG_DIR`.

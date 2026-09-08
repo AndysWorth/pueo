@@ -28,7 +28,7 @@ services:
       - pueo-data:/data
       # /state   — SQLite DB, HITL cards, approved user tools, audit records.
       - pueo-state:/state
-      # /cache   — HA release-notes, HACS changelogs, ha_source, case_ingest.
+      # /cache   — HA release-notes, HACS changelogs, ha_source, ha_concepts.
       #            Ephemeral-safe: Pueo will re-scrape on next refresh if empty.
       - pueo-cache:/cache
       # /logs    — pueo.log and pueo-stderr.log.  Named volume so logs persist
