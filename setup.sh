@@ -49,16 +49,28 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 _RESET_MODE=false
+_STASH_RECOVERED=false
+_STASH_DIR="${HOME}/.pueo_reset_stash"
+
+# If a prior --reset was interrupted and left a stash behind, don't silently ignore it.
+if [[ -d "$_STASH_DIR" && "${1:-}" != "--reset" && "${1:-}" != "--clean" ]]; then
+    echo -e "${YELLOW}⚠  Found leftover stash from an interrupted --reset: ${_STASH_DIR}${NC}"
+    echo "   Run ./setup.sh --reset to recover your config,"
+    echo "   or delete ${_STASH_DIR} to start completely fresh."
+    exit 1
+fi
 
 _do_clean() {
     local preserve_config="$1"
+    local _stash_dir="${HOME}/.pueo_reset_stash"
     # Stash configs before deleting platform dirs (which may contain config.yaml)
     if [[ "$preserve_config" == "true" ]]; then
         _STATE_GUESS="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
-        cp -f "${_STATE_GUESS}/config.yaml" /tmp/_pueo_config_stash.yaml 2>/dev/null || true
-        cp -f "${PUEO_DIR}/config/config.yaml" /tmp/_pueo_config_stash_docker.yaml 2>/dev/null || true
-        _STASHED_NATIVE=$([[ -f /tmp/_pueo_config_stash.yaml ]] && echo true || echo false)
-        _STASHED_DOCKER=$([[ -f /tmp/_pueo_config_stash_docker.yaml ]] && echo true || echo false)
+        mkdir -p "$_stash_dir"
+        cp -f "${_STATE_GUESS}/config.yaml" "${_stash_dir}/config.yaml" 2>/dev/null || true
+        cp -f "${PUEO_DIR}/config/config.yaml" "${_stash_dir}/config_docker.yaml" 2>/dev/null || true
+        _STASHED_NATIVE=$([[ -f "${_stash_dir}/config.yaml" ]] && echo true || echo false)
+        _STASHED_DOCKER=$([[ -f "${_stash_dir}/config_docker.yaml" ]] && echo true || echo false)
     fi
 
     rm -rf .venv
@@ -88,6 +100,21 @@ _do_clean() {
             sudo rm -f /usr/local/bin/pueo
         fi
     fi
+    # Restore configs immediately to canonical locations — stash dir is ephemeral
+    if [[ "$preserve_config" == "true" ]]; then
+        if [[ "${_STASHED_NATIVE}" == "true" ]]; then
+            mkdir -p "${_STATE_GUESS}"
+            cp -f "${_stash_dir}/config.yaml" "${_STATE_GUESS}/config.yaml"
+        fi
+        if [[ "${_STASHED_DOCKER}" == "true" ]]; then
+            mkdir -p "${PUEO_DIR}/config"
+            cp -f "${_stash_dir}/config_docker.yaml" "${PUEO_DIR}/config/config.yaml"
+        fi
+    fi
+    # Always clean up stash dir (--clean removes it too, clearing any interrupted --reset)
+    rm -rf "$_stash_dir"
+    _STASHED_NATIVE=false
+    _STASHED_DOCKER=false
 }
 
 if [[ "${1:-}" == "--clean" ]]; then
@@ -116,21 +143,44 @@ if [[ "${1:-}" == "--reset" ]]; then
         info "Reset cancelled."
         exit 0
     fi
-    # Capture current state before cleaning so we can skip interactive questions below
     _rstate_guess="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
-    _rnat="${_rstate_guess}/config.yaml"
-    _rdoc="${PUEO_DIR}/config/config.yaml"
-    _has_nat=false; _has_doc=false
-    [[ -f "$_rnat" ]] && _has_nat=true
-    [[ -f "$_rdoc" ]] && _has_doc=true
-    if [[ "$_has_nat" == "true" && "$_has_doc" == "true" ]]; then
-        _RESET_DEPLOY_MODE="both"
-    elif [[ "$_has_doc" == "true" ]]; then
-        _RESET_DEPLOY_MODE="docker"
-    else
-        _RESET_DEPLOY_MODE="macos"
+    # Recover from an interrupted --reset (stash dir left behind from a prior run)
+    if [[ -d "$_STASH_DIR" ]]; then
+        info "Recovering from interrupted --reset (stash found at ${_STASH_DIR})..."
+        _has_stash_nat=$([[ -f "${_STASH_DIR}/config.yaml" ]] && echo true || echo false)
+        _has_stash_doc=$([[ -f "${_STASH_DIR}/config_docker.yaml" ]] && echo true || echo false)
+        if [[ "$_has_stash_nat" == "true" && "$_has_stash_doc" == "true" ]]; then
+            _RESET_DEPLOY_MODE="both"
+        elif [[ "$_has_stash_doc" == "true" ]]; then
+            _RESET_DEPLOY_MODE="docker"
+        else
+            _RESET_DEPLOY_MODE="macos"
+        fi
+        [[ "$_has_stash_nat" == "true" ]] && mkdir -p "$_rstate_guess" && \
+            cp -f "${_STASH_DIR}/config.yaml" "${_rstate_guess}/config.yaml"
+        [[ "$_has_stash_doc" == "true" ]] && mkdir -p "${PUEO_DIR}/config" && \
+            cp -f "${_STASH_DIR}/config_docker.yaml" "${PUEO_DIR}/config/config.yaml"
+        rm -rf "$_STASH_DIR"
+        ok "Config recovered from stash."
+        _STASH_RECOVERED=true
     fi
-    _conf_src="$_rnat"; [[ ! -f "$_conf_src" ]] && _conf_src="$_rdoc"
+    # Capture current state before cleaning so we can skip interactive questions below
+    if [[ "$_STASH_RECOVERED" != "true" ]]; then
+        _rnat="${_rstate_guess}/config.yaml"
+        _rdoc="${PUEO_DIR}/config/config.yaml"
+        _has_nat=false; _has_doc=false
+        [[ -f "$_rnat" ]] && _has_nat=true
+        [[ -f "$_rdoc" ]] && _has_doc=true
+        if [[ "$_has_nat" == "true" && "$_has_doc" == "true" ]]; then
+            _RESET_DEPLOY_MODE="both"
+        elif [[ "$_has_doc" == "true" ]]; then
+            _RESET_DEPLOY_MODE="docker"
+        else
+            _RESET_DEPLOY_MODE="macos"
+        fi
+    fi
+    _conf_src="${_rstate_guess}/config.yaml"
+    [[ ! -f "$_conf_src" ]] && _conf_src="${PUEO_DIR}/config/config.yaml"
     _RESET_LLM_PROVIDER="local"
     if [[ -f "$_conf_src" ]]; then
         _p=$(grep -E '^\s+provider:' "$_conf_src" 2>/dev/null | head -1 \
@@ -202,8 +252,7 @@ if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
             ok "docker compose $(docker compose version --short 2>/dev/null || echo 'v2')"
         fi
         if ! docker info &>/dev/null 2>&1; then
-            fail "[MISSING] Docker daemon not running — start Docker Desktop first"
-            _prereq_fail=1
+            warn "Docker daemon not running — start Docker Desktop before running 'docker compose up -d'"
         fi
     fi
 fi
@@ -295,21 +344,6 @@ else
     NATIVE_CONFIG_DIR="$PUEO_CONFIG_DIR"
     DOCKER_CONFIG_DIR="${PUEO_DIR}/config"
 
-    # Restore stashed configs now that platform dirs are known (--reset mode)
-    if [[ "$_RESET_MODE" == "true" ]]; then
-        if [[ "${_STASHED_NATIVE:-false}" == "true" && -f /tmp/_pueo_config_stash.yaml ]]; then
-            mkdir -p "$NATIVE_CONFIG_DIR"
-            cp -f /tmp/_pueo_config_stash.yaml "${NATIVE_CONFIG_DIR}/config.yaml"
-            rm -f /tmp/_pueo_config_stash.yaml
-            ok "Restored macOS config.yaml"
-        fi
-        if [[ "${_STASHED_DOCKER:-false}" == "true" && -f /tmp/_pueo_config_stash_docker.yaml ]]; then
-            mkdir -p "$DOCKER_CONFIG_DIR"
-            cp -f /tmp/_pueo_config_stash_docker.yaml "${DOCKER_CONFIG_DIR}/config.yaml"
-            rm -f /tmp/_pueo_config_stash_docker.yaml
-            ok "Restored Docker config.yaml"
-        fi
-    fi
 fi
 
 # ── 2. Ollama ───────────────────────────────────────────────────────────────────
