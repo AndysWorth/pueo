@@ -217,6 +217,17 @@ async def poll_for_dashboard_entity_issues(
             entity_refs = list(merged_refs.values())
             registry = await _ws.get_entity_registry()
 
+            # Domains managed by HA config entries (UI/auto-discovered integrations)
+            # cannot have user-supplied unique_ids via YAML — skip the unregistered
+            # entity check for them entirely.
+            try:
+                config_entries_list = await _ws.get_config_entries()
+                config_entry_domains: set[str] = {
+                    e.get("domain", "") for e in config_entries_list if e.get("domain")
+                }
+            except Exception:
+                config_entry_domains = set()
+
         except Exception as exc:
             log.warning("lovelace_poll_failed", error=str(exc))
             await asyncio.sleep(_interval * 60)
@@ -253,7 +264,13 @@ async def poll_for_dashboard_entity_issues(
             if ref.view_path:
                 dash_url += f"/{ref.view_path}"
 
+            entity_domain = ref.entity_id.split(".")[0]
             if ref.entity_id in state_ids:
+                if entity_domain in config_entry_domains:
+                    # Auto-discovered integration entity — user cannot add unique_id
+                    # via YAML; the card advice would be wrong and unactionable.
+                    continue
+
                 # Entity has state but no unique_id — propose adding one.
                 proposed_unique_id = ref.entity_id.replace(".", "_")
                 card_key = f"unregistered_entity:{ref.entity_id}"
@@ -388,7 +405,8 @@ async def poll_for_dashboard_entity_issues(
                     mark_card_resolved(conn, pending_key)
                 log.info("lovelace_entity_resolved", entity_id=pending_entity_id)
 
-        # Reconcile unregistered-entity cards: resolve when entity gains a unique_id.
+        # Reconcile unregistered-entity cards: resolve when entity gains a unique_id,
+        # or when we now know the domain is auto-discovered (advice was wrong).
         with sqlite3.connect(_db_path) as conn:
             unreg_rows = conn.execute(
                 "SELECT card_key FROM hitl_suppression"
@@ -397,7 +415,11 @@ async def poll_for_dashboard_entity_issues(
             ).fetchall()
         for (pending_key,) in unreg_rows:
             pending_entity_id = pending_key.removeprefix("unregistered_entity:")
-            if pending_entity_id in registry_ids:
+            pending_domain = pending_entity_id.split(".")[0]
+            if (
+                pending_entity_id in registry_ids
+                or pending_domain in config_entry_domains
+            ):
                 with sqlite3.connect(_db_path) as conn:
                     mark_card_resolved(conn, pending_key)
                 log.info(
