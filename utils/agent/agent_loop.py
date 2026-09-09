@@ -294,6 +294,13 @@ class AgentLoop:
             parts.append(f"\n{chunk.text}")
         block = truncate_to_budget("\n".join(parts), 1000)
         log.debug("agent_loop_knowledge_injected", runbooks_found=len(chunks))
+        import config as _al_cfg
+
+        if _al_cfg.DEBUG_LEVEL >= 3:
+            log.debug(
+                "knowledge_chunks", count=len(chunks), query=effective_query[:100]
+            )
+            log.debug("knowledge_pre_inject", block=block[:500])
         return f"{initial_context}\n\n---\n{block}"
 
     def _per_call_timeout_seconds(self) -> float:
@@ -490,6 +497,39 @@ class AgentLoop:
         self._messages = None  # loop finished; disable inject_context
         if self._capture_llm and self._llm_captures and outcome != "success":
             self._llm_captures[-1].outcome_path = "exhaustion_fallback"
+
+        debug_log_path: Optional[str] = None
+        if self._capture_llm and self._llm_captures:
+            try:
+                from utils.debug.episode_writer import write_episode_html
+                from paths import get_dirs as _get_dirs
+                import datetime as _datetime
+
+                _ts = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                _ep_dir = (
+                    _get_dirs().data_dir / "debug_episodes" / f"{self._trigger}_{_ts}"
+                )
+                _session_meta = {
+                    "session_id": _ts,
+                    "outcome": outcome,
+                    "model": self._model,
+                    "provider": "local",
+                    "timestamp": _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "trigger": self._trigger,
+                }
+                _conv = [m for m in messages if m.get("role") in ("user", "assistant")]
+                await asyncio.to_thread(
+                    write_episode_html,
+                    _ep_dir,
+                    _session_meta,
+                    self._llm_captures,
+                    _conv,
+                )
+                debug_log_path = str(_ep_dir / "index.html")
+                log.info("episode_html_written", path=debug_log_path)
+            except Exception as exc:  # nosec B110
+                log.warning("episode_html_write_failed", error=str(exc))
+
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
@@ -498,6 +538,7 @@ class AgentLoop:
             capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
             gap_description=(episode_stub or {}).get("gap_description", ""),
             llm_captures=list(self._llm_captures),
+            debug_log_path=debug_log_path,
         )
 
     async def _maybe_extend_budget(
@@ -627,6 +668,45 @@ class AgentLoop:
                         ollama_load_ms=_timing.get("load_ms"),
                     )
                 )
+
+            _top_tool = None
+            _tc_preview = response.get("tool_calls") or []
+            if _tc_preview:
+                _top_tool = (
+                    _tc_preview[0].get("function", {}).get("name")
+                    if isinstance(_tc_preview[0], dict)
+                    else getattr(
+                        getattr(_tc_preview[0], "function", None), "name", None
+                    )
+                )
+            log.info(
+                "llm_call",
+                model=self._model,
+                call_num=tool_call_count,
+                top_tool=_top_tool,
+                duration_ms=round(_latency_ms),
+            )
+            import config as _al_cfg
+
+            if _al_cfg.DEBUG_LEVEL >= 1:
+                _finish_reason = (
+                    response.get("finish_reason", "")
+                    if isinstance(response, dict)
+                    else ""
+                )
+                log.debug(
+                    "llm_call_detail",
+                    model=self._model,
+                    finish_reason=_finish_reason,
+                    duration_ms=round(_latency_ms),
+                )
+                _hyp = (
+                    (response.get("content", "") or "")[:500]
+                    if isinstance(response, dict)
+                    else ""
+                )
+                if _hyp:
+                    log.debug("llm_hypothesis", content=_hyp)
 
             if self._capture_llm:
                 from utils.debug.capture import LLMCallRecord
@@ -835,6 +915,20 @@ class AgentLoop:
                     ),
                     success=tool_result.success,
                 )
+                if _al_cfg.DEBUG_LEVEL >= 1:
+                    log.debug(
+                        "tool_call",
+                        name=tool_call.name,
+                        args_preview=str(tool_call.arguments)[:200],
+                        result_preview=(result_text or "")[:200],
+                    )
+                if _al_cfg.DEBUG_LEVEL >= 2:
+                    log.debug(
+                        "tool_call_full",
+                        name=tool_call.name,
+                        args=str(tool_call.arguments),
+                        result=(result_text or ""),
+                    )
 
                 if tool_call.name == self._terminal_tool_name:
                     episode_stub = {

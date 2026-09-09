@@ -438,6 +438,21 @@ def _migrate_v32(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE repair_episodes ADD COLUMN debug_log_path TEXT")
 
 
+def _migrate_v33(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS llm_one_shot_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            caller TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_summary TEXT,
+            output_summary TEXT,
+            duration_ms REAL,
+            outcome TEXT,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )"""
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -471,6 +486,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (30, _migrate_v30),
     (31, _migrate_v31),
     (32, _migrate_v32),
+    (33, _migrate_v33),
 ]
 
 

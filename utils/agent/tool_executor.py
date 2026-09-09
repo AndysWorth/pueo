@@ -1292,7 +1292,9 @@ class ToolExecutor:
         )
         try:
             import config as _cfg
+            import time as _time_te
 
+            _t0_te = _time_te.monotonic()
             response = await self._llm_client.chat(
                 model=_cfg.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -1300,6 +1302,21 @@ class ToolExecutor:
                 format=FixEnrichment.model_json_schema(),
             )
             content = response.get("message", {}).get("content", "")
+            _dur_te = (_time_te.monotonic() - _t0_te) * 1000
+            try:
+                from utils.debug.capture import record_one_shot as _ros
+
+                _ros(
+                    "_enrich_fix_context",
+                    _cfg.OLLAMA_MODEL,
+                    prompt[:500],
+                    content[:500],
+                    _dur_te,
+                    "success",
+                    _cfg.DB_PATH,
+                )
+            except Exception:  # nosec B110
+                pass
             return FixEnrichment.model_validate_json(content)
         except Exception as exc:
             log.warning("fix_enrichment_failed", error=str(exc))

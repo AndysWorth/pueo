@@ -432,6 +432,7 @@ async def analyze_log_line_with_ai(
         _triage_armed = True
     except Exception:  # nosec B110
         pass
+    _t0 = __import__("time").monotonic()
     try:
         response = await client.chat(
             model=model,
@@ -449,9 +450,39 @@ async def analyze_log_line_with_ai(
             user_prompt=user_prompt,
             raw_response=raw_output,
         )
+        _dur = (__import__("time").monotonic() - _t0) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_log_line_with_ai",
+                model,
+                user_prompt[:500],
+                raw_output[:500],
+                _dur,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return LogEvaluation.model_validate_json(raw_output), trace
     except Exception as e:
         log.error("triage_inference_failed", error=str(e))
+        _dur = (__import__("time").monotonic() - _t0) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_log_line_with_ai",
+                model,
+                user_prompt[:500],
+                str(e)[:500],
+                _dur,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return LogEvaluation(
             is_actionable=False,
             root_cause_summary="Inference crash",
@@ -501,14 +532,31 @@ async def analyze_repair_issue(
         },
     ]
 
+    _model = _default_model_for_provider()
+    _t0 = __import__("time").monotonic()
     try:
         response = await client.chat(
-            model=_default_model_for_provider(),
+            model=_model,
             messages=messages,
             options={"temperature": 0.0},
             format=RepairIssueAnalysis.model_json_schema(),
         )
         raw = response["message"]["content"]
+        _dur = (__import__("time").monotonic() - _t0) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_repair_issue",
+                _model,
+                issue_text[:500],
+                raw[:500],
+                _dur,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return RepairIssueAnalysis.model_validate_json(raw)
     except Exception as exc:
         log.warning(
@@ -516,6 +564,21 @@ async def analyze_repair_issue(
             issue_id=issue.issue_id,
             error=str(exc),
         )
+        _dur = (__import__("time").monotonic() - _t0) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_repair_issue",
+                _model,
+                issue_text[:500],
+                str(exc)[:500],
+                _dur,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return RepairIssueAnalysis(
             human_explanation=(
                 f"HA repair issue in {issue.domain}: {issue.translation_key or issue.issue_id}"
@@ -588,6 +651,15 @@ async def tail_remote_log_stream(
                     cause=evaluation.root_cause_summary,
                     confidence=evaluation.confidence_score,
                 )
+                import config as _lm_dbg
+
+                if _lm_dbg.DEBUG_LEVEL >= 1:
+                    log.debug(
+                        "log_triage_result",
+                        cause=evaluation.root_cause_summary[:200],
+                        confidence=evaluation.confidence_score,
+                        actionable=evaluation.is_actionable,
+                    )
 
                 if (
                     evaluation.is_actionable

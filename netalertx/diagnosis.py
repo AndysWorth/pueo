@@ -173,6 +173,7 @@ async def _diagnose_with_agent_loop(
         knowledge_store=knowledge_store,
         on_llm_call_start=_on_diag_start,
         on_llm_call_done=_on_diag_done,
+        capture_llm=True,
     )
 
     try:
@@ -207,6 +208,7 @@ async def _diagnose_one_shot(
     """One-shot LLM call for NetAlertX health diagnosis (fallback without ssh_client)."""
     system_prompt = load_prompt("diagnose_netalertx")
     user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
+    _t0_nd = __import__("time").monotonic()
     try:
         response = await client.chat(
             model=model,
@@ -224,6 +226,21 @@ async def _diagnose_one_shot(
             category=result.category,
             severity=result.severity,
         )
+        _dur_nd = (__import__("time").monotonic() - _t0_nd) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_diagnose_one_shot",
+                model,
+                user_prompt[:500],
+                raw_output[:500],
+                _dur_nd,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         trace = LLMTrace(
             model=model,
             system_prompt=system_prompt,
@@ -233,4 +250,19 @@ async def _diagnose_one_shot(
         return result, trace
     except Exception as exc:
         log.error("netalertx_diagnosis_inference_failed", error=str(exc))
+        _dur_nd = (__import__("time").monotonic() - _t0_nd) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_diagnose_one_shot",
+                model,
+                user_prompt[:500],
+                str(exc)[:500],
+                _dur_nd,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return None, None

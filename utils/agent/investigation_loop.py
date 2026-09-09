@@ -263,6 +263,7 @@ async def run_investigation(
         terminal_tool_name="finish_investigation",
         trigger="investigation",
         knowledge_store=knowledge_store,
+        capture_llm=True,
     )
 
     result = await loop.run(initial_context=topic)

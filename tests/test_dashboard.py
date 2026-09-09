@@ -1513,8 +1513,7 @@ class TestDebugModeEndpoints:
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(dashboard, "_debug_mode_enabled", False)
-        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 0)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post("/api/debug-mode", json={"enabled": True, "verbose": False})
         assert resp.status_code == 200
@@ -1527,8 +1526,7 @@ class TestDebugModeEndpoints:
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
-        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
         logging.getLogger("pueo").setLevel(logging.DEBUG)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post("/api/debug-mode", json={"enabled": False, "verbose": False})
@@ -1541,8 +1539,7 @@ class TestDebugModeEndpoints:
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(dashboard, "_debug_mode_enabled", True)
-        monkeypatch.setattr(dashboard, "_debug_verbose_enabled", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.get("/api/debug-mode")
         assert resp.status_code == 200

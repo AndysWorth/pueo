@@ -462,6 +462,21 @@ def _migrate_v32(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE repair_episodes ADD COLUMN debug_log_path TEXT")
 
 
+def _migrate_v33(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS llm_one_shot_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            caller TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_summary TEXT,
+            output_summary TEXT,
+            duration_ms REAL,
+            outcome TEXT,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )"""
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -495,6 +510,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (30, _migrate_v30),
     (31, _migrate_v31),
     (32, _migrate_v32),
+    (33, _migrate_v33),
 ]
 
 
@@ -601,6 +617,19 @@ async def deploy_and_test_in_sandbox(
                 f"mv {CONFIG_REMOTE_PATH}.bak {CONFIG_REMOTE_PATH}", check=True
             )
 
+        import config as _sb_cfg
+
+        if _sb_cfg.DEBUG_LEVEL >= 1:
+            log.debug(
+                "sandbox_preflight_result", exit_code=exit_code, passed=(exit_code == 0)
+            )
+        if _sb_cfg.DEBUG_LEVEL >= 2:
+            log.debug(
+                "sandbox_preflight_output",
+                stdout=(stdout or "")[:500],
+                stderr=(stderr or "")[:500],
+            )
+
         if exit_code == 0:
             log.info("sandbox_test_passed")
             return True
@@ -660,6 +689,7 @@ async def _run_code_proposal_loop(
         tool_registry=registry,
         system_prompt=_CODE_PROPOSAL_SYSTEM_PROMPT,
         trigger="gap_detection",
+        capture_llm=True,
     )
     initial_context = (
         "The previous HA repair loop detected a capability gap:\n\n"
@@ -697,6 +727,11 @@ async def main(
     )
     _gate: AutonomyGate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _llm = llm_client or make_llm_client()
+
+    _cycle_start = __import__("time").monotonic()
+    log.info(
+        "repair_cycle_start", trigger="ha_config", source="ha_agent_sandbox_engine"
+    )
 
     yaml_content, config_hash = await fetch_remote_config(ssh_client=_ssh)
 
@@ -777,6 +812,7 @@ async def main(
         context_inject_callback=_on_knowledge_inject,
         on_llm_call_start=_on_llm_start,
         on_llm_call_done=_on_llm_done,
+        capture_llm=True,
     )
 
     initial_context = (
@@ -800,6 +836,13 @@ async def main(
             set_active_repair_loop(None)
         except Exception:  # nosec B110
             pass
+
+    log.info(
+        "repair_cycle_complete",
+        outcome=result.outcome,
+        tool_calls=len(result.steps),
+        duration_ms=round((__import__("time").monotonic() - _cycle_start) * 1000),
+    )
 
     # Autonomous gap detection (item 84): when the agent signalled a capability gap,
     # automatically start a code-proposal loop that drafts a patch, validates it in

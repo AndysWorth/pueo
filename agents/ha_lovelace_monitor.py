@@ -87,17 +87,51 @@ async def _analyze_missing_entity(
         {"role": "user", "content": prompt_text},
     ]
 
+    import config as _lm_cfg
+
+    _model_lm = _default_model_for_provider()
+    _t0_lm = __import__("time").monotonic()
     try:
         response = await client.chat(
-            model=_default_model_for_provider(),
+            model=_model_lm,
             messages=messages,
             options={"temperature": 0.0},
             format=DashboardEntityAnalysis.model_json_schema(),
         )
         raw = response["message"]["content"]
+        _dur_lm = (__import__("time").monotonic() - _t0_lm) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_analyze_missing_entity",
+                _model_lm,
+                ref.entity_id[:500],
+                raw[:500],
+                _dur_lm,
+                "success",
+                _lm_cfg.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return DashboardEntityAnalysis.model_validate_json(raw)
     except Exception as exc:
         log.warning("lovelace_analysis_failed", entity_id=ref.entity_id, error=str(exc))
+        _dur_lm = (__import__("time").monotonic() - _t0_lm) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_analyze_missing_entity",
+                _model_lm,
+                ref.entity_id[:500],
+                str(exc)[:500],
+                _dur_lm,
+                "error",
+                _lm_cfg.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return DashboardEntityAnalysis(
             explanation=f"Entity {ref.entity_id!r} not found in the HA entity registry.",
             likely_cause="deleted",

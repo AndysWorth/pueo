@@ -223,6 +223,7 @@ class NetAlertXHealer:
             knowledge_store=self._knowledge_store,
             on_llm_call_start=_on_nax_llm_start,
             on_llm_call_done=_on_nax_llm_done,
+            capture_llm=True,
         )
 
         initial_context = (
