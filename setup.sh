@@ -81,8 +81,10 @@ _do_clean() {
         launchctl unload "${HOME}/Library/LaunchAgents/${_plist}.plist" 2>/dev/null || true
         rm -f "${HOME}/Library/LaunchAgents/${_plist}.plist"
     done
-    # CLI symlink
-    rm -f /usr/local/bin/pueo
+    # CLI symlink (may have been installed with sudo)
+    if [[ -L /usr/local/bin/pueo || -f /usr/local/bin/pueo ]]; then
+        sudo rm -f /usr/local/bin/pueo 2>/dev/null || rm -f /usr/local/bin/pueo 2>/dev/null || true
+    fi
 }
 
 if [[ "${1:-}" == "--clean" ]]; then
