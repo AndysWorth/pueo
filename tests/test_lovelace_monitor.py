@@ -975,6 +975,166 @@ class TestPollMissingEntity:
             ).fetchone()
         assert row is not None and row[0] is not None
 
+    def test_config_entry_domain_not_flagged(self, tmp_path):
+        """Entities from auto-discovered domains (config entries) must not fire a card."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "weather", "entity": "sun.sun"}],
+                }
+            ]
+        }
+        # sun.sun: in states but not entity registry; sun domain has a config entry
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sun.sun", "state": "above_horizon"}],
+            config_entries=[{"domain": "sun", "state": "loaded"}],
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert "get_config_entries" in ws.calls
+        assert len(notifier.sent) == 0, "config-entry domain must not produce a card"
+
+    def test_non_config_entry_domain_still_flagged(self, tmp_path):
+        """YAML-configured entities not in config entries are still flagged."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        # sensor.high_tide in states, not in registry; sensor domain has no config entry
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
+            config_entries=[{"domain": "sun", "state": "loaded"}],
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["card_type"] == "unregistered_entity"
+        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.high_tide"
+
+    def test_existing_unregistered_card_resolved_for_config_entry_domain(
+        self, tmp_path
+    ):
+        """A pre-existing unregistered card for a config-entry domain is auto-resolved."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+
+        # Pre-seed: sun.sun was previously flagged before config-entry detection existed.
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(
+                conn,
+                "unregistered_entity:sun.sun",
+                "unregistered_entity",
+                "has no unique_id",
+            )
+
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "weather", "entity": "sun.sun"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sun.sun", "state": "above_horizon"}],
+            config_entries=[{"domain": "sun", "state": "loaded"}],
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        # Card should be resolved, not re-sent
+        assert len(notifier.sent) == 0
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'unregistered_entity:sun.sun'"
+            ).fetchone()
+        assert row is not None and row[0] is not None, "card must be auto-resolved"
+
 
 # ---------------------------------------------------------------------------
 # _analyze_missing_entity — unit test with fake LLM
