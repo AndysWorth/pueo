@@ -28,44 +28,92 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 PUEO_DIR="$SCRIPT_DIR"
 
-# ── --help / --clean flags ───────────────────────────────────────────────────────
+# ── --help / --clean / --reset flags ────────────────────────────────────────────
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    echo -e "\nUsage: ./setup.sh [--clean]"
+    echo -e "\nUsage: ./setup.sh [--clean | --reset]"
     echo
-    echo "  (no flags)   Interactive setup: choose native/docker/both mode,"
+    echo "  (no flags)   Interactive setup: choose macOS/Docker/both mode,"
     echo "               install dependencies, configure Pueo, and set up"
     echo "               infrastructure. Safe to re-run at any time."
     echo
-    echo "  --clean      Remove .venv and all Pueo platform-directory state"
-    echo "               (DB, HITL cards, caches, logs) before running setup."
-    echo "               Use this to start completely from scratch."
+    echo "  --clean      Remove everything: .venv, config.yaml, all platform"
+    echo "               state (DB, caches, logs), launchd plists, CLI symlink,"
+    echo "               and Docker config dir. Start completely from scratch."
+    echo
+    echo "  --reset      Like --clean but preserves config.yaml so you don't"
+    echo "               need to answer setup questions again. Use this to"
+    echo "               reinstall Pueo after a Python or dependency upgrade."
     echo
     echo "  -h, --help   Show this help message."
     exit 0
 fi
 
+_RESET_MODE=false
+
+_do_clean() {
+    local preserve_config="$1"
+    # Stash configs before deleting platform dirs (which may contain config.yaml)
+    if [[ "$preserve_config" == "true" ]]; then
+        _STATE_GUESS="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
+        cp -f "${_STATE_GUESS}/config.yaml" /tmp/_pueo_config_stash.yaml 2>/dev/null || true
+        cp -f "${PUEO_DIR}/config/config.yaml" /tmp/_pueo_config_stash_docker.yaml 2>/dev/null || true
+        _STASHED_NATIVE=$([[ -f /tmp/_pueo_config_stash.yaml ]] && echo true || echo false)
+        _STASHED_DOCKER=$([[ -f /tmp/_pueo_config_stash_docker.yaml ]] && echo true || echo false)
+    fi
+
+    rm -rf .venv
+    if [[ "$preserve_config" != "true" ]]; then
+        rm -f config.yaml
+    fi
+    # Legacy repo-root artifacts from pre-platform-dir layout
+    rm -f ha_agent_state.db pueo.log
+    rm -rf hitl/ .cache/ backups/ chromadb/ archives/
+    # Platform dirs (derive defaults without venv)
+    _STATE="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
+    _DATA="${PUEO_DATA_DIR:-${HOME}/Library/Application Support/Pueo}"
+    _CACHE="${PUEO_CACHE_DIR:-${HOME}/Library/Caches/Pueo}"
+    _LOGS="${PUEO_LOG_DIR:-${HOME}/Library/Logs/Pueo}"
+    rm -rf "$_STATE" "$_DATA" "$_CACHE" "$_LOGS"
+    # Docker config dir
+    rm -rf "${PUEO_DIR}/config"
+    # launchd plists
+    for _plist in com.pueo.agent io.pueo.rag-refresh; do
+        launchctl unload "${HOME}/Library/LaunchAgents/${_plist}.plist" 2>/dev/null || true
+        rm -f "${HOME}/Library/LaunchAgents/${_plist}.plist"
+    done
+    # CLI symlink
+    rm -f /usr/local/bin/pueo
+}
+
 if [[ "${1:-}" == "--clean" ]]; then
     echo -e "\n${YELLOW}⚠  Clean mode — this will remove all Pueo state:${NC}"
-    echo "  .venv, config.yaml, and platform-directory state (DB, HITL cards,"
-    echo "  caches, backups, ChromaDB, logs)."
+    echo "  .venv, config.yaml, platform-directory state (DB, HITL cards, caches,"
+    echo "  backups, ChromaDB, logs), launchd plists, and the pueo CLI symlink."
     echo
     read -rp "  Continue? [y/N]: " clean_confirm
     if [[ ! "${clean_confirm:-N}" =~ ^[Yy] ]]; then
         info "Clean cancelled."
         exit 0
     fi
-    rm -rf .venv
-    rm -f config.yaml
-    # Remove legacy repo-root artifacts from pre-platform-dir layout
-    rm -f ha_agent_state.db pueo.log
-    rm -rf hitl/ .cache/ backups/ chromadb/ archives/
-    # Remove platform dirs if they exist (derive defaults without venv)
-    _STATE="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
-    _DATA="${PUEO_DATA_DIR:-${HOME}/Library/Application Support/Pueo}"
-    _CACHE="${PUEO_CACHE_DIR:-${HOME}/Library/Caches/Pueo}"
-    _LOGS="${PUEO_LOG_DIR:-${HOME}/Library/Logs/Pueo}"
-    rm -rf "$_STATE" "$_DATA" "$_CACHE" "$_LOGS"
-    ok "Removed .venv, config.yaml, and all Pueo state directories"
+    _do_clean false
+    ok "Removed all Pueo state — run ./setup.sh to start fresh."
+    exit 0
+fi
+
+if [[ "${1:-}" == "--reset" ]]; then
+    echo -e "\n${YELLOW}⚠  Reset mode — this will remove all Pueo state except config.yaml:${NC}"
+    echo "  .venv, platform-directory state (DB, HITL cards, caches, backups,"
+    echo "  ChromaDB, logs), launchd plists, CLI symlink, and Docker config dir."
+    echo "  Your config.yaml will be preserved — no need to answer questions again."
+    echo
+    read -rp "  Continue? [y/N]: " reset_confirm
+    if [[ ! "${reset_confirm:-N}" =~ ^[Yy] ]]; then
+        info "Reset cancelled."
+        exit 0
+    fi
+    _do_clean true
+    ok "Reset: state cleared, config.yaml preserved. Continuing with setup..."
+    _RESET_MODE=true
 fi
 
 echo -e "\n🦉  ${BOLD}Pueo Setup${NC}"
@@ -75,17 +123,58 @@ echo "════════════════════════�
 hdr "0. Deployment Mode"
 
 echo "  How will you run Pueo?"
-echo "    1) native  — macOS (launchd, ~/Library/* dirs)"
-echo "    2) docker  — Docker container (docker-compose)"
-echo "    3) both    — native + Docker side-by-side"
+echo "    1) macOS   — launchd service, ~/Library/* directories"
+echo "    2) Docker  — Docker container (docker-compose)"
+echo "    3) Both    — macOS + Docker side-by-side"
 echo
 ask "Deployment mode [1/2/3]" "1" _DEPLOY_MODE_NUM
 case "${_DEPLOY_MODE_NUM}" in
     2) DEPLOY_MODE="docker" ;;
     3) DEPLOY_MODE="both" ;;
-    *) DEPLOY_MODE="native" ;;
+    *) DEPLOY_MODE="macos" ;;
 esac
-ok "Deployment mode: ${DEPLOY_MODE}"
+_DEPLOY_MODE_LABEL="macOS"
+[[ "$DEPLOY_MODE" == "docker" ]] && _DEPLOY_MODE_LABEL="Docker"
+[[ "$DEPLOY_MODE" == "both" ]]   && _DEPLOY_MODE_LABEL="macOS + Docker"
+ok "Deployment mode: ${_DEPLOY_MODE_LABEL}"
+
+# ── Prerequisites ────────────────────────────────────────────────────────────────
+hdr "Prerequisites"
+
+_prereq_fail=0
+
+if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
+    if ! command -v docker &>/dev/null; then
+        fail "[MISSING] docker — install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        _prereq_fail=1
+    else
+        ok "docker $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
+        if ! docker compose version &>/dev/null 2>&1; then
+            fail "[MISSING] docker compose — update Docker Desktop to include Compose v2"
+            _prereq_fail=1
+        else
+            ok "docker compose $(docker compose version --short 2>/dev/null || echo 'v2')"
+        fi
+        if ! docker info &>/dev/null 2>&1; then
+            fail "[MISSING] Docker daemon not running — start Docker Desktop first"
+            _prereq_fail=1
+        fi
+    fi
+fi
+
+if [[ "$DEPLOY_MODE" == "macos" || "$DEPLOY_MODE" == "both" ]]; then
+    if command -v brew &>/dev/null; then
+        ok "Homebrew $(brew --version 2>/dev/null | head -1 | awk '{print $2}')"
+    else
+        warn "Homebrew not found — recommended for Python 3.14 install: https://brew.sh"
+    fi
+fi
+
+if [[ $_prereq_fail -eq 1 ]]; then
+    echo
+    fail "Fix the missing prerequisites above, then re-run ./setup.sh"
+    exit 1
+fi
 
 # ── 1. Python ───────────────────────────────────────────────────────────────────
 hdr "1. Python"
@@ -94,7 +183,7 @@ REQUIRED_PYTHON="3.14"
 
 # Docker-only: skip venv; derive Docker config destination
 if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    info "Docker-only mode — skipping venv creation (not needed inside the container)."
+    info "Docker mode — skipping venv creation (not needed inside the container)."
     DOCKER_CONFIG_DIR="${PUEO_DIR}/config"
     NATIVE_CONFIG_DIR=""
     PUEO_CONFIG_DIR="$DOCKER_CONFIG_DIR"
@@ -103,7 +192,7 @@ if [[ "$DEPLOY_MODE" == "docker" ]]; then
     PUEO_CACHE_DIR=""
     PUEO_LOG_DIR=""
 else
-    # native or both: create venv and resolve platform dirs
+    # macOS or both: create venv and resolve platform dirs
     if command -v pyenv &>/dev/null; then
         ok "pyenv $(pyenv --version | awk '{print $2}')"
     else
@@ -159,16 +248,31 @@ else
 
     NATIVE_CONFIG_DIR="$PUEO_CONFIG_DIR"
     DOCKER_CONFIG_DIR="${PUEO_DIR}/config"
+
+    # Restore stashed configs now that platform dirs are known (--reset mode)
+    if [[ "$_RESET_MODE" == "true" ]]; then
+        if [[ "${_STASHED_NATIVE:-false}" == "true" && -f /tmp/_pueo_config_stash.yaml ]]; then
+            mkdir -p "$NATIVE_CONFIG_DIR"
+            cp -f /tmp/_pueo_config_stash.yaml "${NATIVE_CONFIG_DIR}/config.yaml"
+            rm -f /tmp/_pueo_config_stash.yaml
+            ok "Restored macOS config.yaml"
+        fi
+        if [[ "${_STASHED_DOCKER:-false}" == "true" && -f /tmp/_pueo_config_stash_docker.yaml ]]; then
+            mkdir -p "$DOCKER_CONFIG_DIR"
+            cp -f /tmp/_pueo_config_stash_docker.yaml "${DOCKER_CONFIG_DIR}/config.yaml"
+            rm -f /tmp/_pueo_config_stash_docker.yaml
+            ok "Restored Docker config.yaml"
+        fi
+    fi
 fi
 
 # ── 2. Ollama ───────────────────────────────────────────────────────────────────
 hdr "2. Ollama"
 
 if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    info "Docker-only mode — skipping local Ollama install check."
-    info "Ollama must run on the host; its endpoint will be configured in the next section."
-    OLLAMA_ENDPOINT_DEFAULT="http://host.docker.internal:11434"
-    ask "Ollama endpoint (Docker host sees it as)" "$OLLAMA_ENDPOINT_DEFAULT" OLLAMA_ENDPOINT_FOR_CONFIG
+    info "Docker mode — Ollama must run on the host."
+    info "The container reaches it at http://host.docker.internal:11434 (default)."
+    OLLAMA_ENDPOINT_FOR_CONFIG="http://host.docker.internal:11434"
     CONFIGURED_MODEL="qwen2.5-coder:7b"
     DEFAULT_MODEL="$CONFIGURED_MODEL"
     RAG_EMBED_MODEL="nomic-embed-text"
@@ -176,7 +280,7 @@ else
     OLLAMA_ENDPOINT_FOR_CONFIG="http://localhost:11434"
 
     if ! command -v ollama &>/dev/null; then
-        fail "ollama CLI not found. Install from https://ollama.com then re-run."
+        fail "[MISSING] ollama — install from https://ollama.com then re-run."
         exit 1
     fi
     ok "ollama found"
@@ -261,13 +365,12 @@ if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
     echo
     if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
         warn "ANTHROPIC_API_KEY is not set in the current environment."
-        warn "Pueo will fail to start until it is exported."
+        warn "Pueo will fail to start until it is exported. Add this line to ~/.zshenv:"
+        warn "  export ANTHROPIC_API_KEY=<your-key>"
         if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
             warn "For Docker: set it in the environment: section of docker-compose.yml"
             warn "  or supply a .env file alongside docker-compose.yml."
         fi
-        warn "For native: add this line to ~/.zshenv and reload your shell:"
-        warn "  export ANTHROPIC_API_KEY=<your-key>"
     else
         ok "ANTHROPIC_API_KEY is set"
     fi
@@ -279,14 +382,7 @@ else
     ok "Using local Ollama inference (no cloud API required)"
 fi
 
-if [[ "$DEPLOY_MODE" != "docker" ]]; then
-    echo
-    echo "  Pueo can automatically select the best Ollama model for your hardware"
-    echo "  each time it starts. Useful as you add or remove larger models over time."
-    ask "Auto-select best model at startup? (true/false)" "false" OLLAMA_MODEL_AUTO
-else
-    OLLAMA_MODEL_AUTO="false"
-fi
+OLLAMA_MODEL_AUTO="false"
 
 # ── 3. SSH Key ──────────────────────────────────────────────────────────────────
 hdr "3. SSH Key"
@@ -341,7 +437,7 @@ fi
 hdr "4. Configuration"
 
 # Determine config destinations
-if [[ "$DEPLOY_MODE" == "native" ]]; then
+if [[ "$DEPLOY_MODE" == "macos" ]]; then
     CONFIG_DEST_NATIVE="${NATIVE_CONFIG_DIR}/config.yaml"
     CONFIG_DEST_DOCKER=""
 elif [[ "$DEPLOY_MODE" == "docker" ]]; then
@@ -375,25 +471,15 @@ if $WRITE_CONFIG; then
     echo "  Press Enter to accept each default."
     echo
 
-    ask "Home Assistant hostname or IP"    "homeassistant.local"          HA_HOST
-    ask "SSH username"                      "root"                          HA_USER
-    ask "SSH private key path"             "$DEFAULT_SSH_KEY"              HA_SSH_KEY
+    ask "Home Assistant hostname or IP"  "homeassistant.local"  HA_HOST
+    HA_USER="root"
+    HA_SSH_KEY="${DEFAULT_SSH_KEY}"
+    HA_CONFIG_PATH="/config/configuration.yaml"
     echo "  (Create at: HA Profile → Security → Long-Lived Access Tokens)"
     ask_secret "HA long-lived access token (hidden)" HA_API_TOKEN
     echo
-    echo "  ── HA polling features (require api_token) ──"
-    echo "  When an api_token is set, Pueo can poll for HA updates and surface"
-    echo "  persistent HA notifications as approval cards on the dashboard."
-    echo "  Set the update check interval to 0 to disable update checking."
-    ask "Update check interval (hours, 0 = disabled)"  "6"  HA_UPDATE_CHECK_INTERVAL_HOURS
-    echo
-    ask "config.yaml path on HA host"      "/config/configuration.yaml"    HA_CONFIG_PATH
-    if [[ "$DEPLOY_MODE" != "docker" ]]; then
-        if [[ "$CONFIGURED_MODEL" != "${DEFAULT_MODEL:-$CONFIGURED_MODEL}" ]]; then
-            info "Hardware recommendation: ${DEFAULT_MODEL} (press Enter to keep current, or type the new model name)"
-        fi
-    fi
-    ask "Ollama model"                      "$CONFIGURED_MODEL"             OLLAMA_MODEL
+
+    ask "Ollama model"  "$CONFIGURED_MODEL"  OLLAMA_MODEL
     if ! [[ "$OLLAMA_MODEL" =~ ^[a-zA-Z0-9./:_-]+$ ]]; then
         warn "Model name '${OLLAMA_MODEL}' looks invalid. Using default: ${CONFIGURED_MODEL}"
         OLLAMA_MODEL="$CONFIGURED_MODEL"
@@ -412,14 +498,20 @@ if $WRITE_CONFIG; then
         fi
     fi
 
+    # Derived defaults — not asked
+    LOG_THRESHOLD="0.7"
+    SELF_HEALING="true"
+    DEVELOPMENT_MODE="false"
+    DEBUG_MODE="false"
+    DEBUG_VERBOSE="false"
+    CHAT_ALLOW_TOOL_REGISTRATION="false"
+    ALLOW_DIAGNOSTIC_WAN="true"
+    HA_UPDATE_CHECK_INTERVAL_HOURS="6"
     if [[ -n "${PUEO_STATE_DIR:-}" ]]; then
-        DB_PATH_DEFAULT="${PUEO_STATE_DIR}/ha_agent_state.db"
+        DB_PATH="${PUEO_STATE_DIR}/ha_agent_state.db"
     else
-        DB_PATH_DEFAULT="/state/ha_agent_state.db"
+        DB_PATH="/state/ha_agent_state.db"
     fi
-    ask "Local SQLite database path"        "$DB_PATH_DEFAULT"  DB_PATH
-    ask "Log confidence threshold (0–1)"    "0.7"               LOG_THRESHOLD
-    ask "Self-healing enabled"              "true"              SELF_HEALING
 
     echo
     echo "  ── Approval notifications ──"
@@ -435,29 +527,7 @@ if $WRITE_CONFIG; then
     echo
     ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
     ask "Dashboard port"  "8080"  DASHBOARD_PORT
-    echo
-    echo "  Development mode unlocks advanced surfaces: Runbook Review dashboard tab,"
-    echo "  community knowledge-base submission, cloud escalation approval cards, code"
-    echo "  proposals, and the debug logging toggle. Disable for appliance / production use."
-    ask "Enable development mode? (true/false)"  "false"  DEVELOPMENT_MODE
-    echo
-    echo "  Debug mode records full LLM interactions as HTML episode reports and emits"
-    echo "  extra structured log events. Verbose debug disables all payload truncation."
-    echo "  Both can be toggled at runtime from the Settings tab without a restart."
-    ask "Enable debug mode? (true/false)"  "false"  DEBUG_MODE
-    ask "Enable verbose debug (no truncation)? (true/false)"  "false"  DEBUG_VERBOSE
-    echo
-    echo "  Chat tool registration allows the conversational agent to write and register"
-    echo "  new Python tools at runtime. Each tool requires sandbox CI validation and"
-    echo "  explicit approval before it is loaded, but the agent can still generate"
-    echo "  arbitrary code. Leave disabled unless you understand the risk."
-    ask "Allow chat agent to register new tools? (true/false)"  "false"  CHAT_ALLOW_TOOL_REGISTRATION
-    echo ""
-    echo "  Diagnostic WAN access lets Pueo verify external API availability during"
-    echo "  investigations (e.g., confirming a service outage has resolved)."
-    echo "  Uses HTTP GET only; private/loopback addresses are always blocked."
-    ask "Allow diagnostic WAN fetch (fetch_url tool)? (true/false)"  "true"  ALLOW_DIAGNOSTIC_WAN
-    ask "Notifier type (file/ntfy/webhook)"  "file"                          NOTIFIER_TYPE
+    ask "Notifier type (file/ntfy/webhook)"  "file"  NOTIFIER_TYPE
 
     NOTIFY_URL=""
     if [[ -n "${PUEO_STATE_DIR:-}" ]]; then
@@ -606,7 +676,7 @@ if $WRITE_CONFIG; then
         ok "MQTT anonymous access configured"
     fi
 
-    # ── Write native config ──────────────────────────────────────────────────────
+    # ── Write config ─────────────────────────────────────────────────────────────
     _write_config() {
         local dest="$1"
         local ollama_endpoint="$2"
@@ -711,9 +781,9 @@ agent:
 EOF
     }
 
-    if [[ "$DEPLOY_MODE" == "native" || "$DEPLOY_MODE" == "both" ]]; then
+    if [[ "$DEPLOY_MODE" == "macos" || "$DEPLOY_MODE" == "both" ]]; then
         _write_config "$CONFIG_DEST_NATIVE" "http://localhost:11434"
-        ok "Native config written: ${CONFIG_DEST_NATIVE}"
+        ok "macOS config written: ${CONFIG_DEST_NATIVE}"
     fi
     if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
         _write_config "$CONFIG_DEST_DOCKER" "${OLLAMA_ENDPOINT_FOR_CONFIG}"
@@ -816,7 +886,7 @@ else
     fi
 fi
 
-# ── 7. RAG refresh launchd job ───────────────────────────────────────────────────
+# ── 7. RAG Knowledge-Base Refresh ────────────────────────────────────────────────
 hdr "7. RAG Knowledge-Base Refresh"
 
 if [[ "$DEPLOY_MODE" == "docker" ]]; then
@@ -884,8 +954,8 @@ echo
 echo -e "${GREEN}${BOLD}✔  Pueo is ready.${NC}"
 echo
 
-if [[ "$DEPLOY_MODE" == "native" || "$DEPLOY_MODE" == "both" ]]; then
-    echo "  ── Native ─────────────────────────────────────────────────────"
+if [[ "$DEPLOY_MODE" == "macos" || "$DEPLOY_MODE" == "both" ]]; then
+    echo "  ── macOS ──────────────────────────────────────────────────────"
     echo "  Start Pueo           : pueo"
     echo "  Live log             : tail -f ${PUEO_LOG_DIR}/pueo.log"
     echo "  Dashboard            : http://127.0.0.1:8080"

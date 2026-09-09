@@ -55,9 +55,9 @@ cd pueo
 ./setup.sh
 ```
 
-`setup.sh` is idempotent — safe to re-run at any time. It first asks how you want to run Pueo — macOS native, Docker, or both — and configures everything accordingly: installs dependencies, detects your hardware and recommends an Ollama model, generates an SSH key if needed, writes `config.yaml`, and for Docker generates a configured `docker-compose.yml` with the correct SSH key mount. For a detailed walkthrough of every prompt — credentials to gather, LLM provider options, autonomy levels, notifier setup, and NetAlertX configuration — see **[docs/setup-guide.md](docs/setup-guide.md)**.
+`setup.sh` is idempotent — safe to re-run at any time. It first asks how you want to run Pueo — macOS, Docker, or both — and configures everything accordingly: installs dependencies, detects your hardware and recommends an Ollama model, generates an SSH key if needed, writes `config.yaml`, and for Docker generates a configured `docker-compose.yml` with the correct SSH key mount. For a detailed walkthrough of every prompt — credentials to gather, LLM provider options, autonomy levels, notifier setup, and NetAlertX configuration — see **[docs/setup-guide.md](docs/setup-guide.md)**.
 
-Run `./setup.sh --clean` to wipe all generated files and start from scratch. A reference template is in `config.yaml.default`.
+Run `./setup.sh --clean` to wipe all generated files and start from scratch, or `./setup.sh --reset` to do the same while preserving `config.yaml` so you don't need to re-answer setup questions. A reference template is in `config.yaml.default`.
 
 ### 3. Running the Agent
 

@@ -8,7 +8,10 @@ cd pueo
 ./setup.sh
 ```
 
-`setup.sh` is idempotent — safe to re-run at any time. If you want to start completely from scratch, run `./setup.sh --clean` first (removes `.venv`, `config.yaml`, and all platform-directory state: DB, HITL cards, caches, backups, ChromaDB, logs).
+`setup.sh` is idempotent — safe to re-run at any time.
+
+- **`./setup.sh --clean`** — removes everything: `.venv`, `config.yaml`, all platform-directory state (DB, HITL cards, caches, backups, ChromaDB, logs), launchd plists, and the `pueo` CLI symlink. Start completely from scratch.
+- **`./setup.sh --reset`** — like `--clean` but preserves `config.yaml`. Use this to reinstall after a Python or dependency upgrade without re-answering setup questions.
 
 ---
 
@@ -18,17 +21,19 @@ cd pueo
 
 ```
 How will you run Pueo?
-  1) native  — macOS (launchd, ~/Library/* dirs)
-  2) docker  — Docker container (docker-compose)
-  3) both    — native + Docker side-by-side
+  1) macOS   — launchd service, ~/Library/* directories
+  2) Docker  — Docker container (docker-compose)
+  3) Both    — macOS + Docker side-by-side
 [1/2/3, default: 1]:
 ```
 
+Both macOS and Docker are equally supported deployment targets.
+
 | Mode | What setup.sh does |
 |---|---|
-| `native` | Creates `.venv`, installs Ollama model, writes `~/Library/Application Support/Pueo/config.yaml`, installs launchd service and RAG refresh job, symlinks `pueo` command |
+| `macos` | Creates `.venv`, installs Ollama model, writes `~/Library/Application Support/Pueo/config.yaml`, installs launchd service and RAG refresh job, symlinks `pueo` command |
 | `docker` | Skips venv and launchd; writes `config/config.yaml` and generates `docker-compose.yml` with SSH key mount |
-| `both` | Does everything: native config + infrastructure, plus Docker config and `docker-compose.yml` |
+| `both` | Does everything: macOS config + infrastructure, plus Docker config and `docker-compose.yml` |
 
 ---
 
@@ -36,7 +41,7 @@ How will you run Pueo?
 
 > **Docker mode: this section is skipped.** Python runs inside the container; you don't need a local venv.
 
-**Automatic, no input needed (native/both).**
+**Automatic, no input needed (macOS/both).**
 
 Setup detects Python 3.14 via Homebrew (`python3.14`) or pyenv, creates a `.venv`, and installs all dependencies from `requirements-dev.txt`. If the existing `.venv` is the wrong Python version, it is recreated automatically. If Python 3.14 isn't found at all, setup exits with instructions.
 
@@ -48,9 +53,9 @@ Setup detects Python 3.14 via Homebrew (`python3.14`) or pyenv, creates a `.venv
 
 ## Section 2 — Ollama
 
-> **Docker mode:** this section asks for the Ollama endpoint URL (default: `http://host.docker.internal:11434` for macOS Docker Desktop). Ollama must run on the host machine; no model pull is attempted.
+> **Docker mode:** Ollama must run on the host machine. The endpoint is set to `http://host.docker.internal:11434` automatically; no prompt is shown and no model pull is attempted.
 
-**Automatic, no prompts (native/both).**
+**Automatic, no prompts (macOS/both).**
 
 Setup verifies that Ollama is installed and running (starting it automatically if needed), detects your hardware (chip and RAM), and recommends a model:
 
@@ -89,7 +94,7 @@ Press Enter to accept the default or type a different Anthropic model ID.
 
 **ANTHROPIC_API_KEY** — Required for `cloud` and `both` modes. Pueo reads this exclusively from the environment — it is never written to `config.yaml`.
 
-- **Native:** add to `~/.zshenv` and reload your shell:
+- **macOS:** add to `~/.zshenv` and reload your shell:
   ```bash
   export ANTHROPIC_API_KEY=<your-key>
   ```
@@ -100,13 +105,7 @@ Press Enter to accept the default or type a different Anthropic model ID.
 
 Setup warns you if the key is absent; Pueo will refuse to start in `cloud` or `both` mode until it is set.
 
-**Prompt: Auto-select best model at startup?** (`true` / `false`, default: `false`)
-
-> **Docker mode: this prompt is skipped** — `model_auto` is set to `false` in the generated config.
-
-When `true`, Pueo checks which `qwen2.5-coder` variants are installed at startup and picks the largest one that fits in your current RAM. Useful as you add or remove larger models over time.
-
-Config keys: `llm.provider`, `cloud.model`, `ollama.model_auto`
+Config keys: `llm.provider`, `cloud.model`
 
 ---
 
@@ -122,7 +121,7 @@ If you generate a key, setup prints the public key and gives instructions for ad
 3. Set `port: 22` and click **Start**
 4. Press Enter in setup to continue
 
-**SSH agent check (native/both only)** — Pueo uses `asyncssh` and cannot prompt for a key passphrase interactively. If your key has a passphrase, add it to the macOS keychain once:
+**SSH agent check (macOS/both only)** — Pueo uses `asyncssh` and cannot prompt for a key passphrase interactively. If your key has a passphrase, add it to the macOS keychain once:
 
 ```bash
 ssh-add --apple-use-keychain ~/.ssh/id_ed25519
@@ -136,7 +135,16 @@ Setup warns if the agent is not running or the key is not loaded.
 
 ## Section 4 — Configuration
 
-**The main configuration prompts. Press Enter to accept each default. All modes.**
+**The main configuration prompts. All modes.**
+
+The following settings use sensible defaults silently (edit `config.yaml` directly to change them after setup):
+- SSH username: `root` (always correct for HA Terminal & SSH add-on)
+- HA config path: `/config/configuration.yaml`
+- SQLite DB path: platform default (`~/Library/Application Support/Pueo/ha_agent_state.db` on macOS, `/state/ha_agent_state.db` in Docker)
+- Log confidence threshold: `0.7`
+- Self-healing enabled: `true`
+- Update check interval: `6` hours
+- Debug mode, verbose debug, development mode, chat tool registration, diagnostic WAN: all defaults
 
 **If `config.yaml` already exists**, setup detects it and asks:
 ```
@@ -145,7 +153,7 @@ Setup warns if the agent is not running or the key is not loaded.
 Answer `y` to re-run all prompts. Answer `n` (or Enter) to skip the entire configuration section and proceed to the service install steps.
 
 Config file destination:
-- **native:** `~/Library/Application Support/Pueo/config.yaml`
+- **macOS:** `~/Library/Application Support/Pueo/config.yaml`
 - **docker:** `config/config.yaml` (the bind-mount source for `./config:/config:ro`)
 - **both:** writes both; the Docker copy uses `host.docker.internal` as the Ollama endpoint
 
@@ -154,18 +162,6 @@ Config file destination:
 **Prompt: Home Assistant hostname or IP** (default: `homeassistant.local`)
 
 Config key: `home_assistant.host`
-
----
-
-**Prompt: SSH username** (default: `root`)
-
-Config key: `home_assistant.user`
-
----
-
-**Prompt: SSH private key path** (default: `~/.ssh/id_ed25519`)
-
-Config key: `home_assistant.ssh_key_path`
 
 ---
 
@@ -179,49 +175,11 @@ Config key: `home_assistant.api_token`
 
 ---
 
-**Prompt: Update check interval (hours, 0 = disabled)** (default: `6`)
-
-Only used when `api_token` is set. Controls how often Pueo polls for available HA Core, OS, and add-on updates.
-
-Config key: `agent.update_check_interval_hours`
-
----
-
-**Prompt: config.yaml path on HA host** (default: `/config/configuration.yaml`)
-
-Config key: `home_assistant.config_path`
-
----
-
 **Prompt: Ollama model** (default: hardware-matched recommendation or existing config value)
 
 Confirms or overrides the model detected in Section 2. If you enter a model name that isn't installed, setup offers to pull it immediately.
 
 Config key: `ollama.model`
-
----
-
-**Prompt: Local SQLite database path**
-- Native default: `~/Library/Application Support/Pueo/ha_agent_state.db`
-- Docker default: `/state/ha_agent_state.db`
-
-Config key: `agent.db_path`
-
----
-
-**Prompt: Log confidence threshold (0–1)** (default: `0.7`)
-
-The minimum confidence score an LLM log-triage result must reach before Pueo treats it as actionable. Lower values increase sensitivity; raise it to reduce false positives on noisy logs.
-
-Config key: `agent.log_confidence_threshold`
-
----
-
-**Prompt: Self-healing enabled** (`true` / `false`, default: `true`)
-
-When `false`, Pueo diagnoses and reports issues but never writes to Home Assistant or triggers repairs.
-
-Config key: `agent.self_healing_enabled`
 
 ---
 
@@ -241,22 +199,6 @@ Config key: `agent.autonomy_level`
 **Prompt: Dashboard port** (default: `8080`)
 
 Config key: `agent.dashboard_port`
-
----
-
-**Prompt: Allow chat agent to register new tools?** (`true` / `false`, default: `false`)
-
-When enabled, the conversational agent can write new Python tools at runtime. Each tool requires sandbox CI validation and explicit approval before loading. Leave disabled unless you understand the risk.
-
-Config key: `agent.chat_allow_tool_registration`
-
----
-
-**Prompt: Allow diagnostic WAN fetch?** (`true` / `false`, default: `true`)
-
-Controls the `fetch_url` tool, which lets Pueo make read-only HTTP GET requests to external URLs during investigations — for example, to confirm that a cloud API outage has resolved. Private and loopback addresses are always blocked regardless of this setting.
-
-Config key: `agent.allow_diagnostic_wan`
 
 ---
 
@@ -353,7 +295,7 @@ Config keys: `netalertx.mqtt_user`, `netalertx.mqtt_password`
 
 ## Section 4.5 — Docker Compose Setup
 
-> **Native mode: this section is skipped.**
+> **macOS mode: this section is skipped.**
 
 **Automatic (docker/both).**
 
@@ -385,7 +327,7 @@ Reports whether NetAlertX will be installed automatically on first start or is d
 
 > **Docker mode: this section is skipped.** Restart policy is handled by Docker (`restart: unless-stopped`).
 
-**One prompt (native/both).**
+**One prompt (macOS/both).**
 
 **Prompt: Install Pueo as a launchd service?** (`Y` / `n`)
 When installed, Pueo starts automatically at login and restarts automatically on crash. If the service is already installed, this section is skipped.
@@ -407,7 +349,7 @@ launchctl remove com.pueo.agent     # uninstall
 > ```
 > Or add a cron job on the host to run it on a schedule.
 
-**One prompt (native/both).**
+**One prompt (macOS/both).**
 
 **Prompt: Install weekly RAG refresh job?** (`Y` / `n`)
 
@@ -435,7 +377,7 @@ Optional config keys (edit `config.yaml` directly to set these):
 
 > **Docker mode: this section is skipped.**
 
-**Automatic, no input needed (native/both).**
+**Automatic, no input needed (macOS/both).**
 
 Setup symlinks `bin/pueo` to `/usr/local/bin/pueo` so `pueo` is available anywhere in your shell. If `/usr/local/bin` is not writable, setup prints the manual symlink command to run with `sudo`.
 
@@ -443,7 +385,7 @@ Setup symlinks `bin/pueo` to `/usr/local/bin/pueo` so `pueo` is available anywhe
 
 ## Section 9 — Where Your Data Lives
 
-### Native / both
+### macOS / both
 
 On macOS, `platformdirs` maps all Pueo directories:
 
@@ -471,7 +413,7 @@ Named volumes persist across container recreation (`docker compose down` does no
 
 ## After Setup
 
-### Native / both
+### macOS / both
 
 ```bash
 pueo                                      # start the supervisor (all loops + dashboard)
