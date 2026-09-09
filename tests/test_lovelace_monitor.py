@@ -640,8 +640,8 @@ class TestPollMissingEntity:
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
 
-    def test_unregistered_but_present_in_states_fires_unique_id_card(self, tmp_path):
-        """Entities in hass.states but not the registry get an unregistered_entity card."""
+    def test_unregistered_but_present_in_states_goes_to_investigation(self, tmp_path):
+        """Entities in hass.states but not the registry are passed to _run_lovelace_investigation."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
@@ -662,7 +662,10 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        # entity_registry is empty (no unique_id), but hass.states has the entity
+        # entity_registry is empty (no unique_id), but hass.states has the entity.
+        # The poll loop now passes this to _run_lovelace_investigation (AgentLoop).
+        # FakeLLMClient does not implement chat_with_tools, so the investigation fails
+        # silently — no direct card is sent by the poll loop itself.
         ws = FakeHAWebSocketClient(
             entity_registry=[],
             lovelace_configs={None: lovelace},
@@ -690,10 +693,8 @@ class TestPollMissingEntity:
 
         asyncio.run(_run())
         assert "get_states" in ws.calls
-        assert len(notifier.sent) == 1
-        p = notifier.sent[0]["payload"]
-        assert p["card_type"] == "unregistered_entity"
-        assert p["entity_id"] == "sensor.high_tide"
+        # No direct card from the poll loop — classification is delegated to AgentLoop
+        assert len(notifier.sent) == 0
 
     def test_absent_from_both_registry_and_states_fires_card(self, tmp_path):
         """Entities absent from both registry and hass.states do fire a card."""
@@ -868,7 +869,8 @@ class TestPollMissingEntity:
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_section"
 
-    def test_unregistered_entity_fires_unique_id_card(self, tmp_path):
+    def test_unregistered_entity_delegated_to_investigation(self, tmp_path):
+        """Entities with state but no registry entry are delegated to _run_lovelace_investigation."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
@@ -909,12 +911,8 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        p = notifier.sent[0]["payload"]
-        assert p["card_type"] == "unregistered_entity"
-        assert p["entity_id"] == "sensor.high_tide"
-        assert p["proposed_unique_id"] == "sensor_high_tide"
-        assert "unique_id: sensor_high_tide" in p["yaml_hint"]
+        # Classification delegated to AgentLoop — poll loop sends no card directly
+        assert len(notifier.sent) == 0
 
     def test_unregistered_entity_resolves_when_registered(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
@@ -975,8 +973,8 @@ class TestPollMissingEntity:
             ).fetchone()
         assert row is not None and row[0] is not None
 
-    def test_config_entry_domain_not_flagged(self, tmp_path):
-        """Entities from auto-discovered domains (config entries) must not fire a card."""
+    def test_unregistered_entity_no_direct_card_sent(self, tmp_path):
+        """Unregistered entities with live state produce no direct card — AgentLoop investigates."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
@@ -991,12 +989,10 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        # sun.sun: in states but not entity registry; sun domain has a config entry
         ws = FakeHAWebSocketClient(
             entity_registry=[],
             lovelace_configs={None: lovelace},
             states=[{"entity_id": "sun.sun", "state": "above_horizon"}],
-            config_entries=[{"domain": "sun", "state": "loaded"}],
         )
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
@@ -1019,11 +1015,13 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        assert "get_config_entries" in ws.calls
-        assert len(notifier.sent) == 0, "config-entry domain must not produce a card"
+        # Poll loop no longer fetches config_entries directly (AgentLoop does that)
+        assert "get_config_entries" not in ws.calls
+        # No card from the poll loop itself — investigation is delegated to AgentLoop
+        assert len(notifier.sent) == 0
 
-    def test_non_config_entry_domain_still_flagged(self, tmp_path):
-        """YAML-configured entities not in config entries are still flagged."""
+    def test_unregistered_entity_delegated_not_directly_typed(self, tmp_path):
+        """Entities with state but absent from registry are not given ha_config_issue cards directly."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
@@ -1038,12 +1036,10 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        # sensor.high_tide in states, not in registry; sensor domain has no config entry
         ws = FakeHAWebSocketClient(
             entity_registry=[],
             lovelace_configs={None: lovelace},
             states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
-            config_entries=[{"domain": "sun", "state": "loaded"}],
         )
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
@@ -1066,14 +1062,13 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["card_type"] == "unregistered_entity"
-        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.high_tide"
+        # Classification is done by AgentLoop; poll loop sends nothing directly
+        assert len(notifier.sent) == 0
 
-    def test_existing_unregistered_card_resolved_for_config_entry_domain(
+    def test_legacy_unregistered_card_resolved_when_entity_joins_registry(
         self, tmp_path
     ):
-        """A pre-existing unregistered card for a config-entry domain is auto-resolved."""
+        """A legacy unregistered_entity card is resolved when the entity gains a registry entry."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.hitl_tracker import mark_card_sent
@@ -1082,7 +1077,7 @@ class TestPollMissingEntity:
 
         db_path = _make_hitl_db(tmp_path)
 
-        # Pre-seed: sun.sun was previously flagged before config-entry detection existed.
+        # Pre-seed: sun.sun was previously flagged.
         with sqlite3.connect(db_path) as conn:
             mark_card_sent(
                 conn,
@@ -1099,11 +1094,10 @@ class TestPollMissingEntity:
                 }
             ]
         }
+        # Entity now appears in the entity registry — card should be resolved.
         ws = FakeHAWebSocketClient(
-            entity_registry=[],
+            entity_registry=[{"entity_id": "sun.sun"}],
             lovelace_configs={None: lovelace},
-            states=[{"entity_id": "sun.sun", "state": "above_horizon"}],
-            config_entries=[{"domain": "sun", "state": "loaded"}],
         )
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
@@ -1126,7 +1120,6 @@ class TestPollMissingEntity:
                 pass
 
         asyncio.run(_run())
-        # Card should be resolved, not re-sent
         assert len(notifier.sent) == 0
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
@@ -1193,3 +1186,185 @@ class TestAnalyzeMissingEntity:
         result = asyncio.run(_analyze_missing_entity(ref, [], llm))
         assert result.action == "investigate"
         assert "sensor.bad" in result.explanation
+
+
+# ---------------------------------------------------------------------------
+# FakeHAWebSocketClient — new get_all_config_entries / get_ha_components
+# ---------------------------------------------------------------------------
+
+
+class TestFakeWSNewMethods:
+    def test_get_all_config_entries_returns_all(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {"domain": "sun", "state": "loaded"},
+            {"domain": "zha", "state": "not_loaded"},
+        ]
+        ws = FakeHAWebSocketClient(config_entries=entries)
+        result = asyncio.run(ws.get_all_config_entries())
+        assert result == entries
+        assert "get_all_config_entries" in ws.calls
+
+    def test_get_ha_components_returns_list(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        components = ["sun", "binary_sensor", "sun.binary_sensor"]
+        ws = FakeHAWebSocketClient(ha_components=components)
+        result = asyncio.run(ws.get_ha_components())
+        assert result == components
+        assert "get_ha_components" in ws.calls
+
+    def test_get_all_config_entries_empty_by_default(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        result = asyncio.run(ws.get_all_config_entries())
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _run_lovelace_investigation — integration test with FakeToolCallingLLMClient
+# ---------------------------------------------------------------------------
+
+
+class TestRunLovelaceInvestigation:
+    def test_empty_suspicious_list_is_noop(self, tmp_path):
+        from agents.ha_lovelace_monitor import _run_lovelace_investigation
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+
+        ws = FakeHAWebSocketClient()
+        notifier = FakeNotifier()
+        db_path = _make_hitl_db(tmp_path)
+
+        asyncio.run(
+            _run_lovelace_investigation(
+                suspicious=[],
+                ws_client=ws,
+                db_path=db_path,
+                notifier=notifier,
+            )
+        )
+        assert len(notifier.sent) == 0
+
+    def test_investigation_sends_ha_config_issue_card(self, tmp_path):
+        """AgentLoop that calls finish_lovelace_investigation creates an ha_config_issue card."""
+        from agents.ha_lovelace_monitor import _run_lovelace_investigation
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        ws = FakeHAWebSocketClient(
+            states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
+            ha_components=["sensor"],
+        )
+        notifier = FakeNotifier()
+
+        findings = [
+            {
+                "entity_ids": ["sensor.high_tide"],
+                "title": "YAML entity missing unique_id",
+                "description": "sensor.high_tide has live state but no unique_id",
+                "suggested_actions": ["Add unique_id: sensor_high_tide to YAML"],
+                "chat_needed": False,
+                "initial_chat_message": "",
+            }
+        ]
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_lovelace_investigation",
+                                "arguments": {"findings": findings},
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        suspicious = [
+            {
+                "entity_id": "sensor.high_tide",
+                "has_state": True,
+                "dashboard": "Default",
+                "view": "Main",
+                "card_title": None,
+            }
+        ]
+
+        asyncio.run(
+            _run_lovelace_investigation(
+                suspicious=suspicious,
+                ws_client=ws,
+                db_path=db_path,
+                notifier=notifier,
+                llm_client=llm,
+            )
+        )
+
+        assert len(notifier.sent) == 1
+        p = notifier.sent[0]["payload"]
+        assert p["card_type"] == "ha_config_issue"
+        assert "sensor.high_tide" in p["entity_ids"]
+
+    def test_ha_config_issue_reconciliation(self, tmp_path):
+        """ha_config_issue card is resolved when entity joins the entity registry."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+        card_key = "ha_config_issue:sensor.high_tide"
+
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(conn, card_key, "ha_config_issue", "yaml entity no uid")
+
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        # Entity is now in the registry — card should be resolved
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.high_tide"}],
+            lovelace_configs={None: lovelace},
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (card_key,),
+            ).fetchone()
+        assert (
+            row is not None and row[0] is not None
+        ), "ha_config_issue card must be resolved"
