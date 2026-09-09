@@ -9,6 +9,9 @@ from typing import AsyncIterator
 import asyncssh
 
 from config import HA_HOST, HA_USER, SSH_KEY_PATH
+from utils.core.logging import get_logger
+
+log = get_logger("pueo")
 
 
 class AsyncSSHClient:  # pragma: no cover
@@ -60,6 +63,14 @@ class AsyncSSHClient:  # pragma: no cover
             exit_code = result.exit_status if result.exit_status is not None else 1
             stdout = result.stdout if isinstance(result.stdout, str) else ""
             stderr = result.stderr if isinstance(result.stderr, str) else ""
+            _cmd_prefix = command.split()[0] if command.split() else command
+            log.info("ssh_command", command_prefix=_cmd_prefix, exit_code=exit_code)
+            import config as _ssh_cfg
+
+            if _ssh_cfg.DEBUG_LEVEL >= 1:
+                log.debug("ssh_run", command=command[:100], exit_code=exit_code)
+            if _ssh_cfg.DEBUG_LEVEL >= 2:
+                log.debug("ssh_run_output", stdout=stdout[:500])
             return exit_code, stdout, stderr
 
     async def stream_lines(self, command: str) -> AsyncIterator[str]:  # type: ignore[misc]

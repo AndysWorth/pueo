@@ -1391,3 +1391,47 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.DIAGNOSTIC_WAN_TIMEOUT_SECONDS == 30
+
+    def test_debug_level_default_zero(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL == 0
+
+    def test_debug_level_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"debug_level": 3}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL == 3
+
+    def test_debug_level_backward_compat_debug_mode(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"debug_mode": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL >= 1
+        assert config.DEBUG_MODE is True
+
+    def test_debug_level_backward_compat_debug_verbose(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"debug_verbose": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL >= 2
+        assert config.DEBUG_VERBOSE is True
+
+    def test_debug_episode_retention_days_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_EPISODE_RETENTION_DAYS == 30
+
+    def test_debug_episode_retention_days_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"debug_episode_retention_days": 7}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_EPISODE_RETENTION_DAYS == 7

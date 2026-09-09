@@ -1,11 +1,13 @@
-"""Tests for the debug mode overhaul (issue #574).
+"""Tests for the debug mode overhaul (issue #574) and debug level system (issue #578).
 
 Covers:
 - utils/debug/episode_writer.py HTML structure
 - AgentLoop capture_llm=True: captures in result, nudge pass-back
-- GET/POST /api/debug-mode: enable/disable/verbose states
-- config.py DEBUG_MODE / DEBUG_VERBOSE defaults and YAML loading
+- GET/POST /api/debug-mode: enable/disable/verbose states + level field
+- config.py DEBUG_LEVEL, DEBUG_MODE / DEBUG_VERBOSE defaults and YAML loading
 - V32 migration: debug_log_path column exists
+- V33 migration: llm_one_shot_calls table exists
+- record_one_shot() helper: happy path, DB error swallowed, input truncated
 """
 
 from __future__ import annotations
@@ -547,11 +549,10 @@ class TestDebugModeAPI:
 
     @pytest.fixture(autouse=True)
     def reset_debug_state(self, monkeypatch):
-        """Reset _debug_mode_enabled and _debug_verbose_enabled between tests."""
+        """Reset _debug_level_enabled between tests."""
         import web.dashboard as dash
 
-        monkeypatch.setattr(dash, "_debug_mode_enabled", False)
-        monkeypatch.setattr(dash, "_debug_verbose_enabled", False)
+        monkeypatch.setattr(dash, "_debug_level_enabled", 0)
 
     def _client(self):
         from starlette.testclient import TestClient
@@ -565,29 +566,45 @@ class TestDebugModeAPI:
         body = resp.json()
         assert body["enabled"] is False
         assert body["verbose"] is False
+        assert body["level"] == 0
 
-    def test_post_enables_debug(self):
+    def test_post_enables_debug_level_1(self):
         client = self._client()
         resp = client.post("/api/debug-mode", json={"enabled": True, "verbose": False})
         assert resp.status_code == 200
-        assert resp.json()["enabled"] is True
+        body = resp.json()
+        assert body["enabled"] is True
+        assert body["level"] == 1
 
-    def test_post_enables_verbose(self):
+    def test_post_enables_verbose_sets_level_2(self):
         client = self._client()
         resp = client.post("/api/debug-mode", json={"enabled": True, "verbose": True})
         assert resp.status_code == 200
         body = resp.json()
         assert body["enabled"] is True
         assert body["verbose"] is True
+        assert body["level"] == 2
+
+    def test_post_level_field_takes_precedence(self):
+        client = self._client()
+        resp = client.post(
+            "/api/debug-mode", json={"enabled": False, "verbose": False, "level": 3}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["level"] == 3
+        assert body["enabled"] is True
+        assert body["verbose"] is True
 
     def test_post_disables_debug(self):
         import web.dashboard as dash
 
-        dash._debug_mode_enabled = True
+        dash._debug_level_enabled = 1
         client = self._client()
         resp = client.post("/api/debug-mode", json={"enabled": False, "verbose": False})
         assert resp.status_code == 200
         assert resp.json()["enabled"] is False
+        assert resp.json()["level"] == 0
 
     def test_get_reflects_post_state(self):
         client = self._client()
@@ -595,20 +612,20 @@ class TestDebugModeAPI:
         resp = client.get("/api/debug-mode")
         assert resp.json()["enabled"] is True
 
-    def test_verbose_only_defaults_enabled_false(self):
-        """verbose=True with enabled=False is a valid combination."""
+    def test_verbose_legacy_maps_to_level_2(self):
+        """verbose=True with enabled=False maps to level 2."""
         client = self._client()
         resp = client.post("/api/debug-mode", json={"enabled": False, "verbose": True})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["enabled"] is False
+        assert body["level"] == 2
         assert body["verbose"] is True
 
     def test_episode_file_served_when_debug_on(self, tmp_path, monkeypatch):
         """Static episode files are served when debug mode is on."""
         import web.dashboard as dash
 
-        monkeypatch.setattr(dash, "_debug_mode_enabled", True)
+        monkeypatch.setattr(dash, "_debug_level_enabled", 1)
 
         # Write a fake episode file
         def fake_get_dirs():
@@ -638,7 +655,7 @@ class TestDebugModeAPI:
     def test_episode_file_404_when_debug_off(self, tmp_path, monkeypatch):
         import web.dashboard as dash
 
-        monkeypatch.setattr(dash, "_debug_mode_enabled", False)
+        monkeypatch.setattr(dash, "_debug_level_enabled", 0)
         client = self._client()
         resp = client.get("/debug-episodes/session_7/index.html")
         assert resp.status_code == 404
@@ -650,6 +667,12 @@ class TestDebugModeAPI:
 
 
 class TestDebugModeConfig:
+    def test_debug_level_default_zero(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL == 0
+
     def test_debug_mode_default_false(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
@@ -662,12 +685,31 @@ class TestDebugModeConfig:
 
         assert config.DEBUG_VERBOSE is False
 
+    def test_debug_level_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"debug_level": 2}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL == 2
+        assert config.DEBUG_MODE is True
+        assert config.DEBUG_VERBOSE is True
+
+    def test_debug_level_1_sets_mode_only(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"debug_level": 1}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.DEBUG_LEVEL == 1
+        assert config.DEBUG_MODE is True
+        assert config.DEBUG_VERBOSE is False
+
     def test_debug_mode_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"debug_mode": True}}))
         importlib.reload(sys.modules["config"])
         import config
 
         assert config.DEBUG_MODE is True
+        assert config.DEBUG_LEVEL >= 1
 
     def test_debug_verbose_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"debug_verbose": True}}))
@@ -675,6 +717,7 @@ class TestDebugModeConfig:
         import config
 
         assert config.DEBUG_VERBOSE is True
+        assert config.DEBUG_LEVEL >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +758,121 @@ class TestV32Migration:
         ha_agent_sandbox_engine.init_local_database()
         cols = self._get_cols(db, "chat_sessions")
         assert "debug_log_path" in cols
+
+
+# ---------------------------------------------------------------------------
+# TestV33Migration
+# ---------------------------------------------------------------------------
+
+
+class TestV33Migration:
+    """V33 adds llm_one_shot_calls table."""
+
+    def _has_table(self, db_path: str, table: str) -> bool:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            return row is not None
+
+    def test_llm_one_shot_calls_in_advanced_db(self, monkeypatch, tmp_path):
+        from agents import ha_agent_advanced
+
+        db = str(tmp_path / "v33_adv.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        assert self._has_table(db, "llm_one_shot_calls")
+
+    def test_llm_one_shot_calls_in_sandbox_db(self, monkeypatch, tmp_path):
+        from agents import ha_agent_sandbox_engine
+
+        db = str(tmp_path / "v33_sb.db")
+        monkeypatch.setattr(ha_agent_sandbox_engine, "DB_PATH", db)
+        ha_agent_sandbox_engine.init_local_database()
+        assert self._has_table(db, "llm_one_shot_calls")
+
+    def test_llm_one_shot_calls_columns(self, monkeypatch, tmp_path):
+        from agents import ha_agent_advanced
+
+        db = str(tmp_path / "v33_cols.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db)
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db) as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_one_shot_calls)")]
+        for expected in (
+            "caller",
+            "model",
+            "input_summary",
+            "output_summary",
+            "duration_ms",
+            "outcome",
+        ):
+            assert expected in cols
+
+
+# ---------------------------------------------------------------------------
+# TestRecordOneShot
+# ---------------------------------------------------------------------------
+
+
+class TestRecordOneShot:
+    """record_one_shot() helper in utils/debug/capture.py."""
+
+    def test_happy_path_inserts_row(self, tmp_path):
+        db = str(tmp_path / "os_happy.db")
+        # Initialise schema so the table exists
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE llm_one_shot_calls "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, caller TEXT, model TEXT, "
+                "input_summary TEXT, output_summary TEXT, duration_ms REAL, "
+                "outcome TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+
+        from utils.debug.capture import record_one_shot
+
+        record_one_shot("test_caller", "qwen3:7b", "in", "out", 123.4, "success", db)
+        with _sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT caller, model, outcome FROM llm_one_shot_calls"
+            ).fetchone()
+        assert row == ("test_caller", "qwen3:7b", "success")
+
+    def test_db_error_swallowed(self, tmp_path):
+        """record_one_shot must not raise even when the table is missing."""
+        from utils.debug.capture import record_one_shot
+
+        record_one_shot(
+            "caller",
+            "model",
+            "in",
+            "out",
+            10.0,
+            "error",
+            str(tmp_path / "nonexistent.db"),
+        )
+        # No exception raised
+
+    def test_input_truncated_to_500(self, tmp_path):
+        import sqlite3 as _sqlite3
+
+        db = str(tmp_path / "os_trunc.db")
+        with _sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE llm_one_shot_calls "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, caller TEXT, model TEXT, "
+                "input_summary TEXT, output_summary TEXT, duration_ms REAL, "
+                "outcome TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+
+        from utils.debug.capture import record_one_shot
+
+        long_input = "x" * 1000
+        record_one_shot("c", "m", long_input, "out", 1.0, "success", db)
+        with _sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT input_summary FROM llm_one_shot_calls"
+            ).fetchone()
+        assert len(row[0]) <= 500

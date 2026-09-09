@@ -566,6 +566,7 @@ async def supervisor_main(config_path: Path) -> None:
     notifier = get_notifier(cfg.NOTIFIER, cfg.NOTIFY_URL, cfg.NOTIFY_WATCH_DIR)
     supervisor = LoopSupervisor(bus=event_bus)
     set_supervisor_instance(supervisor)
+    _supervisor_start_time = __import__("time").monotonic()
 
     # Build shared ToolExecutor and attach to supervisor so the chat loop and
     # dashboard code_proposal handler share the same dynamic-tools registry.
@@ -703,6 +704,28 @@ async def supervisor_main(config_path: Path) -> None:
             except Exception:  # nosec B110
                 _bs_outcome = "In sync"
             supervisor.touch("backup_sync", outcome=_bs_outcome)
+
+            # Heartbeat — once per backup_sync cycle (~30 min) at INFO.
+            _uptime_s = int(__import__("time").monotonic() - _supervisor_start_time)
+            _log.info(
+                "supervisor_loop_heartbeat",
+                loop="backup_sync",
+                status="running",
+                uptime_s=_uptime_s,
+            )
+
+            # Episode rotation — remove HTML episode dirs older than retention policy.
+            try:
+                from utils.debug.episode_writer import rotate_old_episodes as _roe
+                from paths import get_dirs as _gd
+
+                await asyncio.to_thread(
+                    _roe,
+                    _gd().data_dir / "debug_episodes",
+                    cfg.DEBUG_EPISODE_RETENTION_DAYS,
+                )
+            except Exception as _re:  # nosec B110
+                _log.warning("episode_rotation_failed", error=str(_re))
 
     supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
 

@@ -502,6 +502,7 @@ if $WRITE_CONFIG; then
     LOG_THRESHOLD="0.7"
     SELF_HEALING="true"
     DEVELOPMENT_MODE="false"
+    DEBUG_LEVEL="0"
     DEBUG_MODE="false"
     DEBUG_VERBOSE="false"
     CHAT_ALLOW_TOOL_REGISTRATION="false"
@@ -741,6 +742,7 @@ agent:
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   development_mode: ${DEVELOPMENT_MODE}
+  debug_level: ${DEBUG_LEVEL}         # 0=off 1=debug 2=verbose 3=ultra; debug_mode/debug_verbose below are legacy
   debug_mode: ${DEBUG_MODE}
   debug_verbose: ${DEBUG_VERBOSE}
   chat_allow_tool_registration: ${CHAT_ALLOW_TOOL_REGISTRATION}

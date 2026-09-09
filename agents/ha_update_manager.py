@@ -230,6 +230,7 @@ async def analyze_breaking_changes(
         },
     ]
 
+    _t0 = __import__("time").monotonic()
     response = await client.chat(
         model=_config.OLLAMA_MODEL,
         messages=messages,
@@ -237,7 +238,31 @@ async def analyze_breaking_changes(
         format=UpdateReadinessReport.model_json_schema(),
     )
     raw = response["message"]["content"]
-    return UpdateReadinessReport.model_validate_json(raw)
+    _dur = (__import__("time").monotonic() - _t0) * 1000
+    try:
+        from utils.debug.capture import record_one_shot as _ros
+
+        _ros(
+            "analyze_breaking_changes",
+            _config.OLLAMA_MODEL,
+            "\n".join(user_content_parts)[:500],
+            raw[:500],
+            _dur,
+            "success",
+            _config.DB_PATH,
+        )
+    except Exception:  # nosec B110
+        pass
+    _report = UpdateReadinessReport.model_validate_json(raw)
+    import config as _um_cfg
+
+    if _um_cfg.DEBUG_LEVEL >= 1:
+        log.debug(
+            "breaking_change_analysis",
+            breaking_changes_count=len(_report.breaking_changes),
+            safe_to_update=_report.safe_to_update,
+        )
+    return _report
 
 
 async def personalize_breaking_changes(
@@ -345,6 +370,7 @@ async def _personalize_with_agent_loop(
         terminal_tool_name="finish_impact_analysis",
         trigger="impact_analysis",
         knowledge_store=knowledge_store,
+        capture_llm=True,
     )
 
     loop_result: AgentLoopResult = await loop.run(initial_message)
@@ -412,6 +438,7 @@ async def _personalize_one_shot(
         "Propose YAML config fixes where applicable."
     )
 
+    _t0_ps = __import__("time").monotonic()
     try:
         system_prompt = load_prompt("personalize_breaking_changes")
         response = await client.chat(
@@ -424,12 +451,42 @@ async def _personalize_one_shot(
             format=InstanceImpactReport.model_json_schema(),
         )
         raw = response["message"]["content"]
+        _dur_ps = (__import__("time").monotonic() - _t0_ps) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_personalize_one_shot",
+                _config.OLLAMA_MODEL,
+                user_content[:500],
+                raw[:500],
+                _dur_ps,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         report = InstanceImpactReport.model_validate_json(raw)
         if report.instance_impact not in ("none", "low", "high"):
             report = report.model_copy(update={"instance_impact": "low"})
         return report
     except Exception as exc:
         log.warning("personalize_breaking_changes_failed", error=str(exc))
+        _dur_ps = (__import__("time").monotonic() - _t0_ps) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_personalize_one_shot",
+                _config.OLLAMA_MODEL,
+                user_content[:500],
+                str(exc)[:500],
+                _dur_ps,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return safe_default
 
 
@@ -887,6 +944,7 @@ async def _self_check_llm_cross_reference(
         },
     ]
 
+    _t0_sc = __import__("time").monotonic()
     response = await client.chat(
         model=_config.OLLAMA_MODEL,
         messages=messages,
@@ -894,6 +952,21 @@ async def _self_check_llm_cross_reference(
         format=SelfCheckCommandRisk.model_json_schema(),
     )
     raw = response["message"]["content"]
+    _dur_sc = (__import__("time").monotonic() - _t0_sc) * 1000
+    try:
+        from utils.debug.capture import record_one_shot as _ros
+
+        _ros(
+            "_self_check_llm_cross_reference",
+            _config.OLLAMA_MODEL,
+            catalog[:500],
+            raw[:500],
+            _dur_sc,
+            "success",
+            _config.DB_PATH,
+        )
+    except Exception:  # nosec B110
+        pass
     return SelfCheckCommandRisk.model_validate_json(raw)
 
 

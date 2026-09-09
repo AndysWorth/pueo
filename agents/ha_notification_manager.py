@@ -298,14 +298,43 @@ async def analyze_notification(
         },
     ]
 
+    _model = _default_model_for_provider()
+    _t0 = __import__("time").monotonic()
     response = await client.chat(
-        model=_default_model_for_provider(),
+        model=_model,
         messages=messages,
         options={"temperature": 0.0},
         format=_NotificationLLMOutput.model_json_schema(),
     )
     raw = response["message"]["content"]
+    _dur = (__import__("time").monotonic() - _t0) * 1000
+    try:
+        from utils.debug.capture import record_one_shot as _ros
+
+        _ros(
+            "analyze_notification",
+            _model,
+            message[:500],
+            raw[:500],
+            _dur,
+            "success",
+            _config.DB_PATH,
+        )
+    except Exception:  # nosec B110
+        pass
     llm_out = _NotificationLLMOutput.model_validate_json(raw)
+
+    import config as _nm_cfg
+
+    if _nm_cfg.DEBUG_LEVEL >= 1:
+        log.debug(
+            "notification_enriched",
+            notification_id=notification_id,
+            category=category,
+            severity=severity,
+            requires_hitl=llm_out.requires_hitl,
+            explanation=llm_out.human_explanation[:200],
+        )
 
     return NotificationAnalysis(
         notification_id=notification_id,

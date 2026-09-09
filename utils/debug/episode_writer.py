@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import html
 import json
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -245,3 +247,16 @@ def write_episode_html(
     episode_dir.mkdir(parents=True, exist_ok=True)
     index_html = _build_index(session_meta, captures, conversation, episode_dir)
     (episode_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+
+def rotate_old_episodes(base_dir: Path, retention_days: int) -> int:
+    """Delete episode subdirectories older than *retention_days*. Returns count removed."""
+    if not base_dir.exists():
+        return 0
+    cutoff = time.time() - retention_days * 86400
+    removed = 0
+    for child in base_dir.iterdir():
+        if child.is_dir() and child.stat().st_mtime < cutoff:
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+    return removed

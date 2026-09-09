@@ -368,12 +368,13 @@
           .then(function (d) {
             var pill = document.getElementById('debug-pill');
             if (!pill) return;
-            if (d.verbose) {
+            var lvl = typeof d.level === 'number' ? d.level : (d.verbose ? 2 : (d.enabled ? 1 : 0));
+            if (lvl >= 3) {
               pill.className = 'debug-pill debug-verbose';
-              pill.textContent = 'Debug: verbose';
-            } else if (d.enabled) {
+              pill.textContent = '[DBG:' + lvl + ']';
+            } else if (lvl >= 1) {
               pill.className = 'debug-pill debug-on';
-              pill.textContent = 'Debug: on';
+              pill.textContent = '[DBG:' + lvl + ']';
             } else {
               pill.className = 'debug-pill debug-off';
               pill.textContent = 'Debug: off';

@@ -219,8 +219,27 @@ DIAGNOSTIC_WAN_TIMEOUT_SECONDS: int = int(
 # Leave false for appliance / production operation.
 DEVELOPMENT_MODE: bool = bool(_agent.get("development_mode", False))
 
-DEBUG_MODE: bool = bool(_agent.get("debug_mode", False))
-DEBUG_VERBOSE: bool = bool(_agent.get("debug_verbose", False))
+
+# Numeric debug level: 0=off, 1=debug (tool previews + LLM headers),
+# 2=verbose (full payloads), 3=ultra (RAG internals + all state).
+# Backward-compat: if debug_level absent, derive from legacy debug_mode/debug_verbose.
+def _load_debug_level() -> int:
+    _raw = _agent.get("debug_level")
+    if _raw is not None:
+        return int(_raw)
+    if _agent.get("debug_verbose"):
+        return 2
+    if _agent.get("debug_mode"):
+        return 1
+    return 0
+
+
+DEBUG_LEVEL: int = _load_debug_level()
+DEBUG_MODE: bool = DEBUG_LEVEL >= 1  # backward compat
+DEBUG_VERBOSE: bool = DEBUG_LEVEL >= 2  # backward compat
+
+# How long to keep episode HTML files before rotating (days).
+DEBUG_EPISODE_RETENTION_DAYS: int = int(_agent.get("debug_episode_retention_days", 30))
 
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})

@@ -60,6 +60,7 @@ async def run_cloud_escalation(
         escalated=True,
         timeline_callback=timeline_callback,
         knowledge_store=knowledge_store,
+        capture_llm=True,
     )
 
     if not initial_context:

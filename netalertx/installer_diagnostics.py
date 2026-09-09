@@ -209,6 +209,7 @@ async def diagnose_installer_failure(
         terminal_tool_name="finish_installer_diagnosis",
         trigger="installer_diagnosis",
         knowledge_store=knowledge_store,
+        capture_llm=True,
     )
 
     try:

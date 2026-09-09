@@ -27,6 +27,7 @@ from config import (
     AGENT_MAX_WALL_SECONDS,
     DASHBOARD_PORT,
     DB_PATH,
+    DEBUG_LEVEL,
     DEBUG_MODE,
     DEBUG_VERBOSE,
     DEVELOPMENT_MODE,
@@ -65,13 +66,13 @@ templates.env.filters["epoch_to_iso"] = lambda ts: (
 )
 
 
-_debug_mode_enabled: bool = DEBUG_MODE
-_debug_verbose_enabled: bool = DEBUG_VERBOSE
+_debug_level_enabled: int = DEBUG_LEVEL
 
 
 class DebugModeRequest(BaseModel):
     enabled: bool
     verbose: bool = False
+    level: int = -1  # -1 means derive from enabled/verbose for backward compat
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -306,23 +307,16 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "group": "Developer",
         "restart_required": True,
     },
-    "debug_mode": {
+    "debug_level": {
         "yaml_section": "agent",
-        "yaml_key": "debug_mode",
-        "config_attr": "DEBUG_MODE",
-        "val_type": "bool",
-        "description": "Enable debug mode: extra logs + full LLM interaction recording as HTML episode reports. Toggled at runtime via /api/debug-mode — no restart required.",
+        "yaml_key": "debug_level",
+        "config_attr": "DEBUG_LEVEL",
+        "val_type": "int",
+        "description": "Debug level: 0=off, 1=debug (per-step logs), 2=verbose (full payloads), 3=ultra (RAG chunks). Toggled at runtime via /api/debug-mode — no restart required.",
         "group": "Developer",
         "restart_required": False,
-    },
-    "debug_verbose": {
-        "yaml_section": "agent",
-        "yaml_key": "debug_verbose",
-        "config_attr": "DEBUG_VERBOSE",
-        "val_type": "bool",
-        "description": "Verbose debug: disable all payload truncation in captured LLM calls. Implies debug_mode.",
-        "group": "Developer",
-        "restart_required": False,
+        "min_val": 0,
+        "max_val": 3,
     },
 }
 
@@ -2473,14 +2467,11 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
     # Update in-memory module attribute (runtime params take effect immediately)
     setattr(_config, spec["config_attr"], value)
 
-    # Sync debug globals and log level when debug keys are toggled via Settings
-    if req.key in ("debug_mode", "debug_verbose"):
-        global _debug_mode_enabled, _debug_verbose_enabled
-        _debug_mode_enabled = bool(_config.DEBUG_MODE)
-        _debug_verbose_enabled = bool(_config.DEBUG_VERBOSE)
-        set_log_level(
-            "DEBUG" if (_debug_mode_enabled or _debug_verbose_enabled) else "INFO"
-        )
+    # Sync debug global and log level when debug_level is toggled via Settings
+    if req.key == "debug_level":
+        global _debug_level_enabled
+        _debug_level_enabled = int(_config.DEBUG_LEVEL)
+        set_log_level("DEBUG" if _debug_level_enabled >= 1 else "INFO")
 
     # Emit SSE event so the browser can flash a confirmation
     try:
@@ -2849,28 +2840,42 @@ async def delete_chat_session(session_id: int) -> Response:
 
 @app.post("/api/debug-mode")
 async def set_debug_mode(body: DebugModeRequest) -> JSONResponse:
-    """Toggle debug mode and verbose debug at runtime (no restart required)."""
-    global _debug_mode_enabled, _debug_verbose_enabled
-    _debug_mode_enabled = body.enabled
-    _debug_verbose_enabled = body.verbose
-    set_log_level("DEBUG" if (body.enabled or body.verbose) else "INFO")
+    """Toggle debug level at runtime (no restart required)."""
+    global _debug_level_enabled
+    if body.level >= 0:
+        _debug_level_enabled = body.level
+    elif body.verbose:
+        _debug_level_enabled = 2
+    elif body.enabled:
+        _debug_level_enabled = 1
+    else:
+        _debug_level_enabled = 0
+    set_log_level("DEBUG" if _debug_level_enabled >= 1 else "INFO")
     return JSONResponse(
-        {"enabled": _debug_mode_enabled, "verbose": _debug_verbose_enabled}
+        {
+            "enabled": _debug_level_enabled >= 1,
+            "verbose": _debug_level_enabled >= 2,
+            "level": _debug_level_enabled,
+        }
     )
 
 
 @app.get("/api/debug-mode")
 async def get_debug_mode() -> JSONResponse:
-    """Return current debug mode state."""
+    """Return current debug level state."""
     return JSONResponse(
-        {"enabled": _debug_mode_enabled, "verbose": _debug_verbose_enabled}
+        {
+            "enabled": _debug_level_enabled >= 1,
+            "verbose": _debug_level_enabled >= 2,
+            "level": _debug_level_enabled,
+        }
     )
 
 
 @app.get("/debug-episodes/session_{session_id}/{filename:path}")
 async def serve_debug_episode(session_id: int, filename: str) -> Response:
     """Serve static HTML debug episode files."""
-    if not _debug_mode_enabled:
+    if _debug_level_enabled < 1:
         raise HTTPException(status_code=404, detail="Debug mode is off")
     import os
 
@@ -3198,7 +3203,7 @@ async def _run_chat_loop(
             db_path=DB_PATH,
             on_llm_call_start=_on_chat_llm_start,
             on_llm_call_done=_on_chat_llm_done,
-            capture_llm=_debug_mode_enabled,
+            capture_llm=_debug_level_enabled >= 1,
         )
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:
@@ -3239,7 +3244,7 @@ async def _run_chat_loop(
         await asyncio.to_thread(_persist_chat_results, session_id, result, summary)
 
         debug_log_path: str | None = None
-        if _debug_mode_enabled and result.llm_captures:
+        if _debug_level_enabled >= 1 and result.llm_captures:
             try:
                 from utils.debug.episode_writer import write_episode_html
 

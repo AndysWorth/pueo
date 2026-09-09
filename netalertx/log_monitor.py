@@ -254,6 +254,7 @@ async def analyze_log_line_with_ai(
 
     model = _default_model_for_provider()
     _triage_armed = False
+    _t0_nlm = time.monotonic()
     try:
         from utils.agent.supervisor import (
             decrement_active_triage,
@@ -277,6 +278,21 @@ async def analyze_log_line_with_ai(
             format=LogEvaluation.model_json_schema(),
         )
         raw_output = response["message"]["content"]
+        _dur_nlm = (time.monotonic() - _t0_nlm) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_log_line_with_ai",
+                model,
+                user_prompt[:500],
+                raw_output[:500],
+                _dur_nlm,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         trace = LLMTrace(
             model=model,
             system_prompt=system_prompt,
@@ -286,6 +302,21 @@ async def analyze_log_line_with_ai(
         return LogEvaluation.model_validate_json(raw_output), trace
     except Exception as e:
         log.error("netalertx_triage_inference_failed", error=str(e))
+        _dur_nlm = (time.monotonic() - _t0_nlm) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "analyze_log_line_with_ai",
+                model,
+                user_prompt[:500],
+                str(e)[:500],
+                _dur_nlm,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         return LogEvaluation(
             is_actionable=False,
             root_cause_summary="Inference crash",

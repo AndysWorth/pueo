@@ -100,6 +100,7 @@ async def _analyze_with_agent_loop(
         terminal_tool_name="finish_diagnosis",
         trigger="config_analysis",
         knowledge_store=knowledge_store,
+        capture_llm=True,
     )
 
     try:
@@ -160,6 +161,7 @@ async def _analyze_one_shot(
         )
     user_prompt = f"{user_prefix}{yaml_content}{user_suffix}"
 
+    _t0_ca = __import__("time").monotonic()
     try:
         log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
         response = await client.chat(
@@ -172,6 +174,21 @@ async def _analyze_one_shot(
             format=DiagnosticsReport.model_json_schema(),
         )
         raw_output = response["message"]["content"]
+        _dur_ca = (__import__("time").monotonic() - _t0_ca) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_analyze_one_shot",
+                _config.OLLAMA_MODEL,
+                user_prompt[:500],
+                raw_output[:500],
+                _dur_ca,
+                "success",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         trace = LLMTrace(
             model=_config.OLLAMA_MODEL,
             system_prompt=system_prompt,
@@ -181,4 +198,19 @@ async def _analyze_one_shot(
         return DiagnosticsReport.model_validate_json(raw_output), trace
     except Exception as e:
         log.error("ollama_inference_failed", error=str(e))
+        _dur_ca = (__import__("time").monotonic() - _t0_ca) * 1000
+        try:
+            from utils.debug.capture import record_one_shot as _ros
+
+            _ros(
+                "_analyze_one_shot",
+                _config.OLLAMA_MODEL,
+                user_prompt[:500],
+                str(e)[:500],
+                _dur_ca,
+                "error",
+                _config.DB_PATH,
+            )
+        except Exception:  # nosec B110
+            pass
         raise
