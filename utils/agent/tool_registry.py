@@ -1176,6 +1176,128 @@ GET_OLLAMA_STATUS = ToolDefinition(
 )
 
 
+CHECK_ENTITY_STATUS = ToolDefinition(
+    name="check_entity_status",
+    description=(
+        "Check the status of a single entity: is it in the HA entity registry, does it have "
+        "live state, and which config entries are related to its domain (including not-loaded "
+        "entries and sub-platform relationships like sun.binary_sensor for binary_sensor.sun_rising). "
+        "Use this to diagnose why an entity is not in the registry."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": "The full entity_id to check (e.g. 'binary_sensor.sun_rising').",
+            },
+        },
+        "required": ["entity_id"],
+    },
+)
+
+GET_CONFIG_ENTRIES_ALL = ToolDefinition(
+    name="get_config_entries_all",
+    description=(
+        "Fetch all HA config entries including those in not_loaded or failed state. "
+        "Unlike get_ha_profile, this includes stale/failed integrations. "
+        "Use this to find config entries that may explain why entities are unregistered."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
+GET_HA_COMPONENTS = ToolDefinition(
+    name="get_ha_components",
+    description=(
+        "Return the full list of loaded HA components (e.g. 'sun', 'sun.binary_sensor', "
+        "'sensor', 'noaa_tides.sensor'). Sub-platform entries like 'sun.binary_sensor' indicate "
+        "that the sun integration creates entities in the binary_sensor domain — those entities "
+        "cannot have user-supplied unique_ids via YAML. Use this to detect sub-platform relationships."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
+FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
+    name="finish_lovelace_investigation",
+    description=(
+        "Report investigation findings and create HITL cards for entity issues that need user attention. "
+        "Call with an empty list if all suspicious entities are benign (no user action needed). "
+        "Each finding groups one or more entities sharing the same root cause."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "description": "List of finding objects; empty list if no issues found.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "entity_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Entity IDs sharing this root cause.",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Short title for the HITL card (≤80 chars).",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Plain-English explanation of the root cause.",
+                        },
+                        "suggested_actions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Recommended actions for the user.",
+                        },
+                        "chat_needed": {
+                            "type": "boolean",
+                            "description": "True if human input is needed to resolve this issue.",
+                        },
+                        "initial_chat_message": {
+                            "type": "string",
+                            "description": (
+                                "Pre-seeded message for the chat session if chat_needed=true. "
+                                "Include the card_key so the chat agent can call resolve_hitl_card."
+                            ),
+                        },
+                    },
+                    "required": [
+                        "entity_ids",
+                        "title",
+                        "description",
+                        "suggested_actions",
+                        "chat_needed",
+                        "initial_chat_message",
+                    ],
+                },
+            },
+        },
+        "required": ["findings"],
+    },
+)
+
+RESOLVE_HITL_CARD = ToolDefinition(
+    name="resolve_hitl_card",
+    description=(
+        "Mark a HITL card as resolved. Call this after the issue has been handled "
+        "(entity added to registry, config fixed, or user confirmed no action needed). "
+        "The card_key comes from the HITL card payload or the initial_chat_message."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "card_key": {
+                "type": "string",
+                "description": "The suppression key of the card to resolve (e.g. 'ha_config_issue:sensor.foo').",
+            },
+        },
+        "required": ["card_key"],
+    },
+)
+
+
 def build_ha_tool_registry() -> ToolRegistry:
     """HA repair registry.
 
@@ -1306,6 +1428,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         EXECUTE_LOCAL_PYTHON,
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
+        RESOLVE_HITL_CARD,
     ):
         reg.register(tool)
     return reg
@@ -1391,6 +1514,31 @@ def build_impact_analysis_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         SAVE_RUNBOOK,
         FINISH_IMPACT_ANALYSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_lovelace_investigation_registry() -> ToolRegistry:
+    """Focused registry for Lovelace entity investigation.
+
+    The caller passes the list of suspicious entities as initial context.
+    The agent uses WS-based tools to diagnose root causes, then calls
+    finish_lovelace_investigation with findings (or an empty list).
+    """
+    reg = ToolRegistry()
+    for tool in (
+        QUERY_KNOWLEDGE,
+        READ_LOGS,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
+        CHECK_ENTITY_STATUS,
+        GET_CONFIG_ENTRIES_ALL,
+        GET_HA_COMPONENTS,
+        SAVE_RUNBOOK,
+        REQUEST_ESCALATION,
+        RESOLVE_HITL_CARD,
+        FINISH_LOVELACE_INVESTIGATION,
     ):
         reg.register(tool)
     return reg

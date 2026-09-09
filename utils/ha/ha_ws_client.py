@@ -112,6 +112,37 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def get_all_config_entries(self) -> list[dict]:
+        """Fetch all config entries including not-loaded ones via HA WebSocket API."""
+        ws = await self._connect_and_auth()
+        try:
+            for msg_id, cmd in (
+                (1, "config_entries/get"),
+                (2, "config/config_entries/all"),
+                (3, "config_entries/list"),
+            ):
+                await ws.send(json.dumps({"id": msg_id, "type": cmd}))
+                msg = json.loads(await ws.recv())
+                if msg.get("success"):
+                    return msg.get("result", [])
+                if msg.get("error", {}).get("code") != "unknown_command":
+                    raise RuntimeError(f"Config entries request failed: {msg}")
+            raise RuntimeError("Config entries: no supported WebSocket command found")
+        finally:
+            await ws.close()
+
+    async def get_ha_components(self) -> list[str]:
+        """Fetch the list of loaded HA components via REST /api/config."""
+        import httpx
+
+        url = f"http://{self._host}:{self._port}/api/config"
+        headers = {"Authorization": f"Bearer {self._token}"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data: dict = resp.json()
+        return data.get("components", [])
+
     async def get_entity_registry(self) -> list[dict]:
         """Fetch all entities via HA WebSocket config/entity_registry/list."""
         ws = await self._connect_and_auth()
@@ -185,6 +216,7 @@ class FakeHAWebSocketClient:
         lovelace_configs: dict | None = None,
         lovelace_config_not_found: set[str] | None = None,
         states: list[dict] | None = None,
+        ha_components: list[str] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -197,6 +229,7 @@ class FakeHAWebSocketClient:
         # url_path values for which get_lovelace_config should raise LovelaceConfigNotFound.
         self._lovelace_config_not_found: set[str] = lovelace_config_not_found or set()
         self._states: list[dict] = states or []
+        self._ha_components: list[str] = ha_components or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -214,6 +247,14 @@ class FakeHAWebSocketClient:
     async def get_config_entries(self) -> list[dict]:
         self.calls.append("get_config_entries")
         return [e for e in self._config_entries if e.get("state") == "loaded"]
+
+    async def get_all_config_entries(self) -> list[dict]:
+        self.calls.append("get_all_config_entries")
+        return list(self._config_entries)
+
+    async def get_ha_components(self) -> list[str]:
+        self.calls.append("get_ha_components")
+        return list(self._ha_components)
 
     async def get_entity_registry(self) -> list[dict]:
         self.calls.append("get_entity_registry")

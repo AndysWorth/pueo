@@ -78,6 +78,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Time-range log analysis",
         "analyze log lines from time range, what happened in the log, log analysis HH:MM, sparkline click, log window",
     ),
+    (
+        "seed_lovelace_config.md",
+        "Lovelace unregistered entity investigation",
+        "lovelace entity not in registry, unregistered entity, dashboard entity has state but no unique_id, sub-platform entity, not-loaded config entry",
+    ),
 ]
 
 

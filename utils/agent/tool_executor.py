@@ -351,6 +351,18 @@ class ToolExecutor:
                     success=True,
                     output=args.get("summary", "Impact analysis complete"),
                 )
+            if name == "check_entity_status":
+                return await self._check_entity_status(args.get("entity_id", ""))
+            if name == "get_config_entries_all":
+                return await self._get_config_entries_all()
+            if name == "get_ha_components":
+                return await self._get_ha_components()
+            if name == "finish_lovelace_investigation":
+                return await self._finish_lovelace_investigation(
+                    args.get("findings", [])
+                )
+            if name == "resolve_hitl_card":
+                return await self._resolve_hitl_card(args.get("card_key", ""))
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):
@@ -2266,4 +2278,192 @@ class ToolExecutor:
                     "The user will be notified to review and provide guidance. "
                     f"Reason: {reason}"
                 ),
+            )
+
+    # ------------------------------------------------------------------
+    # Lovelace investigation tools
+    # ------------------------------------------------------------------
+
+    async def _check_entity_status(self, entity_id: str) -> ToolResult:
+        """Check registry, state, and config-entry relationships for one entity."""
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="check_entity_status",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        entity_domain = entity_id.split(".")[0] if "." in entity_id else entity_id
+        try:
+            registry = await self._ws_client.get_entity_registry()
+            in_registry = any(e.get("entity_id") == entity_id for e in registry)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="check_entity_status",
+                success=False,
+                output="",
+                error=f"entity registry fetch failed: {exc}",
+            )
+        try:
+            states = await self._ws_client.get_states()
+            state_entry = next(
+                (s for s in states if s.get("entity_id") == entity_id), None
+            )
+            has_state = state_entry is not None
+            state_value = state_entry.get("state") if state_entry else None
+        except Exception:
+            has_state = False
+            state_value = None
+        try:
+            all_entries = await self._ws_client.get_all_config_entries()
+            components = await self._ws_client.get_ha_components()
+            related_entries = []
+            for entry in all_entries:
+                ce_domain = entry.get("domain", "")
+                if entity_domain == ce_domain:
+                    related_entries.append(dict(entry))
+                    continue
+                sub_platform = f"{ce_domain}.{entity_domain}"
+                if sub_platform in components:
+                    enriched = dict(entry)
+                    enriched["_sub_platform"] = sub_platform
+                    related_entries.append(enriched)
+        except Exception:
+            related_entries = []
+        result = {
+            "entity_id": entity_id,
+            "in_registry": in_registry,
+            "has_state": has_state,
+            "state_value": state_value,
+            "config_entries_with_domain": related_entries,
+        }
+        return ToolResult(
+            tool_name="check_entity_status",
+            success=True,
+            output=json.dumps(result, indent=2),
+        )
+
+    async def _get_config_entries_all(self) -> ToolResult:
+        """Return all config entries including not-loaded ones."""
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_config_entries_all",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        try:
+            entries = await self._ws_client.get_all_config_entries()
+            return ToolResult(
+                tool_name="get_config_entries_all",
+                success=True,
+                output=json.dumps(entries, indent=2),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_config_entries_all",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _get_ha_components(self) -> ToolResult:
+        """Return the full HA components list."""
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_ha_components",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        try:
+            components = await self._ws_client.get_ha_components()
+            return ToolResult(
+                tool_name="get_ha_components",
+                success=True,
+                output=json.dumps(components, indent=2),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_ha_components",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _finish_lovelace_investigation(self, findings: list[dict]) -> ToolResult:
+        """Create HITL cards for each finding; suppress duplicates."""
+        from utils.hitl.card_types import CARD_TYPE_HA_CONFIG_ISSUE
+        from utils.hitl.hitl_tracker import mark_card_sent, should_send_card, stable_nid
+
+        cards_created = 0
+        for finding in findings:
+            entity_ids: list[str] = finding.get("entity_ids", [])
+            if not entity_ids:
+                continue
+            card_key = "ha_config_issue:" + ":".join(sorted(entity_ids))
+            with sqlite3.connect(self._db_path) as conn:
+                if not should_send_card(conn, card_key):
+                    continue
+            title = finding.get("title", f"HA config issue: {entity_ids[0]}")
+            description = finding.get("description", "")
+            suggested_actions: list[str] = finding.get("suggested_actions", [])
+            chat_needed: bool = finding.get("chat_needed", False)
+            initial_chat_message: str = finding.get("initial_chat_message", "")
+            body_parts = [description]
+            if suggested_actions:
+                body_parts.append("\nSuggested actions:")
+                body_parts.extend(f"• {a}" for a in suggested_actions)
+            body = "\n".join(body_parts)
+            payload: dict = {
+                "notification_id": stable_nid(card_key),
+                "card_type": CARD_TYPE_HA_CONFIG_ISSUE,
+                "suppression_key": card_key,
+                "entity_ids": entity_ids,
+                "title": title,
+                "body": body,
+                "suggested_actions": suggested_actions,
+                "chat_needed": chat_needed,
+                "initial_chat_message": initial_chat_message,
+            }
+            with sqlite3.connect(self._db_path) as conn:
+                mark_card_sent(conn, card_key, CARD_TYPE_HA_CONFIG_ISSUE, description)
+            await self._notifier.send(subject=title, body=body, payload=payload)
+            log.info(
+                "lovelace_config_issue_card_sent",
+                entity_ids=entity_ids,
+                chat_needed=chat_needed,
+            )
+            cards_created += 1
+        return ToolResult(
+            tool_name="finish_lovelace_investigation",
+            success=True,
+            output=f"Investigation complete. Cards created: {cards_created}",
+        )
+
+    async def _resolve_hitl_card(self, card_key: str) -> ToolResult:
+        """Mark a HITL card as resolved."""
+        from utils.hitl.hitl_tracker import mark_card_resolved
+
+        if not card_key:
+            return ToolResult(
+                tool_name="resolve_hitl_card",
+                success=False,
+                output="",
+                error="card_key is required",
+            )
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                mark_card_resolved(conn, card_key)
+            return ToolResult(
+                tool_name="resolve_hitl_card",
+                success=True,
+                output=f"Card {card_key!r} resolved.",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="resolve_hitl_card",
+                success=False,
+                output="",
+                error=str(exc),
             )
