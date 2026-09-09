@@ -161,7 +161,12 @@ if [[ "${1:-}" == "--reset" ]]; then
         [[ "$_has_stash_doc" == "true" ]] && mkdir -p "${PUEO_DIR}/config" && \
             cp -f "${_STASH_DIR}/config_docker.yaml" "${PUEO_DIR}/config/config.yaml"
         rm -rf "$_STASH_DIR"
-        ok "Config recovered from stash."
+        if [[ "$_has_stash_nat" == "true" || "$_has_stash_doc" == "true" ]]; then
+            ok "Config recovered from stash."
+        else
+            warn "Stash directory found but contained no recognizable config files — starting without saved config."
+            warn "If your config.yaml is missing, restore it manually before running setup again."
+        fi
         _STASH_RECOVERED=true
     fi
     # Capture current state before cleaning so we can skip interactive questions below
