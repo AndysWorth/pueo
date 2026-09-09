@@ -20,7 +20,7 @@ Originally planned as a `[KNOWLEDGE]` block injected into a fixed system prompt.
 
 ### Components
 
-**Vector store:** ChromaDB, running locally on macOS. Docker is simplest; native install also viable. Path configured via `CHROMADB_PATH`.
+**Vector store:** ChromaDB, running locally on macOS. Both macOS and Docker installs are supported. Path configured via `CHROMADB_PATH`.
 
 **Embedding model:** `nomic-embed-text` via Ollama — zero WAN, already running locally, consistent with the 0-WAN-during-fix-cycles constraint.
 

@@ -30,7 +30,7 @@ Run from the `pueo/` directory:
 ```bash
 pip install -r requirements-dev.txt  # includes runtime deps + dev/test tooling
 
-# Primary entry point (recommended — native)
+# Primary entry point (macOS)
 pueo                          # start supervisor (all loops + dashboard)
 python main.py                # same, without the background/PID wrapper
 
@@ -142,7 +142,9 @@ All agent sessions follow the **6-phase investigation cycle** (encoded in `promp
 
 ## Deployment
 
-`setup.sh` supports three deployment modes — `native`, `docker`, or `both` — chosen interactively at setup time. For Docker, `setup.sh` generates `docker-compose.yml` with the SSH key volume mount (`<host-key-path>:/root/.ssh/id_ed25519:ro`) and writes `config/config.yaml` (the bind-mount source). Run `./setup.sh` and choose the mode; no manual editing of `docker-compose.yml` is needed. `docker-compose.yml.example` is the committed reference template (with placeholders); `docker-compose.yml` is gitignored.
+`setup.sh` supports three deployment modes — `macos`, `docker`, or `both` — chosen interactively at setup time. Both macOS and Docker are equally supported; neither is second-class. For Docker, `setup.sh` generates `docker-compose.yml` with the SSH key volume mount (`<host-key-path>:/root/.ssh/id_ed25519:ro`) and writes `config/config.yaml` (the bind-mount source). Run `./setup.sh` and choose the mode; no manual editing of `docker-compose.yml` is needed. `docker-compose.yml.example` is the committed reference template (with placeholders); `docker-compose.yml` is gitignored.
+
+`setup.sh --clean` removes all state (DB, caches, launchd plists, CLI symlink, config.yaml). `setup.sh --reset` does the same but preserves `config.yaml` for a clean reinstall without re-answering questions.
 
 `Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container uses five volumes: `/config` (bind-mount of `./config/`, read-only — place `config.yaml` here), `/data` (`pueo-data` named volume — backups, ChromaDB), `/state` (`pueo-state` named volume — SQLite DB, HITL cards, tools), `/cache` (`pueo-cache` named volume — scraped knowledge), `/logs` (`pueo-logs` named volume — log files). The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically so no code path references `/app`. `main.py` is the unified entry point; default mode is `monitor` (the live log daemon).
 
