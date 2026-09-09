@@ -83,7 +83,10 @@ _do_clean() {
     done
     # CLI symlink (may have been installed with sudo)
     if [[ -L /usr/local/bin/pueo || -f /usr/local/bin/pueo ]]; then
-        sudo rm -f /usr/local/bin/pueo 2>/dev/null || rm -f /usr/local/bin/pueo 2>/dev/null || true
+        if ! rm -f /usr/local/bin/pueo 2>/dev/null; then
+            warn "Removing /usr/local/bin/pueo requires elevated permissions (it was installed with sudo)."
+            sudo rm -f /usr/local/bin/pueo
+        fi
     fi
 }
 
@@ -113,6 +116,31 @@ if [[ "${1:-}" == "--reset" ]]; then
         info "Reset cancelled."
         exit 0
     fi
+    # Capture current state before cleaning so we can skip interactive questions below
+    _rstate_guess="${PUEO_STATE_DIR:-${HOME}/Library/Application Support/Pueo}"
+    _rnat="${_rstate_guess}/config.yaml"
+    _rdoc="${PUEO_DIR}/config/config.yaml"
+    _has_nat=false; _has_doc=false
+    [[ -f "$_rnat" ]] && _has_nat=true
+    [[ -f "$_rdoc" ]] && _has_doc=true
+    if [[ "$_has_nat" == "true" && "$_has_doc" == "true" ]]; then
+        _RESET_DEPLOY_MODE="both"
+    elif [[ "$_has_doc" == "true" ]]; then
+        _RESET_DEPLOY_MODE="docker"
+    else
+        _RESET_DEPLOY_MODE="macos"
+    fi
+    _conf_src="$_rnat"; [[ ! -f "$_conf_src" ]] && _conf_src="$_rdoc"
+    _RESET_LLM_PROVIDER="local"
+    if [[ -f "$_conf_src" ]]; then
+        _p=$(grep -E '^\s+provider:' "$_conf_src" 2>/dev/null | head -1 \
+            | sed 's/.*provider:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+        [[ -n "$_p" ]] && _RESET_LLM_PROVIDER="$_p"
+    fi
+    _RESET_SVC_INSTALLED=false
+    _RESET_RAG_INSTALLED=false
+    launchctl list "com.pueo.agent"      &>/dev/null 2>&1 && _RESET_SVC_INSTALLED=true
+    launchctl list "io.pueo.rag-refresh" &>/dev/null 2>&1 && _RESET_RAG_INSTALLED=true
     _do_clean true
     ok "Reset: state cleared, config.yaml preserved. Continuing with setup..."
     _RESET_MODE=true
@@ -124,21 +152,37 @@ echo "════════════════════════�
 # ── 0. Deployment Mode ──────────────────────────────────────────────────────────
 hdr "0. Deployment Mode"
 
-echo "  How will you run Pueo?"
-echo "    1) macOS   — launchd service, ~/Library/* directories"
-echo "    2) Docker  — Docker container (docker-compose)"
-echo "    3) Both    — macOS + Docker side-by-side"
-echo
-ask "Deployment mode [1/2/3]" "1" _DEPLOY_MODE_NUM
-case "${_DEPLOY_MODE_NUM}" in
-    2) DEPLOY_MODE="docker" ;;
-    3) DEPLOY_MODE="both" ;;
-    *) DEPLOY_MODE="macos" ;;
-esac
-_DEPLOY_MODE_LABEL="macOS"
-[[ "$DEPLOY_MODE" == "docker" ]] && _DEPLOY_MODE_LABEL="Docker"
-[[ "$DEPLOY_MODE" == "both" ]]   && _DEPLOY_MODE_LABEL="macOS + Docker"
-ok "Deployment mode: ${_DEPLOY_MODE_LABEL}"
+# Fallback defaults for variables captured in --reset mode
+_RESET_DEPLOY_MODE="${_RESET_DEPLOY_MODE:-macos}"
+_RESET_LLM_PROVIDER="${_RESET_LLM_PROVIDER:-local}"
+_RESET_SVC_INSTALLED="${_RESET_SVC_INSTALLED:-false}"
+_RESET_RAG_INSTALLED="${_RESET_RAG_INSTALLED:-false}"
+
+if [[ "$_RESET_MODE" == "true" ]]; then
+    DEPLOY_MODE="$_RESET_DEPLOY_MODE"
+    case "$DEPLOY_MODE" in
+        docker) _DEPLOY_MODE_LABEL="Docker" ;;
+        both)   _DEPLOY_MODE_LABEL="macOS + Docker" ;;
+        *)      _DEPLOY_MODE_LABEL="macOS" ;;
+    esac
+    ok "Reset mode: deployment mode unchanged: ${_DEPLOY_MODE_LABEL}"
+else
+    echo "  How will you run Pueo?"
+    echo "    1) macOS   — launchd service, ~/Library/* directories"
+    echo "    2) Docker  — Docker container (docker-compose)"
+    echo "    3) Both    — macOS + Docker side-by-side"
+    echo
+    ask "Deployment mode [1/2/3]" "1" _DEPLOY_MODE_NUM
+    case "${_DEPLOY_MODE_NUM}" in
+        2) DEPLOY_MODE="docker" ;;
+        3) DEPLOY_MODE="both" ;;
+        *) DEPLOY_MODE="macos" ;;
+    esac
+    _DEPLOY_MODE_LABEL="macOS"
+    [[ "$DEPLOY_MODE" == "docker" ]] && _DEPLOY_MODE_LABEL="Docker"
+    [[ "$DEPLOY_MODE" == "both" ]]   && _DEPLOY_MODE_LABEL="macOS + Docker"
+    ok "Deployment mode: ${_DEPLOY_MODE_LABEL}"
+fi
 
 # ── Prerequisites ────────────────────────────────────────────────────────────────
 hdr "Prerequisites"
@@ -354,34 +398,39 @@ fi
 # ── 2.5. LLM Provider ───────────────────────────────────────────────────────────
 hdr "2.5. LLM Provider"
 
-echo "  Choose how Pueo runs LLM inference:"
-echo "    local  — Ollama only (default, no WAN; privacy-first)"
-echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
-echo "    both   — Ollama for autonomous cycles + Claude available for approved escalation"
-echo
-ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
 CLOUD_MODEL_VAL="claude-sonnet-5"
-
-if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
-    ask "Claude model" "claude-sonnet-5" CLOUD_MODEL_VAL
+if [[ "$_RESET_MODE" == "true" ]]; then
+    LLM_PROVIDER="$_RESET_LLM_PROVIDER"
+    ok "Reset mode: LLM provider unchanged: ${LLM_PROVIDER}"
+else
+    echo "  Choose how Pueo runs LLM inference:"
+    echo "    local  — Ollama only (default, no WAN; privacy-first)"
+    echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
+    echo "    both   — Ollama for autonomous cycles + Claude available for approved escalation"
     echo
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-        warn "ANTHROPIC_API_KEY is not set in the current environment."
-        warn "Pueo will fail to start until it is exported. Add this line to ~/.zshenv:"
-        warn "  export ANTHROPIC_API_KEY=<your-key>"
-        if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
-            warn "For Docker: set it in the environment: section of docker-compose.yml"
-            warn "  or supply a .env file alongside docker-compose.yml."
+    ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
+
+    if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
+        ask "Claude model" "claude-sonnet-5" CLOUD_MODEL_VAL
+        echo
+        if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+            warn "ANTHROPIC_API_KEY is not set in the current environment."
+            warn "Pueo will fail to start until it is exported. Add this line to ~/.zshenv:"
+            warn "  export ANTHROPIC_API_KEY=<your-key>"
+            if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
+                warn "For Docker: set it in the environment: section of docker-compose.yml"
+                warn "  or supply a .env file alongside docker-compose.yml."
+            fi
+        else
+            ok "ANTHROPIC_API_KEY is set"
+        fi
+        if [[ "$LLM_PROVIDER" == "cloud" && "$DEPLOY_MODE" != "docker" ]]; then
+            info "Ollama inference model pull skipped (cloud mode — not needed for inference)."
+            info "nomic-embed-text was already pulled above for RAG embeddings."
         fi
     else
-        ok "ANTHROPIC_API_KEY is set"
+        ok "Using local Ollama inference (no cloud API required)"
     fi
-    if [[ "$LLM_PROVIDER" == "cloud" && "$DEPLOY_MODE" != "docker" ]]; then
-        info "Ollama inference model pull skipped (cloud mode — not needed for inference)."
-        info "nomic-embed-text was already pulled above for RAG embeddings."
-    fi
-else
-    ok "Using local Ollama inference (no cloud API required)"
 fi
 
 OLLAMA_MODEL_AUTO="false"
@@ -455,8 +504,12 @@ WRITE_CONFIG=false
 PRIMARY_CONFIG="${CONFIG_DEST_NATIVE:-$CONFIG_DEST_DOCKER}"
 if [[ -f "$PRIMARY_CONFIG" ]]; then
     ok "config.yaml already exists at ${PRIMARY_CONFIG}"
-    read -rp "  Reconfigure? [y/N]: " reconf
-    [[ "${reconf:-N}" =~ ^[Yy] ]] && WRITE_CONFIG=true
+    if [[ "$_RESET_MODE" == "true" ]]; then
+        info "Reset mode: keeping existing config.yaml"
+    else
+        read -rp "  Reconfigure? [y/N]: " reconf
+        [[ "${reconf:-N}" =~ ^[Yy] ]] && WRITE_CONFIG=true
+    fi
 else
     WRITE_CONFIG=true
 fi
@@ -799,6 +852,10 @@ fi
 if [[ "$DEPLOY_MODE" == "docker" || "$DEPLOY_MODE" == "both" ]]; then
     hdr "4.5. Docker Compose"
 
+    if [[ "$_RESET_MODE" == "true" && -f "${PUEO_DIR}/docker-compose.yml" ]]; then
+        ok "Reset mode: docker-compose.yml already exists, keeping it"
+    else
+
     mkdir -p "${PUEO_DIR}/config"
 
     # Resolve SSH key path for the volume mount
@@ -841,6 +898,7 @@ EOF
     ok "docker-compose.yml written (SSH key mount: ${_KEY_PATH})"
     info "config.yaml is at ${CONFIG_DEST_DOCKER}"
     info "Start with: docker compose up -d"
+    fi  # end reset-mode skip
 fi
 
 # ── 5. NetAlertX ──────────────────────────────────────────────────────────────────
@@ -867,8 +925,13 @@ else
     if launchctl list "$PLIST_LABEL" &>/dev/null 2>&1; then
         ok "Pueo launchd service is already installed and loaded"
     else
-        echo
-        read -rp "  Install Pueo as a launchd service (auto-start at login)? [Y/n]: " install_svc
+        if [[ "$_RESET_MODE" == "true" && "$_RESET_SVC_INSTALLED" == "true" ]]; then
+            info "Reset mode: reinstalling launchd service (was installed before reset)"
+            install_svc="Y"
+        else
+            echo
+            read -rp "  Install Pueo as a launchd service (auto-start at login)? [Y/n]: " install_svc
+        fi
         if [[ "${install_svc:-Y}" =~ ^[Yy] ]]; then
             PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
             mkdir -p "$PUEO_LOG_DIR"
@@ -904,17 +967,22 @@ else
     if launchctl list "$RAG_PLIST_LABEL" &>/dev/null 2>&1; then
         ok "RAG refresh launchd job is already installed"
     else
-        echo
-        echo "  Pueo uses a local ChromaDB vector store (RAG) for HA knowledge: release"
-        echo "  notes (last N versions), HACS integration changelogs (auto-discovered"
-        echo "  from your HA instance), and HA integration documentation. A weekly"
-        echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
-        echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
-        echo "  rag_ha_docs_cache_dir, ha_source_cache_dir, ha_concepts_cache_dir,"
-        echo "  rag_refresh_interval_hours (default 168, i.e. weekly), pueo_kb_repo, kb_sync_interval_hours,"
-        echo "  kb_sync_cache_dir — see config.yaml.default for details."
-        echo
-        read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
+        if [[ "$_RESET_MODE" == "true" && "$_RESET_RAG_INSTALLED" == "true" ]]; then
+            info "Reset mode: reinstalling RAG refresh job (was installed before reset)"
+            install_rag="Y"
+        else
+            echo
+            echo "  Pueo uses a local ChromaDB vector store (RAG) for HA knowledge: release"
+            echo "  notes (last N versions), HACS integration changelogs (auto-discovered"
+            echo "  from your HA instance), and HA integration documentation. A weekly"
+            echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
+            echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
+            echo "  rag_ha_docs_cache_dir, ha_source_cache_dir, ha_concepts_cache_dir,"
+            echo "  rag_refresh_interval_hours (default 168, i.e. weekly), pueo_kb_repo, kb_sync_interval_hours,"
+            echo "  kb_sync_cache_dir — see config.yaml.default for details."
+            echo
+            read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
+        fi
         if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then
             PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
             mkdir -p "$PUEO_LOG_DIR"
