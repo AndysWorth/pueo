@@ -520,21 +520,19 @@ async def pueo_status() -> JSONResponse:
     if any(s.status == "starting" for s in statuses):
         return JSONResponse({"activity": "starting", "detail": "Loops starting"})
     if get_active_repair_loop() is not None:
-        return JSONResponse({"activity": "repairing", "detail": "Repair in progress"})
+        return JSONResponse({"activity": "ha_repair", "detail": "Repair in progress"})
     if get_active_agent_count() > 0:
         return JSONResponse(
-            {"activity": "repairing", "detail": "Agent loop in progress"}
+            {"activity": "ha_repair", "detail": "Agent loop in progress"}
         )
     if get_active_triage_count() > 0:
-        return JSONResponse(
-            {"activity": "triaging", "detail": "Log triage in progress"}
-        )
+        return JSONResponse({"activity": "triage", "detail": "Log triage in progress"})
     if any(Path(NOTIFY_WATCH_DIR).glob("*.in_progress")):
         return JSONResponse(
             {"activity": "executing", "detail": "Running approved action"}
         )
     if get_active_chat_count() > 0:
-        return JSONResponse({"activity": "chatting", "detail": "Chat in progress"})
+        return JSONResponse({"activity": "chat", "detail": "Chat in progress"})
     if get_rag_refreshing():
         return JSONResponse(
             {"activity": "refreshing", "detail": "Refreshing knowledge base"}
@@ -1187,6 +1185,7 @@ async def _execute_cloud_escalation(
                     "tool": tool_name,
                     "status": status_line,
                     "card_id": card_id,
+                    "activity": "ha_repair",
                 }
             )
         except Exception:  # nosec B110 — best-effort SSE
@@ -1221,6 +1220,7 @@ async def _execute_cloud_escalation(
                     "event_type": "repair_done",
                     "outcome": result.outcome,
                     "card_id": card_id,
+                    "activity": "ha_repair",
                 }
             )
         else:
@@ -1232,6 +1232,7 @@ async def _execute_cloud_escalation(
                     "event_type": "repair_failed",
                     "outcome": result.outcome,
                     "card_id": card_id,
+                    "activity": "ha_repair",
                 }
             )
 

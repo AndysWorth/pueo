@@ -1145,7 +1145,9 @@ async def poll_for_updates(
                 _sv_inst.touch("update_check", outcome=_update_outcome)
         except Exception:  # nosec B110
             pass
-        await asyncio.sleep(interval)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep
+
+        await _sup_sleep("update_check", interval)
 
 
 async def poll_for_notifications(
@@ -1186,7 +1188,9 @@ async def poll_for_notifications(
 
     backoff: int = 0  # seconds; 0 means use normal interval
     while True:
-        await asyncio.sleep(backoff if backoff else interval)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_n
+
+        await _sup_sleep_n("notification_poll", backoff if backoff else interval)
         try:
             notifications = await _ws.get_persistent_notifications()
             backoff = 0  # reset on success
@@ -1318,7 +1322,11 @@ async def poll_for_repairs(
 
     repair_backoff: int = 0  # seconds; 0 means use normal interval
     while True:
-        await asyncio.sleep(repair_backoff if repair_backoff else interval)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_r
+
+        await _sup_sleep_r(
+            "repair_poll", repair_backoff if repair_backoff else interval
+        )
         try:
             issues = await get_ha_repair_issues(_client)
             repair_backoff = 0  # reset on success

@@ -507,4 +507,6 @@ async def poll_for_dashboard_entity_issues(
                 _sv_inst.touch("lovelace_poll", outcome=_lv_outcome)
         except Exception:  # nosec B110
             pass
-        await asyncio.sleep(_interval * 60)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_lv
+
+        await _sup_sleep_lv("lovelace_poll", _interval * 60)

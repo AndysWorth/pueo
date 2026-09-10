@@ -229,11 +229,34 @@ def get_supervisor_instance() -> "LoopSupervisor | None":
     return _supervisor_instance
 
 
+async def supervised_sleep(name: str, seconds: float) -> None:
+    """Sleep for *seconds* while advertising loop idle status to the supervisor.
+
+    Sets status="idle" and next_run before sleeping; restores "running" after.
+    Preserves "paused" or "error" if set externally during the sleep.
+    """
+    sv = get_supervisor_instance()
+    if sv is not None and name in sv._handles:
+        st = sv._handles[name]
+        st.status = "idle"
+        st.next_run = time.time() + seconds
+        sv._emit(name)
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        sv = get_supervisor_instance()
+        if sv is not None and name in sv._handles:
+            st = sv._handles[name]
+            if st.status == "idle":  # don't overwrite "paused" or "error"
+                st.status = "running"
+                sv._emit(name)
+
+
 @dataclass
 class LoopStatus:
     name: str
     status: str = (
-        "starting"  # starting | running | paused | error | restarting | disabled
+        "starting"  # starting | running | idle | paused | error | restarting | disabled
     )
     error_count: int = 0
     last_error: str = ""

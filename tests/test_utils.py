@@ -3412,6 +3412,88 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_supervised_sleep_sets_idle_status(self):
+        """supervised_sleep() transitions the loop to 'idle' before sleeping."""
+
+        async def _run():
+            from utils.agent.supervisor import (
+                LoopSupervisor,
+                set_supervisor_instance,
+                supervised_sleep,
+            )
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup._handles["myloop"] = __import__(
+                "utils.agent.supervisor", fromlist=["LoopStatus"]
+            ).LoopStatus(name="myloop", status="running")
+            set_supervisor_instance(sup)
+            try:
+                idle_statuses: list = []
+
+                async def _checker():
+                    await asyncio.sleep(0.01)
+                    idle_statuses.append(sup._handles["myloop"].status)
+
+                await asyncio.gather(_checker(), supervised_sleep("myloop", 0.05))
+                assert "idle" in idle_statuses
+            finally:
+                set_supervisor_instance(None)  # type: ignore[arg-type]
+
+        asyncio.run(_run())
+
+    def test_supervised_sleep_restores_running_after_wake(self):
+        """supervised_sleep() restores status to 'running' when the sleep ends."""
+
+        async def _run():
+            from utils.agent.supervisor import (
+                LoopSupervisor,
+                LoopStatus,
+                set_supervisor_instance,
+                supervised_sleep,
+            )
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup._handles["myloop"] = LoopStatus(name="myloop", status="running")
+            set_supervisor_instance(sup)
+            try:
+                await supervised_sleep("myloop", 0.02)
+                assert sup._handles["myloop"].status == "running"
+            finally:
+                set_supervisor_instance(None)  # type: ignore[arg-type]
+
+        asyncio.run(_run())
+
+    def test_supervised_sleep_preserves_paused_status(self):
+        """supervised_sleep() does not overwrite 'paused' set externally during sleep."""
+
+        async def _run():
+            from utils.agent.supervisor import (
+                LoopSupervisor,
+                LoopStatus,
+                set_supervisor_instance,
+                supervised_sleep,
+            )
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup._handles["myloop"] = LoopStatus(name="myloop", status="running")
+            set_supervisor_instance(sup)
+            try:
+
+                async def _pauser():
+                    await asyncio.sleep(0.01)
+                    sup._handles["myloop"].status = "paused"
+
+                await asyncio.gather(_pauser(), supervised_sleep("myloop", 0.05))
+                # The finally block should NOT overwrite "paused" with "running"
+                assert sup._handles["myloop"].status == "paused"
+            finally:
+                set_supervisor_instance(None)  # type: ignore[arg-type]
+
+        asyncio.run(_run())
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 
