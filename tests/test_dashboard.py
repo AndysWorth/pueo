@@ -525,6 +525,47 @@ class TestDashboardRoutes:
         dashboard.run_dashboard()
         assert calls[0]["port"] == 9999
 
+    def test_pueo_status_returns_canonical_keys(self, tmp_path, monkeypatch):
+        """pueo_status() returns canonical SSE activity keys (ha_repair, triage, chat)."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup
+
+        # Minimal fake supervisor that reports no error/starting loops
+        class _FakeSupervisor:
+            def get_statuses(self):
+                return []
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(sup, "get_supervisor_instance", lambda: _FakeSupervisor())
+        monkeypatch.setattr(sup, "get_active_agent_count", lambda: 0)
+        monkeypatch.setattr(sup, "get_active_triage_count", lambda: 0)
+        monkeypatch.setattr(sup, "get_active_chat_count", lambda: 0)
+        monkeypatch.setattr(sup, "get_rag_refreshing", lambda: False)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+
+        # Simulate an active repair loop
+        monkeypatch.setattr(sup, "get_active_repair_loop", lambda: object())
+        resp = client.get("/api/pueo-status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert (
+            data["activity"] == "ha_repair"
+        ), f"expected ha_repair, got {data['activity']}"
+
+        # Simulate active triage only
+        monkeypatch.setattr(sup, "get_active_repair_loop", lambda: None)
+        monkeypatch.setattr(sup, "get_active_triage_count", lambda: 1)
+        resp2 = client.get("/api/pueo-status")
+        assert resp2.json()["activity"] == "triage"
+
+        # Simulate active chat only
+        monkeypatch.setattr(sup, "get_active_triage_count", lambda: 0)
+        monkeypatch.setattr(sup, "get_active_chat_count", lambda: 1)
+        resp3 = client.get("/api/pueo-status")
+        assert resp3.json()["activity"] == "chat"
+
 
 # ── netalertx/installer_diagnostics.py ───────────────────────────────────────
 
@@ -6306,7 +6347,7 @@ class TestPueoStatusEndpoint:
             client = TestClient(dashboard.app, raise_server_exceptions=True)
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
-        assert response.json()["activity"] == "repairing"
+        assert response.json()["activity"] == "ha_repair"
 
     def test_returns_triaging_when_triage_count_nonzero(self, monkeypatch, pueo_dirs):
         import unittest.mock
@@ -6332,7 +6373,7 @@ class TestPueoStatusEndpoint:
             client = TestClient(dashboard.app, raise_server_exceptions=True)
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
-        assert response.json()["activity"] == "triaging"
+        assert response.json()["activity"] == "triage"
 
     def test_repairing_takes_priority_over_triaging(self, monkeypatch, pueo_dirs):
         """Active repair loop wins over triage count."""
@@ -6360,7 +6401,7 @@ class TestPueoStatusEndpoint:
             client = TestClient(dashboard.app, raise_server_exceptions=True)
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
-        assert response.json()["activity"] == "repairing"
+        assert response.json()["activity"] == "ha_repair"
 
     def test_returns_executing_when_in_progress_file_exists(
         self, monkeypatch, pueo_dirs, tmp_path
@@ -6433,7 +6474,7 @@ class TestPueoStatusEndpoint:
             client = TestClient(dashboard.app, raise_server_exceptions=True)
             response = client.get("/api/pueo-status")
         assert response.status_code == 200
-        assert response.json()["activity"] == "chatting"
+        assert response.json()["activity"] == "chat"
 
     def test_returns_refreshing_when_rag_active(self, monkeypatch, pueo_dirs):
         """Pill shows refreshing while run_rag_refresh is executing."""

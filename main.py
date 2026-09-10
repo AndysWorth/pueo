@@ -305,7 +305,9 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
     )
 
     while True:
-        await asyncio.sleep(interval_hours * 3600)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_rag
+
+        await _sup_sleep_rag("rag_refresh", interval_hours * 3600)
         _log.info("rag_refresh_start", reason="scheduled")
         write_timeline_event(
             "INFO",
@@ -352,7 +354,9 @@ async def _kb_sync_loop(knowledge_store: Any, interval_hours: int) -> None:
 
     _log.info("kb_sync_loop_started", next_run_hours=interval_hours)
     while True:
-        await asyncio.sleep(interval_hours * 3600)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_kb
+
+        await _sup_sleep_kb("kb_sync", interval_hours * 3600)
         _log.info("kb_sync_start")
         try:
             from utils.knowledge.kb_ingester import KbIngestError, run_kb_sync
@@ -388,7 +392,9 @@ async def _known_issues_poll_loop(
 
     _log = _gl("main")
     while True:
-        await asyncio.sleep(3600)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_ki
+
+        await _sup_sleep_ki("known_issues_poll", 3600)
         try:
 
             def _fetch_due() -> list:
@@ -441,7 +447,9 @@ async def _ollama_monitor_loop() -> None:
     )
 
     while True:
-        await asyncio.sleep(15)
+        from utils.agent.supervisor import supervised_sleep as _sup_sleep_ol
+
+        await _sup_sleep_ol("ollama_monitor", 15)
         models = await asyncio.to_thread(poll_ollama_ps, _cfg.OLLAMA_ENDPOINT)
         active_calls = get_active_llm_calls()
         status = {
@@ -650,7 +658,11 @@ async def supervisor_main(config_path: Path) -> None:
                     else "Profile refreshed"
                 )
                 supervisor.touch("profile_refresh", outcome=_prof_outcome)
-                await asyncio.sleep(cfg.HA_PROFILE_REFRESH_HOURS * 3600)
+                from utils.agent.supervisor import supervised_sleep as _sup_sleep_pr
+
+                await _sup_sleep_pr(
+                    "profile_refresh", cfg.HA_PROFILE_REFRESH_HOURS * 3600
+                )
 
         supervisor.start(
             "profile_refresh",
@@ -666,8 +678,10 @@ async def supervisor_main(config_path: Path) -> None:
 
         _log = _gl("main")
         while True:
-            await asyncio.sleep(
-                30 * 60
+            from utils.agent.supervisor import supervised_sleep as _sup_sleep_bs
+
+            await _sup_sleep_bs(
+                "backup_sync", 30 * 60
             )  # 30-minute interval; startup reconcile+offload already ran
             ssh = _SSH(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
             try:

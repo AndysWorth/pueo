@@ -190,7 +190,9 @@ class ResourcePoller:
                     _sv.touch("resource_poll", outcome=_outcome)
             except Exception:  # nosec B110
                 pass
-            await asyncio.sleep(self._interval)
+            from utils.agent.supervisor import supervised_sleep as _sup_sleep_rp
+
+            await _sup_sleep_rp("resource_poll", self._interval)
 
     async def _check_and_alert(self, status: ResourceStatus) -> None:
         """Send alerts for new threshold breaches; suppress duplicates until the condition clears."""

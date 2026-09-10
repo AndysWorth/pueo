@@ -978,7 +978,9 @@ async def main(
         from utils.agent.supervisor import publish_event
 
         ev_type = "repair_done" if result.outcome == "success" else "repair_failed"
-        publish_event({"event_type": ev_type, "outcome": result.outcome})
+        publish_event(
+            {"event_type": ev_type, "outcome": result.outcome, "activity": "ha_repair"}
+        )
     except Exception:  # nosec B110 — best-effort SSE
         pass
 

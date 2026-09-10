@@ -2935,6 +2935,35 @@ class TestSandboxPipeline:
         # AgentLoop makes one chat_with_tools call per tool-calling step
         assert len(llm_with_fix.calls) >= 1
 
+    def test_repair_done_event_has_activity_field(
+        self, ssh_ok, llm_with_fix, db_path, gate_auto, knowledge_store, monkeypatch
+    ):
+        """repair_done SSE event includes activity='ha_repair' so the widget clears correctly."""
+        from agents import ha_agent_sandbox_engine
+        import utils.agent.supervisor as sup
+
+        published = []
+        monkeypatch.setattr(sup, "publish_event", lambda ev: published.append(ev))
+        ha_agent_sandbox_engine.init_local_database()
+        asyncio.run(
+            ha_agent_sandbox_engine.main(
+                ssh_client=ssh_ok,
+                llm_client=llm_with_fix,
+                gate=gate_auto,
+                knowledge_store=knowledge_store,
+            )
+        )
+        repair_events = [
+            e
+            for e in published
+            if e.get("event_type") in ("repair_done", "repair_failed")
+        ]
+        assert repair_events, "no repair_done/repair_failed event published"
+        for ev in repair_events:
+            assert (
+                ev.get("activity") == "ha_repair"
+            ), f"activity field missing or wrong in {ev}"
+
 
 # ── ha_log_monitor triage with fake LLM ──────────────────────────────────────────
 

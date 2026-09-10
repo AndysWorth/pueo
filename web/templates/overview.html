@@ -21,6 +21,7 @@
   .dot-paused     { background: #6c757d; }
   .dot-disabled   { background: #adb5bd; }
   .dot-starting   { background: #17a2b8; }
+  .dot-idle       { background: #adb5bd; }
   .loop-table-wrap { overflow-x: auto; }
   table.loop-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   table.loop-table th { text-align: left; padding: 0.3rem 0.5rem; color: #888;
@@ -463,6 +464,7 @@
 
   var statusDotClass = {
     running:    'dot-running',
+    idle:       'dot-idle',
     error:      'dot-error',
     restarting: 'dot-restarting',
     paused:     'dot-paused',
@@ -760,7 +762,7 @@
     var statusEl = row.querySelector('.loop-status');
     if (dotEl && statusEl) {
       dotEl.className = 'status-dot ' + (statusDotClass[evt.status] || '');
-      statusEl.textContent = evt.status;
+      statusEl.textContent = evt.status === 'idle' ? 'idle' : evt.status;
     }
     var outcomeEl = row.querySelector('.loop-outcome');
     if (outcomeEl) outcomeEl.textContent = evt.last_outcome || '—';
@@ -774,9 +776,12 @@
         if (countdown) {
           countdown.setAttribute('data-next', evt.next_run);
           countdown.textContent = fmtCountdown(evt.next_run);
-        } else if (evt.status === 'error') {
+        } else if (evt.status === 'error' || evt.status === 'idle') {
           nextRunEl.innerHTML = '<span class="loop-next-run-countdown" data-next="' + evt.next_run + '">' + fmtCountdown(evt.next_run) + '</span>';
         }
+      } else if (evt.status !== 'idle' && countdown) {
+        // Restore static cadence text when loop resumes from idle
+        nextRunEl.innerHTML = nextRunEl.getAttribute('data-cadence') || countdown.textContent;
       }
     }
     var next = row.nextElementSibling;
@@ -972,13 +977,13 @@
     fetchSparkline('ha_log_monitor_supervisor');
   }, 60000);
 
-  // Countdown ticker for infrequent loop next-run timestamps
+  // Countdown ticker for loop next-run timestamps (idle and error states)
   var _si2 = setInterval(function() {
     var els = document.querySelectorAll('.loop-next-run-countdown[data-next]');
     for (var i = 0; i < els.length; i++) {
       els[i].textContent = fmtCountdown(parseFloat(els[i].getAttribute('data-next')));
     }
-  }, 30000);
+  }, 1000);
 
   var es = window._pueoES || new EventSource('/events');
 
