@@ -376,9 +376,12 @@ async def _personalize_with_agent_loop(
         tool_registry=registry,
         terminal_tool_name="finish_impact_analysis",
         trigger="impact_analysis",
+        activity_type="update_analysis",
         knowledge_store=knowledge_store,
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("update_analysis"),
+        timeline_callback=make_activity_timeline_callback(
+            "update_analysis", trigger="Update impact analysis"
+        ),
     )
 
     increment_active_agent()

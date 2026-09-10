@@ -215,9 +215,12 @@ async def diagnose_installer_failure(
         model=model,
         terminal_tool_name="finish_installer_diagnosis",
         trigger="installer_diagnosis",
+        activity_type="netalertx_installer",
         knowledge_store=knowledge_store,
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("netalertx_installer"),
+        timeline_callback=make_activity_timeline_callback(
+            "netalertx_installer", trigger="NetAlertX installer"
+        ),
     )
 
     increment_active_agent()

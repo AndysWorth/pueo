@@ -41,6 +41,21 @@ if TYPE_CHECKING:
 
 log = get_logger("agent_loop")
 
+_TRIGGER_LABELS: dict[str, str] = {
+    "ha_log": "Error in HA logs",
+    "ha_config": "HA config check",
+    "lovelace_poll": "Lovelace entity change",
+    "impact_analysis": "Update impact analysis",
+    "config_analysis": "Config analysis",
+    "investigation": "User-requested investigation",
+    "health_diagnosis": "NetAlertX health check",
+    "netalertx": "NetAlertX device event",
+    "installer_diagnosis": "NetAlertX installer",
+    "gap_detection": "Capability gap detected",
+    "manual": "Chat session",
+    "escalated": "Cloud escalation",
+}
+
 
 class LimitReviewDecision(BaseModel):
     reason_limit_hit: str = Field(description="Why the limit was reached")
@@ -129,6 +144,7 @@ class AgentLoop:
         pre_step_callback: Optional[Callable[["ToolCall"], Awaitable[None]]] = None,
         timeline_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
         trigger: str = "manual",
+        activity_type: str = "",
         db_path: Optional[str] = None,
         escalated: bool = False,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
@@ -156,6 +172,7 @@ class AgentLoop:
         self._pre_step_callback = pre_step_callback
         self._timeline_callback = timeline_callback
         self._trigger = trigger
+        self._activity_type = activity_type
         self._db_path = db_path
         self._escalated = escalated
         self._knowledge_store = knowledge_store
@@ -455,6 +472,17 @@ class AgentLoop:
         outcome: str = "exhausted"
         episode_stub: Optional[dict] = None
 
+        _tl_label = _TRIGGER_LABELS.get(self._trigger, self._trigger)
+        _tl_activity = self._activity_type or self._trigger
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            write_timeline_event(
+                "INFO", "agent_loop", f"{_tl_label} — {_tl_activity} started"
+            )
+        except Exception:  # nosec B110
+            pass
+
         try:
             result = await self._loop_body(
                 messages, tools, steps, tool_call_count, start_time
@@ -495,6 +523,14 @@ class AgentLoop:
                 log.error("repair_episode_record_failed", error=str(exc))
 
         self._messages = None  # loop finished; disable inject_context
+        _tl_level = "INFO" if outcome == "success" else "WARN"
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            write_timeline_event(_tl_level, "agent_loop", f"{_tl_label} — {outcome}")
+        except Exception:  # nosec B110
+            pass
+
         if self._capture_llm and self._llm_captures and outcome != "success":
             self._llm_captures[-1].outcome_path = "exhaustion_fallback"
 

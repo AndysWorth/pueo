@@ -696,8 +696,11 @@ async def _run_code_proposal_loop(
         tool_registry=registry,
         system_prompt=_CODE_PROPOSAL_SYSTEM_PROMPT,
         trigger="gap_detection",
+        activity_type="code_proposal",
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("code_proposal"),
+        timeline_callback=make_activity_timeline_callback(
+            "code_proposal", trigger="Capability gap detected"
+        ),
     )
     initial_context = (
         "The previous HA repair loop detected a capability gap:\n\n"
@@ -777,12 +780,16 @@ async def main(
 
     async def _on_repair_timeline(tool_name: str, status_line: str) -> None:
         try:
-            from utils.core.timeline import write_timeline_event
             from utils.agent.supervisor import publish_event
 
-            write_timeline_event("INFO", "agent_loop", status_line)
             publish_event(
-                {"event_type": "agent_step", "tool": tool_name, "status": status_line}
+                {
+                    "event_type": "agent_step",
+                    "tool": tool_name,
+                    "status": status_line,
+                    "activity": "ha_repair",
+                    "trigger": "Error in HA logs",
+                }
             )
         except Exception:  # nosec B110 — best-effort SSE
             pass
@@ -820,6 +827,7 @@ async def main(
         tool_executor=executor,
         tool_registry=registry,
         trigger="ha_log",
+        activity_type="ha_repair",
         db_path=DB_PATH,
         timeline_callback=_on_repair_timeline,
         knowledge_store=_knowledge_store,

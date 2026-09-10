@@ -231,9 +231,12 @@ async def _run_lovelace_investigation(
         system_prompt=system_prompt,
         terminal_tool_name="finish_lovelace_investigation",
         trigger="lovelace_poll",
+        activity_type="lovelace_investigation",
         db_path=db_path,
         knowledge_store=knowledge_store,
-        timeline_callback=make_activity_timeline_callback("lovelace_investigation"),
+        timeline_callback=make_activity_timeline_callback(
+            "lovelace_investigation", trigger="Lovelace entity change"
+        ),
     )
     increment_active_agent()
     try:

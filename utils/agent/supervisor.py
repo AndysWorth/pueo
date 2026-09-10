@@ -136,20 +136,18 @@ def get_ollama_status_cache() -> dict:
     return dict(_ollama_status_cache)
 
 
-def make_activity_timeline_callback(activity_type: str) -> Callable:
+def make_activity_timeline_callback(activity_type: str, trigger: str = "") -> Callable:
     """Return async timeline_callback(tool_name, status_line) emitting agent_step SSE."""
 
     async def _callback(tool_name: str, status_line: str) -> None:
         try:
-            from utils.core.timeline import write_timeline_event
-
-            write_timeline_event("INFO", "agent_loop", status_line)
             publish_event(
                 {
                     "event_type": "agent_step",
                     "tool": tool_name,
                     "status": status_line,
                     "activity": activity_type,
+                    "trigger": trigger,
                 }
             )
         except Exception:  # nosec B110

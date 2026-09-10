@@ -15180,3 +15180,152 @@ class TestAgentLoopLLMCallbacks:
         )
         result = asyncio.run(loop.run("check config"))
         assert result.outcome in ("success", "exhausted", "timeout", "stuck", "error")
+
+
+class TestAgentLoopActivityType:
+    """AgentLoop stores activity_type and writes timeline events at start/end of run()."""
+
+    def _make_finish_llm(self):
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+    def _make_executor(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+
+    def test_activity_type_stored(self):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            activity_type="ha_repair",
+        )
+        assert loop._activity_type == "ha_repair"
+
+    def test_activity_type_default_empty(self):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+        )
+        assert loop._activity_type == ""
+
+    def test_timeline_written_twice_per_run(self, monkeypatch):
+        """write_timeline_event called exactly at start and end of run(), not per step."""
+        import asyncio
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+
+        calls: list[tuple] = []
+
+        def _fake_write(level, source, message):
+            calls.append((level, source, message))
+
+        monkeypatch.setattr("utils.core.timeline.write_timeline_event", _fake_write)
+
+        loop = AgentLoop(
+            llm_client=self._make_finish_llm(),
+            tool_executor=self._make_executor(),
+            tool_registry=build_ha_tool_registry(),
+            trigger="ha_log",
+            activity_type="ha_repair",
+        )
+        asyncio.run(loop.run("check config"))
+
+        # Exactly 2 timeline events: start + end
+        tl = [c for c in calls if c[1] == "agent_loop"]
+        assert len(tl) == 2
+        assert "started" in tl[0][2]
+        assert "ha_repair" in tl[0][2]
+        # Second event is the outcome
+        assert any(kw in tl[1][2] for kw in ("success", "exhausted", "stuck", "failed"))
+
+    def test_timeline_not_written_inside_per_step_callback(self, monkeypatch):
+        """make_activity_timeline_callback does NOT call write_timeline_event."""
+        import asyncio
+        from utils.agent.supervisor import make_activity_timeline_callback
+
+        calls: list = []
+
+        monkeypatch.setattr(
+            "utils.agent.supervisor.publish_event", lambda ev: calls.append(ev)
+        )
+
+        cb = make_activity_timeline_callback("ha_repair", trigger="Error in HA logs")
+        asyncio.run(cb("read_config", "step 1 — read_config: OK"))
+
+        # publish_event called once with agent_step
+        assert len(calls) == 1
+        assert calls[0]["event_type"] == "agent_step"
+        assert calls[0]["trigger"] == "Error in HA logs"
+        assert calls[0]["activity"] == "ha_repair"
+
+
+class TestMakeActivityTimelineCallback:
+    """make_activity_timeline_callback emits agent_step SSE with trigger field."""
+
+    def test_trigger_field_in_sse_payload(self, monkeypatch):
+        import asyncio
+        from utils.agent.supervisor import make_activity_timeline_callback
+
+        published: list[dict] = []
+        monkeypatch.setattr(
+            "utils.agent.supervisor.publish_event", lambda ev: published.append(ev)
+        )
+
+        cb = make_activity_timeline_callback(
+            "lovelace_investigation", trigger="Lovelace entity change"
+        )
+        asyncio.run(cb("check_entity_status", "step 2 — check_entity_status: OK"))
+
+        assert len(published) == 1
+        ev = published[0]
+        assert ev["event_type"] == "agent_step"
+        assert ev["activity"] == "lovelace_investigation"
+        assert ev["trigger"] == "Lovelace entity change"
+        assert ev["tool"] == "check_entity_status"
+
+    def test_trigger_defaults_to_empty_string(self, monkeypatch):
+        import asyncio
+        from utils.agent.supervisor import make_activity_timeline_callback
+
+        published: list[dict] = []
+        monkeypatch.setattr(
+            "utils.agent.supervisor.publish_event", lambda ev: published.append(ev)
+        )
+
+        cb = make_activity_timeline_callback("config_analysis")
+        asyncio.run(cb("read_config", "step 1 — read_config: OK"))
+
+        assert published[0]["trigger"] == ""
