@@ -224,6 +224,34 @@
         </details>
       </div>
       {% endif %}
+      {% if ct == "ha_config_issue" %}
+      <div style="margin:0.75rem 0;">
+        {% if r.payload.get("entity_ids") %}
+        <p style="margin:0 0 0.3rem;"><strong>Affected entities:</strong></p>
+        <p style="margin:0 0 0.6rem;">
+          {% for eid in r.payload.entity_ids %}
+          <code style="display:inline-block;margin:0 4px 4px 0;padding:2px 8px;background:var(--bg-tertiary,#f0f0f0);border-radius:4px;font-size:0.82rem;">{{ eid }}</code>
+          {% endfor %}
+        </p>
+        {% endif %}
+        {% if r.payload.get("suggested_actions") %}
+        <p style="margin:0 0 0.3rem;"><strong>Suggested actions:</strong></p>
+        <ul style="margin:0 0 0.6rem;padding-left:1.2rem;font-size:0.88rem;">
+          {% for action in r.payload.suggested_actions %}
+          <li>{{ action }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if r.payload.get("chat_needed") and r.payload.get("initial_chat_message") %}
+        <p style="margin:0 0 0.3rem;">
+          <a href="/chat?message={{ r.payload.initial_chat_message | urlencode }}"
+             style="font-size:0.88rem;color:var(--accent,#0d6efd);">
+            Open in Chat for deeper investigation &rarr;
+          </a>
+        </p>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if ct == "netalertx_new_device" %}
       <div style="margin:0.75rem 0;">
         {% set _mac = r.payload.get("mac", "") %}
