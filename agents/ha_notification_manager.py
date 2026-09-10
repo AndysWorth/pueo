@@ -15,10 +15,7 @@ from typing import TYPE_CHECKING
 
 import config as _config
 from config import (
-    CONFIG_REMOTE_PATH,
     DB_PATH,
-    HA_NOTIFICATION_ENRICH_AUTH_FAILURES,
-    MAX_PROMPT_TOKENS,
 )
 from interfaces import (
     HARestClientProtocol,
@@ -27,9 +24,7 @@ from interfaces import (
     NetAlertXClientProtocol,
     SSHClientProtocol,
 )
-from utils.core.context import truncate_to_budget
 from utils.core.logging import get_logger
-from utils.core.prompts import load_prompt
 
 if TYPE_CHECKING:
     from utils.hitl.notify import NotifierProtocol
@@ -47,12 +42,6 @@ class NotificationAnalysis(BaseModel):
     original_message: str
     human_explanation: str
     enriched_context: dict
-    recommended_action: str
-    requires_hitl: bool
-
-
-class _NotificationLLMOutput(BaseModel):
-    human_explanation: str
     recommended_action: str
     requires_hitl: bool
 
@@ -232,170 +221,113 @@ async def enrich_http_login(
     return context
 
 
-async def analyze_notification(
+async def _run_notification_investigation(
     notification_id: str,
     title: Optional[str],
     message: str,
-    enriched_context: dict,
-    config_content: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-    category: str = "other",
-    severity: str = "MEDIUM",
-) -> NotificationAnalysis:
-    """LLM plain-English analysis of a notification. Returns a full NotificationAnalysis."""
-    from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
-
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-
-    context_parts: list[str] = []
-    if enriched_context:
-        lines: list[str] = []
-        if enriched_context.get("source_ip"):
-            lines.append(f"Source IP: {enriched_context['source_ip']}")
-        if enriched_context.get("mac_address"):
-            mac = enriched_context["mac_address"]
-            rand = enriched_context.get("mac_is_randomized")
-            vendor = enriched_context.get("mac_vendor")
-            if rand:
-                lines.append(
-                    f"MAC: {mac} (locally administered / randomized — cannot identify vendor)"
-                )
-            else:
-                lines.append(f"MAC: {mac}" + (f" ({vendor})" if vendor else ""))
-        for key in ("dhcp_hostname", "hostname", "netalertx_name", "ha_device_name"):
-            val = enriched_context.get(key)
-            if val:
-                lines.append(f"{key.replace('_', ' ').title()}: {val}")
-        is_known = enriched_context.get("is_known_device", False)
-        lines.append(f"Known device: {'yes' if is_known else 'no'}")
-        context_parts.append("Device context:\n" + "\n".join(lines))
-    if config_content:
-        budget = MAX_PROMPT_TOKENS - 400
-        context_parts.append(
-            f"Current configuration.yaml:\n{truncate_to_budget(config_content, budget)}"
-        )
-
-    context_str = (
-        "\n\n".join(context_parts) if context_parts else "No additional context."
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": load_prompt("analyze_notification"),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Notification ID: {notification_id}\n"
-                f"Category: {category} | Severity: {severity}\n"
-                f"Title: {title or '(none)'}\n"
-                f"Message: {message}\n\n"
-                f"{context_str}\n\n"
-                "Explain what this notification means and what the user should do. "
-                "Set requires_hitl to true if the user needs to take immediate action."
-            ),
-        },
-    ]
-
-    _model = _default_model_for_provider()
-    _t0 = __import__("time").monotonic()
-    response = await client.chat(
-        model=_model,
-        messages=messages,
-        options={"temperature": 0.0},
-        format=_NotificationLLMOutput.model_json_schema(),
-    )
-    raw = response["message"]["content"]
-    _dur = (__import__("time").monotonic() - _t0) * 1000
-    try:
-        from utils.debug.capture import record_one_shot as _ros
-
-        _ros(
-            "analyze_notification",
-            _model,
-            message[:500],
-            raw[:500],
-            _dur,
-            "success",
-            _config.DB_PATH,
-        )
-    except Exception:  # nosec B110
-        pass
-    llm_out = _NotificationLLMOutput.model_validate_json(raw)
-
-    import config as _nm_cfg
-
-    if _nm_cfg.DEBUG_LEVEL >= 1:
-        log.debug(
-            "notification_enriched",
-            notification_id=notification_id,
-            category=category,
-            severity=severity,
-            requires_hitl=llm_out.requires_hitl,
-            explanation=llm_out.human_explanation[:200],
-        )
-
-    return NotificationAnalysis(
-        notification_id=notification_id,
-        category=category,  # type: ignore[arg-type]
-        severity=severity,  # type: ignore[arg-type]
-        original_title=title,
-        original_message=message,
-        human_explanation=llm_out.human_explanation,
-        enriched_context=enriched_context,
-        recommended_action=llm_out.recommended_action,
-        requires_hitl=llm_out.requires_hitl,
-    )
-
-
-async def enrich_and_analyze_notification(
-    notification_id: str,
-    title: Optional[str],
-    message: str,
-    ssh_client: Optional[SSHClientProtocol] = None,
+    ha_created_at: Optional[float],
+    db_path: str,
+    notifier: "NotifierProtocol",
     llm_client: Optional[LLMClientProtocol] = None,
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     ws_client: Optional[HAWebSocketClientProtocol] = None,
-) -> NotificationAnalysis:
-    """Orchestrate enrichment and LLM analysis for a notification.
+    knowledge_store: Optional[object] = None,
+) -> None:
+    """Run an AgentLoop to investigate an HA persistent notification and create a HITL card."""
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_notification_investigation_registry
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.llm.llm_factory import make_llm_client
+    from utils.core.prompts import load_prompt
 
-    For http_login: extracts source IP and enriches with reverse DNS,
-    NetAlertX device name, and HA device registry. Unknown-source logins
-    are escalated to CRITICAL.
-
-    For invalid_config: fetches configuration.yaml content so the LLM can
-    cite the specific broken section.
-    """
     category, severity = classify_notification(notification_id)
-    enriched_context: dict = {}
-    config_content = ""
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = FakeAutonomyGate(auto_execute_result=True)
 
-    if (
-        notification_id in ("http-login", "ip-ban")
-        and HA_NOTIFICATION_ENRICH_AUTH_FAILURES
-    ):
-        ip = extract_ip_from_message(message)
-        if ip:
-            enriched_context = await enrich_http_login(ip, netalertx_client, ws_client)
-            if not enriched_context.get("is_known_device", True):
-                severity = "CRITICAL"
-    elif notification_id == "invalid_config" and ssh_client is not None:
-        try:
-            config_content = await ssh_client.read_file(CONFIG_REMOTE_PATH)
-        except Exception as exc:  # nosec B110
-            log.warning("config_ssh_fetch_failed", error=str(exc))
+    class _NullSSH:
+        async def read_file(self, path: str) -> str:
+            return ""
 
-    return await analyze_notification(
-        notification_id,
-        title,
-        message,
-        enriched_context,
-        config_content,
-        llm_client,
-        category,
-        severity,
+        async def write_file(self, path: str, content: str) -> None:
+            pass
+
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            pass
+
+        async def run(self, command: str, check: bool = False) -> tuple:
+            return (0, "", "")
+
+        async def stream_lines(self, command: str):  # type: ignore[return]
+            pass
+
+    pending_notif: dict = {
+        "ha_nid": notification_id,
+        "title": title,
+        "message": message,
+        "category": category,
+        "severity": severity,
+        "ha_created_at": ha_created_at,
+        "db_path": db_path,
+    }
+
+    executor = ToolExecutor(
+        ha_ssh_client=_NullSSH(),  # type: ignore[arg-type]
+        gate=gate,  # type: ignore[arg-type]
+        notifier=notifier,
+        netalertx_api_client=netalertx_client,  # type: ignore[arg-type]
+        ha_ws_client=ws_client,
+        knowledge_store=knowledge_store,  # type: ignore[arg-type]
+        db_path=db_path,
+        pending_notification=pending_notif,
     )
+
+    registry = build_notification_investigation_registry()
+    system_prompt = load_prompt("agent_loop_notification").format(
+        terminal_tool="finish_notification_investigation"
+    )
+
+    initial_context = (
+        f"HA persistent notification:\n"
+        f"Notification ID: {notification_id}\n"
+        f"Category: {category} | Severity: {severity}\n"
+        f"Title: {title or '(none)'}\n"
+        f"Message: {message}\n"
+    )
+
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=system_prompt,
+        terminal_tool_name="finish_notification_investigation",
+        trigger="notification_poll",
+        activity_type="notification",
+        db_path=db_path,
+        knowledge_store=knowledge_store,  # type: ignore[arg-type]
+        timeline_callback=make_activity_timeline_callback(
+            "notification", trigger=f"HA notification: {notification_id}"
+        ),
+    )
+    increment_active_agent()
+    try:
+        result = await loop.run(initial_context=initial_context)
+        publish_activity_done("notification", result.outcome)
+    except Exception as exc:
+        log.error(
+            "notification_investigation_failed",
+            ha_notification_id=notification_id,
+            error=str(exc),
+        )
+    finally:
+        decrement_active_agent()
 
 
 def record_notification_seen(
@@ -624,7 +556,6 @@ async def run_notifications(
         _title = title
         _message = message
         _ha_created_at = ha_created_at
-        _ssh = ssh_client
         _llm = llm_client
         _nax_ref = _nax
         _ws_ref = _ws
@@ -637,50 +568,17 @@ async def run_notifications(
             message: str = _message,
             ha_created_at: "Optional[float]" = _ha_created_at,
         ) -> None:
-            try:
-                analysis = await enrich_and_analyze_notification(
-                    ha_nid,
-                    title,
-                    message,
-                    _ssh,
-                    _llm,
-                    _nax_ref,
-                    _ws_ref,
-                )
-            except Exception as exc:
-                log.error(
-                    "notification_analysis_failed",
-                    ha_notification_id=ha_nid,
-                    error=str(exc),
-                )
-                return
-
-            card_id = f"notif_{ha_nid}"
-            subject = _format_notification_subject(analysis)
-            body = _format_notification_body(analysis)
-
-            payload: dict = {
-                "notification_id": card_id,
-                "ha_notification_id": ha_nid,
-                "is_notification_card": True,
-                "category": analysis.category,
-                "severity": analysis.severity,
-                "human_explanation": analysis.human_explanation,
-                "recommended_action": analysis.recommended_action,
-                "enriched_context": analysis.enriched_context,
-                "original_message": analysis.original_message,
-                "original_title": analysis.original_title,
-                "ha_created_at": ha_created_at,
-            }
-
-            await _notifier_ref.send(subject, body, payload)
-            mark_notification_hitl_sent(ha_nid, _db)
-            log.info(
-                "notification_hitl_sent",
-                ha_notification_id=ha_nid,
-                severity=analysis.severity,
+            await _run_notification_investigation(
+                notification_id=ha_nid,
+                title=title,
+                message=message,
+                ha_created_at=ha_created_at,
+                db_path=_db,
+                notifier=_notifier_ref,
+                llm_client=_llm,
+                netalertx_client=_nax_ref,
+                ws_client=_ws_ref,
             )
-            print(f"[{analysis.severity}] {subject}")
 
         from utils.agent.work_queue import (
             PRIORITY_HIGH,

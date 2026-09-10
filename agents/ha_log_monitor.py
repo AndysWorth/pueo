@@ -380,18 +380,6 @@ class LogEvaluation(BaseModel):
     )
 
 
-class RepairIssueAnalysis(BaseModel):
-    human_explanation: str = Field(
-        description="Plain-English explanation of what the repair issue means and why it matters."
-    )
-    recommended_action_rationale: str = Field(
-        description="Why the recommended action (restart/reboot/dismiss) is appropriate for this issue."
-    )
-    requires_hitl: bool = Field(
-        description="True if the user must take immediate action to keep Home Assistant running correctly."
-    )
-
-
 # ==========================================
 # LOCAL REAL-TIME LOG FILTERING ENGINE
 # ==========================================
@@ -502,90 +490,98 @@ async def analyze_log_line_with_ai(
                 pass
 
 
-async def analyze_repair_issue(
+async def _run_repair_issue_investigation(
     issue: HARepairIssue,
+    notifier: NotifierProtocol,
+    db_path: str,
     llm_client: Optional[LLMClientProtocol] = None,
-) -> RepairIssueAnalysis:
-    """LLM plain-English analysis of an HA repair issue."""
-    from utils.llm.llm_factory import _default_model_for_provider, make_llm_client
+    knowledge_store: Optional[Any] = None,
+) -> None:
+    """Run an AgentLoop to investigate an HA repair issue and create a HITL card."""
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_ha_tool_registry
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = FakeAutonomyGate(auto_execute_result=True)
 
-    issue_text = (
+    class _NullSSH:
+        async def read_file(self, path: str) -> str:
+            return ""
+
+        async def write_file(self, path: str, content: str) -> None:
+            pass
+
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            pass
+
+        async def run(self, command: str, check: bool = False) -> tuple:
+            return (0, "", "")
+
+        async def stream_lines(self, command: str):  # type: ignore[return]
+            pass
+
+    executor = ToolExecutor(
+        ha_ssh_client=_NullSSH(),  # type: ignore[arg-type]
+        gate=gate,  # type: ignore[arg-type]
+        notifier=notifier,
+        knowledge_store=knowledge_store,
+        db_path=db_path,
+        pending_repair_issue=issue,
+    )
+
+    registry = build_ha_tool_registry()
+    system_prompt = load_prompt("agent_loop_repair_issue").format(
+        terminal_tool="finish_repair_issue"
+    )
+
+    initial_context = (
+        f"HA repair issue:\n"
         f"Domain: {issue.domain}\n"
         f"Issue ID: {issue.issue_id}\n"
+        f"Issue key: {issue.issue_key}\n"
         f"Severity: {issue.severity}\n"
         f"Translation key: {issue.translation_key or '(none)'}\n"
     )
     if issue.breaks_in_ha_version:
-        issue_text += f"Breaks in HA version: {issue.breaks_in_ha_version}\n"
+        initial_context += f"Breaks in HA version: {issue.breaks_in_ha_version}\n"
 
-    messages = [
-        {"role": "system", "content": load_prompt("triage_repair_issue")},
-        {
-            "role": "user",
-            "content": (
-                issue_text
-                + "\nExplain this repair issue and whether the user must take immediate action."
-            ),
-        },
-    ]
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
 
-    _model = _default_model_for_provider()
-    _t0 = __import__("time").monotonic()
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=system_prompt,
+        terminal_tool_name="finish_repair_issue",
+        trigger="repair_poll",
+        activity_type="repair_issue",
+        db_path=db_path,
+        knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback(
+            "repair_issue", trigger=f"HA repair: {issue.domain}/{issue.issue_id}"
+        ),
+    )
+    increment_active_agent()
     try:
-        response = await client.chat(
-            model=_model,
-            messages=messages,
-            options={"temperature": 0.0},
-            format=RepairIssueAnalysis.model_json_schema(),
-        )
-        raw = response["message"]["content"]
-        _dur = (__import__("time").monotonic() - _t0) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "analyze_repair_issue",
-                _model,
-                issue_text[:500],
-                raw[:500],
-                _dur,
-                "success",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        return RepairIssueAnalysis.model_validate_json(raw)
+        result = await loop.run(initial_context=initial_context)
+        publish_activity_done("repair_issue", result.outcome)
     except Exception as exc:
-        log.warning(
-            "repair_issue_analysis_failed",
-            issue_id=issue.issue_id,
+        log.error(
+            "repair_issue_investigation_failed",
+            issue_key=issue.issue_key,
             error=str(exc),
         )
-        _dur = (__import__("time").monotonic() - _t0) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "analyze_repair_issue",
-                _model,
-                issue_text[:500],
-                str(exc)[:500],
-                _dur,
-                "error",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        return RepairIssueAnalysis(
-            human_explanation=(
-                f"HA repair issue in {issue.domain}: {issue.translation_key or issue.issue_id}"
-            ),
-            recommended_action_rationale="",
-            requires_hitl=issue.severity in ("critical", "error"),
-        )
+    finally:
+        decrement_active_agent()
 
 
 # ==========================================
@@ -1246,18 +1242,14 @@ async def poll_for_updates(
 async def poll_for_notifications(
     notifier: Optional[NotifierProtocol] = None,
     llm_client: Optional[LLMClientProtocol] = None,
-    ssh_client: Optional[SSHClientProtocol] = None,
     ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     db_path: str = DB_PATH,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires approval alerts."""
     from .ha_notification_manager import (
-        _format_notification_body,
-        _format_notification_subject,
+        _run_notification_investigation,
         classify_notification,
-        enrich_and_analyze_notification,
-        mark_notification_hitl_sent,
         record_notification_seen,
     )
     from netalertx.api_client import NetAlertXAPIClient
@@ -1269,9 +1261,6 @@ async def poll_for_notifications(
     )  # pragma: no cover
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     _llm: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-    _ssh: SSHClientProtocol = ssh_client or AsyncSSHClient(
-        HA_HOST, HA_USER, SSH_KEY_PATH
-    )  # pragma: no cover
     _nax: NetAlertXClientProtocol = (
         netalertx_client
         or NetAlertXAPIClient(  # pragma: no cover
@@ -1329,51 +1318,55 @@ async def poll_for_notifications(
             should_send = await asyncio.to_thread(_check_notif_should_send, nid)
 
             if should_send:
-                try:
-                    analysis = await enrich_and_analyze_notification(
-                        nid,
-                        title,
-                        message,
-                        ssh_client=_ssh,
-                        llm_client=_llm,
-                        netalertx_client=_nax,
-                        ws_client=_ws,
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "notification_enrichment_failed",
-                        notification_id=nid,
-                        error=str(exc),
-                    )
-                    continue
+                # Capture loop-local variables for the async closure.
+                _nid = nid
+                _title = title
+                _message = message
+                _ha_created_at = ha_created_at
+                _notifier_ref = _notifier
+                _nax_ref = _nax
+                _ws_ref = _ws
+                _llm_ref = _llm
+                _db = db_path
 
-                log.info(
-                    "new_notification_detected",
-                    notification_id=nid,
-                    category=analysis.category,
-                    severity=analysis.severity,
+                async def _run_investigation(
+                    nid: str = _nid,
+                    title: "Optional[str]" = _title,
+                    message: str = _message,
+                    ha_created_at: "Optional[float]" = _ha_created_at,
+                ) -> None:
+                    await _run_notification_investigation(
+                        notification_id=nid,
+                        title=title,
+                        message=message,
+                        ha_created_at=ha_created_at,
+                        db_path=_db,
+                        notifier=_notifier_ref,
+                        llm_client=_llm_ref,
+                        netalertx_client=_nax_ref,
+                        ws_client=_ws_ref,
+                    )
+
+                from utils.agent.work_queue import (
+                    PRIORITY_HIGH,
+                    WorkItem,
+                    get_work_queue_or_none,
                 )
-                card_id = f"notif_{nid}"
-                payload: dict = {
-                    "notification_id": card_id,
-                    "ha_notification_id": nid,
-                    "suppression_key": f"notification:{nid}",
-                    "is_notification_card": True,
-                    "category": analysis.category,
-                    "severity": analysis.severity,
-                    "human_explanation": analysis.human_explanation,
-                    "recommended_action": analysis.recommended_action,
-                    "enriched_context": analysis.enriched_context,
-                    "original_message": analysis.original_message,
-                    "original_title": analysis.original_title,
-                    "ha_created_at": ha_created_at,
-                }
-                await _notifier.send(
-                    subject=_format_notification_subject(analysis),
-                    body=_format_notification_body(analysis),
-                    payload=payload,
-                )
-                mark_notification_hitl_sent(nid, db_path=db_path)
+
+                _wq = get_work_queue_or_none()
+                if _wq is not None:
+                    await _wq.submit(
+                        WorkItem(
+                            priority=PRIORITY_HIGH,
+                            activity_type="notification",
+                            description=f"Notification triage: {nid}",
+                            dedup_key=f"notification:{nid}",
+                            suppress_while_running=frozenset(),
+                            coro_factory=_run_investigation,
+                        )
+                    )
+                else:
+                    await _run_investigation()
                 _new_notif_count += 1
 
         _notif_outcome = (
@@ -1399,11 +1392,9 @@ async def poll_for_repairs(
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from .ha_agent_advanced import (
-        mark_repair_hitl_sent,
         mark_repair_resolved,
         record_repair_seen,
     )
-    from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
     from utils.ha.ha_rest_client import get_ha_repair_issues
     from utils.ha.ha_ws_client import HAWebSocketClient
 
@@ -1462,65 +1453,46 @@ async def poll_for_repairs(
             )
 
             if not already_sent:
-                is_reboot = "reboot" in (issue.translation_key or "").lower()
-                is_restart = (
-                    "restart" in (issue.translation_key or "").lower() and not is_reboot
-                )
-                action = (
-                    "reboot"
-                    if is_reboot or issue.severity == "critical"
-                    else "restart" if is_restart else "dismiss"
-                )
-                analysis = await analyze_repair_issue(issue, llm_client)
-                title = f"HA repair: {issue.domain}/{issue.issue_id}"
-                body_parts = [
-                    f"Domain: {issue.domain}",
-                    f"Issue: {issue.issue_id}",
-                    f"Severity: {issue.severity}",
-                ]
-                if analysis.human_explanation:
-                    body_parts.append(f"What this means: {analysis.human_explanation}")
-                elif issue.translation_key:
-                    body_parts.append(f"Type: {issue.translation_key}")
-                if analysis.recommended_action_rationale:
-                    body_parts.append(
-                        f"Recommended action: {analysis.recommended_action_rationale}"
-                    )
-                if issue.breaks_in_ha_version:
-                    body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
-                # Use translation_key as the stable suppression key when available so the
-                # same logical issue maps to the same card even after HA UUID reassignment.
-                _repair_sup_key = (
-                    f"ha_repair:{issue.translation_key or issue.issue_key}"
-                )
-                from utils.hitl.hitl_tracker import stable_nid
+                _issue_snap = issue
+                _notifier_snap = _notifier
+                _llm_snap = llm_client
+                _db_snap = db_path
 
-                payload: dict = {
-                    "notification_id": stable_nid(_repair_sup_key),
-                    "card_type": CARD_TYPE_HA_REPAIR,
-                    "suppression_key": _repair_sup_key,
-                    "action": action,
-                    "domain": issue.domain,
-                    "issue_id": issue.issue_id,
-                    "issue_key": issue.issue_key,
-                    "severity": issue.severity.upper(),
-                    "title": title,
-                    "body": "\n".join(body_parts),
-                    "breaks_in_ha_version": issue.breaks_in_ha_version,
-                    "translation_key": issue.translation_key,
-                }
-                mark_repair_hitl_sent(issue.issue_key)
-                await _notifier.send(
-                    subject=title,
-                    body="\n".join(body_parts),
-                    payload=payload,
+                async def _run_investigation(
+                    _issue: HARepairIssue = _issue_snap,
+                    _notifier_ref: NotifierProtocol = _notifier_snap,
+                    _llm_ref: Optional[LLMClientProtocol] = _llm_snap,
+                    _db_ref: str = _db_snap,
+                ) -> None:
+                    await _run_repair_issue_investigation(
+                        issue=_issue,
+                        notifier=_notifier_ref,
+                        db_path=_db_ref,
+                        llm_client=_llm_ref,
+                    )
+
+                from utils.agent.work_queue import (
+                    PRIORITY_NORMAL,
+                    WorkItem,
+                    get_work_queue_or_none,
                 )
-                log.info(
-                    "repair_hitl_card_sent",
-                    issue_key=issue.issue_key,
-                    action=action,
-                    translation_key=issue.translation_key,
-                )
+
+                _wq = get_work_queue_or_none()
+                if _wq is not None:
+                    await _wq.submit(
+                        WorkItem(
+                            priority=PRIORITY_NORMAL,
+                            activity_type="repair_issue",
+                            description=(
+                                f"Repair issue investigation: {issue.domain}/{issue.issue_id}"
+                            ),
+                            dedup_key=f"repair_issue:{issue.issue_key}",
+                            suppress_while_running=frozenset(),
+                            coro_factory=_run_investigation,
+                        )
+                    )
+                else:
+                    await _run_investigation()
 
         # Reconcile: mark resolved any previously-sent repairs no longer in HA's list.
         import sqlite3 as _sqlite3
@@ -1613,7 +1585,6 @@ async def main(
             poll_for_notifications(
                 notifier=_notifier,
                 llm_client=llm_client,
-                ssh_client=_ssh,
                 ha_ws_client=ha_ws_client,
             )
         )
