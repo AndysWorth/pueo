@@ -576,6 +576,10 @@ async def supervisor_main(config_path: Path) -> None:
     set_supervisor_instance(supervisor)
     _supervisor_start_time = __import__("time").monotonic()
 
+    from utils.agent.work_queue import init_work_queue as _init_wq
+
+    work_queue = _init_wq()
+
     # Build shared ToolExecutor and attach to supervisor so the chat loop and
     # dashboard code_proposal handler share the same dynamic-tools registry.
     from utils.agent.autonomy import AutonomyGate
@@ -888,6 +892,9 @@ async def supervisor_main(config_path: Path) -> None:
                     "netalertx_setup",
                     lambda: _nax_installer.main(gate=_nax_gate, notifier=notifier),
                 )
+
+    # Start the serialized work queue (must be called inside the running event loop).
+    work_queue.start()
 
     # Register signal handlers for clean shutdown.
     # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.

@@ -223,15 +223,64 @@ class ResourcePoller:
                             f" (total: {status.disk_total_gb:.2f} GB)."
                             f" Critical threshold: {self._disk_critical_gb} GB."
                         )
-                        auto_summary = await run_safe_disk_recovery(
-                            ssh_client=self._ssh,
-                            rest_client=self._rest_client,
-                            recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
-                            journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
-                            llm_client=self._llm_client,
-                            knowledge_store=self._knowledge_store,
-                            initial_context=_inv_ctx,
+                        _rdr_days = _cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS
+                        _jnl_mb = _cfg.DISK_RECOVERY_JOURNAL_MAX_MB
+                        _self = self
+
+                        _result_future: asyncio.Future = (
+                            asyncio.get_event_loop().create_future()
                         )
+
+                        async def _disk_recovery_coro(
+                            inv_ctx: str = _inv_ctx,
+                            rdr_days: int = _rdr_days,
+                            jnl_mb: int = _jnl_mb,
+                        ) -> None:
+                            try:
+                                _s = await run_safe_disk_recovery(
+                                    ssh_client=_self._ssh,
+                                    rest_client=_self._rest_client,
+                                    recorder_keep_days=rdr_days,
+                                    journal_max_mb=jnl_mb,
+                                    llm_client=_self._llm_client,
+                                    knowledge_store=_self._knowledge_store,
+                                    initial_context=inv_ctx,
+                                )
+                                if not _result_future.done():
+                                    _result_future.set_result(_s)
+                            except Exception as _exc:
+                                if not _result_future.done():
+                                    _result_future.set_exception(_exc)
+
+                        from utils.agent.work_queue import (
+                            PRIORITY_HIGH,
+                            WorkItem,
+                            get_work_queue_or_none,
+                        )
+
+                        _wq = get_work_queue_or_none()
+                        if _wq is not None:
+                            await _wq.submit(
+                                WorkItem(
+                                    priority=PRIORITY_HIGH,
+                                    activity_type="disk_recovery",
+                                    description="Disk space critical — recovery",
+                                    dedup_key="disk_recovery",
+                                    suppress_while_running=frozenset({"ha_update"}),
+                                    coro_factory=_disk_recovery_coro,
+                                )
+                            )
+                            auto_summary = await _result_future
+                        else:
+                            auto_summary = await run_safe_disk_recovery(
+                                ssh_client=self._ssh,
+                                rest_client=self._rest_client,
+                                recorder_keep_days=_rdr_days,
+                                journal_max_mb=_jnl_mb,
+                                llm_client=self._llm_client,
+                                knowledge_store=self._knowledge_store,
+                                initial_context=_inv_ctx,
+                            )
                         # Offload pending backups and enforce retention with force_critical
                         try:
                             from agents import ha_agent_advanced as _adv

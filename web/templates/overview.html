@@ -250,11 +250,13 @@
       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6366f1;animation:pulse 1.2s infinite;flex-shrink:0;"></span>
       <span id="active-activity-heading">Current Activity</span>
       <span id="active-activity-count" style="font-size:0.75rem;color:var(--muted);display:none;"></span>
+      <span id="queue-pending-badge" hidden style="margin-left:auto;font-size:0.72rem;padding:1px 7px;border-radius:10px;background:#e9d5ff;color:#6b21a8;font-weight:600;"></span>
     </div>
     <div style="display:flex;align-items:baseline;gap:0.5rem;margin-bottom:0.25rem;">
       <span id="active-activity-trigger" style="font-size:0.75rem;color:var(--muted);font-style:italic;"></span>
     </div>
     <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:5.2em;overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;gap:2px;"></ul>
+    <ul id="queue-pending-list" hidden style="list-style:none;padding:0;margin:0.5rem 0 0;font-size:0.78rem;color:var(--muted);border-top:1px solid var(--border);padding-top:0.4rem;display:flex;flex-direction:column;gap:2px;"></ul>
   </div>
 
   <!-- Recent Events -->
@@ -992,6 +994,28 @@
       showActivityWidget(d.detail || '', d.activity || '', '');
   }).catch(function() {});
 
+  function updateQueueBadge(data) {
+    var badge = document.getElementById('queue-pending-badge');
+    var list = document.getElementById('queue-pending-list');
+    var n = data.pending_count || 0;
+    if (n > 0) {
+      badge.textContent = n + ' queued';
+      badge.hidden = false;
+      list.hidden = false;
+      list.innerHTML = (data.pending || []).slice(0, 5).map(function(item) {
+        return '<li>⏳ <strong>' + (item.priority || '') + '</strong> — ' + (item.description || item.activity_type || '') + '</li>';
+      }).join('');
+    } else {
+      badge.hidden = true;
+      list.hidden = true;
+      list.innerHTML = '';
+    }
+  }
+
+  fetch('/api/pueo-queue').then(function(r) { return r.json(); }).then(function(d) {
+    updateQueueBadge(d);
+  }).catch(function() {});
+
   var _overviewMsg = function (e) {
     try {
       var evt = JSON.parse(e.data);
@@ -1002,6 +1026,7 @@
       else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget(evt.activity || '');
       else if (evt.event_type === 'triage_start') showActivityWidget('Triage in progress…', 'triage', 'HA log event');
       else if (evt.event_type === 'triage_done') scheduleHideActivityWidget('triage');
+      else if (evt.event_type === 'queue_update') updateQueueBadge(evt);
     } catch (_) {}
   };
   es.addEventListener('message', _overviewMsg);

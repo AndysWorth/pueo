@@ -540,6 +540,23 @@ async def pueo_status() -> JSONResponse:
     return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
 
 
+@app.get("/api/pueo-queue")
+async def pueo_queue_status() -> JSONResponse:
+    """Return the current work-queue snapshot (pending + running) for the dashboard."""
+    from utils.agent.work_queue import get_work_queue_or_none
+
+    wq = get_work_queue_or_none()
+    if wq is None:
+        return JSONResponse({"pending": [], "pending_count": 0, "running": None})
+    return JSONResponse(
+        {
+            "pending": wq.snapshot(),
+            "pending_count": len(wq._pending),
+            "running": wq.running_snapshot(),
+        }
+    )
+
+
 @app.get("/api/ollama-status")
 async def ollama_status_api() -> JSONResponse:
     """Return cached Ollama status (loaded models + active calls) for the navbar pill."""
@@ -2963,7 +2980,27 @@ async def post_chat_message(req: ChatMessageRequest) -> JSONResponse:
     if session_id is None:
         raise HTTPException(status_code=500, detail="session creation failed")
     prior = history[:-1]
-    asyncio.create_task(_run_chat_loop(session_id, message, prior))
+    from utils.agent.work_queue import PRIORITY_NORMAL, WorkItem, get_work_queue_or_none
+
+    _sid = session_id
+    _msg = message
+    _prior = prior
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        asyncio.create_task(
+            _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="chat",
+                    description=f"Chat session {_sid}",
+                    dedup_key="chat",
+                    suppress_while_running=frozenset(),
+                    coro_factory=lambda: _run_chat_loop(_sid, _msg, _prior),
+                )
+            )
+        )
+    else:
+        asyncio.create_task(_run_chat_loop(_sid, _msg, _prior))
     return JSONResponse({"session_id": session_id}, status_code=202)
 
 

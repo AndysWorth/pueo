@@ -2021,6 +2021,13 @@ class TestSupervisorMain:
             orig_start(self, name, factory, interval_seconds=interval_seconds)
 
         monkeypatch.setattr(LoopSupervisor, "start", _tracking_start)
+
+        # Reset the work-queue singleton so supervisor_main's init_work_queue()
+        # call doesn't leak into subsequent tests.
+        import utils.agent.work_queue as _wq_mod
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", None)
+
         return started
 
     def test_core_loops_always_start(self, monkeypatch, tmp_path):
