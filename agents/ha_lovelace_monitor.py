@@ -442,13 +442,43 @@ async def poll_for_dashboard_entity_issues(
 
         # Delegate unregistered entity classification to the AgentLoop.
         if suspicious_unregistered:
-            await _run_lovelace_investigation(
-                suspicious=suspicious_unregistered,
-                ws_client=_ws,
-                db_path=_db_path,
-                notifier=_notifier,
-                llm_client=llm_client,
+            from utils.agent.work_queue import (
+                PRIORITY_NORMAL,
+                WorkItem,
+                get_work_queue_or_none,
             )
+
+            _suspicious = suspicious_unregistered
+            _ws_ref = _ws
+            _db_ref = _db_path
+            _notifier_ref = _notifier
+            _llm_ref = llm_client
+            _wq = get_work_queue_or_none()
+            if _wq is not None:
+                await _wq.submit(
+                    WorkItem(
+                        priority=PRIORITY_NORMAL,
+                        activity_type="lovelace_investigation",
+                        description="Lovelace entity investigation",
+                        dedup_key="lovelace_investigation",
+                        suppress_while_running=frozenset(),
+                        coro_factory=lambda: _run_lovelace_investigation(
+                            suspicious=_suspicious,
+                            ws_client=_ws_ref,
+                            db_path=_db_ref,
+                            notifier=_notifier_ref,
+                            llm_client=_llm_ref,
+                        ),
+                    )
+                )
+            else:
+                await _run_lovelace_investigation(
+                    suspicious=_suspicious,
+                    ws_client=_ws_ref,
+                    db_path=_db_ref,
+                    notifier=_notifier_ref,
+                    llm_client=_llm_ref,
+                )
 
         # Reconcile missing-entity cards.
         with sqlite3.connect(_db_path) as conn:

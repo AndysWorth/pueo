@@ -619,51 +619,92 @@ async def run_notifications(
             log.debug("notification_card_already_sent", ha_notification_id=ha_nid)
             continue
 
-        try:
-            analysis = await enrich_and_analyze_notification(
-                ha_nid,
-                title,
-                message,
-                ssh_client,
-                llm_client,
-                _nax,
-                _ws,
-            )
-        except Exception as exc:
-            log.error(
-                "notification_analysis_failed",
+        # Capture loop-local variables for the async closure.
+        _ha_nid = ha_nid
+        _title = title
+        _message = message
+        _ha_created_at = ha_created_at
+        _ssh = ssh_client
+        _llm = llm_client
+        _nax_ref = _nax
+        _ws_ref = _ws
+        _notifier_ref = card_notifier
+        _db = db_path
+
+        async def _analyze_and_send(
+            ha_nid: str = _ha_nid,
+            title: "Optional[str]" = _title,
+            message: str = _message,
+            ha_created_at: "Optional[float]" = _ha_created_at,
+        ) -> None:
+            try:
+                analysis = await enrich_and_analyze_notification(
+                    ha_nid,
+                    title,
+                    message,
+                    _ssh,
+                    _llm,
+                    _nax_ref,
+                    _ws_ref,
+                )
+            except Exception as exc:
+                log.error(
+                    "notification_analysis_failed",
+                    ha_notification_id=ha_nid,
+                    error=str(exc),
+                )
+                return
+
+            card_id = f"notif_{ha_nid}"
+            subject = _format_notification_subject(analysis)
+            body = _format_notification_body(analysis)
+
+            payload: dict = {
+                "notification_id": card_id,
+                "ha_notification_id": ha_nid,
+                "is_notification_card": True,
+                "category": analysis.category,
+                "severity": analysis.severity,
+                "human_explanation": analysis.human_explanation,
+                "recommended_action": analysis.recommended_action,
+                "enriched_context": analysis.enriched_context,
+                "original_message": analysis.original_message,
+                "original_title": analysis.original_title,
+                "ha_created_at": ha_created_at,
+            }
+
+            await _notifier_ref.send(subject, body, payload)
+            mark_notification_hitl_sent(ha_nid, _db)
+            log.info(
+                "notification_hitl_sent",
                 ha_notification_id=ha_nid,
-                error=str(exc),
+                severity=analysis.severity,
             )
-            continue
+            print(f"[{analysis.severity}] {subject}")
 
-        card_id = f"notif_{ha_nid}"
-        subject = _format_notification_subject(analysis)
-        body = _format_notification_body(analysis)
-
-        payload: dict = {
-            "notification_id": card_id,
-            "ha_notification_id": ha_nid,
-            "is_notification_card": True,
-            "category": analysis.category,
-            "severity": analysis.severity,
-            "human_explanation": analysis.human_explanation,
-            "recommended_action": analysis.recommended_action,
-            "enriched_context": analysis.enriched_context,
-            "original_message": analysis.original_message,
-            "original_title": analysis.original_title,
-            "ha_created_at": ha_created_at,
-        }
-
-        await card_notifier.send(subject, body, payload)
-        mark_notification_hitl_sent(ha_nid, db_path)
-        new_count += 1
-        log.info(
-            "notification_hitl_sent",
-            ha_notification_id=ha_nid,
-            severity=analysis.severity,
+        from utils.agent.work_queue import (
+            PRIORITY_HIGH,
+            WorkItem,
+            get_work_queue_or_none,
         )
-        print(f"[{analysis.severity}] {subject}")
+
+        _wq = get_work_queue_or_none()
+        if _wq is not None:
+            accepted = await _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_HIGH,
+                    activity_type="notification",
+                    description=f"Notification triage: {ha_nid}",
+                    dedup_key=f"notification:{ha_nid}",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_analyze_and_send,
+                )
+            )
+            if accepted:
+                new_count += 1
+        else:
+            await _analyze_and_send()
+            new_count += 1
 
     if new_count == 0:
         print("No new notifications to triage.")

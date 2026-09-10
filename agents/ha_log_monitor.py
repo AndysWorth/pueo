@@ -641,41 +641,52 @@ async def tail_remote_log_stream(
                         pass
                     continue
 
-                log.info("triage_start", model=_default_model_for_provider())
-                evaluation, llm_trace = await analyze_log_line_with_ai(
-                    list(_log_buffer), llm_client=llm_client
-                )
-                log.info(
-                    "triage_complete",
-                    actionable=evaluation.is_actionable,
-                    cause=evaluation.root_cause_summary,
-                    confidence=evaluation.confidence_score,
-                )
-                import config as _lm_dbg
+                # Snapshot mutable values before handing off to the queue consumer.
+                _line_fp = hashlib.sha256(clean_line.encode()).hexdigest()[:16]
+                _buf_snap = list(_log_buffer)
+                _clean_snap = clean_line
+                _loop_name = state.loop_name
 
-                if _lm_dbg.DEBUG_LEVEL >= 1:
-                    log.debug(
-                        "log_triage_result",
-                        cause=evaluation.root_cause_summary[:200],
-                        confidence=evaluation.confidence_score,
-                        actionable=evaluation.is_actionable,
+                async def _triage_coro(
+                    _buf: list = _buf_snap,
+                    _cl: str = _clean_snap,
+                    _ln: str = _loop_name,
+                ) -> None:
+                    import config as _lm_dbg
+
+                    log.info("triage_start", model=_default_model_for_provider())
+                    evaluation, llm_trace = await analyze_log_line_with_ai(
+                        _buf, llm_client=llm_client
                     )
-
-                if (
-                    evaluation.is_actionable
-                    and evaluation.confidence_score > CONFIDENCE_THRESHOLD
-                ):
+                    log.info(
+                        "triage_complete",
+                        actionable=evaluation.is_actionable,
+                        cause=evaluation.root_cause_summary,
+                        confidence=evaluation.confidence_score,
+                    )
+                    if _lm_dbg.DEBUG_LEVEL >= 1:
+                        log.debug(
+                            "log_triage_result",
+                            cause=evaluation.root_cause_summary[:200],
+                            confidence=evaluation.confidence_score,
+                            actionable=evaluation.is_actionable,
+                        )
+                    if not (
+                        evaluation.is_actionable
+                        and evaluation.confidence_score > CONFIDENCE_THRESHOLD
+                    ):
+                        return
                     try:  # pragma: no cover
                         from utils.core.timeline import write_timeline_event
 
                         await asyncio.to_thread(
                             write_timeline_event,
                             "ERROR",
-                            state.loop_name,
+                            _ln,
                             evaluation.root_cause_summary,
                             {
                                 "confidence": evaluation.confidence_score,
-                                "log_line": clean_line,
+                                "log_line": _cl,
                                 "llm_trace": llm_trace.as_dict(),
                             },
                         )
@@ -686,15 +697,15 @@ async def tail_remote_log_stream(
                             "self_healing_disabled",
                             cause=evaluation.root_cause_summary,
                         )
-                        continue
+                        return
                     if not _debouncer.record():
                         log.info("debounce_suppressed")
-                        continue
+                        return
                     try:
                         _rate_limiter.check()
                     except RateLimitExceeded:
                         log.warning("rate_limit_exceeded")
-                        continue
+                        return
                     # Persistent dedup: skip if we already sent an approval card for this
                     # error pattern within the cooldown window. Survives daemon restarts
                     # unlike the in-memory _debouncer.
@@ -711,7 +722,7 @@ async def tail_remote_log_stream(
                             fingerprint=_fingerprint,
                             cause=evaluation.root_cause_summary,
                         )
-                        continue
+                        return
                     if not _gate.should_auto_execute(RiskLevel.HIGH):
                         log.info(
                             "autonomy_gate_blocked",
@@ -732,22 +743,54 @@ async def tail_remote_log_stream(
                                 "cause": evaluation.root_cause_summary,
                                 "confidence": evaluation.confidence_score,
                                 "diagnosis": evaluation.model_dump(),
-                                "evidence_raw": {
-                                    "log_buffer_snapshot": list(_log_buffer)
-                                },
+                                "evidence_raw": {"log_buffer_snapshot": list(_buf)},
                                 "llm_trace": llm_trace.as_dict(),
                             },
                         )
-                        continue
+                        return
                     log.warning("repair_triggered")
-                    asyncio.create_task(trigger_remediation_pipeline())
                     await asyncio.to_thread(_triage_mark_hitl_sent, _fingerprint, _now)
-                    log.info(
-                        "repair_cooldown_start",
-                        seconds=REPAIR_COOLDOWN_SECONDS,
+                    from utils.agent.work_queue import (
+                        PRIORITY_CRITICAL,
+                        WorkItem,
+                        get_work_queue_or_none,
                     )
-                    await asyncio.sleep(REPAIR_COOLDOWN_SECONDS)
-                    log.info("repair_cooldown_complete")
+
+                    _wq = get_work_queue_or_none()
+                    if _wq is not None:
+                        await _wq.submit(
+                            WorkItem(
+                                priority=PRIORITY_CRITICAL,
+                                activity_type="ha_repair",
+                                description=f"Repair: {evaluation.root_cause_summary[:80]}",
+                                dedup_key=f"ha_repair:{_fingerprint}",
+                                suppress_while_running=frozenset(),
+                                coro_factory=trigger_remediation_pipeline,
+                            )
+                        )
+                    else:
+                        asyncio.create_task(trigger_remediation_pipeline())
+
+                from utils.agent.work_queue import (
+                    PRIORITY_HIGH,
+                    WorkItem,
+                    get_work_queue_or_none,
+                )
+
+                _wq = get_work_queue_or_none()
+                if _wq is not None:
+                    await _wq.submit(
+                        WorkItem(
+                            priority=PRIORITY_HIGH,
+                            activity_type="triage",
+                            description=f"Triage: {_clean_snap[:80]}",
+                            dedup_key=f"triage:{_line_fp}",
+                            suppress_while_running=frozenset(),
+                            coro_factory=_triage_coro,
+                        )
+                    )
+                else:
+                    await _triage_coro()
 
     except Exception as e:
         if isinstance(e, OSError) and e.errno in _TRANSIENT_SSH_ERRNOS:
@@ -933,14 +976,64 @@ async def poll_for_updates(
                                     _integrations = _cached.installed_integrations
                             except Exception:  # nosec B110
                                 pass
-                            impact = await personalize_breaking_changes(
-                                readiness.breaking_changes,
-                                ha_cfg_yaml,
-                                _integrations,
-                                _llm,
-                                ssh_client=_ha_ssh,
-                                knowledge_store=knowledge_store,
+                            _impact_future: asyncio.Future = (
+                                asyncio.get_event_loop().create_future()
                             )
+                            _bc_snap = readiness.breaking_changes
+                            _cfg_snap = ha_cfg_yaml
+                            _int_snap = _integrations
+                            _ssh_snap = _ha_ssh
+                            _ks_snap = knowledge_store
+                            _llm_snap = _llm
+
+                            async def _personalize_coro(
+                                bcs: list = _bc_snap,
+                                cfg: str = _cfg_snap,
+                                ints: list = _int_snap,
+                            ) -> None:
+                                try:
+                                    _r = await personalize_breaking_changes(
+                                        bcs,
+                                        cfg,
+                                        ints,
+                                        _llm_snap,
+                                        ssh_client=_ssh_snap,
+                                        knowledge_store=_ks_snap,
+                                    )
+                                    if not _impact_future.done():
+                                        _impact_future.set_result(_r)
+                                except Exception as _exc:
+                                    if not _impact_future.done():
+                                        _impact_future.set_exception(_exc)
+
+                            from utils.agent.work_queue import (
+                                PRIORITY_NORMAL,
+                                WorkItem,
+                                get_work_queue_or_none,
+                            )
+
+                            _wq = get_work_queue_or_none()
+                            if _wq is not None:
+                                await _wq.submit(
+                                    WorkItem(
+                                        priority=PRIORITY_NORMAL,
+                                        activity_type="update_analysis",
+                                        description=f"Update impact analysis: {u.component}",
+                                        dedup_key="update_analysis",
+                                        suppress_while_running=frozenset(),
+                                        coro_factory=_personalize_coro,
+                                    )
+                                )
+                                impact = await _impact_future
+                            else:
+                                impact = await personalize_breaking_changes(
+                                    _bc_snap,
+                                    _cfg_snap,
+                                    _int_snap,
+                                    _llm,
+                                    ssh_client=_ha_ssh,
+                                    knowledge_store=knowledge_store,
+                                )
                             log.info(
                                 "breaking_changes_personalized",
                                 instance_impact=impact.instance_impact,

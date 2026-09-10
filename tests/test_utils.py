@@ -6272,3 +6272,474 @@ class TestSupervisorActivityHelpers:
             assert get_active_agent_count() == 0
         finally:
             sup._active_agent_count = original
+
+
+# ── utils/agent/work_queue.py ─────────────────────────────────────────────────
+
+
+class TestPueoWorkQueue:
+    """Tests for PueoWorkQueue serialized work queue."""
+
+    async def _cancel_queue(self, q):
+        if q._consumer_task and not q._consumer_task.done():
+            q._consumer_task.cancel()
+            try:
+                await q._consumer_task
+            except asyncio.CancelledError:
+                pass
+
+    def test_submit_runs_item(self):
+        """A submitted item's coro_factory is called by the consumer."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        ran = []
+
+        async def run():
+            q = PueoWorkQueue()
+            q.start()
+
+            async def _coro():
+                ran.append(True)
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="test item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_coro,
+                )
+            )
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert ran == [True]
+
+    def test_priority_ordering(self):
+        """CRITICAL item queued before queue starts runs before LOW item."""
+        from utils.agent.work_queue import (
+            PRIORITY_CRITICAL,
+            PRIORITY_LOW,
+            PueoWorkQueue,
+            WorkItem,
+        )
+
+        order = []
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _low():
+                order.append("low")
+
+            async def _critical():
+                order.append("critical")
+
+            # Submit both before starting so both are pending
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_LOW,
+                    activity_type="low",
+                    description="low item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_low,
+                    submitted_at=1.0,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_CRITICAL,
+                    activity_type="critical",
+                    description="critical item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_critical,
+                    submitted_at=2.0,
+                )
+            )
+            q.start()
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert order == ["critical", "low"]
+
+    def test_dedup_drops_while_pending(self):
+        """Second submit with same non-empty dedup_key while first is pending returns False."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _noop():
+                pass
+
+            a1 = await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="first",
+                    dedup_key="mykey",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            a2 = await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="second",
+                    dedup_key="mykey",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            return a1, a2
+
+        a1, a2 = asyncio.run(run())
+        assert a1 is True
+        assert a2 is False
+
+    def test_dedup_drops_while_running(self):
+        """Submit with same dedup_key as the currently running item returns False."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocking():
+                started.set()
+                await release.wait()
+
+            async def _noop():
+                pass
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="first",
+                    dedup_key="unique_key",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_blocking,
+                )
+            )
+            q.start()
+            await started.wait()  # first item is now running
+
+            a2 = await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="second",
+                    dedup_key="unique_key",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            release.set()
+            await self._cancel_queue(q)
+            return a2
+
+        result = asyncio.run(run())
+        assert result is False
+
+    def test_suppress_holds_item_until_dependency_clears(self):
+        """Suppressed item stays pending while its declared activity type is running."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+            a_started = asyncio.Event()
+            a_release = asyncio.Event()
+
+            async def _a():
+                a_started.set()
+                await a_release.wait()
+
+            async def _b():
+                pass
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="ha_update",
+                    description="update item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_a,
+                )
+            )
+            q.start()
+            await a_started.wait()  # _a is running; ha_update in _active_types
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="disk_recovery",
+                    description="disk item",
+                    dedup_key="",
+                    suppress_while_running=frozenset({"ha_update"}),
+                    coro_factory=_b,
+                )
+            )
+            await asyncio.sleep(0.01)  # let consumer attempt (and skip) disk_recovery
+
+            pending_types = [item.activity_type for item in q._pending]
+            running_type = q._running.activity_type if q._running else None
+
+            a_release.set()
+            await self._cancel_queue(q)
+            return pending_types, running_type
+
+        pending_types, running_type = asyncio.run(run())
+        assert "disk_recovery" in pending_types
+        assert running_type == "ha_update"
+
+    def test_suppressed_item_does_eventually_run(self):
+        """Suppressed item runs once its dependency activity type finishes."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        ran_b = []
+
+        async def run():
+            q = PueoWorkQueue()
+            a_release = asyncio.Event()
+
+            async def _a():
+                await a_release.wait()
+
+            async def _b():
+                ran_b.append(True)
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="ha_update",
+                    description="update item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_a,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="disk_recovery",
+                    description="disk item",
+                    dedup_key="",
+                    suppress_while_running=frozenset({"ha_update"}),
+                    coro_factory=_b,
+                )
+            )
+            q.start()
+            await asyncio.sleep(0.01)  # let A start
+            a_release.set()
+            await asyncio.sleep(0.05)  # let B run after A finishes
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert ran_b == [True]
+
+    def test_exception_does_not_stop_queue(self):
+        """An exception raised inside a work item does not halt the consumer loop."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        ran_second = []
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _fail():
+                raise RuntimeError("deliberate failure")
+
+            async def _ok():
+                ran_second.append(True)
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test_fail",
+                    description="failing item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_fail,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test_ok",
+                    description="ok item",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_ok,
+                )
+            )
+            q.start()
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+
+        asyncio.run(run())
+        assert ran_second == [True]
+
+    def test_snapshot_lists_pending_items(self):
+        """snapshot() returns descriptions of all pending items."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _noop():
+                pass
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="chat",
+                    description="Chat session 1",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="triage",
+                    description="Triage: error line",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            return q.snapshot()
+
+        snap = asyncio.run(run())
+        descriptions = [s["description"] for s in snap]
+        assert "Chat session 1" in descriptions
+        assert "Triage: error line" in descriptions
+
+    def test_snapshot_empty_after_completion(self):
+        """snapshot() returns [] once the only pending item has finished running."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _noop():
+                pass
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="chat",
+                    description="a chat",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            q.start()
+            await asyncio.sleep(0.05)
+            await self._cancel_queue(q)
+            return q.snapshot()
+
+        snap = asyncio.run(run())
+        assert snap == []
+
+    def test_no_dedup_key_allows_duplicates(self):
+        """Items with empty dedup_key '' are never deduplicated."""
+        from utils.agent.work_queue import PRIORITY_NORMAL, PueoWorkQueue, WorkItem
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _noop():
+                pass
+
+            a1 = await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="first",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            a2 = await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="test",
+                    description="second",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                )
+            )
+            return a1, a2, len(q._pending)
+
+        a1, a2, count = asyncio.run(run())
+        assert a1 is True
+        assert a2 is True
+        assert count == 2
+
+    def test_bisect_ordering_by_priority_then_submitted_at(self):
+        """bisect.insort keeps _pending sorted by (priority, submitted_at)."""
+        from utils.agent.work_queue import (
+            PRIORITY_CRITICAL,
+            PRIORITY_LOW,
+            PRIORITY_NORMAL,
+            PueoWorkQueue,
+            WorkItem,
+        )
+
+        async def run():
+            q = PueoWorkQueue()
+
+            async def _noop():
+                pass
+
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_LOW,
+                    activity_type="low",
+                    description="low",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                    submitted_at=1.0,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_CRITICAL,
+                    activity_type="critical",
+                    description="critical",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                    submitted_at=2.0,
+                )
+            )
+            await q.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="normal",
+                    description="normal",
+                    dedup_key="",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_noop,
+                    submitted_at=0.5,
+                )
+            )
+            return [item.activity_type for item in q._pending]
+
+        order = asyncio.run(run())
+        assert order == ["critical", "normal", "low"]
