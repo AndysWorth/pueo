@@ -9883,3 +9883,236 @@ class TestNetAlertXSwitchFlow:
         assert (
             not installer_called
         ), "Installer should not run if uninstall was incomplete"
+
+
+# ===========================================================================
+# TestNetalertxWorkQueueWiring — PR #603 queue wiring for log_monitor + diagnosis
+# ===========================================================================
+
+
+class TestNetalertxLogMonitorQueueWiring:
+    """Verify netalertx/log_monitor.py submits healer dispatch through PueoWorkQueue."""
+
+    def test_healer_dispatch_goes_through_queue_when_available(self, monkeypatch):
+        """When a queue is present, healer dispatch is submitted as a WorkItem."""
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.work_queue import WorkItem
+
+        import netalertx.log_monitor as mod
+        from netalertx.log_monitor import LogEvaluation
+
+        submitted_items: list[WorkItem] = []
+
+        class FakeQueue:
+            async def submit(self, item: WorkItem) -> bool:
+                submitted_items.append(item)
+                return True
+
+        monkeypatch.setattr(
+            mod, "_debouncer", type("D", (), {"record": lambda s: True})()
+        )
+        monkeypatch.setattr(
+            mod, "_rate_limiter", type("R", (), {"check": lambda s: None})()
+        )
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed",
+            confidence_score=0.95,
+        )
+        llm = FakeLLMClient(ev.model_dump_json())
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier()
+        ssh = FakeSSHClient(stream_data=["ERROR ArpScan failed: network unreachable"])
+
+        import netalertx.log_monitor as _lm
+        import utils.agent.work_queue as _wq_mod
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", FakeQueue())
+
+        asyncio.run(
+            mod.tail_netalertx_log_stream(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+
+        assert len(submitted_items) == 1
+        item = submitted_items[0]
+        assert item.activity_type == "netalertx_repair"
+        assert item.dedup_key == "netalertx_repair"
+        assert item.priority == 10  # PRIORITY_CRITICAL
+
+    def test_healer_dispatch_falls_back_to_create_task_without_queue(self, monkeypatch):
+        """Without a queue, healer dispatch falls back to asyncio.create_task."""
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+
+        import netalertx.log_monitor as mod
+        from netalertx.log_monitor import LogEvaluation
+
+        healer_called: list = []
+
+        async def fake_dispatch(ev, healer=None):
+            healer_called.append(ev)
+
+        monkeypatch.setattr(mod, "_dispatch_to_healer", fake_dispatch)
+        monkeypatch.setattr(
+            mod, "_debouncer", type("D", (), {"record": lambda s: True})()
+        )
+        monkeypatch.setattr(
+            mod, "_rate_limiter", type("R", (), {"check": lambda s: None})()
+        )
+
+        import utils.agent.work_queue as _wq_mod
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", None)
+
+        ev = LogEvaluation(
+            is_actionable=True,
+            root_cause_summary="ArpScan failed",
+            confidence_score=0.95,
+        )
+        llm = FakeLLMClient(ev.model_dump_json())
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        notifier = FakeNotifier()
+        ssh = FakeSSHClient(stream_data=["ERROR ArpScan failed: network unreachable"])
+
+        asyncio.run(
+            mod.tail_netalertx_log_stream(
+                ssh_client=ssh, llm_client=llm, gate=gate, notifier=notifier
+            )
+        )
+
+        assert len(healer_called) == 1
+
+
+class TestNetalertxDiagnosisQueueWiring:
+    """Verify netalertx/diagnosis.py submits AgentLoop diagnosis through PueoWorkQueue."""
+
+    def _zero_devices_report(self):
+        from netalertx.health import HealthReport
+
+        return HealthReport(
+            last_scan_age_minutes=25,
+            device_counts={"total": 0, "online": 0},
+            mqtt_active=False,
+            anomalies=["No devices discovered"],
+            netalertx_version="v26.7.1",
+        )
+
+    def test_diagnosis_submitted_to_queue_when_available(self, monkeypatch):
+        """When a queue is available, diagnose_health_report submits a WorkItem."""
+        import asyncio
+
+        from utils.agent.work_queue import WorkItem
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
+
+        submitted_items: list[WorkItem] = []
+        diag = NetAlertXDiagnostic(
+            issue="No devices",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Check Docker network",
+            affected_netalertx_version="v26.7.1",
+        )
+
+        class FakeQueue:
+            async def submit(self, item: WorkItem) -> bool:
+                submitted_items.append(item)
+                # Run the coro inline so the future gets resolved
+                await item.coro_factory()
+                return True
+
+        import utils.agent.work_queue as _wq_mod
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", FakeQueue())
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ssh = FakeSSHClient()
+
+        result, _trace = asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(), llm_client=llm, ssh_client=ssh
+            )
+        )
+
+        assert len(submitted_items) == 1
+        item = submitted_items[0]
+        assert item.activity_type == "netalertx_diagnosis"
+        assert item.dedup_key == "netalertx_diagnosis"
+        assert item.priority == 20  # PRIORITY_HIGH
+        assert result is not None
+
+    def test_diagnosis_falls_back_to_direct_without_queue(self, monkeypatch):
+        """Without a queue, diagnose_health_report runs the AgentLoop directly."""
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from netalertx.diagnosis import NetAlertXDiagnostic, diagnose_health_report
+
+        import utils.agent.work_queue as _wq_mod
+
+        monkeypatch.setattr(_wq_mod, "_work_queue", None)
+
+        diag = NetAlertXDiagnostic(
+            issue="No devices",
+            severity="HIGH",
+            category="networking",
+            recommended_fix="Check Docker network",
+            affected_netalertx_version="v26.7.1",
+        )
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_health_diagnosis",
+                                "arguments": {
+                                    **diag.model_dump(),
+                                    "summary": diag.issue,
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        ssh = FakeSSHClient()
+
+        result, _trace = asyncio.run(
+            diagnose_health_report(
+                self._zero_devices_report(), llm_client=llm, ssh_client=ssh
+            )
+        )
+
+        assert result is not None
+        assert result.category == "networking"
