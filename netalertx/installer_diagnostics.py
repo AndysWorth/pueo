@@ -200,6 +200,13 @@ async def diagnose_installer_failure(
         gate=FakeAutonomyGate(),  # type: ignore[arg-type]
         notifier=FakeNotifier(),
     )
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     registry = build_installer_diagnosis_registry()
     loop = AgentLoop(
         llm_client=client,
@@ -210,11 +217,14 @@ async def diagnose_installer_failure(
         trigger="installer_diagnosis",
         knowledge_store=knowledge_store,
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("netalertx_installer"),
     )
 
+    increment_active_agent()
     try:
         loop_result: AgentLoopResult = await loop.run(initial_message)
         diagnostic = _extract_installer_diagnostic(loop_result)
+        publish_activity_done("netalertx_installer", loop_result.outcome)
         log.info(
             "installer_diagnosis_complete",
             failure_type=failure_type,
@@ -224,7 +234,10 @@ async def diagnose_installer_failure(
         )
     except Exception as exc:
         log.error("installer_diagnosis_failed", error=str(exc))
+        publish_activity_done("netalertx_installer", "failed")
         diagnostic = _fallback_diagnostic()
+    finally:
+        decrement_active_agent()
 
     from utils.core.prompts import load_prompt as _lp
 

@@ -213,6 +213,13 @@ class NetAlertXHealer:
             _on_nax_llm_start = None  # type: ignore[assignment]
             _on_nax_llm_done = None  # type: ignore[assignment]
 
+        from utils.agent.supervisor import (
+            decrement_active_agent,
+            increment_active_agent,
+            make_activity_timeline_callback,
+            publish_activity_done,
+        )
+
         loop = AgentLoop(
             llm_client=llm_client,
             tool_executor=executor,
@@ -224,6 +231,7 @@ class NetAlertXHealer:
             on_llm_call_start=_on_nax_llm_start,
             on_llm_call_done=_on_nax_llm_done,
             capture_llm=True,
+            timeline_callback=make_activity_timeline_callback("netalertx_repair"),
         )
 
         initial_context = (
@@ -243,7 +251,12 @@ class NetAlertXHealer:
             category=diagnostic.category,
             severity=diagnostic.severity,
         )
-        result = await loop.run(initial_context)
+        increment_active_agent()
+        try:
+            result = await loop.run(initial_context)
+            publish_activity_done("netalertx_repair", result.outcome)
+        finally:
+            decrement_active_agent()
         log.info(
             "netalertx_heal_loop_complete",
             outcome=result.outcome,

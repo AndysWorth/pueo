@@ -4404,8 +4404,8 @@ class TestNetAlertXLogMonitor:
             sup, "decrement_active_triage", lambda: decrements.append(1)
         )
         asyncio.run(analyze_log_line_with_ai(["ERROR ArpScan failed"], llm_actionable))
-        assert {"type": "triage_start"} in published
-        assert {"type": "triage_done"} in published
+        assert {"event_type": "triage_start"} in published
+        assert {"event_type": "triage_done"} in published
         assert decrements
 
     def test_analyze_emits_triage_done_on_inference_failure(self, monkeypatch):
@@ -4428,7 +4428,7 @@ class TestNetAlertXLogMonitor:
             sup, "decrement_active_triage", lambda: decrements.append(1)
         )
         asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
-        assert {"type": "triage_done"} in published
+        assert {"event_type": "triage_done"} in published
         assert decrements
 
     # ── stream behaviour ──────────────────────────────────────────────────────

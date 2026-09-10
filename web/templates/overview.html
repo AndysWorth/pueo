@@ -243,13 +243,13 @@
     </div>
   </div>
 
-  <!-- Active Repair Widget -->
-  <div class="card full-width" id="active-repair-widget" style="display:none;border-left:3px solid #6366f1;">
+  <!-- Current Activity Widget -->
+  <div class="card full-width" id="active-activity-widget" style="display:none;border-left:3px solid #6366f1;">
     <div class="section-title" style="display:flex;align-items:center;gap:0.5rem;">
       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6366f1;animation:pulse 1.2s infinite;flex-shrink:0;"></span>
-      Active Repair
+      <span id="active-activity-heading">Current Activity</span>
     </div>
-    <p id="active-repair-status" style="font-size:0.88rem;color:#333;margin:0;font-family:monospace;"></p>
+    <p id="active-activity-status" style="font-size:0.88rem;color:#333;margin:0;font-family:monospace;"></p>
   </div>
 
   <!-- Recent Events -->
@@ -868,20 +868,33 @@
     while (body.rows.length > 10) body.deleteRow(body.rows.length - 1);
   }
 
-  var _repairHideTimer = null;
+  var _activityHideTimer = null;
+  var ACTIVITY_HEADINGS = {
+    'code_proposal': 'Code Proposal',
+    'lovelace_investigation': 'Lovelace Investigation',
+    'update_analysis': 'Update Analysis',
+    'config_analysis': 'Config Analysis',
+    'investigation': 'Investigation',
+    'netalertx_investigation': 'NetAlertX Investigation',
+    'netalertx_repair': 'NetAlertX Repair',
+    'netalertx_installer': 'NetAlertX Installer',
+    'triage': 'Log Triage',
+  };
 
-  function showRepairWidget(statusLine) {
-    var widget = document.getElementById('active-repair-widget');
-    var status = document.getElementById('active-repair-status');
+  function showActivityWidget(statusLine, activityType) {
+    var widget = document.getElementById('active-activity-widget');
+    var status = document.getElementById('active-activity-status');
+    var heading = document.getElementById('active-activity-heading');
     if (widget) widget.style.display = '';
     if (status) status.textContent = statusLine;
-    if (_repairHideTimer) { clearTimeout(_repairHideTimer); _repairHideTimer = null; }
+    if (heading) heading.textContent = ACTIVITY_HEADINGS[activityType] || 'Current Activity';
+    if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
   }
 
-  function scheduleHideRepairWidget() {
-    if (_repairHideTimer) clearTimeout(_repairHideTimer);
-    _repairHideTimer = setTimeout(function () {
-      var widget = document.getElementById('active-repair-widget');
+  function scheduleHideActivityWidget() {
+    if (_activityHideTimer) clearTimeout(_activityHideTimer);
+    _activityHideTimer = setTimeout(function () {
+      var widget = document.getElementById('active-activity-widget');
       if (widget) widget.style.display = 'none';
     }, 3000);
   }
@@ -907,14 +920,22 @@
   }, 30000);
 
   var es = window._pueoES || new EventSource('/events');
+
+  fetch('/api/pueo-status').then(function(r) { return r.json(); }).then(function(d) {
+    if (d.activity && d.activity !== 'monitoring' && d.activity !== 'starting')
+      showActivityWidget(d.detail || '', '');
+  }).catch(function() {});
+
   var _overviewMsg = function (e) {
     try {
       var evt = JSON.parse(e.data);
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
       else if (evt.event_type === 'resource') updateGauges(evt);
       else if (evt.event_type === 'timeline') prependTimelineRow(evt);
-      else if (evt.event_type === 'agent_step') showRepairWidget(evt.status || '');
-      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideRepairWidget();
+      else if (evt.event_type === 'agent_step') showActivityWidget(evt.status || '', evt.activity || '');
+      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget();
+      else if (evt.event_type === 'triage_start') showActivityWidget('Triage in progress', 'triage');
+      else if (evt.event_type === 'triage_done') scheduleHideActivityWidget();
     } catch (_) {}
   };
   es.addEventListener('message', _overviewMsg);

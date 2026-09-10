@@ -217,6 +217,13 @@ async def _run_lovelace_investigation(
         + "\n".join(lines)
     )
 
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     loop = AgentLoop(
         llm_client=llm,
         tool_executor=executor,
@@ -226,11 +233,17 @@ async def _run_lovelace_investigation(
         trigger="lovelace_poll",
         db_path=db_path,
         knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback("lovelace_investigation"),
     )
+    increment_active_agent()
     try:
-        await loop.run(initial_context=initial_context)
+        result = await loop.run(initial_context=initial_context)
+        publish_activity_done("lovelace_investigation", result.outcome)
     except Exception as exc:
         log.warning("lovelace_investigation_failed", error=str(exc))
+        publish_activity_done("lovelace_investigation", "failed")
+    finally:
+        decrement_active_agent()
 
 
 async def poll_for_dashboard_entity_issues(

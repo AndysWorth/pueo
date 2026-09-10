@@ -500,6 +500,7 @@ async def ha_status_check() -> JSONResponse:  # pragma: no cover
 async def pueo_status() -> JSONResponse:
     """Return a simple activity summary for the navbar status pill."""
     from utils.agent.supervisor import (
+        get_active_agent_count,
         get_active_chat_count,
         get_active_repair_loop,
         get_active_triage_count,
@@ -520,6 +521,10 @@ async def pueo_status() -> JSONResponse:
         return JSONResponse({"activity": "starting", "detail": "Loops starting"})
     if get_active_repair_loop() is not None:
         return JSONResponse({"activity": "repairing", "detail": "Repair in progress"})
+    if get_active_agent_count() > 0:
+        return JSONResponse(
+            {"activity": "repairing", "detail": "Agent loop in progress"}
+        )
     if get_active_triage_count() > 0:
         return JSONResponse(
             {"activity": "triaging", "detail": "Log triage in progress"}

@@ -92,6 +92,13 @@ async def _analyze_with_agent_loop(
         notifier=FakeNotifier(),
         llm_client=client,
     )
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     registry = build_config_analysis_registry()
     loop = AgentLoop(
         llm_client=client,
@@ -101,15 +108,21 @@ async def _analyze_with_agent_loop(
         trigger="config_analysis",
         knowledge_store=knowledge_store,
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("config_analysis"),
     )
 
+    increment_active_agent()
     try:
         loop_result: AgentLoopResult = await loop.run(initial_message)
+        publish_activity_done("config_analysis", loop_result.outcome)
         report = _extract_diagnostics_report(loop_result)
         return report, None
     except Exception as exc:
         log.warning("config_analysis_agent_loop_failed", error=str(exc))
+        publish_activity_done("config_analysis", "fallback")
         return await _analyze_one_shot(yaml_content, llm_client)
+    finally:
+        decrement_active_agent()
 
 
 def _extract_diagnostics_report(loop_result: "AgentLoopResult") -> "DiagnosticsReport":
