@@ -6,6 +6,7 @@ Returns None when there is nothing to diagnose (no anomalies, no config issues).
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
@@ -114,6 +115,44 @@ async def diagnose_health_report(
     context = _build_context(report, all_issues)
 
     if ssh_client is not None:
+        from utils.agent.work_queue import (
+            PRIORITY_HIGH,
+            WorkItem,
+            get_work_queue_or_none,
+        )
+
+        _wq = get_work_queue_or_none()
+        if _wq is not None:
+            _result_future: asyncio.Future = asyncio.get_event_loop().create_future()
+            _ctx_snap, _c_snap, _m_snap = context, client, model
+            _ssh_snap, _ks_snap = ssh_client, knowledge_store
+
+            async def _diag_coro(
+                _ctx: str = _ctx_snap,
+                _c: "LLMClientProtocol" = _c_snap,
+                _m: str = _m_snap,
+                _ssh: "SSHClientProtocol" = _ssh_snap,
+                _ks: Optional["KnowledgeStoreClientProtocol"] = _ks_snap,
+            ) -> None:
+                try:
+                    _r = await _diagnose_with_agent_loop(_ctx, _c, _m, _ssh, _ks)
+                    if not _result_future.done():
+                        _result_future.set_result(_r)
+                except Exception as _exc:
+                    if not _result_future.done():
+                        _result_future.set_exception(_exc)
+
+            await _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_HIGH,
+                    activity_type="netalertx_diagnosis",
+                    description="NetAlertX health diagnosis",
+                    dedup_key="netalertx_diagnosis",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_diag_coro,
+                )
+            )
+            return await _result_future
         return await _diagnose_with_agent_loop(
             context, client, model, ssh_client, knowledge_store
         )

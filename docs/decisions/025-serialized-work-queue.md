@@ -65,16 +65,30 @@ A queued repair (CRITICAL, priority 10) starts only after the currently running 
 
 This satisfies the design requirement: "let a running chat session finish" — the chat won't be interrupted — while ensuring a queued repair starts as soon as the slot is free.
 
+### Mandatory queue rule
+
+All `AgentLoop.run()` calls that represent a judgment call or HA-state change **must** be submitted through `PueoWorkQueue`. Bypassing the queue (calling `AgentLoop.run()` directly in a supervisor context) is a correctness violation regardless of the calling context.
+
+Use `get_work_queue_or_none()` and fall back to direct execution only when the queue is not initialized (standalone scripts, unit tests).
+
+The only legitimate one-shot LLM calls are:
+- Volume-throttled streaming pre-filters (`analyze_log_line_with_ai`) — fire per log line; sole output is a binary gate before a queue submission
+- Secondary enrichment inside a running tool executor (`_enrich_fix_context`) — called inside an already-running AgentLoop; cannot itself be a queue submission
+
 ### Callers
 
 | File | Activity type | Priority | dedup_key |
 |---|---|---|---|
 | `ha_log_monitor.py` triage | `triage` | HIGH | `triage:{line_fp}` |
 | `ha_log_monitor.py` repair trigger | `ha_repair` | CRITICAL | `ha_repair:{fp}` |
+| `ha_log_monitor.py` repair issue | `repair_issue` | NORMAL | `repair_issue:{issue_id}` |
+| `ha_log_monitor.py` update impact analysis | `update_analysis` | NORMAL | `update_analysis` |
 | `ha_lovelace_monitor.py` investigation | `lovelace_investigation` | NORMAL | `lovelace_investigation` |
-| `ha_update_manager.py` impact analysis | `update_analysis` | NORMAL | `update_analysis` |
-| `utils/disk/resource.py` disk recovery | `disk_recovery` | HIGH | `disk_recovery` |
 | `ha_notification_manager.py` analysis | `notification` | HIGH | `notification:{ha_nid}` |
+| `ha_update_manager.py` update analysis (run_update_check) | `update_analysis` | NORMAL | `update_analysis` |
+| `netalertx/log_monitor.py` healer dispatch | `netalertx_repair` | CRITICAL | `netalertx_repair` |
+| `netalertx/diagnosis.py` health diagnosis | `netalertx_diagnosis` | HIGH | `netalertx_diagnosis` |
+| `utils/disk/resource.py` disk recovery | `disk_recovery` | HIGH | `disk_recovery` |
 | `web/dashboard.py` chat | `chat` | NORMAL | `chat` |
 
 `utils/agent/config_analysis.py` is excluded: it is always called within a repair pipeline item (CRITICAL), and its AgentLoop inherits the queue's serialization implicitly.

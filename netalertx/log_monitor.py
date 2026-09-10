@@ -463,7 +463,35 @@ async def tail_netalertx_log_stream(
                         continue
 
                     log.warning("netalertx_repair_triggered")
-                    asyncio.create_task(_dispatch_to_healer(evaluation, healer=healer))
+                    _eval_snap = evaluation
+                    _healer_snap = healer
+
+                    async def _healer_coro(
+                        _ev: LogEvaluation = _eval_snap,
+                        _h: Optional["NetAlertXHealer"] = _healer_snap,
+                    ) -> None:
+                        await _dispatch_to_healer(_ev, healer=_h)
+
+                    from utils.agent.work_queue import (
+                        PRIORITY_CRITICAL,
+                        WorkItem,
+                        get_work_queue_or_none,
+                    )
+
+                    _wq = get_work_queue_or_none()
+                    if _wq is not None:
+                        await _wq.submit(
+                            WorkItem(
+                                priority=PRIORITY_CRITICAL,
+                                activity_type="netalertx_repair",
+                                description=f"NetAlertX repair: {evaluation.root_cause_summary[:80]}",
+                                dedup_key="netalertx_repair",
+                                suppress_while_running=frozenset(),
+                                coro_factory=_healer_coro,
+                            )
+                        )
+                    else:
+                        asyncio.create_task(_healer_coro())
 
     except Exception as e:
         log.error("netalertx_log_stream_failed", error=str(e))
