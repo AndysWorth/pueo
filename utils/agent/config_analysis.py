@@ -106,9 +106,12 @@ async def _analyze_with_agent_loop(
         tool_registry=registry,
         terminal_tool_name="finish_diagnosis",
         trigger="config_analysis",
+        activity_type="config_analysis",
         knowledge_store=knowledge_store,
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("config_analysis"),
+        timeline_callback=make_activity_timeline_callback(
+            "config_analysis", trigger="Config analysis"
+        ),
     )
 
     increment_active_agent()

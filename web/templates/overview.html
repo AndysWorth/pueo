@@ -248,8 +248,12 @@
     <div class="section-title" style="display:flex;align-items:center;gap:0.5rem;">
       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6366f1;animation:pulse 1.2s infinite;flex-shrink:0;"></span>
       <span id="active-activity-heading">Current Activity</span>
+      <span id="active-activity-count" style="font-size:0.75rem;color:var(--muted);display:none;"></span>
     </div>
-    <p id="active-activity-status" style="font-size:0.88rem;color:#333;margin:0;font-family:monospace;"></p>
+    <div style="display:flex;align-items:baseline;gap:0.5rem;margin-bottom:0.25rem;">
+      <span id="active-activity-trigger" style="font-size:0.75rem;color:var(--muted);font-style:italic;"></span>
+    </div>
+    <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:5.2em;overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;gap:2px;"></ul>
   </div>
 
   <!-- Recent Events -->
@@ -869,7 +873,9 @@
   }
 
   var _activityHideTimer = null;
+  var _activeLoops = {};
   var ACTIVITY_HEADINGS = {
+    'ha_repair': 'HA Repair',
     'code_proposal': 'Code Proposal',
     'lovelace_investigation': 'Lovelace Investigation',
     'update_analysis': 'Update Analysis',
@@ -879,23 +885,78 @@
     'netalertx_repair': 'NetAlertX Repair',
     'netalertx_installer': 'NetAlertX Installer',
     'triage': 'Log Triage',
+    'chat': 'Chat',
   };
 
-  function showActivityWidget(statusLine, activityType) {
+  function _activityShortLabel(actType) {
+    return ACTIVITY_HEADINGS[actType] || actType;
+  }
+
+  function showActivityWidget(statusLine, activityType, trigger) {
+    if (activityType) _activeLoops[activityType] = trigger || '';
+
+    var n = Object.keys(_activeLoops).length;
+    var headingEl = document.getElementById('active-activity-heading');
+    var countEl = document.getElementById('active-activity-count');
+    var triggerEl = document.getElementById('active-activity-trigger');
+
+    if (headingEl) {
+      headingEl.textContent = n > 1
+        ? 'Current Activity'
+        : (_activityShortLabel(activityType) || 'Current Activity');
+    }
+    if (countEl) {
+      if (n > 1) { countEl.textContent = '(' + n + ' active)'; countEl.style.display = ''; }
+      else { countEl.style.display = 'none'; }
+    }
+
+    var trig = trigger || (activityType ? _activeLoops[activityType] : '');
+    if (triggerEl && trig) triggerEl.textContent = trig;
+
+    if (statusLine) {
+      var list = document.getElementById('active-activity-steps');
+      if (list) {
+        var li = document.createElement('li');
+        li.style.cssText = 'color:var(--fg);padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        var prefix = n > 1 ? '[' + _activityShortLabel(activityType) + '] ' : '';
+        li.textContent = prefix + statusLine;
+        list.insertBefore(li, list.firstChild);
+        while (list.children.length > 8) list.removeChild(list.lastChild);
+      }
+    }
+
     var widget = document.getElementById('active-activity-widget');
-    var status = document.getElementById('active-activity-status');
-    var heading = document.getElementById('active-activity-heading');
     if (widget) widget.style.display = '';
-    if (status) status.textContent = statusLine;
-    if (heading) heading.textContent = ACTIVITY_HEADINGS[activityType] || 'Current Activity';
     if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
   }
 
-  function scheduleHideActivityWidget() {
+  function scheduleHideActivityWidget(activityType) {
+    if (activityType) delete _activeLoops[activityType];
+
+    var n = Object.keys(_activeLoops).length;
+    if (n > 0) {
+      var headingEl = document.getElementById('active-activity-heading');
+      var countEl = document.getElementById('active-activity-count');
+      if (headingEl) {
+        headingEl.textContent = n > 1
+          ? 'Current Activity'
+          : _activityShortLabel(Object.keys(_activeLoops)[0]);
+      }
+      if (countEl) {
+        if (n > 1) { countEl.textContent = '(' + n + ' active)'; countEl.style.display = ''; }
+        else { countEl.style.display = 'none'; }
+      }
+      return;
+    }
     if (_activityHideTimer) clearTimeout(_activityHideTimer);
     _activityHideTimer = setTimeout(function () {
       var widget = document.getElementById('active-activity-widget');
       if (widget) widget.style.display = 'none';
+      var list = document.getElementById('active-activity-steps');
+      if (list) list.innerHTML = '';
+      var trigEl = document.getElementById('active-activity-trigger');
+      if (trigEl) trigEl.textContent = '';
+      _activeLoops = {};
     }, 3000);
   }
 
@@ -923,7 +984,7 @@
 
   fetch('/api/pueo-status').then(function(r) { return r.json(); }).then(function(d) {
     if (d.activity && d.activity !== 'monitoring' && d.activity !== 'starting')
-      showActivityWidget(d.detail || '', '');
+      showActivityWidget(d.detail || '', d.activity || '', '');
   }).catch(function() {});
 
   var _overviewMsg = function (e) {
@@ -932,10 +993,10 @@
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
       else if (evt.event_type === 'resource') updateGauges(evt);
       else if (evt.event_type === 'timeline') prependTimelineRow(evt);
-      else if (evt.event_type === 'agent_step') showActivityWidget(evt.status || '', evt.activity || '');
-      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget();
-      else if (evt.event_type === 'triage_start') showActivityWidget('Triage in progress', 'triage');
-      else if (evt.event_type === 'triage_done') scheduleHideActivityWidget();
+      else if (evt.event_type === 'agent_step') showActivityWidget(evt.status || '', evt.activity || '', evt.trigger || '');
+      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget(evt.activity || '');
+      else if (evt.event_type === 'triage_start') showActivityWidget('Triage in progress…', 'triage', 'HA log event');
+      else if (evt.event_type === 'triage_done') scheduleHideActivityWidget('triage');
     } catch (_) {}
   };
   es.addEventListener('message', _overviewMsg);

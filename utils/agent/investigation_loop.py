@@ -269,9 +269,12 @@ async def run_investigation(
         system_prompt=system_prompt,
         terminal_tool_name="finish_investigation",
         trigger="investigation",
+        activity_type="investigation",
         knowledge_store=knowledge_store,
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("investigation"),
+        timeline_callback=make_activity_timeline_callback(
+            "investigation", trigger="User-requested investigation"
+        ),
     )
 
     increment_active_agent()

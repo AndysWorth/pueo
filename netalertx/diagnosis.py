@@ -177,11 +177,14 @@ async def _diagnose_with_agent_loop(
         model=model,
         terminal_tool_name="finish_health_diagnosis",
         trigger="health_diagnosis",
+        activity_type="netalertx_investigation",
         knowledge_store=knowledge_store,
         on_llm_call_start=_on_diag_start,
         on_llm_call_done=_on_diag_done,
         capture_llm=True,
-        timeline_callback=make_activity_timeline_callback("netalertx_investigation"),
+        timeline_callback=make_activity_timeline_callback(
+            "netalertx_investigation", trigger="NetAlertX health check"
+        ),
     )
 
     increment_active_agent()

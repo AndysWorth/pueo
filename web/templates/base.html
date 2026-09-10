@@ -94,8 +94,18 @@
       border-radius: 50%; flex-shrink: 0; }
     .pueo-status-monitoring { background: #d1e7dd; color: #0a3622; border-color: #28a745; }
     .pueo-status-monitoring::before { background: #28a745; }
-    .pueo-status-repairing  { background: #e0e7ff; color: #3730a3; border-color: #6366f1; }
-    .pueo-status-repairing::before  { background: #6366f1; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-repairing      { background: #e0e7ff; color: #3730a3; border-color: #6366f1; }
+    .pueo-status-repairing::before      { background: #6366f1; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-investigating  { background: #ede9fe; color: #4c1d95; border-color: #6366f1; }
+    .pueo-status-investigating::before  { background: #6366f1; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-analyzing      { background: #e0f2fe; color: #0c4a6e; border-color: #0ea5e9; }
+    .pueo-status-analyzing::before      { background: #0ea5e9; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-healing        { background: #d1fae5; color: #064e3b; border-color: #10b981; }
+    .pueo-status-healing::before        { background: #10b981; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-installing     { background: #fef3c7; color: #78350f; border-color: #f59e0b; }
+    .pueo-status-installing::before     { background: #f59e0b; animation: pulse-dot 1.2s infinite; }
+    .pueo-status-proposing      { background: #fae8ff; color: #6b21a8; border-color: #a855f7; }
+    .pueo-status-proposing::before      { background: #a855f7; animation: pulse-dot 1.2s infinite; }
     .pueo-status-triaging   { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
     .pueo-status-triaging::before   { background: #f59e0b; animation: pulse-dot 1.2s infinite; }
     .pueo-status-chatting   { background: #dbeafe; color: #1d4ed8; border-color: #3b82f6; }
@@ -232,9 +242,22 @@
       setInterval(updateHaStatus, 30000);
     })();
     (function () {
-      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', triaging:'Triaging', chatting:'Chatting', executing:'Executing', refreshing:'Refreshing', starting:'Starting', error:'Error'};
+      var LABELS = {monitoring:'Monitoring', repairing:'Repairing', investigating:'Investigating', analyzing:'Analyzing', healing:'Healing', installing:'Installing', proposing:'Proposing', triaging:'Triaging', chatting:'Chatting', executing:'Executing', refreshing:'Refreshing', starting:'Starting', error:'Error'};
+      var ACTIVITY_PILL_STATES = {
+        'lovelace_investigation': 'investigating',
+        'investigation':          'investigating',
+        'config_analysis':        'analyzing',
+        'update_analysis':        'analyzing',
+        'netalertx_investigation':'healing',
+        'netalertx_repair':       'healing',
+        'netalertx_installer':    'installing',
+        'code_proposal':          'proposing',
+        'chat':                   'chatting',
+      };
+      var _AGENT_STATES = ['repairing','investigating','analyzing','healing','installing','proposing'];
       var state = 'monitoring';
       var repairTimer = null, chatTimer = null;
+      var REPAIR_TIMEOUT_MS = 600000;
       var TIMEOUT_MS = 90000;
 
       function setState(s) {
@@ -267,13 +290,16 @@
           }
         } else if (et === 'agent_step') {
           clearTimeout(repairTimer);
-          setState('repairing');
-          repairTimer = setTimeout(function () { if (state === 'repairing') setState('monitoring'); }, TIMEOUT_MS);
+          var pillState = ACTIVITY_PILL_STATES[d.activity] || 'repairing';
+          if (_AGENT_STATES.indexOf(state) === -1 || state === 'repairing') setState(pillState);
+          repairTimer = setTimeout(function () {
+            if (_AGENT_STATES.indexOf(state) !== -1) setState('monitoring');
+          }, REPAIR_TIMEOUT_MS);
         } else if (et === 'repair_done' || et === 'repair_failed') {
           clearTimeout(repairTimer);
-          if (state === 'repairing') setState('monitoring');
+          if (_AGENT_STATES.indexOf(state) !== -1) setState('monitoring');
         } else if (et === 'triage_start') {
-          if (state !== 'repairing' && state !== 'error') {
+          if (_AGENT_STATES.indexOf(state) === -1 && state !== 'error') {
             clearTimeout(triageTimer);
             setState('triaging');
             triageTimer = setTimeout(function () { if (state === 'triaging') setState('monitoring'); }, TIMEOUT_MS);

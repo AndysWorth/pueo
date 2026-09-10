@@ -226,12 +226,15 @@ class NetAlertXHealer:
             tool_registry=registry,
             model=_config.OLLAMA_MODEL,
             trigger="netalertx",
+            activity_type="netalertx_repair",
             db_path=self._db_path,
             knowledge_store=self._knowledge_store,
             on_llm_call_start=_on_nax_llm_start,
             on_llm_call_done=_on_nax_llm_done,
             capture_llm=True,
-            timeline_callback=make_activity_timeline_callback("netalertx_repair"),
+            timeline_callback=make_activity_timeline_callback(
+                "netalertx_repair", trigger="NetAlertX device event"
+            ),
         )
 
         initial_context = (

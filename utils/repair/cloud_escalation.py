@@ -56,6 +56,7 @@ async def run_cloud_escalation(
         max_tool_calls=AGENT_MAX_TOOL_CALLS,
         max_wall_seconds=AGENT_MAX_WALL_SECONDS,
         trigger="escalated",
+        activity_type="ha_repair",
         db_path=DB_PATH,
         escalated=True,
         timeline_callback=timeline_callback,

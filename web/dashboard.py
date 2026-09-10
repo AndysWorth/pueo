@@ -3094,6 +3094,7 @@ async def _run_chat_loop(
         decrement_active_chat,
         get_supervisor_instance,
         increment_active_chat,
+        make_activity_timeline_callback,
         publish_chat_event,
     )
     from utils.agent.tool_executor import ToolExecutor
@@ -3201,8 +3202,13 @@ async def _run_chat_loop(
             terminal_tool_name="finish_chat",
             max_tool_calls=20,
             max_wall_seconds=AGENT_MAX_WALL_SECONDS,
+            trigger="manual",
+            activity_type="chat",
             step_callback=on_step,
             pre_step_callback=on_pre_step,
+            timeline_callback=make_activity_timeline_callback(
+                "chat", trigger="Chat session"
+            ),
             knowledge_store=getattr(executor, "_knowledge_store", None),
             context_inject_callback=_store_pre_inject,
             db_path=DB_PATH,
