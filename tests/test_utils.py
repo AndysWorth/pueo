@@ -6101,3 +6101,92 @@ class TestHardwareTTLCache:
         m2 = hw.list_ollama_models()
         assert call_count[0] == count_after_first, "second call should use cache"
         assert len(m2) == 1
+
+
+class TestSupervisorActivityHelpers:
+    """Tests for make_activity_timeline_callback, publish_activity_done, and active-agent counter."""
+
+    def test_make_activity_timeline_callback_returns_coroutine(self):
+        from utils.agent.supervisor import make_activity_timeline_callback
+        import asyncio
+
+        cb = make_activity_timeline_callback("test_activity")
+        assert asyncio.iscoroutinefunction(cb)
+
+    def test_callback_publishes_agent_step_event(self, monkeypatch):
+        import asyncio
+        import utils.agent.supervisor as sup
+        from utils.agent.supervisor import make_activity_timeline_callback
+        import utils.core.timeline as tl
+
+        published = []
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+        monkeypatch.setattr(tl, "write_timeline_event", lambda *a, **kw: None)
+
+        cb = make_activity_timeline_callback("my_activity")
+        asyncio.run(cb("my_tool", "doing things"))
+
+        assert len(published) == 1
+        evt = published[0]
+        assert evt["event_type"] == "agent_step"
+        assert evt["activity"] == "my_activity"
+        assert evt["tool"] == "my_tool"
+        assert evt["status"] == "doing things"
+
+    def test_publish_activity_done_success(self, monkeypatch):
+        import utils.agent.supervisor as sup
+        from utils.agent.supervisor import publish_activity_done
+
+        published = []
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+
+        publish_activity_done("config_analysis", "success")
+        assert len(published) == 1
+        assert published[0]["event_type"] == "repair_done"
+        assert published[0]["outcome"] == "success"
+        assert published[0]["activity"] == "config_analysis"
+
+    def test_publish_activity_done_failure(self, monkeypatch):
+        import utils.agent.supervisor as sup
+        from utils.agent.supervisor import publish_activity_done
+
+        published = []
+        monkeypatch.setattr(sup, "publish_event", lambda e: published.append(e))
+
+        publish_activity_done("investigation", "failed")
+        assert published[0]["event_type"] == "repair_failed"
+
+    def test_active_agent_counter_increment_decrement(self):
+        import utils.agent.supervisor as sup
+        from utils.agent.supervisor import (
+            decrement_active_agent,
+            get_active_agent_count,
+            increment_active_agent,
+        )
+
+        original = sup._active_agent_count
+        try:
+            sup._active_agent_count = 0
+            increment_active_agent()
+            assert get_active_agent_count() == 1
+            increment_active_agent()
+            assert get_active_agent_count() == 2
+            decrement_active_agent()
+            assert get_active_agent_count() == 1
+        finally:
+            sup._active_agent_count = original
+
+    def test_active_agent_counter_floor_at_zero(self):
+        import utils.agent.supervisor as sup
+        from utils.agent.supervisor import (
+            decrement_active_agent,
+            get_active_agent_count,
+        )
+
+        original = sup._active_agent_count
+        try:
+            sup._active_agent_count = 0
+            decrement_active_agent()
+            assert get_active_agent_count() == 0
+        finally:
+            sup._active_agent_count = original

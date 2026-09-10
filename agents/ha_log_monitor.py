@@ -428,7 +428,7 @@ async def analyze_log_line_with_ai(
         )
 
         increment_active_triage()
-        publish_event({"type": "triage_start"})
+        publish_event({"event_type": "triage_start"})
         _triage_armed = True
     except Exception:  # nosec B110
         pass
@@ -497,7 +497,7 @@ async def analyze_log_line_with_ai(
         if _triage_armed:
             try:
                 decrement_active_triage()
-                publish_event({"type": "triage_done"})
+                publish_event({"event_type": "triage_done"})
             except Exception:  # nosec B110
                 pass
 

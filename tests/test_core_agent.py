@@ -3074,10 +3074,10 @@ class TestLogMonitorTriage:
             sup, "decrement_active_triage", lambda: decrements.append(1)
         )
         asyncio.run(analyze_log_line_with_ai(["ERROR crash"], llm_actionable))
-        assert {"type": "triage_start"} in published
-        assert {"type": "triage_done"} in published
-        assert published.index({"type": "triage_start"}) < published.index(
-            {"type": "triage_done"}
+        assert {"event_type": "triage_start"} in published
+        assert {"event_type": "triage_done"} in published
+        assert published.index({"event_type": "triage_start"}) < published.index(
+            {"event_type": "triage_done"}
         )
         assert increments and decrements
 
@@ -3098,7 +3098,7 @@ class TestLogMonitorTriage:
             sup, "decrement_active_triage", lambda: decrements.append(1)
         )
         asyncio.run(analyze_log_line_with_ai(["ERROR ..."], broken_llm))
-        assert {"type": "triage_done"} in published
+        assert {"event_type": "triage_done"} in published
         assert decrements
 
 

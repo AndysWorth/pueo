@@ -163,6 +163,13 @@ async def _diagnose_with_agent_loop(
         _on_diag_start = None  # type: ignore[assignment]
         _on_diag_done = None  # type: ignore[assignment]
 
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     loop = AgentLoop(
         llm_client=client,
         tool_executor=executor,
@@ -174,10 +181,13 @@ async def _diagnose_with_agent_loop(
         on_llm_call_start=_on_diag_start,
         on_llm_call_done=_on_diag_done,
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("netalertx_investigation"),
     )
 
+    increment_active_agent()
     try:
         loop_result = await loop.run(initial_message)
+        publish_activity_done("netalertx_investigation", loop_result.outcome)
         result = _extract_health_diagnostic(loop_result)
         if result is not None:
             log.info(
@@ -198,6 +208,8 @@ async def _diagnose_with_agent_loop(
     except Exception as exc:
         log.error("netalertx_diagnosis_agent_loop_failed", error=str(exc))
         return None, None
+    finally:
+        decrement_active_agent()
 
 
 async def _diagnose_one_shot(

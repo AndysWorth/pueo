@@ -363,6 +363,13 @@ async def _personalize_with_agent_loop(
         llm_client=client,
     )
     registry = build_impact_analysis_registry()
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     loop = AgentLoop(
         llm_client=client,
         tool_executor=executor,
@@ -371,9 +378,15 @@ async def _personalize_with_agent_loop(
         trigger="impact_analysis",
         knowledge_store=knowledge_store,
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("update_analysis"),
     )
 
-    loop_result: AgentLoopResult = await loop.run(initial_message)
+    increment_active_agent()
+    try:
+        loop_result: AgentLoopResult = await loop.run(initial_message)
+        publish_activity_done("update_analysis", loop_result.outcome)
+    finally:
+        decrement_active_agent()
     return _extract_impact_report(loop_result)
 
 

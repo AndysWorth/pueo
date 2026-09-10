@@ -683,6 +683,13 @@ async def _run_code_proposal_loop(
         llm_client=llm_client,
     )
     registry = build_code_proposal_registry()
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     proposal_loop = AgentLoop(
         llm_client=llm_client,
         tool_executor=executor,
@@ -690,6 +697,7 @@ async def _run_code_proposal_loop(
         system_prompt=_CODE_PROPOSAL_SYSTEM_PROMPT,
         trigger="gap_detection",
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("code_proposal"),
     )
     initial_context = (
         "The previous HA repair loop detected a capability gap:\n\n"
@@ -697,7 +705,13 @@ async def _run_code_proposal_loop(
         "Read the relevant source files, propose a patch that closes this gap, "
         "validate it with sandbox_code, and queue it for review with open_pr."
     )
-    result = await proposal_loop.run(initial_context)
+
+    increment_active_agent()
+    try:
+        result = await proposal_loop.run(initial_context)
+        publish_activity_done("code_proposal", result.outcome)
+    finally:
+        decrement_active_agent()
     log.info(
         "code_proposal_loop_complete",
         outcome=result.outcome,

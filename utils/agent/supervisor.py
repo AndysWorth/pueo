@@ -40,6 +40,9 @@ _active_chat_count: int = 0
 # True while run_rag_refresh() is executing
 _rag_refreshing: bool = False
 
+# Count of concurrent non-repair, non-chat AgentLoop sessions in flight
+_active_agent_count: int = 0
+
 # Active LLM calls: maps loop_name → model (set by on_llm_call_start, cleared by on_llm_call_done)
 _active_llm_calls: dict[str, str] = {}
 
@@ -93,6 +96,20 @@ def get_rag_refreshing() -> bool:
     return _rag_refreshing
 
 
+def increment_active_agent() -> None:
+    global _active_agent_count
+    _active_agent_count += 1
+
+
+def decrement_active_agent() -> None:
+    global _active_agent_count
+    _active_agent_count = max(0, _active_agent_count - 1)
+
+
+def get_active_agent_count() -> int:
+    return _active_agent_count
+
+
 def set_llm_active(loop_name: str, model: str) -> None:
     """Record that an LLM call is in flight for the named loop."""
     _active_llm_calls[loop_name] = model
@@ -117,6 +134,38 @@ def update_ollama_status_cache(status: dict) -> None:
 def get_ollama_status_cache() -> dict:
     """Return the last known Ollama status."""
     return dict(_ollama_status_cache)
+
+
+def make_activity_timeline_callback(activity_type: str) -> Callable:
+    """Return async timeline_callback(tool_name, status_line) emitting agent_step SSE."""
+
+    async def _callback(tool_name: str, status_line: str) -> None:
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            write_timeline_event("INFO", "agent_loop", status_line)
+            publish_event(
+                {
+                    "event_type": "agent_step",
+                    "tool": tool_name,
+                    "status": status_line,
+                    "activity": activity_type,
+                }
+            )
+        except Exception:  # nosec B110
+            pass
+
+    return _callback
+
+
+def publish_activity_done(activity_type: str, outcome: str) -> None:
+    ev_type = "repair_done" if outcome == "success" else "repair_failed"
+    try:
+        publish_event(
+            {"event_type": ev_type, "outcome": outcome, "activity": activity_type}
+        )
+    except Exception:  # nosec B110
+        pass
 
 
 def publish_event(event: dict) -> None:

@@ -253,6 +253,13 @@ async def run_investigation(
         knowledge_store=knowledge_store,
     )
 
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
     loop = AgentLoop(
         llm_client=llm_client,
         tool_registry=registry,
@@ -264,9 +271,15 @@ async def run_investigation(
         trigger="investigation",
         knowledge_store=knowledge_store,
         capture_llm=True,
+        timeline_callback=make_activity_timeline_callback("investigation"),
     )
 
-    result = await loop.run(initial_context=topic)
+    increment_active_agent()
+    try:
+        result = await loop.run(initial_context=topic)
+        publish_activity_done("investigation", result.outcome)
+    finally:
+        decrement_active_agent()
 
     # Parse finish_investigation arguments from the last finish_investigation step
     finish_args: dict = {}
