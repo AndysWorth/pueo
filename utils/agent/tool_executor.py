@@ -128,6 +128,8 @@ class ToolExecutor:
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
         db_path: str = DB_PATH,
         llm_client: Optional["LLMClientProtocol"] = None,
+        pending_repair_issue: Optional[Any] = None,
+        pending_notification: Optional[dict] = None,
     ) -> None:
         self._ha_ssh = ha_ssh_client
         self._nax_ssh = nax_ssh_client
@@ -145,6 +147,8 @@ class ToolExecutor:
         self._sandbox_output: str = ""
         self._dynamic_tools: dict[str, Callable[..., Any]] = {}
         self._ha_profile: Optional["HAEnvironmentProfile"] = None
+        self._pending_repair_issue = pending_repair_issue
+        self._pending_notification = pending_notification
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -361,6 +365,25 @@ class ToolExecutor:
                 return await self._finish_lovelace_investigation(
                     args.get("findings", [])
                 )
+            if name == "finish_repair_issue":
+                return await self._finish_repair_issue(
+                    human_explanation=args.get("human_explanation", ""),
+                    recommended_action=args.get("recommended_action", ""),
+                    requires_hitl=bool(args.get("requires_hitl", True)),
+                    action=args.get("action", "dismiss"),
+                )
+            if name == "finish_notification_investigation":
+                return await self._finish_notification_investigation(
+                    human_explanation=args.get("human_explanation", ""),
+                    recommended_action=args.get("recommended_action", ""),
+                    requires_hitl=bool(args.get("requires_hitl", True)),
+                    severity_override=args.get("severity_override"),
+                    dismiss_now=bool(args.get("dismiss_now", False)),
+                )
+            if name == "get_device_info":
+                return await self._get_device_info(args.get("ip", ""))
+            if name == "dismiss_notification":
+                return await self._dismiss_notification(args.get("notification_id", ""))
             if name == "resolve_hitl_card":
                 return await self._resolve_hitl_card(args.get("card_key", ""))
             if name in self._dynamic_tools:
@@ -2440,6 +2463,224 @@ class ToolExecutor:
             success=True,
             output=f"Investigation complete. Cards created: {cards_created}",
         )
+
+    async def _finish_repair_issue(
+        self,
+        human_explanation: str,
+        recommended_action: str,
+        requires_hitl: bool,
+        action: str,
+    ) -> ToolResult:
+        """Create a HITL card for the pending repair issue."""
+        if not requires_hitl:
+            return ToolResult(
+                tool_name="finish_repair_issue",
+                success=True,
+                output="Investigation complete. No user action required.",
+            )
+        issue = self._pending_repair_issue
+        if issue is None:
+            return ToolResult(
+                tool_name="finish_repair_issue",
+                success=False,
+                output="",
+                error="No pending repair issue stored on executor",
+            )
+        from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
+        from utils.hitl.hitl_tracker import stable_nid
+        from agents.ha_agent_advanced import mark_repair_hitl_sent
+
+        _repair_sup_key = (
+            f"ha_repair:{getattr(issue, 'translation_key', None) or issue.issue_key}"
+        )
+        title = f"HA repair: {issue.domain}/{issue.issue_id}"
+        body_parts = [
+            f"Domain: {issue.domain}",
+            f"Issue: {issue.issue_id}",
+            f"Severity: {issue.severity}",
+        ]
+        if human_explanation:
+            body_parts.append(f"What this means: {human_explanation}")
+        elif getattr(issue, "translation_key", None):
+            body_parts.append(f"Type: {issue.translation_key}")
+        if recommended_action:
+            body_parts.append(f"Recommended action: {recommended_action}")
+        if getattr(issue, "breaks_in_ha_version", None):
+            body_parts.append(f"Breaks in: {issue.breaks_in_ha_version}")
+        body = "\n".join(body_parts)
+        payload: dict = {
+            "notification_id": stable_nid(_repair_sup_key),
+            "card_type": CARD_TYPE_HA_REPAIR,
+            "suppression_key": _repair_sup_key,
+            "action": action,
+            "domain": issue.domain,
+            "issue_id": issue.issue_id,
+            "issue_key": issue.issue_key,
+            "severity": issue.severity.upper(),
+            "title": title,
+            "body": body,
+            "breaks_in_ha_version": getattr(issue, "breaks_in_ha_version", None),
+            "translation_key": getattr(issue, "translation_key", None),
+        }
+        mark_repair_hitl_sent(issue.issue_key)
+        await self._notifier.send(subject=title, body=body, payload=payload)
+        log.info(
+            "repair_hitl_card_sent",
+            issue_key=issue.issue_key,
+            action=action,
+            translation_key=getattr(issue, "translation_key", None),
+        )
+        return ToolResult(
+            tool_name="finish_repair_issue",
+            success=True,
+            output=f"Repair issue card sent for {issue.domain}/{issue.issue_id}",
+        )
+
+    async def _finish_notification_investigation(
+        self,
+        human_explanation: str,
+        recommended_action: str,
+        requires_hitl: bool,
+        severity_override: Optional[str],
+        dismiss_now: bool,
+    ) -> ToolResult:
+        """Create a HITL card for the pending notification; optionally dismiss it from HA."""
+        notif = self._pending_notification
+        if notif is None:
+            return ToolResult(
+                tool_name="finish_notification_investigation",
+                success=False,
+                output="",
+                error="No pending notification stored on executor",
+            )
+        ha_nid: str = notif.get("ha_nid", "")
+        title: str = notif.get("title") or f"HA Notification: {ha_nid}"
+        message: str = notif.get("message", "")
+        category: str = notif.get("category", "other")
+        severity: str = severity_override or notif.get("severity", "MEDIUM")
+        ha_created_at = notif.get("ha_created_at")
+        db_path: str = notif.get("db_path", self._db_path)
+
+        if dismiss_now and self._ws_client is not None:
+            try:
+                await self._ws_client.dismiss_notification(ha_nid)
+                log.info("notification_dismissed", ha_notification_id=ha_nid)
+            except Exception as exc:  # nosec B110
+                log.warning(
+                    "notification_dismiss_failed",
+                    ha_notification_id=ha_nid,
+                    error=str(exc),
+                )
+
+        if not requires_hitl:
+            from agents.ha_notification_manager import mark_notification_hitl_sent
+
+            mark_notification_hitl_sent(ha_nid, db_path)
+            return ToolResult(
+                tool_name="finish_notification_investigation",
+                success=True,
+                output="Investigation complete. No HITL card needed.",
+            )
+
+        # Format subject line for known notification types
+        if ha_nid in ("http-login", "ip-ban") and severity in ("CRITICAL", "HIGH"):
+            subject = f"⚠ Unknown source IP — {title}"
+        else:
+            subject = title
+
+        body_lines = [human_explanation]
+        if recommended_action:
+            body_lines.append(f"\nRecommended action: {recommended_action}")
+        body = "\n".join(body_lines)
+        card_id = f"notif_{ha_nid}"
+        payload: dict = {
+            "notification_id": card_id,
+            "ha_notification_id": ha_nid,
+            "is_notification_card": True,
+            "category": category,
+            "severity": severity,
+            "human_explanation": human_explanation,
+            "recommended_action": recommended_action,
+            "enriched_context": {},
+            "original_message": message,
+            "original_title": notif.get("title"),
+            "ha_created_at": ha_created_at,
+        }
+        await self._notifier.send(subject=subject, body=body, payload=payload)
+        from agents.ha_notification_manager import mark_notification_hitl_sent
+
+        mark_notification_hitl_sent(ha_nid, db_path)
+        log.info(
+            "notification_hitl_sent",
+            ha_notification_id=ha_nid,
+            severity=severity,
+        )
+        return ToolResult(
+            tool_name="finish_notification_investigation",
+            success=True,
+            output=f"Notification card sent for {ha_nid} (severity={severity})",
+        )
+
+    async def _get_device_info(self, ip: str) -> ToolResult:
+        """Enrich a source IP with ARP, DNS, NetAlertX, and HA device registry context."""
+        if not ip:
+            return ToolResult(
+                tool_name="get_device_info",
+                success=False,
+                output="",
+                error="ip is required",
+            )
+        try:
+            from agents.ha_notification_manager import enrich_http_login
+
+            info = await enrich_http_login(
+                ip,
+                netalertx_client=self._api,
+                ws_client=self._ws_client,
+            )
+            return ToolResult(
+                tool_name="get_device_info",
+                success=True,
+                output=json.dumps(info, default=str),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_device_info",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _dismiss_notification(self, notification_id: str) -> ToolResult:
+        """Dismiss a HA persistent notification by its notification_id."""
+        if not notification_id:
+            return ToolResult(
+                tool_name="dismiss_notification",
+                success=False,
+                output="",
+                error="notification_id is required",
+            )
+        if self._ws_client is None:
+            return ToolResult(
+                tool_name="dismiss_notification",
+                success=False,
+                output="",
+                error="No WebSocket client available",
+            )
+        try:
+            await self._ws_client.dismiss_notification(notification_id)
+            return ToolResult(
+                tool_name="dismiss_notification",
+                success=True,
+                output=f"Notification {notification_id!r} dismissed.",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="dismiss_notification",
+                success=False,
+                output="",
+                error=str(exc),
+            )
 
     async def _resolve_hitl_card(self, card_key: str) -> ToolResult:
         """Mark a HITL card as resolved."""

@@ -67,6 +67,27 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def dismiss_notification(self, notification_id: str) -> None:
+        """Dismiss a persistent notification via HA WebSocket call_service."""
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "call_service",
+                        "domain": "persistent_notification",
+                        "service": "dismiss",
+                        "service_data": {"notification_id": notification_id},
+                    }
+                )
+            )
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"Dismiss notification failed: {msg}")
+        finally:
+            await ws.close()
+
     async def get_repair_issues(self) -> list[dict]:
         """Fetch current repair issues via HA WebSocket API."""
         ws = await self._connect_and_auth()
@@ -263,6 +284,9 @@ class FakeHAWebSocketClient:
     async def get_states(self) -> list[dict]:
         self.calls.append("get_states")
         return list(self._states)
+
+    async def dismiss_notification(self, notification_id: str) -> None:
+        self.calls.append(f"dismiss_notification:{notification_id}")
 
     async def get_lovelace_dashboards(self) -> list[dict]:
         self.calls.append("get_lovelace_dashboards")

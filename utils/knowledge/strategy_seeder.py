@@ -83,6 +83,16 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Lovelace unregistered entity investigation",
         "lovelace entity not in registry, unregistered entity, dashboard entity has state but no unique_id, sub-platform entity, not-loaded config entry",
     ),
+    (
+        "seed_repair_issue.md",
+        "HA repair issue investigation",
+        "HA repair panel issue, config_entry_reauth, reboot_required, restart_required, integration disabled, breaking change deprecation",
+    ),
+    (
+        "seed_notification_analysis.md",
+        "HA notification investigation",
+        "HA persistent notification, http_login, ip-ban, invalid_config, integration disabled, failed login, unknown device",
+    ),
 ]
 
 

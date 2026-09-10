@@ -1278,6 +1278,121 @@ FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
     },
 )
 
+FINISH_REPAIR_ISSUE = ToolDefinition(
+    name="finish_repair_issue",
+    description=(
+        "Report investigation findings and optionally create a HITL card for the repair issue. "
+        "Call once after fully investigating the issue. "
+        "Set requires_hitl=false to suppress the card if the issue is benign or already resolved."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "human_explanation": {
+                "type": "string",
+                "description": "Plain-English explanation of what the repair issue means (2–3 sentences).",
+            },
+            "recommended_action": {
+                "type": "string",
+                "description": "What the user should do, with specific steps.",
+            },
+            "requires_hitl": {
+                "type": "boolean",
+                "description": "True if the user must take action. False to suppress the HITL card.",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["reboot", "restart", "dismiss"],
+                "description": "The action the HITL card should offer.",
+            },
+        },
+        "required": [
+            "human_explanation",
+            "recommended_action",
+            "requires_hitl",
+            "action",
+        ],
+    },
+)
+
+FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
+    name="finish_notification_investigation",
+    description=(
+        "Report investigation findings and optionally create a HITL card for the notification. "
+        "Call once after fully investigating the notification. "
+        "Set requires_hitl=false for benign notifications (e.g. login from a known device)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "human_explanation": {
+                "type": "string",
+                "description": "Plain-English explanation of what the notification means (2–4 sentences).",
+            },
+            "recommended_action": {
+                "type": "string",
+                "description": "Concrete steps the user should take.",
+            },
+            "requires_hitl": {
+                "type": "boolean",
+                "description": "True if user attention is needed. False to suppress the HITL card.",
+            },
+            "severity_override": {
+                "type": "string",
+                "description": (
+                    "Escalated severity: 'CRITICAL' or 'HIGH'. "
+                    "Omit or set null to keep the default severity."
+                ),
+            },
+            "dismiss_now": {
+                "type": "boolean",
+                "description": "True to auto-dismiss the notification from HA immediately.",
+            },
+        },
+        "required": ["human_explanation", "recommended_action", "requires_hitl"],
+    },
+)
+
+GET_DEVICE_INFO = ToolDefinition(
+    name="get_device_info",
+    description=(
+        "Enrich a source IP with device context: reverse DNS hostname, ARP MAC address, "
+        "MAC vendor (OUI), MAC randomization flag, NetAlertX device name, HA device registry name, "
+        "and DHCP hostname from the router. Returns a JSON object. "
+        "Call this for any http_login or ip-ban notification before the terminal tool."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ip": {
+                "type": "string",
+                "description": "The IPv4 address to look up.",
+            },
+        },
+        "required": ["ip"],
+    },
+)
+
+DISMISS_NOTIFICATION = ToolDefinition(
+    name="dismiss_notification",
+    description=(
+        "Dismiss a Home Assistant persistent notification by its notification_id. "
+        "The notification will no longer appear in the HA notifications panel. "
+        "Use for benign notifications after investigation; also set dismiss_now=true "
+        "in finish_notification_investigation to dismiss via the terminal tool."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "notification_id": {
+                "type": "string",
+                "description": "The HA notification_id to dismiss (e.g. 'http-login').",
+            },
+        },
+        "required": ["notification_id"],
+    },
+)
+
 RESOLVE_HITL_CARD = ToolDefinition(
     name="resolve_hitl_card",
     description=(
@@ -1316,6 +1431,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         APPLY_FIX,
         VERIFY_FIX,
         FINISH_REPAIR,
+        FINISH_REPAIR_ISSUE,
         QUERY_KNOWLEDGE,
         READ_SOURCE,
         FETCH_HA_DOCS,
@@ -1539,6 +1655,31 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,
         FINISH_LOVELACE_INVESTIGATION,
+    ):
+        reg.register(tool)
+    return reg
+
+
+def build_notification_investigation_registry() -> ToolRegistry:
+    """Registry for investigating HA persistent notifications.
+
+    Includes device enrichment (get_device_info), notification dismissal,
+    log reading, and knowledge querying. The agent calls
+    finish_notification_investigation as the terminal tool.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        QUERY_KNOWLEDGE,
+        READ_LOGS,
+        READ_CONFIG,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
+        FETCH_URL,
+        GET_DEVICE_INFO,
+        DISMISS_NOTIFICATION,
+        SAVE_RUNBOOK,
+        REQUEST_ESCALATION,
+        FINISH_NOTIFICATION_INVESTIGATION,
     ):
         reg.register(tool)
     return reg

@@ -7500,22 +7500,32 @@ class TestPollForNotifications:
 
     @staticmethod
     def _make_llm_client():
-        from agents.ha_notification_manager import _NotificationLLMOutput
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        out = _NotificationLLMOutput(
-            human_explanation="Test explanation.",
-            recommended_action="Check it.",
-            requires_hitl=True,
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_notification_investigation",
+                                "arguments": {
+                                    "human_explanation": "Test explanation.",
+                                    "recommended_action": "Check it.",
+                                    "requires_hitl": True,
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
         )
-        return FakeLLMClient(out.model_dump_json())
 
     def test_new_notification_triggers_notifier(self, db_path, monkeypatch):
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
             "http-login", "Login attempt", "Bad creds"
@@ -7531,7 +7541,6 @@ class TestPollForNotifications:
                     ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
-                    ssh_client=FakeSSHClient(),
                     db_path=db_path,
                 )
             )
@@ -7603,7 +7612,6 @@ class TestPollForNotifications:
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
             "some_integration_abc", message="Something failed"
@@ -7619,7 +7627,6 @@ class TestPollForNotifications:
                     ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
-                    ssh_client=FakeSSHClient(),
                     db_path=db_path,
                 )
             )
@@ -7629,7 +7636,7 @@ class TestPollForNotifications:
         assert notifier.sent[0]["payload"]["severity"] == "MEDIUM"
 
     def test_enrichment_failure_skips_notification(self, db_path, monkeypatch):
-        """If enrich_and_analyze_notification raises, the notification is skipped."""
+        """If the investigation AgentLoop raises, no card is sent."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
@@ -7637,6 +7644,9 @@ class TestPollForNotifications:
 
         class ExplodingLLM:
             async def chat(self, model, messages, options, format):
+                raise RuntimeError("LLM exploded")
+
+            async def chat_with_tools(self, model, messages, tools, options=None):
                 raise RuntimeError("LLM exploded")
 
         notif = self._make_notification_entity("http_login", "Login", "Bad creds")
@@ -7663,7 +7673,6 @@ class TestPollForNotifications:
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
 
         notif = self._make_notification_entity(
             "invalid_config", "Config error", "Bad YAML"
@@ -7679,7 +7688,6 @@ class TestPollForNotifications:
                     ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
-                    ssh_client=FakeSSHClient(),
                     db_path=db_path,
                 )
             )
@@ -7729,7 +7737,6 @@ class TestPollForNotifications:
                     ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
-                    ssh_client=FakeSSHClient(),
                     db_path=db_path,
                 )
             )
@@ -7746,6 +7753,7 @@ class TestPollForNotifications:
         notif_second["created_at"] = created_at_2
 
         ws2 = FakeHAWebSocketClient(notifications=[notif_second])
+        llm2 = self._make_llm_client()
         call_count2 = [0]
 
         async def fake_sleep_second(seconds: float) -> None:
@@ -7760,8 +7768,7 @@ class TestPollForNotifications:
                 poll_for_notifications(
                     ha_ws_client=ws2,
                     notifier=notifier,
-                    llm_client=llm,
-                    ssh_client=FakeSSHClient(),
+                    llm_client=llm2,
                     db_path=db_path,
                 )
             )
@@ -7770,13 +7777,12 @@ class TestPollForNotifications:
             len(notifier.sent) == 2
         ), "re-appearing notification must trigger a second card"
 
-    def test_netalertx_name_included_in_enrichment(self, db_path, monkeypatch):
-        """NetAlertX device name must appear in enriched_context when a client is provided."""
+    def test_netalertx_client_accepted_without_error(self, db_path, monkeypatch):
+        """Passing a netalertx_client to poll_for_notifications must not raise."""
         import asyncio as asyncio_mod
         from agents.ha_log_monitor import poll_for_notifications
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.ha.ssh_client import FakeSSHClient
 
         class FakeNetAlertXClient:
             async def get_devices(self):
@@ -7798,16 +7804,13 @@ class TestPollForNotifications:
                     ha_ws_client=ws,
                     notifier=notifier,
                     llm_client=llm,
-                    ssh_client=FakeSSHClient(),
                     netalertx_client=FakeNetAlertXClient(),
                     db_path=db_path,
                 )
             )
 
         assert len(notifier.sent) == 1
-        ctx = notifier.sent[0]["payload"]["enriched_context"]
-        assert ctx["netalertx_name"] == "iPhony 5G"
-        assert ctx["is_known_device"] is True
+        assert notifier.sent[0]["payload"]["is_notification_card"] is True
 
 
 # ── ha_notification_manager — extract_ip_from_message ────────────────────────────
@@ -8049,262 +8052,113 @@ class TestEnrichHttpLogin:
         assert result is None
 
 
-# ── ha_notification_manager — analyze_notification ───────────────────────────────
+# ── ha_notification_manager — _run_notification_investigation ────────────────────
 
 
-class TestAnalyzeNotification:
+class TestRunNotificationInvestigation:
+    """Tests for _run_notification_investigation() using FakeToolCallingLLMClient."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
     @staticmethod
-    def _make_llm_client(requires_hitl: bool = True):
-        from agents.ha_notification_manager import _NotificationLLMOutput
-        from utils.llm.ollama_client import FakeLLMClient
-
-        out = _NotificationLLMOutput(
-            human_explanation="Someone tried to log in.",
-            recommended_action="Change your password.",
-            requires_hitl=requires_hitl,
-        )
-        return FakeLLMClient(out.model_dump_json())
-
-    def test_returns_notification_analysis(self):
-        from agents.ha_notification_manager import (
-            NotificationAnalysis,
-            analyze_notification,
-        )
-
-        result = asyncio.run(
-            analyze_notification(
-                "http_login",
-                "Login attempt",
-                "Bad creds from 192.168.1.1",
-                {"source_ip": "192.168.1.1", "is_known_device": False},
-                "",
-                llm_client=self._make_llm_client(),
-                category="security",
-                severity="CRITICAL",
-            )
-        )
-        assert isinstance(result, NotificationAnalysis)
-        assert result.notification_id == "http_login"
-        assert result.category == "security"
-        assert result.severity == "CRITICAL"
-        assert result.human_explanation == "Someone tried to log in."
-        assert result.requires_hitl is True
-
-    def test_passes_config_content_truncated(self):
-        from agents.ha_notification_manager import (
-            _NotificationLLMOutput,
-            analyze_notification,
-        )
-        from utils.llm.ollama_client import FakeLLMClient
-
-        llm = FakeLLMClient(
-            _NotificationLLMOutput(
-                human_explanation="Config broken.",
-                recommended_action="Fix it.",
-                requires_hitl=True,
-            ).model_dump_json()
-        )
-        result = asyncio.run(
-            analyze_notification(
-                "invalid_config",
-                None,
-                "Error in sensor platform",
-                {},
-                "homeassistant:\n  name: Home\n",
-                llm_client=llm,
-                category="config_error",
-                severity="HIGH",
-            )
-        )
-        assert result.original_message == "Error in sensor platform"
-        assert result.original_title is None
-        assert len(llm.calls) == 1
-        user_msg = llm.calls[0]["messages"][1]["content"]
-        assert "configuration.yaml" in user_msg
-
-    def test_enriched_context_in_payload(self):
-        from agents.ha_notification_manager import analyze_notification
-
-        ctx = {"source_ip": "10.0.0.1", "is_known_device": True}
-        result = asyncio.run(
-            analyze_notification(
-                "http_login", None, "msg", ctx, "", llm_client=self._make_llm_client()
-            )
-        )
-        assert result.enriched_context == ctx
-
-    def test_requires_hitl_false_propagates(self):
-        from agents.ha_notification_manager import analyze_notification
-
-        result = asyncio.run(
-            analyze_notification(
-                "other",
-                None,
-                "msg",
-                {},
-                "",
-                llm_client=self._make_llm_client(requires_hitl=False),
-            )
-        )
-        assert result.requires_hitl is False
-
-    def test_analyze_notification_uses_model_factory(self, monkeypatch):
-        from agents.ha_notification_manager import analyze_notification
-        from agents import ha_notification_manager
-        import utils.llm.llm_factory
-
-        calls = []
-        monkeypatch.setattr(
-            utils.llm.llm_factory,
-            "_default_model_for_provider",
-            lambda: calls.append(True) or "sentinel-model",
-        )
-        asyncio.run(
-            analyze_notification(
-                "other", None, "msg", {}, "", llm_client=self._make_llm_client()
-            )
-        )
-        assert (
-            calls
-        ), "_default_model_for_provider was not called in analyze_notification"
-
-
-# ── ha_notification_manager — enrich_and_analyze_notification ────────────────────
-
-
-class TestEnrichAndAnalyzeNotification:
-    @staticmethod
-    def _make_llm_client(requires_hitl: bool = True):
-        from agents.ha_notification_manager import _NotificationLLMOutput
-        from utils.llm.ollama_client import FakeLLMClient
-
-        out = _NotificationLLMOutput(
-            human_explanation="Explanation.",
-            recommended_action="Action.",
-            requires_hitl=requires_hitl,
-        )
-        return FakeLLMClient(out.model_dump_json())
-
-    def test_http_login_unknown_ip_escalated_to_critical(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
-
-        class NeverMatchNAX:
-            async def get_devices(self):
-                return []
-
-        result = asyncio.run(
-            enrich_and_analyze_notification(
-                "http-login",
-                "Login attempt",
-                "Invalid auth from 192.168.1.99",
-                llm_client=self._make_llm_client(),
-                netalertx_client=NeverMatchNAX(),
-            )
-        )
-        assert result.severity == "CRITICAL"
-        assert result.enriched_context["source_ip"] == "192.168.1.99"
-        assert result.enriched_context["is_known_device"] is False
-
-    def test_http_login_known_ip_stays_high(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
-
-        class MatchingNAX:
-            async def get_devices(self):
-                return [{"devLastIP": "192.168.1.42", "devName": "Laptop"}]
-
-        result = asyncio.run(
-            enrich_and_analyze_notification(
-                "http-login",
-                "Login attempt",
-                "Invalid auth from 192.168.1.42",
-                llm_client=self._make_llm_client(),
-                netalertx_client=MatchingNAX(),
-            )
-        )
-        assert result.severity == "HIGH"
-        assert result.enriched_context["netalertx_name"] == "Laptop"
-
-    def test_http_login_no_ip_in_message_stays_high(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
-
-        result = asyncio.run(
-            enrich_and_analyze_notification(
-                "http-login",
-                "Login attempt",
-                "Bad credentials supplied",
-                llm_client=self._make_llm_client(),
-            )
-        )
-        assert result.severity == "HIGH"
-        assert result.enriched_context == {}
-
-    def test_invalid_config_includes_config_content_in_llm(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
-        from utils.ha.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient(
-            file_contents={
-                "/config/configuration.yaml": "homeassistant:\n  name: Home\n"
+    def _finish_call(
+        requires_hitl: bool = True, severity_override: str | None = None
+    ) -> list[dict]:
+        args: dict = {
+            "human_explanation": "Test explanation.",
+            "recommended_action": "Test action.",
+            "requires_hitl": requires_hitl,
+        }
+        if severity_override:
+            args["severity_override"] = severity_override
+        return [
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_notification_investigation",
+                            "arguments": args,
+                        }
+                    }
+                ]
             }
-        )
-        llm = self._make_llm_client()
+        ]
+
+    def test_sends_hitl_card_when_requires_hitl_true(self, db_path):
+        from agents.ha_notification_manager import _run_notification_investigation
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(self._finish_call(requires_hitl=True))
         asyncio.run(
-            enrich_and_analyze_notification(
-                "invalid_config",
-                None,
-                "Configuration error",
-                ssh_client=ssh,
+            _run_notification_investigation(
+                notification_id="http-login",
+                title="Login attempt",
+                message="Invalid auth from 192.168.1.99",
+                ha_created_at=None,
+                db_path=db_path,
+                notifier=notifier,
+                llm_client=llm,
+                ws_client=FakeHAWebSocketClient(),
+            )
+        )
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["is_notification_card"] is True
+        assert payload["ha_notification_id"] == "http-login"
+        assert payload["category"] == "security"
+
+    def test_no_hitl_card_when_requires_hitl_false(self, db_path):
+        from agents.ha_notification_manager import _run_notification_investigation
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(self._finish_call(requires_hitl=False))
+        asyncio.run(
+            _run_notification_investigation(
+                notification_id="http-login",
+                title="Login attempt",
+                message="msg",
+                ha_created_at=None,
+                db_path=db_path,
+                notifier=notifier,
                 llm_client=llm,
             )
         )
-        assert len(llm.calls) == 1
-        user_msg = llm.calls[0]["messages"][1]["content"]
-        assert "configuration.yaml" in user_msg
+        assert len(notifier.sent) == 0
 
-    def test_invalid_config_ssh_failure_continues(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
+    def test_severity_override_propagates_to_card(self, db_path):
+        from agents.ha_notification_manager import _run_notification_investigation
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        class ExplodingSSH:
-            async def read_file(self, path):
-                raise RuntimeError("SSH down")
-
-            async def write_file(self, path, content):
-                raise RuntimeError("SSH down")
-
-            async def download_file(self, remote, local):
-                raise RuntimeError("SSH down")
-
-            async def run(self, cmd, check=False):
-                raise RuntimeError("SSH down")
-
-            def stream_lines(self, cmd):
-                raise RuntimeError("SSH down")
-
-        result = asyncio.run(
-            enrich_and_analyze_notification(
-                "invalid_config",
-                None,
-                "Config error",
-                ssh_client=ExplodingSSH(),
-                llm_client=self._make_llm_client(),
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(
+            self._finish_call(requires_hitl=True, severity_override="CRITICAL")
+        )
+        asyncio.run(
+            _run_notification_investigation(
+                notification_id="http-login",
+                title="Login",
+                message="Bad auth from 1.2.3.4",
+                ha_created_at=None,
+                db_path=db_path,
+                notifier=notifier,
+                llm_client=llm,
             )
         )
-        assert result.notification_id == "invalid_config"
-
-    def test_other_notification_no_enrichment(self):
-        from agents.ha_notification_manager import enrich_and_analyze_notification
-
-        result = asyncio.run(
-            enrich_and_analyze_notification(
-                "integration_error",
-                "Integration failed",
-                "Component X failed to load",
-                llm_client=self._make_llm_client(),
-            )
-        )
-        assert result.category == "other"
-        assert result.severity == "MEDIUM"
-        assert result.enriched_context == {}
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["severity"] == "CRITICAL"
 
 
 # ── utils/ha_ws_client — FakeHAWebSocketClient ───────────────────────────────────
@@ -8481,15 +8335,25 @@ class TestRunNotifications:
         return path
 
     def _make_llm_client(self):
-        from agents.ha_notification_manager import _NotificationLLMOutput
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        return FakeLLMClient(
-            _NotificationLLMOutput(
-                human_explanation="Someone tried to log in.",
-                recommended_action="Check your logs.",
-                requires_hitl=True,
-            ).model_dump_json()
+        return FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_notification_investigation",
+                                "arguments": {
+                                    "human_explanation": "Someone tried to log in.",
+                                    "recommended_action": "Check your logs.",
+                                    "requires_hitl": True,
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
         )
 
     def test_sends_card_for_new_notification(self, db_path):
@@ -12439,39 +12303,47 @@ class TestRepairCardClassification:
         ha_agent_advanced.init_local_database()
         return path
 
-    def _run_one_poll(self, raw_issues, monkeypatch, db_path):
+    def _run_one_poll(self, raw_issues, monkeypatch, db_path, action: str = "dismiss"):
         """Run exactly one poll iteration and return the FakeNotifier."""
         import asyncio as asyncio_mod
-        from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
+        from agents.ha_log_monitor import poll_for_repairs
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         notifier = FakeNotifier()
         iteration = [0]
-        _default_analysis = RepairIssueAnalysis(
-            human_explanation="Test repair issue.",
-            recommended_action_rationale="",
-            requires_hitl=True,
+        fake_llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair_issue",
+                                "arguments": {
+                                    "human_explanation": "Test repair issue.",
+                                    "recommended_action": "Test action.",
+                                    "requires_hitl": True,
+                                    "action": action,
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
         )
-        fake_llm = FakeLLMClient(_default_analysis.model_dump_json())
 
         async def one_shot_sleep(_seconds):
             iteration[0] += 1
             if iteration[0] >= 2:
                 raise asyncio.CancelledError()
 
-        class FakeRepairWS:
-            async def get_repair_issues(self):
-                return raw_issues
-
-            async def get_device_registry(self):
-                return []
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 poll_for_repairs(
-                    ha_ws_client=FakeRepairWS(),
+                    ha_ws_client=FakeHAWebSocketClient(repair_issues=raw_issues),
                     notifier=notifier,
                     db_path=db_path,
                     llm_client=fake_llm,
@@ -12533,7 +12405,7 @@ class TestRepairCardClassification:
     def test_reboot_required_translation_key_classified_as_reboot(
         self, db_path, monkeypatch
     ):
-        """Repairs with 'reboot' in translation_key must be classified as reboot."""
+        """When the LLM investigation returns action=reboot, the card payload reflects it."""
         notifier = self._run_one_poll(
             [
                 {
@@ -12545,6 +12417,7 @@ class TestRepairCardClassification:
             ],
             monkeypatch,
             db_path,
+            action="reboot",
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
@@ -12552,7 +12425,7 @@ class TestRepairCardClassification:
     def test_critical_severity_non_reboot_key_classified_as_reboot(
         self, db_path, monkeypatch
     ):
-        """severity=critical overrides translation_key — action is reboot even without 'reboot' in key."""
+        """When the LLM investigation returns action=reboot for a critical issue, the card reflects it."""
         notifier = self._run_one_poll(
             [
                 {
@@ -12564,6 +12437,7 @@ class TestRepairCardClassification:
             ],
             monkeypatch,
             db_path,
+            action="reboot",
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
@@ -12571,8 +12445,7 @@ class TestRepairCardClassification:
     def test_restart_required_translation_key_classified_as_restart(
         self, db_path, monkeypatch
     ):
-        """Repairs with 'restart' in translation_key (e.g. HACS restart_required) must be
-        classified as restart (HA Core restart), not dismiss."""
+        """When the LLM investigation returns action=restart, the card payload reflects it."""
         notifier = self._run_one_poll(
             [
                 {
@@ -12584,6 +12457,7 @@ class TestRepairCardClassification:
             ],
             monkeypatch,
             db_path,
+            action="restart",
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "restart"
@@ -12591,8 +12465,7 @@ class TestRepairCardClassification:
     def test_reboot_in_translation_key_not_overridden_by_restart_check(
         self, db_path, monkeypatch
     ):
-        """A translation_key containing 'reboot' must yield 'reboot', not 'restart',
-        even though 'reboot' also contains 'restart' as a substring."""
+        """When the LLM returns action=reboot, the card has action=reboot (not restart)."""
         notifier = self._run_one_poll(
             [
                 {
@@ -12604,6 +12477,7 @@ class TestRepairCardClassification:
             ],
             monkeypatch,
             db_path,
+            action="reboot",
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
@@ -12632,11 +12506,20 @@ class TestRepairCardClassification:
         assert len(notifier.sent) == 0
 
 
-# ── RepairIssueAnalysis ───────────────────────────────────────────────────────────
+# ── _run_repair_issue_investigation ──────────────────────────────────────────────
 
 
-class TestRepairIssueAnalysis:
-    """Tests for RepairIssueAnalysis schema and analyze_repair_issue()."""
+class TestRunRepairIssueInvestigation:
+    """Tests for _run_repair_issue_investigation() using FakeToolCallingLLMClient."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
 
     def _make_issue(self, translation_key="config_entry_reauth", severity="warning"):
         from utils.ha.ha_rest_client import HARepairIssue
@@ -12650,95 +12533,87 @@ class TestRepairIssueAnalysis:
             translation_key=translation_key,
         )
 
-    def test_analyze_repair_issue_returns_schema(self):
-        """Valid LLM JSON → RepairIssueAnalysis fields populated correctly."""
-        from agents.ha_log_monitor import RepairIssueAnalysis, analyze_repair_issue
-        from utils.llm.ollama_client import FakeLLMClient
-
-        expected = RepairIssueAnalysis(
-            human_explanation="Your Cync integration needs to log in again.",
-            recommended_action_rationale="Dismissing will prompt re-authentication on next load.",
-            requires_hitl=False,
-        )
-        fake = FakeLLMClient(expected.model_dump_json())
-        result = asyncio.run(analyze_repair_issue(self._make_issue(), llm_client=fake))
-        assert result.human_explanation == expected.human_explanation
-        assert (
-            result.recommended_action_rationale == expected.recommended_action_rationale
-        )
-        assert result.requires_hitl is False
-
-    def test_analyze_repair_issue_invalid_json(self):
-        """Garbage LLM response → safe default returned, no exception raised."""
-        from agents.ha_log_monitor import analyze_repair_issue
-        from utils.llm.ollama_client import FakeLLMClient
-
-        fake = FakeLLMClient("not valid json {{{{")
-        issue = self._make_issue(severity="critical")
-        result = asyncio.run(analyze_repair_issue(issue, llm_client=fake))
-        assert isinstance(result.human_explanation, str)
-        assert len(result.human_explanation) > 0
-        assert (
-            result.requires_hitl is True
-        )  # critical severity → requires HITL in safe default
-
-    def test_poll_for_repairs_uses_llm_explanation(self, tmp_path, monkeypatch):
-        """poll_for_repairs enriches the card body with the LLM explanation."""
-        import asyncio as asyncio_mod
-        from agents import ha_agent_advanced
-        from agents.ha_log_monitor import poll_for_repairs, RepairIssueAnalysis
-        from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
-
-        db_path = str(tmp_path / "test.db")
-        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", db_path)
-        ha_agent_advanced.init_local_database()
-
-        explanation = "Your Cync integration needs to re-authenticate."
-        rationale = "Dismiss to trigger the re-auth flow."
-        analysis = RepairIssueAnalysis(
-            human_explanation=explanation,
-            recommended_action_rationale=rationale,
-            requires_hitl=False,
-        )
-        fake_llm = FakeLLMClient(analysis.model_dump_json())
-        notifier = FakeNotifier()
-        iteration = [0]
-
-        async def one_shot_sleep(_):
-            iteration[0] += 1
-            if iteration[0] >= 2:
-                raise asyncio.CancelledError()
-
-        class FakeRepairWS:
-            async def get_repair_issues(self):
-                return [
+    @staticmethod
+    def _finish_call(action: str = "dismiss", requires_hitl: bool = True) -> list[dict]:
+        return [
+            {
+                "tool_calls": [
                     {
-                        "domain": "pycync",
-                        "issue_id": "abc-002",
-                        "severity": "warning",
-                        "translation_key": "config_entry_reauth",
+                        "function": {
+                            "name": "finish_repair_issue",
+                            "arguments": {
+                                "human_explanation": "Your integration needs attention.",
+                                "recommended_action": "Dismiss this repair.",
+                                "requires_hitl": requires_hitl,
+                                "action": action,
+                            },
+                        }
                     }
                 ]
+            }
+        ]
 
-            async def get_device_registry(self):
-                return []
+    def test_sends_hitl_card_when_requires_hitl_true(self, db_path):
+        from agents.ha_log_monitor import _run_repair_issue_investigation
+        from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
 
-        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                poll_for_repairs(
-                    ha_ws_client=FakeRepairWS(),
-                    notifier=notifier,
-                    db_path=db_path,
-                    llm_client=fake_llm,
-                )
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(
+            self._finish_call(action="dismiss", requires_hitl=True)
+        )
+        asyncio.run(
+            _run_repair_issue_investigation(
+                issue=self._make_issue(),
+                notifier=notifier,
+                db_path=db_path,
+                llm_client=llm,
             )
-
+        )
         assert len(notifier.sent) == 1
-        body = notifier.sent[0]["body"]
-        assert explanation in body
-        assert rationale in body
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == CARD_TYPE_HA_REPAIR
+        assert payload["action"] == "dismiss"
+
+    def test_no_hitl_card_when_requires_hitl_false(self, db_path):
+        from agents.ha_log_monitor import _run_repair_issue_investigation
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(
+            self._finish_call(action="dismiss", requires_hitl=False)
+        )
+        asyncio.run(
+            _run_repair_issue_investigation(
+                issue=self._make_issue(),
+                notifier=notifier,
+                db_path=db_path,
+                llm_client=llm,
+            )
+        )
+        assert len(notifier.sent) == 0
+
+    def test_action_reboot_propagates_to_card(self, db_path):
+        from agents.ha_log_monitor import _run_repair_issue_investigation
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(
+            self._finish_call(action="reboot", requires_hitl=True)
+        )
+        asyncio.run(
+            _run_repair_issue_investigation(
+                issue=self._make_issue(translation_key="issue_system_reboot_required"),
+                notifier=notifier,
+                db_path=db_path,
+                llm_client=llm,
+            )
+        )
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "reboot"
 
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────
