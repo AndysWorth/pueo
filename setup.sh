@@ -93,11 +93,13 @@ _do_clean() {
         launchctl unload "${HOME}/Library/LaunchAgents/${_plist}.plist" 2>/dev/null || true
         rm -f "${HOME}/Library/LaunchAgents/${_plist}.plist"
     done
-    # CLI symlink (may have been installed with sudo)
-    if [[ -L /usr/local/bin/pueo || -f /usr/local/bin/pueo ]]; then
-        if ! rm -f /usr/local/bin/pueo 2>/dev/null; then
-            warn "Removing /usr/local/bin/pueo requires elevated permissions (it was installed with sudo)."
-            sudo rm -f /usr/local/bin/pueo
+    # CLI symlink — removed on --clean but kept on --reset so the command stays usable
+    if [[ "$preserve_config" != "true" ]]; then
+        if [[ -L /usr/local/bin/pueo || -f /usr/local/bin/pueo ]]; then
+            if ! rm -f /usr/local/bin/pueo 2>/dev/null; then
+                warn "Removing /usr/local/bin/pueo requires elevated permissions (it was installed with sudo)."
+                sudo rm -f /usr/local/bin/pueo
+            fi
         fi
     fi
     # Restore configs immediately to canonical locations — stash dir is ephemeral
@@ -135,7 +137,7 @@ fi
 if [[ "${1:-}" == "--reset" ]]; then
     echo -e "\n${YELLOW}⚠  Reset mode — this will remove all Pueo state except config.yaml:${NC}"
     echo "  .venv, platform-directory state (DB, HITL cards, caches, backups,"
-    echo "  ChromaDB, logs), launchd plists, CLI symlink, and Docker config dir."
+    echo "  ChromaDB, logs), launchd plists, and Docker config dir."
     echo "  Your config.yaml will be preserved — no need to answer questions again."
     echo
     read -rp "  Continue? [y/N]: " reset_confirm
