@@ -135,6 +135,17 @@ class OllamaClient:
             "eval_ms": eval_ns / 1_000_000 if eval_ns else None,
             "load_ms": load_ns / 1_000_000 if load_ns else None,
         }
+        # Extract thinking text for SQLite persistence.
+        _thinking_raw = getattr(msg, "thinking", None)
+        if _thinking_raw is None:
+            _content_str = result.get("content", "") or ""
+            if "<think>" in _content_str:
+                import re as _re
+
+                _m = _re.search(r"<think>(.*?)</think>", _content_str, _re.DOTALL)
+                _thinking_raw = _m.group(1).strip() if _m else None
+        if _thinking_raw:
+            result["_thinking"] = _thinking_raw
         tool_calls = result.get("tool_calls", [])
         duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(

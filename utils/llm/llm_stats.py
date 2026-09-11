@@ -24,14 +24,16 @@ def record_llm_call(
     output_tokens: Optional[int] = None,
     episode_id: Optional[str] = None,
     session_id: Optional[int] = None,
+    thinking_text: Optional[str] = None,
 ) -> None:
     """Insert one row into the llm_calls table."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT INTO llm_calls "
             "(ts, episode_id, session_id, model, provider, call_type, "
-            "latency_ms, ollama_eval_ms, ollama_load_ms, input_tokens, output_tokens) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "latency_ms, ollama_eval_ms, ollama_load_ms, input_tokens, output_tokens, "
+            "thinking_text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 episode_id,
@@ -44,6 +46,7 @@ def record_llm_call(
                 ollama_load_ms,
                 input_tokens,
                 output_tokens,
+                thinking_text,
             ),
         )
 

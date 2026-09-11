@@ -315,6 +315,7 @@ async def _run_notification_investigation(
         timeline_callback=make_activity_timeline_callback(
             "notification", trigger=f"HA notification: {notification_id}"
         ),
+        capture_llm=True,
     )
     increment_active_agent()
     try:

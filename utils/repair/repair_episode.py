@@ -33,6 +33,8 @@ class RepairEpisode(BaseModel):
     duration_seconds: float
     submitted_at: Optional[float] = None
     pr_url: Optional[str] = None
+    initial_context: Optional[str] = None
+    activity_type: Optional[str] = None
 
 
 def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
@@ -41,8 +43,9 @@ def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
             """
             INSERT OR REPLACE INTO repair_episodes
                 (id, timestamp, trigger, symptoms, tool_sequence, hypothesis_chain,
-                 fix_applied, verification_result, model_used, escalated, duration_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 fix_applied, verification_result, model_used, escalated, duration_seconds,
+                 initial_context, activity_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 episode.id,
@@ -65,6 +68,8 @@ def serialize_episode(db_path: str, episode: RepairEpisode) -> None:
                 episode.model_used,
                 int(episode.escalated),
                 episode.duration_seconds,
+                episode.initial_context,
+                episode.activity_type,
             ),
         )
         conn.commit()
@@ -95,6 +100,8 @@ def _row_to_episode(row: sqlite3.Row) -> RepairEpisode:
         duration_seconds=row["duration_seconds"],
         submitted_at=row["submitted_at"] if "submitted_at" in keys else None,
         pr_url=row["pr_url"] if "pr_url" in keys else None,
+        initial_context=row["initial_context"] if "initial_context" in keys else None,
+        activity_type=row["activity_type"] if "activity_type" in keys else None,
     )
 
 

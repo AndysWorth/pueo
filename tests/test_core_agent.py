@@ -513,7 +513,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 33
+        assert version == 34
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -523,7 +523,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 33
+        assert rows[0][0] == 34
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -552,7 +552,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 33
+        assert version == 34
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1430,7 +1430,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 33
+        assert version == 34
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1440,7 +1440,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 33
+        assert rows[0][0] == 34
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1468,7 +1468,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 33
+        assert version == 34
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1931,6 +1931,96 @@ class TestRepairEpisodeResultSummary:
         loaded = load_episode(db_path, "legacy-ep")
         assert loaded is not None
         assert loaded.tool_result_summaries == [""]
+
+
+class TestRepairEpisodeV34Fields:
+    """V34: initial_context and activity_type columns round-trip through SQLite."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_initial_context_stored_and_loaded(self, db_path):
+        from utils.repair.repair_episode import (
+            RepairEpisode,
+            load_episode,
+            serialize_episode,
+        )
+
+        ep = RepairEpisode(
+            id="v34-ep-1",
+            trigger="lovelace_poll",
+            symptoms=[],
+            tool_sequence=[],
+            tool_result_summaries=[],
+            hypothesis_chain=[],
+            verification_result=True,
+            model_used="qwen2.5-coder:7b",
+            escalated=False,
+            duration_seconds=1.0,
+            initial_context="Entity sensor.foo is missing from HA registry.",
+            activity_type="lovelace_investigation",
+        )
+        serialize_episode(db_path, ep)
+        loaded = load_episode(db_path, "v34-ep-1")
+        assert loaded is not None
+        assert (
+            loaded.initial_context == "Entity sensor.foo is missing from HA registry."
+        )
+        assert loaded.activity_type == "lovelace_investigation"
+
+    def test_v34_columns_nullable(self, db_path):
+        """Episodes without initial_context/activity_type load with None."""
+        from utils.repair.repair_episode import (
+            RepairEpisode,
+            load_episode,
+            serialize_episode,
+        )
+
+        ep = RepairEpisode(
+            id="v34-ep-2",
+            trigger="ha_log",
+            symptoms=[],
+            tool_sequence=[],
+            tool_result_summaries=[],
+            hypothesis_chain=[],
+            verification_result=True,
+            model_used="qwen2.5-coder:7b",
+            escalated=False,
+            duration_seconds=0.5,
+        )
+        serialize_episode(db_path, ep)
+        loaded = load_episode(db_path, "v34-ep-2")
+        assert loaded is not None
+        assert loaded.initial_context is None
+        assert loaded.activity_type is None
+
+    def test_llm_calls_thinking_text_column_exists(self, db_path):
+        """V34 migration adds thinking_text column to llm_calls."""
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1] for r in conn.execute("PRAGMA table_info(llm_calls)").fetchall()
+            ]
+        assert "thinking_text" in cols
+
+    def test_schema_v34_columns_exist(self, db_path):
+        """V34 migration adds initial_context and activity_type to repair_episodes."""
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(repair_episodes)").fetchall()
+            ]
+        assert "initial_context" in cols
+        assert "activity_type" in cols
 
 
 class TestSupervisorMain:
@@ -13945,7 +14035,7 @@ class TestAgentLoopActivityType:
 
         calls: list[tuple] = []
 
-        def _fake_write(level, source, message):
+        def _fake_write(level, source, message, detail=None):
             calls.append((level, source, message))
 
         monkeypatch.setattr("utils.core.timeline.write_timeline_event", _fake_write)

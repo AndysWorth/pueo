@@ -183,6 +183,10 @@ class AgentLoop:
         self._llm_captures: list = []
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
+        self._episode_id: str = ""  # set at start of run()
+        self._raw_initial_context: str = (
+            ""  # pre-injection context, set at start of run()
+        )
 
     def inject_context(self, message: str) -> None:
         """Append a user message to the live conversation during a running loop.
@@ -202,7 +206,20 @@ class AgentLoop:
         start_wall: float,
     ) -> dict[str, Any]:
         """Extract structured episode data from tool call history."""
-        _DIAGNOSTIC_TOOLS = {"read_config", "read_logs", "read_file"}
+        _DIAGNOSTIC_TOOLS = {
+            "read_config",
+            "read_logs",
+            "read_file",
+            "check_entity_status",
+            "get_ha_components",
+            "get_config_entries_all",
+            "search_log",
+            "run_ha_command",
+            "query_netalertx",
+            "get_device_info",
+            "get_disk_usage",
+            "read_pueo_log",
+        }
         symptoms: list[str] = []
         fix_applied: Optional[str] = None
         verification_result = True
@@ -218,7 +235,13 @@ class AgentLoop:
             elif name == "verify_fix":
                 verification_result = step.tool_result.success
 
-        summary = (episode_stub or {}).get("summary", "")
+        stub = episode_stub or {}
+        summary = (
+            stub.get("summary")
+            or stub.get("human_explanation")
+            or stub.get("recommendation")
+            or ""
+        )
         hypothesis_chain = [summary] if summary else []
 
         return {
@@ -240,7 +263,7 @@ class AgentLoop:
 
         data = self._build_episode(steps, episode_stub, start_wall)
         episode = RepairEpisode(
-            id=str(uuid.uuid4()),
+            id=self._episode_id,
             trigger=self._trigger,
             symptoms=data["symptoms"],
             tool_sequence=[step.tool_call for step in steps],
@@ -254,6 +277,8 @@ class AgentLoop:
             model_used=self._model,
             escalated=self._escalated,
             duration_seconds=data["duration_seconds"],
+            initial_context=self._raw_initial_context,
+            activity_type=self._activity_type,
         )
         if self._db_path is None:
             return (
@@ -387,6 +412,7 @@ class AgentLoop:
             review_prompt=review_prompt[:500],
             messages_count=len(review_messages),
         )
+        _review_t0 = time.monotonic()
         try:
             response = await asyncio.wait_for(
                 self._llm.chat(
@@ -407,6 +433,22 @@ class AgentLoop:
                 reason_limit_hit=decision.reason_limit_hit[:120],
                 summary=decision.summary_if_giving_up[:120],
             )
+            if self._db_path:
+                try:
+                    from utils.debug.capture import record_one_shot as _ros
+
+                    _ros(
+                        "_review_limit",
+                        self._model,
+                        f"{reason}: {total_calls_used} calls, {elapsed:.0f}s",
+                        decision.summary_if_giving_up[:500]
+                        or decision.reason_limit_hit[:500],
+                        (time.monotonic() - _review_t0) * 1000,
+                        "extend" if decision.can_resolve_with_more else "give_up",
+                        self._db_path,
+                    )
+                except Exception:  # nosec B110
+                    pass
             return decision
         except Exception:
             log.warning("limit_review_failed", timeout_used=timeout)
@@ -440,6 +482,8 @@ class AgentLoop:
         """
         self._executor.reset()
         self._llm_captures = []
+        self._episode_id = str(uuid.uuid4())
+        self._raw_initial_context = initial_context
 
         # Save the raw user question before any injection so ChromaDB gets
         # user intent, not the prepended HA profile block.
@@ -478,7 +522,15 @@ class AgentLoop:
             from utils.core.timeline import write_timeline_event
 
             write_timeline_event(
-                "INFO", "agent_loop", f"{_tl_label} — {_tl_activity} started"
+                "INFO",
+                "agent_loop",
+                f"{_tl_label} — {_tl_activity} started",
+                detail={
+                    "trigger": self._trigger,
+                    "activity_type": _tl_activity,
+                    "model": self._model,
+                    "episode_id": self._episode_id,
+                },
             )
         except Exception:  # nosec B110
             pass
@@ -513,21 +565,31 @@ class AgentLoop:
             elapsed=round(time.monotonic() - start_time, 2),
         )
 
-        episode_id: Optional[str] = None
         if outcome == "success" and self._db_path is not None:
             try:
-                episode_id = await asyncio.to_thread(
+                await asyncio.to_thread(
                     self._record_episode, steps, episode_stub, start_time
                 )
             except Exception as exc:  # nosec B110
                 log.error("repair_episode_record_failed", error=str(exc))
 
+        _duration = round(time.monotonic() - start_time, 2)
         self._messages = None  # loop finished; disable inject_context
         _tl_level = "INFO" if outcome == "success" else "WARN"
         try:
             from utils.core.timeline import write_timeline_event
 
-            write_timeline_event(_tl_level, "agent_loop", f"{_tl_label} — {outcome}")
+            write_timeline_event(
+                _tl_level,
+                "agent_loop",
+                f"{_tl_label} — {outcome}",
+                detail={
+                    "outcome": outcome,
+                    "steps": len(steps),
+                    "duration_seconds": _duration,
+                    "episode_id": self._episode_id,
+                },
+            )
         except Exception:  # nosec B110
             pass
 
@@ -570,7 +632,9 @@ class AgentLoop:
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
             episode_stub=episode_stub,
-            episode_id=episode_id,
+            episode_id=(
+                self._episode_id if (outcome == "success" and self._db_path) else None
+            ),
             capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
             gap_description=(episode_stub or {}).get("gap_description", ""),
             llm_captures=list(self._llm_captures),
@@ -682,6 +746,9 @@ class AgentLoop:
             _timing = (
                 response.pop("_ollama_timing", {}) if isinstance(response, dict) else {}
             )
+            _thinking_text = (
+                response.pop("_thinking", None) if isinstance(response, dict) else None
+            )
             if self._db_path:
                 from utils.llm.llm_stats import record_llm_call
 
@@ -702,6 +769,8 @@ class AgentLoop:
                         latency_ms=_latency_ms,
                         ollama_eval_ms=_timing.get("eval_ms"),
                         ollama_load_ms=_timing.get("load_ms"),
+                        episode_id=self._episode_id,
+                        thinking_text=_thinking_text,
                     )
                 )
 
@@ -969,6 +1038,10 @@ class AgentLoop:
                 if tool_call.name == self._terminal_tool_name:
                     episode_stub = {
                         "summary": tool_call.arguments.get("summary", ""),
+                        "human_explanation": tool_call.arguments.get(
+                            "human_explanation", ""
+                        ),
+                        "recommendation": tool_call.arguments.get("recommendation", ""),
                         "action_taken": tool_call.arguments.get("action_taken", ""),
                         "steps": tool_call_count,
                         "capability_gap": bool(

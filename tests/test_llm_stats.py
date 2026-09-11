@@ -26,7 +26,8 @@ def db(tmp_path):
             "ollama_eval_ms REAL, "
             "ollama_load_ms REAL, "
             "input_tokens INTEGER, "
-            "output_tokens INTEGER"
+            "output_tokens INTEGER, "
+            "thinking_text TEXT"
             ")"
         )
     return path

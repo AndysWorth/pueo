@@ -114,6 +114,7 @@ async def _run_lovelace_investigation(
         timeline_callback=make_activity_timeline_callback(
             "lovelace_investigation", trigger="Lovelace entity change"
         ),
+        capture_llm=True,
     )
     increment_active_agent()
     try:
