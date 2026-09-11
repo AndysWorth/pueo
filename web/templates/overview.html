@@ -255,7 +255,7 @@
     <div style="display:flex;align-items:baseline;gap:0.5rem;margin-bottom:0.25rem;">
       <span id="active-activity-trigger" style="font-size:0.75rem;color:var(--muted);font-style:italic;"></span>
     </div>
-    <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:5.2em;overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;gap:2px;"></ul>
+    <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:8em;overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;"></ul>
     <ul id="queue-pending-list" hidden style="list-style:none;padding:0;margin:0.5rem 0 0;font-size:0.78rem;color:var(--muted);border-top:1px solid var(--border);padding-top:0.4rem;display:flex;flex-direction:column;gap:2px;"></ul>
   </div>
 
@@ -296,7 +296,7 @@
   <!-- Monitoring Loops table (polling loops only) -->
   <div class="card full-width">
     <div class="section-title">Monitoring Loops</div>
-    {% set SKIP = ["ha_log_monitor", "ha_log_monitor_supervisor", "netalertx", "netalertx_setup"] %}
+    {% set SKIP = ["ha_log_monitor", "ha_log_monitor_supervisor", "netalertx", "netalertx_setup", "ollama_monitor"] %}
     {% set FAST_ORDER = ["resource_poll", "disk_usage_poll", "notification_poll", "repair_poll", "lovelace_poll"] %}
     {% set INFREQ_ORDER = ["embed_episodes", "backup_sync", "known_issues_poll", "profile_refresh", "update_check", "rag_refresh"] %}
     {% set status_map = {} %}
@@ -924,7 +924,7 @@
       var list = document.getElementById('active-activity-steps');
       if (list) {
         var li = document.createElement('li');
-        li.style.cssText = 'color:var(--fg);padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        li.style.cssText = 'color:var(--fg);padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border);';
         var prefix = n > 1 ? '[' + _activityShortLabel(activityType) + '] ' : '';
         li.textContent = prefix + statusLine;
         list.insertBefore(li, list.firstChild);
