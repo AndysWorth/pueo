@@ -34,11 +34,6 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA repair card, persistent issue, component failure flagged by HA",
     ),
     (
-        "triage_dashboard_entity.md",
-        "HA dashboard entity not found",
-        "Lovelace entity-not-found error, dashboard card showing unavailable",
-    ),
-    (
         "investigation.md",
         "General investigation methodology",
         "Unknown HA failure, general diagnostic investigation",
