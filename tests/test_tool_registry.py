@@ -131,19 +131,19 @@ class TestRegistryMembership:
         ):
             assert name in reg, f"expected {name!r} in config_analysis registry"
 
-    def test_impact_analysis_registry_membership(self):
-        from utils.agent.tool_registry import build_impact_analysis_registry
+    def test_update_analysis_registry_membership(self):
+        from utils.agent.tool_registry import build_update_analysis_registry
 
-        reg = build_impact_analysis_registry()
+        reg = build_update_analysis_registry()
         for name in (
-            "read_file",
-            "run_ha_command",
-            "fetch_ha_docs",
+            "get_update_release_notes",
+            "get_pueo_command_catalog",
+            "check_config_against_breaking_change",
             "query_knowledge",
             "save_runbook",
-            "finish_impact_analysis",
+            "finish_update_analysis",
         ):
-            assert name in reg, f"expected {name!r} in impact_analysis registry"
+            assert name in reg, f"expected {name!r} in update_analysis registry"
 
     def test_ha_registry_includes_get_ha_profile(self):
         reg = build_ha_tool_registry()

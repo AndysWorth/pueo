@@ -1413,6 +1413,157 @@ RESOLVE_HITL_CARD = ToolDefinition(
 )
 
 
+GET_UPDATE_RELEASE_NOTES = ToolDefinition(
+    name="get_update_release_notes",
+    description=(
+        "Fetch the release notes for a specific HA version from the local cache "
+        "(or GitHub API if not yet cached). Returns the release notes text. "
+        "Call this early in update analysis to identify breaking changes."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "target_version": {
+                "type": "string",
+                "description": "The HA version to fetch notes for (e.g. '2026.9.1').",
+            },
+        },
+        "required": ["target_version"],
+    },
+)
+
+GET_PUEO_COMMAND_CATALOG = ToolDefinition(
+    name="get_pueo_command_catalog",
+    description=(
+        "Return the list of SSH commands Pueo uses to interact with Home Assistant. "
+        "Cross-reference these with release notes to identify renamed or removed commands "
+        "that would break Pueo's operation."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+
+CHECK_CONFIG_AGAINST_BREAKING_CHANGE = ToolDefinition(
+    name="check_config_against_breaking_change",
+    description=(
+        "Check whether a specific config key mentioned in the release notes is present "
+        "in the live HA configuration.yaml. Returns 'PRESENT' or 'NOT FOUND' with context. "
+        "Call once per breaking change that mentions a YAML config key."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "config_key": {
+                "type": "string",
+                "description": "The YAML key to look for (e.g. 'recorder', 'homeassistant').",
+            },
+            "breaking_change_desc": {
+                "type": "string",
+                "description": "The breaking change description (for context in the result).",
+            },
+        },
+        "required": ["config_key", "breaking_change_desc"],
+    },
+)
+
+FINISH_UPDATE_ANALYSIS = ToolDefinition(
+    name="finish_update_analysis",
+    description=(
+        "Call when the update analysis is complete. Provide a structured assessment "
+        "of whether the update is safe for this specific installation. "
+        "Setting create_hitl_card=true sends an approval card to the user."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "safe_to_update": {
+                "type": "boolean",
+                "description": "Advisory: true if safe to proceed, false if review required.",
+            },
+            "breaking_changes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Breaking changes found in the release notes (empty if none).",
+            },
+            "affected_config_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Config keys in this installation that are affected by breaking changes.",
+            },
+            "pueo_command_risks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Pueo SSH commands that appear in breaking/migration notes.",
+            },
+            "recommendation": {
+                "type": "string",
+                "description": "One-sentence plain-English recommendation for the user.",
+            },
+            "instance_impact": {
+                "type": "string",
+                "enum": ["none", "low", "high"],
+                "description": "'none' if no breaking changes affect this install, 'low' for minor changes, 'high' for critical changes.",
+            },
+            "proposed_config_fixes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "fix_description": {"type": "string"},
+                        "config_fix_yaml": {"type": "string"},
+                    },
+                    "required": ["description", "config_fix_yaml"],
+                },
+                "description": "YAML config fixes the user should apply before updating.",
+            },
+            "create_hitl_card": {
+                "type": "boolean",
+                "description": "True to send an approval card to the user. Usually true for core/os updates.",
+            },
+        },
+        "required": [
+            "safe_to_update",
+            "breaking_changes",
+            "affected_config_keys",
+            "pueo_command_risks",
+            "recommendation",
+            "instance_impact",
+            "proposed_config_fixes",
+            "create_hitl_card",
+        ],
+    },
+)
+
+
+def build_update_analysis_registry() -> ToolRegistry:
+    """Registry for HA update breaking-change analysis.
+
+    The agent fetches release notes, cross-references breaking changes
+    against this installation's config, checks Pueo's command catalog,
+    and calls finish_update_analysis with a structured recommendation.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        GET_UPDATE_RELEASE_NOTES,
+        GET_PUEO_COMMAND_CATALOG,
+        CHECK_CONFIG_AGAINST_BREAKING_CHANGE,
+        READ_FILE,
+        RUN_HA_COMMAND,
+        FETCH_HA_DOCS,
+        FETCH_URL,
+        QUERY_KNOWLEDGE,
+        SAVE_RUNBOOK,
+        REQUEST_ESCALATION,
+        FINISH_UPDATE_ANALYSIS,
+    ):
+        reg.register(tool)
+    return reg
+
+
 def build_ha_tool_registry() -> ToolRegistry:
     """HA repair registry.
 

@@ -862,30 +862,14 @@ async def poll_for_updates(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     notifier: Optional[NotifierProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
-    llm_client: Optional[LLMClientProtocol] = None,
-    cache_dir: Optional[str] = None,
     knowledge_store: Optional[Any] = None,
 ) -> None:
     """Periodically checks for available HA updates and fires update approval cards."""
-    from .ha_update_manager import (
-        InstanceImpactReport,
-        UpdateReadinessReport,
-        analyze_breaking_changes,
-        fetch_release_notes_cached,
-        personalize_breaking_changes,
-    )
-    from utils.hitl.card_types import CARD_TYPE_UPDATE
-
     interval = HA_UPDATE_CHECK_INTERVAL_HOURS * 3600
     _client: HARestClientProtocol = ha_rest_client or HARestClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
-    _ssh: Optional[SSHClientProtocol] = ssh_client  # None → no config fetch (soft)
-    _llm: Optional[LLMClientProtocol] = (
-        llm_client  # None → OllamaClient() inside analyze
-    )
-    _cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
 
     _update_gone: dict[str, float] = (
         {}
@@ -923,248 +907,14 @@ async def poll_for_updates(
                     latest=u.latest_version,
                 )
 
-                # Run breaking-change analysis for core updates.
-                readiness: Optional[UpdateReadinessReport] = None
-                impact: Optional[InstanceImpactReport] = None
-                if u.component == "core":
-                    release_notes = ""
-                    try:
-                        release_notes = await fetch_release_notes_cached(
-                            u.latest_version, _cache_dir
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "update_poll_release_notes_failed",
-                            version=u.latest_version,
-                            error=str(exc),
-                        )
-
-                    if release_notes:
-                        try:
-                            readiness = await analyze_breaking_changes(
-                                u, release_notes, _llm
-                            )
-                        except Exception as exc:
-                            log.warning("update_poll_analysis_failed", error=str(exc))
-
-                    # Personalize: cross-reference breaking changes against actual config.
-                    if readiness and readiness.breaking_changes and _ssh is not None:
-                        try:
-                            from utils.ha.ssh_client import AsyncSSHClient
-
-                            _ha_ssh = (
-                                _ssh
-                                if _ssh is not None
-                                else AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
-                            )
-                            _, ha_cfg_yaml, _ = await _ha_ssh.run(
-                                "cat /config/configuration.yaml", check=False
-                            )
-                            # Get installed integrations from last cached profile.
-                            _integrations: list[str] = []
-                            try:
-                                from utils.ha.ha_environment import (
-                                    load_environment_profile,
-                                )
-
-                                _cached = load_environment_profile(DB_PATH)
-                                if _cached is not None:
-                                    _integrations = _cached.installed_integrations
-                            except Exception:  # nosec B110
-                                pass
-                            _impact_future: asyncio.Future = (
-                                asyncio.get_event_loop().create_future()
-                            )
-                            _bc_snap = readiness.breaking_changes
-                            _cfg_snap = ha_cfg_yaml
-                            _int_snap = _integrations
-                            _ssh_snap = _ha_ssh
-                            _ks_snap = knowledge_store
-                            _llm_snap = _llm
-
-                            async def _personalize_coro(
-                                bcs: list = _bc_snap,
-                                cfg: str = _cfg_snap,
-                                ints: list = _int_snap,
-                            ) -> None:
-                                try:
-                                    _r = await personalize_breaking_changes(
-                                        bcs,
-                                        cfg,
-                                        ints,
-                                        _llm_snap,
-                                        ssh_client=_ssh_snap,
-                                        knowledge_store=_ks_snap,
-                                    )
-                                    if not _impact_future.done():
-                                        _impact_future.set_result(_r)
-                                except Exception as _exc:
-                                    if not _impact_future.done():
-                                        _impact_future.set_exception(_exc)
-
-                            from utils.agent.work_queue import (
-                                PRIORITY_NORMAL,
-                                WorkItem,
-                                get_work_queue_or_none,
-                            )
-
-                            _wq = get_work_queue_or_none()
-                            if _wq is not None:
-                                await _wq.submit(
-                                    WorkItem(
-                                        priority=PRIORITY_NORMAL,
-                                        activity_type="update_analysis",
-                                        description=f"Update impact analysis: {u.component}",
-                                        dedup_key="update_analysis",
-                                        suppress_while_running=frozenset(),
-                                        coro_factory=_personalize_coro,
-                                    )
-                                )
-                                impact = await _impact_future
-                            else:
-                                impact = await personalize_breaking_changes(
-                                    _bc_snap,
-                                    _cfg_snap,
-                                    _int_snap,
-                                    _llm,
-                                    ssh_client=_ha_ssh,
-                                    knowledge_store=knowledge_store,
-                                )
-                            log.info(
-                                "breaking_changes_personalized",
-                                instance_impact=impact.instance_impact,
-                                effective_safe=impact.effective_safe_to_update,
-                            )
-                        except Exception as exc:
-                            log.warning(
-                                "update_poll_personalize_failed", error=str(exc)
-                            )
-
                 if HA_UPDATE_NOTIFY_ON_AVAILABLE:
-                    # Base risk level for the component type.
-                    risk = (
-                        "CRITICAL"
-                        if u.component in ("core", "os")
-                        else "HIGH" if u.component == "supervisor" else "MEDIUM"
-                    )
-                    # Downgrade risk when personalized analysis confirms no impact.
-                    if impact is not None and impact.instance_impact == "none":
-                        risk = "HIGH" if u.component in ("core", "os") else risk
+                    from .ha_update_manager import _run_update_analysis
 
-                    body_parts = [
-                        f"Component: {u.component}",
-                        f"Risk: {risk}",
-                    ]
-                    if u.release_summary:
-                        body_parts.append(f"Summary: {u.release_summary}")
-                    if readiness:
-                        advisory = (
-                            "SAFE" if readiness.safe_to_update else "REVIEW REQUIRED"
-                        )
-                        body_parts.append(
-                            f"Advisory: {advisory} — {readiness.recommendation}"
-                        )
-                    if impact is not None:
-                        if impact.instance_impact == "none":
-                            body_parts.append(
-                                "✅ None of the breaking changes affect your install. "
-                                "Safe to proceed."
-                            )
-                        else:
-                            body_parts.append(
-                                f"⚠️ Instance impact: {impact.instance_impact.upper()} — "
-                                f"{impact.summary}"
-                            )
-                            if not impact.effective_safe_to_update:
-                                body_parts.append(
-                                    "🚫 Config fixes required before updating — "
-                                    "see 'Apply fixes' below."
-                                )
-
-                    disk_headroom_warning: Optional[str] = None
-                    if u.component in ("core", "os"):
-                        from utils.disk.resource import get_resource_status
-
-                        _rs = get_resource_status()
-                        if (
-                            _rs is not None
-                            and _rs.disk_free_gb < HA_DISK_CRITICAL_GB + 1.0
-                        ):
-                            disk_headroom_warning = (
-                                f"⚠️ Disk free is {_rs.disk_free_gb:.1f} GB — only "
-                                f"{_rs.disk_free_gb - HA_DISK_CRITICAL_GB:.1f} GB above "
-                                f"the critical threshold. Updates temporarily require extra "
-                                f"space. Consider running disk recovery before approving."
-                            )
-                            body_parts.append(disk_headroom_warning)
-
-                    from utils.hitl.hitl_tracker import stable_nid
-
-                    # Collect proposed config fixes from affected changes.
-                    proposed_config_fixes = []
-                    if impact is not None:
-                        for ac in impact.affected_changes:
-                            if ac.applies and ac.config_fix_yaml:
-                                proposed_config_fixes.append(
-                                    {
-                                        "description": ac.description,
-                                        "fix_description": ac.fix_description or "",
-                                        "config_fix_yaml": ac.config_fix_yaml,
-                                    }
-                                )
-
-                    # Mark sent in DB before writing file — if Pueo restarts between
-                    # the two, DB says "sent" (no card visible) rather than DB saying
-                    # "not sent" (duplicate card on next poll).
-                    await asyncio.to_thread(
-                        _update_mark_card_sent,
-                        suppression_key,
-                        CARD_TYPE_UPDATE,
-                        f"Update: {u.component} {u.installed_version} → {u.latest_version}",
-                    )
-                    await _notifier.send(
-                        subject=(
-                            f"Update available: {u.component}"
-                            f" {u.installed_version} → {u.latest_version}"
-                        ),
-                        body="\n".join(body_parts),
-                        payload={
-                            "notification_id": stable_nid(suppression_key),
-                            "card_type": CARD_TYPE_UPDATE,
-                            "suppression_key": suppression_key,
-                            "component": u.component,
-                            "entity_id": u.entity_id,
-                            "installed_version": u.installed_version,
-                            "latest_version": u.latest_version,
-                            "release_url": u.release_url,
-                            "release_summary": u.release_summary,
-                            "risk": risk,
-                            "severity": risk,
-                            "breaking_changes": (
-                                readiness.breaking_changes if readiness else []
-                            ),
-                            "affected_config_keys": (
-                                readiness.affected_config_keys if readiness else []
-                            ),
-                            "pueo_command_risks": (
-                                readiness.pueo_command_risks if readiness else []
-                            ),
-                            "advisory": readiness.recommendation if readiness else None,
-                            "safe_to_update": (
-                                readiness.safe_to_update if readiness else None
-                            ),
-                            "instance_impact": (
-                                impact.instance_impact if impact else None
-                            ),
-                            "effective_safe_to_update": (
-                                impact.effective_safe_to_update if impact else None
-                            ),
-                            "instance_impact_summary": (
-                                impact.summary if impact else None
-                            ),
-                            "proposed_config_fixes": proposed_config_fixes,
-                            "disk_headroom_warning": disk_headroom_warning,
-                        },
+                    await _run_update_analysis(
+                        u,
+                        ssh_client=ssh_client,
+                        notifier=_notifier,
+                        knowledge_store=knowledge_store,
                     )
                 try:  # pragma: no cover
                     from utils.core.timeline import write_timeline_event

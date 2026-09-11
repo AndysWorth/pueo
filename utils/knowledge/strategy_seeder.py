@@ -93,6 +93,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA notification investigation",
         "HA persistent notification, http_login, ip-ban, invalid_config, integration disabled, failed login, unknown device",
     ),
+    (
+        "seed_update_analysis.md",
+        "HA update breaking-change analysis",
+        "HA update available, breaking changes, deprecated config key, OS update, CLI change, HACS incompatibility, release notes unavailable",
+    ),
 ]
 
 

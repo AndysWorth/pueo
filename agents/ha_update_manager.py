@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 from pydantic import BaseModel, Field
@@ -24,7 +24,6 @@ from config import (
     HA_HOST,
     HA_MEM_WARN_MB,
     HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
-    MAX_PROMPT_TOKENS,
     NOTIFIER,
     NOTIFY_URL,
     NOTIFY_WATCH_DIR,
@@ -33,10 +32,8 @@ from config import (
 )
 from interfaces import HARestClientProtocol, LLMClientProtocol, SSHClientProtocol
 from utils.agent.autonomy import RiskLevel
-from utils.core.context import truncate_to_budget
 from utils.ha.ha_rest_client import HARestClient, UpdateStatus, get_update_status
 from utils.core.logging import get_logger
-from utils.core.prompts import load_prompt, repeat_query
 
 if TYPE_CHECKING:
     from utils.agent.agent_loop import AgentLoopResult
@@ -65,50 +62,6 @@ PUEO_SSH_COMMANDS = [
 _GITHUB_API_URL = (
     "https://api.github.com/repos/home-assistant/core/releases/tags/{version}"
 )
-
-
-class UpdateReadinessReport(BaseModel):
-    target_version: str
-    safe_to_update: bool  # advisory only
-    breaking_changes: list[str]
-    affected_config_keys: list[str]
-    pueo_command_risks: list[str]
-    recommendation: str
-
-
-class AffectedChange(BaseModel):
-    description: str = Field(description="The breaking change from the release notes")
-    applies: bool = Field(
-        description="True if this change applies to the current install"
-    )
-    reason: str = Field(
-        description="Explanation of why it applies or does not apply to this install"
-    )
-    config_fix_yaml: Optional[str] = Field(
-        default=None,
-        description="YAML snippet to fix this breaking change in the HA config, or null",
-    )
-    fix_description: Optional[str] = Field(
-        default=None,
-        description="Plain-English description of what the fix does, or null if no fix",
-    )
-
-
-class InstanceImpactReport(BaseModel):
-    affected_changes: list[AffectedChange]
-    instance_impact: str = Field(
-        description=(
-            "'none' if no breaking changes apply to this install, "
-            "'low' if minor/optional changes apply, "
-            "'high' if critical changes that must be addressed before updating"
-        )
-    )
-    effective_safe_to_update: bool = Field(
-        description="True if the update is safe to proceed given this instance's current config"
-    )
-    summary: str = Field(
-        description="One paragraph plain-English summary of the impact on this specific install"
-    )
 
 
 async def _fetch_github_release_notes(version: str) -> str:  # pragma: no cover
@@ -158,354 +111,6 @@ async def fetch_release_notes_cached(
     return notes
 
 
-async def analyze_breaking_changes(
-    update_status: UpdateStatus,
-    release_notes: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-    profile: Optional["HAEnvironmentProfile"] = None,
-) -> UpdateReadinessReport:
-    """LLM advisory analysis of release notes against the current installation.
-
-    When profile is provided, a structured installation summary is used in the
-    prompt instead of raw configuration YAML.  When profile is None, the prompt
-    omits installation context.
-    """
-    if len(release_notes.strip()) < 500:
-        url_match = re.search(r"https?://\S+", release_notes)
-        url_hint = (
-            url_match.group(0) if url_match else "https://www.home-assistant.io/blog/"
-        )
-        return UpdateReadinessReport(
-            target_version=update_status.latest_version,
-            safe_to_update=True,
-            breaking_changes=[],
-            affected_config_keys=[],
-            pueo_command_risks=[],
-            recommendation=(
-                f"Release notes for {update_status.latest_version} are not yet "
-                f"available on GitHub. Review manually: {url_hint}"
-            ),
-        )
-
-    from utils.llm.llm_factory import make_llm_client
-
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-
-    command_catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
-    notes_content = truncate_to_budget(release_notes, MAX_PROMPT_TOKENS - 400)
-
-    if profile is not None:
-        domains = ", ".join(profile.installed_integrations) or "unknown"
-        keys = ", ".join(profile.config_yaml_top_keys) or "unknown"
-        installation_section = (
-            f"=== Installed integrations ===\n{domains}\n\n"
-            f"HA version: {profile.ha_version}\n"
-            f"Top-level config keys: {keys}"
-        )
-    else:
-        installation_section = ""
-
-    user_content_parts = [
-        f"Target version: {update_status.latest_version}",
-        f"Installed version: {update_status.installed_version}",
-    ]
-    if installation_section:
-        user_content_parts.append(f"\n{installation_section}")
-    user_content_parts += [
-        f"\n=== Release notes ===\n{notes_content}",
-        f"\n=== Pueo SSH command catalog ===\n{command_catalog}",
-        "\nList breaking changes, affected config keys, and any Pueo commands "
-        "that appear in breaking changes or migration notes.",
-    ]
-
-    system_prompt = load_prompt("analyze_breaking_changes")
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt,
-        },
-        {
-            "role": "user",
-            "content": repeat_query(system_prompt, "\n".join(user_content_parts)),
-        },
-    ]
-
-    _t0 = __import__("time").monotonic()
-    response = await client.chat(
-        model=_config.OLLAMA_MODEL,
-        messages=messages,
-        options={"temperature": 0.0},
-        format=UpdateReadinessReport.model_json_schema(),
-    )
-    raw = response["message"]["content"]
-    _dur = (__import__("time").monotonic() - _t0) * 1000
-    try:
-        from utils.debug.capture import record_one_shot as _ros
-
-        _ros(
-            "analyze_breaking_changes",
-            _config.OLLAMA_MODEL,
-            "\n".join(user_content_parts)[:500],
-            raw[:500],
-            _dur,
-            "success",
-            _config.DB_PATH,
-        )
-    except Exception:  # nosec B110
-        pass
-    _report = UpdateReadinessReport.model_validate_json(raw)
-    import config as _um_cfg
-
-    if _um_cfg.DEBUG_LEVEL >= 1:
-        log.debug(
-            "breaking_change_analysis",
-            breaking_changes_count=len(_report.breaking_changes),
-            safe_to_update=_report.safe_to_update,
-        )
-    return _report
-
-
-async def personalize_breaking_changes(
-    breaking_changes: list[str],
-    ha_config_yaml: str,
-    installed_integrations: list[str],
-    llm_client: Optional[LLMClientProtocol] = None,
-    ssh_client: Optional[SSHClientProtocol] = None,
-    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
-) -> InstanceImpactReport:
-    """Second LLM pass: determine which general breaking changes actually affect this install.
-
-    When *ssh_client* is provided, runs an AgentLoop that can follow !include
-    directives, verify installed apps via ``ha apps list``, and look up
-    integration docs before reporting.  Without it, falls back to a one-shot
-    LLM call (backward-compatible for tests and callers without SSH).
-
-    Returns an InstanceImpactReport classifying impact and proposing YAML fixes
-    for any breaking changes that do apply.  Falls back to a safe default on
-    LLM error.
-    """
-    _safe_default = InstanceImpactReport(
-        affected_changes=[],
-        instance_impact="none",
-        effective_safe_to_update=True,
-        summary="Could not determine personalized impact; proceeding with general advisory.",
-    )
-
-    if not breaking_changes:
-        return InstanceImpactReport(
-            affected_changes=[],
-            instance_impact="none",
-            effective_safe_to_update=True,
-            summary="No breaking changes found in the release notes for this version.",
-        )
-
-    if ssh_client is not None:
-        try:
-            return await _personalize_with_agent_loop(
-                breaking_changes,
-                ha_config_yaml,
-                installed_integrations,
-                llm_client,
-                ssh_client,
-                knowledge_store,
-            )
-        except Exception as exc:
-            log.warning("personalize_agent_loop_failed", error=str(exc))
-            return _safe_default
-
-    return await _personalize_one_shot(
-        breaking_changes,
-        ha_config_yaml,
-        installed_integrations,
-        llm_client,
-        _safe_default,
-    )
-
-
-async def _personalize_with_agent_loop(
-    breaking_changes: list[str],
-    ha_config_yaml: str,
-    installed_integrations: list[str],
-    llm_client: Optional[LLMClientProtocol],
-    ssh_client: "SSHClientProtocol",
-    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
-) -> InstanceImpactReport:
-    from utils.llm.llm_factory import make_llm_client
-    from utils.agent.agent_loop import AgentLoop
-    from utils.agent.tool_executor import ToolExecutor
-    from utils.agent.tool_registry import (
-        build_impact_analysis_registry,
-        AgentLoopResult,
-    )
-    from utils.agent.autonomy import FakeAutonomyGate
-    from utils.hitl.notify import FakeNotifier
-
-    client: LLMClientProtocol = llm_client or make_llm_client()
-
-    changes_text = "\n".join(f"- {c}" for c in breaking_changes)
-    integrations_text = ", ".join(installed_integrations) or "unknown"
-    config_snippet = truncate_to_budget(ha_config_yaml, MAX_PROMPT_TOKENS - 800)
-
-    initial_message = (
-        "Determine which of these HA breaking changes affect this specific installation.\n\n"
-        f"=== Breaking changes ===\n{changes_text}\n\n"
-        f"=== Installed integrations ===\n{integrations_text}\n\n"
-        f"=== Current configuration.yaml (excerpt) ===\n```yaml\n{config_snippet}\n```\n\n"
-        "Use read_file to follow !include directives, run_ha_command('ha apps list') to "
-        "verify installed apps, fetch_ha_docs for integration details, query_knowledge for "
-        "known patterns, then call finish_impact_analysis with your assessment."
-    )
-
-    executor = ToolExecutor(
-        ha_ssh_client=ssh_client,
-        gate=FakeAutonomyGate(),  # type: ignore[arg-type]
-        notifier=FakeNotifier(),
-        llm_client=client,
-    )
-    registry = build_impact_analysis_registry()
-    from utils.agent.supervisor import (
-        decrement_active_agent,
-        increment_active_agent,
-        make_activity_timeline_callback,
-        publish_activity_done,
-    )
-
-    loop = AgentLoop(
-        llm_client=client,
-        tool_executor=executor,
-        tool_registry=registry,
-        terminal_tool_name="finish_impact_analysis",
-        trigger="impact_analysis",
-        activity_type="update_analysis",
-        knowledge_store=knowledge_store,
-        capture_llm=True,
-        timeline_callback=make_activity_timeline_callback(
-            "update_analysis", trigger="Update impact analysis"
-        ),
-    )
-
-    increment_active_agent()
-    try:
-        loop_result: AgentLoopResult = await loop.run(initial_message)
-        publish_activity_done("update_analysis", loop_result.outcome)
-    finally:
-        decrement_active_agent()
-    return _extract_impact_report(loop_result)
-
-
-def _extract_impact_report(loop_result: "AgentLoopResult") -> "InstanceImpactReport":
-    for step in loop_result.steps:
-        if step.tool_call.name == "finish_impact_analysis":
-            args = step.tool_call.arguments
-            try:
-                raw_changes = args.get("affected_changes", [])
-                affected = [
-                    AffectedChange(
-                        description=c.get("description", ""),
-                        applies=bool(c.get("applies", False)),
-                        reason=c.get("reason", ""),
-                        config_fix_yaml=c.get("config_fix_yaml"),
-                        fix_description=c.get("fix_description"),
-                    )
-                    for c in raw_changes
-                    if isinstance(c, dict)
-                ]
-                impact = str(args.get("instance_impact", "none"))
-                if impact not in ("none", "low", "high"):
-                    impact = "low"
-                return InstanceImpactReport(
-                    affected_changes=affected,
-                    instance_impact=impact,
-                    effective_safe_to_update=bool(
-                        args.get("effective_safe_to_update", True)
-                    ),
-                    summary=str(args.get("summary", "")),
-                )
-            except Exception as exc:  # nosec B110
-                log.warning("impact_report_parse_failed", error=str(exc))
-    return InstanceImpactReport(
-        affected_changes=[],
-        instance_impact="none",
-        effective_safe_to_update=True,
-        summary="Agent loop completed without calling finish_impact_analysis.",
-    )
-
-
-async def _personalize_one_shot(
-    breaking_changes: list[str],
-    ha_config_yaml: str,
-    installed_integrations: list[str],
-    llm_client: Optional[LLMClientProtocol],
-    safe_default: InstanceImpactReport,
-) -> InstanceImpactReport:
-    from utils.llm.llm_factory import make_llm_client
-
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-
-    changes_text = "\n".join(f"- {c}" for c in breaking_changes)
-    integrations_text = ", ".join(installed_integrations) or "unknown"
-    config_snippet = truncate_to_budget(ha_config_yaml, MAX_PROMPT_TOKENS - 800)
-
-    user_content = (
-        f"=== Breaking changes from release notes ===\n{changes_text}\n\n"
-        f"=== Installed integrations ===\n{integrations_text}\n\n"
-        f"=== Current configuration.yaml ===\n{config_snippet}\n\n"
-        "For each breaking change, determine if it applies to this install. "
-        "Propose YAML config fixes where applicable."
-    )
-
-    _t0_ps = __import__("time").monotonic()
-    try:
-        system_prompt = load_prompt("personalize_breaking_changes")
-        response = await client.chat(
-            model=_config.OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": repeat_query(system_prompt, user_content)},
-            ],
-            options={"temperature": 0.0},
-            format=InstanceImpactReport.model_json_schema(),
-        )
-        raw = response["message"]["content"]
-        _dur_ps = (__import__("time").monotonic() - _t0_ps) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "_personalize_one_shot",
-                _config.OLLAMA_MODEL,
-                user_content[:500],
-                raw[:500],
-                _dur_ps,
-                "success",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        report = InstanceImpactReport.model_validate_json(raw)
-        if report.instance_impact not in ("none", "low", "high"):
-            report = report.model_copy(update={"instance_impact": "low"})
-        return report
-    except Exception as exc:
-        log.warning("personalize_breaking_changes_failed", error=str(exc))
-        _dur_ps = (__import__("time").monotonic() - _t0_ps) * 1000
-        try:
-            from utils.debug.capture import record_one_shot as _ros
-
-            _ros(
-                "_personalize_one_shot",
-                _config.OLLAMA_MODEL,
-                user_content[:500],
-                str(exc)[:500],
-                _dur_ps,
-                "error",
-                _config.DB_PATH,
-            )
-        except Exception:  # nosec B110
-            pass
-        return safe_default
-
-
 def _format_update_table(updates: list[UpdateStatus]) -> str:
     if not updates:
         return "No update entities found via REST API."
@@ -519,27 +124,6 @@ def _format_update_table(updates: list[UpdateStatus]) -> str:
             f"{u.component:<30} {u.installed_version:<20} {u.latest_version:<20} {available:<10}"
         )
     return "\n".join(rows)
-
-
-def _format_readiness_report(report: UpdateReadinessReport) -> str:
-    lines = [
-        f"\n=== Breaking Change Analysis: {report.target_version} ===",
-        f"Advisory: {'SAFE' if report.safe_to_update else 'REVIEW REQUIRED'}",
-        f"Recommendation: {report.recommendation}",
-    ]
-    if report.breaking_changes:
-        lines.append("\nBreaking changes:")
-        for bc in report.breaking_changes:
-            lines.append(f"  • {bc}")
-    if report.affected_config_keys:
-        lines.append("\nAffected config keys:")
-        for key in report.affected_config_keys:
-            lines.append(f"  • {key}")
-    if report.pueo_command_risks:
-        lines.append("\nPueo command risks:")
-        for risk in report.pueo_command_risks:
-            lines.append(f"  ⚠ {risk}")
-    return "\n".join(lines)
 
 
 @dataclass
@@ -681,7 +265,6 @@ async def request_update_approval(
     update: UpdateStatus,
     gate: "AutonomyGate | FakeAutonomyGate",
     notifier: "NotifierProtocol",
-    readiness_report: Optional[UpdateReadinessReport] = None,
     disk_free_gb: Optional[float] = None,
     disk_warn: bool = False,
     disk_critical: bool = False,
@@ -707,9 +290,6 @@ async def request_update_approval(
     body_parts = [f"Component: {update.component}", f"Risk: {risk.name}"]
     if update.release_summary:
         body_parts.append(f"Summary: {update.release_summary}")
-    if readiness_report:
-        advisory = "SAFE" if readiness_report.safe_to_update else "REVIEW REQUIRED"
-        body_parts.append(f"Advisory: {advisory} — {readiness_report.recommendation}")
 
     _watch_dir = watch_dir or Path(NOTIFY_WATCH_DIR)
     pending_higher = _pending_higher_priority_components(update.component, _watch_dir)
@@ -765,17 +345,11 @@ async def request_update_approval(
         "release_summary": update.release_summary,
         "risk": risk.name,
         "severity": risk.name,
-        "breaking_changes": (
-            readiness_report.breaking_changes if readiness_report else []
-        ),
-        "affected_config_keys": (
-            readiness_report.affected_config_keys if readiness_report else []
-        ),
-        "pueo_command_risks": (
-            readiness_report.pueo_command_risks if readiness_report else []
-        ),
-        "advisory": readiness_report.recommendation if readiness_report else None,
-        "safe_to_update": readiness_report.safe_to_update if readiness_report else None,
+        "breaking_changes": [],
+        "affected_config_keys": [],
+        "pueo_command_risks": [],
+        "advisory": None,
+        "safe_to_update": None,
         "disk_free_gb": disk_free_gb,
         "disk_warn": disk_warn,
         "disk_critical": disk_critical,
@@ -803,12 +377,11 @@ async def request_update_approval(
 async def run_update_check(
     ha_rest_client: Optional[HARestClientProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
-    llm_client: Optional[LLMClientProtocol] = None,
-    cache_dir: Optional[str] = None,
     gate: Optional["AutonomyGate | FakeAutonomyGate"] = None,
     notifier: Optional["NotifierProtocol"] = None,
+    knowledge_store: Optional[Any] = None,
 ) -> list[UpdateStatus]:
-    """One-shot: print update status table, advisory breaking-change analysis, and approval cards."""
+    """One-shot: print update status table and submit agentic analysis WorkItems."""
     if not ha_rest_client and not HA_API_TOKEN:
         log.error(
             "update_check_no_token",
@@ -840,59 +413,108 @@ async def run_update_check(
             if u.release_url:
                 print(f"  {u.component}: {u.release_url}")
 
-    # Breaking-change analysis for any Core update; collect reports for approval cards.
-    reports: dict[str, UpdateReadinessReport] = {}
-    core_updates = [u for u in available if u.component == "core"]
-    for core_update in core_updates:
-        release_notes = ""
-        resolved_cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
-        try:
-            release_notes = await fetch_release_notes_cached(
-                core_update.latest_version, resolved_cache_dir
-            )
-        except Exception as exc:
-            log.warning(
-                "release_notes_fetch_failed",
-                version=core_update.latest_version,
-                error=str(exc),
-            )
-            print(
-                f"\nWarning: could not fetch release notes for {core_update.latest_version}: {exc}"
-            )
-
-        if not release_notes:
-            continue
-
-        try:
-            report = await analyze_breaking_changes(
-                core_update, release_notes, llm_client
-            )
-            reports[core_update.component] = report
-            print(_format_readiness_report(report))
-            log.info(
-                "breaking_change_analysis_complete",
-                version=core_update.latest_version,
-                safe_to_update=report.safe_to_update,
-                breaking_changes=len(report.breaking_changes),
-            )
-        except Exception as exc:
-            log.error("breaking_change_analysis_failed", error=str(exc))
-            print(f"\nWarning: breaking-change analysis failed: {exc}")
-
-    # Approval cards — Core/OS always require approval; add-ons defer to autonomy level.
-    from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import get_notifier
 
-    _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
     for update in available:
-        readiness = reports.get(update.component)
-        await request_update_approval(update, _gate, _notifier, readiness)
-        # Execution is handled by the dashboard's _execute_queued_update on approve.
-        # run_update_check() only creates the approval card; it never calls execute_update().
+        await _run_update_analysis(
+            update,
+            ssh_client=ssh_client,
+            notifier=_notifier,
+            knowledge_store=knowledge_store,
+        )
 
     return updates
+
+
+async def _run_update_analysis(
+    update: UpdateStatus,
+    ssh_client: Optional[SSHClientProtocol] = None,
+    notifier: Optional["NotifierProtocol"] = None,
+    knowledge_store: Optional[Any] = None,
+) -> None:
+    """Run a single AgentLoop to analyse an update and create the HITL card via the terminal tool."""
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+    )
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_update_analysis_registry
+    from utils.agent.work_queue import (
+        PRIORITY_NORMAL,
+        WorkItem,
+        get_work_queue_or_none,
+    )
+    from utils.core.prompts import load_prompt
+    from utils.llm.llm_factory import make_llm_client
+    from utils.hitl.notify import get_notifier
+
+    terminal_tool = "finish_update_analysis"
+    _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+
+    async def _coro() -> None:
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        executor = ToolExecutor(
+            ha_ssh_client=ssh_client,  # type: ignore[arg-type]
+            gate=gate,  # type: ignore[arg-type]
+            notifier=_notifier,
+            knowledge_store=knowledge_store,
+            db_path=DB_PATH,
+        )
+        executor.set_update_status(update)
+
+        system_prompt = load_prompt("agent_loop_update_analysis").replace(
+            "{terminal_tool}", terminal_tool
+        )
+        initial_context = (
+            f"Available update: {update.component} "
+            f"{update.installed_version} → {update.latest_version}"
+        )
+        if update.release_url:
+            initial_context += f"\nRelease URL: {update.release_url}"
+        if update.release_summary:
+            initial_context += f"\nSummary: {update.release_summary}"
+
+        llm_client = make_llm_client()  # pragma: no cover
+        loop = AgentLoop(
+            llm_client=llm_client,
+            tool_executor=executor,
+            tool_registry=build_update_analysis_registry(),
+            system_prompt=system_prompt,
+            terminal_tool_name=terminal_tool,
+            trigger="update_poll",
+            activity_type="update_analysis",
+            db_path=DB_PATH,
+            knowledge_store=knowledge_store,
+            timeline_callback=make_activity_timeline_callback(
+                "update_analysis",
+                trigger=f"Update: {update.component} → {update.latest_version}",
+            ),
+        )
+        increment_active_agent()
+        try:
+            await loop.run(initial_context)
+        finally:
+            decrement_active_agent()
+
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_NORMAL,
+                activity_type="update_analysis",
+                description=f"Update analysis: {update.component} → {update.latest_version}",
+                dedup_key=f"update_analysis:{update.entity_id}",
+                suppress_while_running=frozenset(),
+                coro_factory=_coro,
+            )
+        )
+    else:
+        await _coro()
 
 
 # ── Pueo Self-Check (item 37) ─────────────────────────────────────────────────
@@ -901,13 +523,6 @@ async def run_update_check(
 _NETALERTX_SLUG = "db21ed7f_netalertx_fa"
 # Disk buffer beyond the warn threshold needed to run the backup smoke test.
 _BACKUP_SMOKE_DISK_BUFFER_GB = 2.0
-
-
-class SelfCheckCommandRisk(BaseModel):
-    """LLM output schema for the post-update command catalog cross-reference."""
-
-    command_risks: list[str]
-    summary: str
 
 
 @dataclass
@@ -931,71 +546,12 @@ class PueoSelfCheckResult:
         )
 
 
-async def _self_check_llm_cross_reference(
-    release_notes: str,
-    llm_client: Optional[LLMClientProtocol] = None,
-) -> SelfCheckCommandRisk:
-    """Ask the LLM which Pueo SSH commands appear in the update's breaking changes."""
-    from utils.llm.llm_factory import make_llm_client
-
-    client: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
-
-    catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
-    notes_budget = MAX_PROMPT_TOKENS - 300  # 300 for system + catalog text
-    notes_content = truncate_to_budget(release_notes, notes_budget)
-
-    messages = [
-        {
-            "role": "system",
-            "content": load_prompt("selfcheck_command_risk"),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"=== Pueo SSH command catalog ===\n{catalog}\n\n"
-                f"=== Release notes ===\n{notes_content}\n\n"
-                "List any catalog commands that appear in breaking changes or "
-                "migration notes. For each, describe what changed."
-            ),
-        },
-    ]
-
-    _t0_sc = __import__("time").monotonic()
-    response = await client.chat(
-        model=_config.OLLAMA_MODEL,
-        messages=messages,
-        options={"temperature": 0.0},
-        format=SelfCheckCommandRisk.model_json_schema(),
-    )
-    raw = response["message"]["content"]
-    _dur_sc = (__import__("time").monotonic() - _t0_sc) * 1000
-    try:
-        from utils.debug.capture import record_one_shot as _ros
-
-        _ros(
-            "_self_check_llm_cross_reference",
-            _config.OLLAMA_MODEL,
-            catalog[:500],
-            raw[:500],
-            _dur_sc,
-            "success",
-            _config.DB_PATH,
-        )
-    except Exception:  # nosec B110
-        pass
-    return SelfCheckCommandRisk.model_validate_json(raw)
-
-
 async def run_pueo_self_check(
     ssh_client: SSHClientProtocol,
     version: str,
-    cache_dir: Optional[str] = None,
     disk_free_gb: Optional[float] = None,
-    llm_client: Optional[LLMClientProtocol] = None,
 ) -> PueoSelfCheckResult:
-    """Run CLI smoke tests and LLM command-catalog cross-reference after a Core update."""
-    resolved_cache_dir = cache_dir or HA_UPDATE_RELEASE_NOTES_CACHE_DIR
-
+    """Run CLI smoke tests after a Core update."""
     # ── CLI smoke tests ────────────────────────────────────────────────────────
     core_check_ok = False
     try:
@@ -1048,29 +604,7 @@ async def run_pueo_self_check(
             log.warning("self_check_backup_smoke_failed", error=str(exc))
             backup_smoke_ok = False
 
-    # ── LLM command-catalog cross-reference ───────────────────────────────────
     command_risks: list[str] = []
-    try:
-        notes_path = Path(resolved_cache_dir) / f"{version}.txt"
-        if notes_path.exists():
-            release_notes = notes_path.read_text()
-            risk_report = await _self_check_llm_cross_reference(
-                release_notes, llm_client
-            )
-            command_risks = risk_report.command_risks
-            log.info(
-                "self_check_llm_cross_reference_complete",
-                version=version,
-                risks_found=len(command_risks),
-            )
-        else:
-            log.info(
-                "self_check_llm_cross_reference_skipped",
-                reason="no_cached_notes",
-                version=version,
-            )
-    except Exception as exc:
-        log.warning("self_check_llm_cross_reference_failed", error=str(exc))
 
     result = PueoSelfCheckResult(
         core_check_ok=core_check_ok,
@@ -1407,9 +941,7 @@ async def execute_core_update(
             self_check = await run_pueo_self_check(
                 ssh_client,
                 version=update.latest_version,
-                cache_dir=cache_dir,
                 disk_free_gb=disk_free_gb,
-                llm_client=llm_client,
             )
         except Exception as exc:
             log.warning("post_update_self_check_failed", error=str(exc))

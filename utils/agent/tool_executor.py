@@ -149,6 +149,7 @@ class ToolExecutor:
         self._ha_profile: Optional["HAEnvironmentProfile"] = None
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
+        self._pending_update_status: Optional[Any] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -177,6 +178,10 @@ class ToolExecutor:
         available at executor creation time). Called from main.py once the client exists.
         """
         self._ws_client = client
+
+    def set_update_status(self, update_status: Any) -> None:
+        """Store the pending UpdateStatus so finish_update_analysis can create the card."""
+        self._pending_update_status = update_status
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -386,6 +391,28 @@ class ToolExecutor:
                 return await self._dismiss_notification(args.get("notification_id", ""))
             if name == "resolve_hitl_card":
                 return await self._resolve_hitl_card(args.get("card_key", ""))
+            if name == "get_update_release_notes":
+                return await self._get_update_release_notes(
+                    args.get("target_version", "")
+                )
+            if name == "get_pueo_command_catalog":
+                return await self._get_pueo_command_catalog()
+            if name == "check_config_against_breaking_change":
+                return await self._check_config_against_breaking_change(
+                    config_key=args.get("config_key", ""),
+                    breaking_change_desc=args.get("breaking_change_desc", ""),
+                )
+            if name == "finish_update_analysis":
+                return await self._finish_update_analysis(
+                    safe_to_update=bool(args.get("safe_to_update", True)),
+                    breaking_changes=args.get("breaking_changes", []),
+                    affected_config_keys=args.get("affected_config_keys", []),
+                    pueo_command_risks=args.get("pueo_command_risks", []),
+                    recommendation=args.get("recommendation", ""),
+                    instance_impact=args.get("instance_impact", "none"),
+                    proposed_config_fixes=args.get("proposed_config_fixes", []),
+                    create_hitl_card=bool(args.get("create_hitl_card", True)),
+                )
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):
@@ -2708,3 +2735,206 @@ class ToolExecutor:
                 output="",
                 error=str(exc),
             )
+
+    async def _get_update_release_notes(self, target_version: str) -> ToolResult:
+        """Fetch release notes for a specific HA version."""
+        if not target_version:
+            return ToolResult(
+                tool_name="get_update_release_notes",
+                success=False,
+                output="",
+                error="target_version is required",
+            )
+        try:
+            from agents.ha_update_manager import fetch_release_notes_cached
+            import config as _cfg
+
+            notes = await fetch_release_notes_cached(
+                target_version, _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR
+            )
+            return ToolResult(
+                tool_name="get_update_release_notes",
+                success=True,
+                output=notes[:16000],
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_update_release_notes",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _get_pueo_command_catalog(self) -> ToolResult:
+        """Return the list of SSH commands Pueo uses with HA."""
+        from agents.ha_update_manager import PUEO_SSH_COMMANDS
+
+        catalog = "\n".join(f"  - {cmd}" for cmd in PUEO_SSH_COMMANDS)
+        return ToolResult(
+            tool_name="get_pueo_command_catalog",
+            success=True,
+            output=f"Pueo SSH command catalog:\n{catalog}",
+        )
+
+    async def _check_config_against_breaking_change(
+        self, config_key: str, breaking_change_desc: str
+    ) -> ToolResult:
+        """Check whether a config key is present in the live HA configuration.yaml."""
+        if not config_key:
+            return ToolResult(
+                tool_name="check_config_against_breaking_change",
+                success=False,
+                output="",
+                error="config_key is required",
+            )
+        if self._ha_ssh is None:
+            return ToolResult(
+                tool_name="check_config_against_breaking_change",
+                success=False,
+                output="",
+                error="No SSH client available; cannot read live config",
+            )
+        try:
+            _, content, _ = await self._ha_ssh.run(
+                f"grep -n '{config_key}' /config/configuration.yaml 2>/dev/null"
+                " || echo 'not found'",
+                check=False,
+            )
+            present = content.strip() and "not found" not in content
+            status = "PRESENT" if present else "NOT FOUND"
+            return ToolResult(
+                tool_name="check_config_against_breaking_change",
+                success=True,
+                output=(
+                    f"Config key '{config_key}': {status}\n"
+                    f"Breaking change: {breaking_change_desc}\n"
+                    f"Grep output: {content[:500]}"
+                ),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="check_config_against_breaking_change",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+
+    async def _finish_update_analysis(
+        self,
+        safe_to_update: bool,
+        breaking_changes: list,
+        affected_config_keys: list,
+        pueo_command_risks: list,
+        recommendation: str,
+        instance_impact: str,
+        proposed_config_fixes: list,
+        create_hitl_card: bool,
+    ) -> ToolResult:
+        """Create a HITL approval card for the pending HA update."""
+        if not create_hitl_card:
+            return ToolResult(
+                tool_name="finish_update_analysis",
+                success=True,
+                output="Update analysis complete. No approval card required.",
+            )
+        update = self._pending_update_status
+        if update is None:
+            return ToolResult(
+                tool_name="finish_update_analysis",
+                success=False,
+                output="",
+                error="No pending update status stored on executor",
+            )
+        from agents.ha_log_monitor import (
+            _update_mark_card_sent,
+        )
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
+        from utils.hitl.hitl_tracker import stable_nid
+        from utils.disk.resource import get_resource_status
+
+        suppression_key = f"update:{update.entity_id}"
+        advisory = "SAFE" if safe_to_update else "REVIEW REQUIRED"
+        body_parts = [
+            f"Component: {update.component}",
+            f"Risk: {'CRITICAL' if update.component in ('core', 'os') else 'HIGH' if update.component == 'supervisor' else 'MEDIUM'}",
+        ]
+        if update.release_summary:
+            body_parts.append(f"Summary: {update.release_summary}")
+        body_parts.append(f"Advisory: {advisory} — {recommendation}")
+        if instance_impact != "none":
+            body_parts.append(f"⚠️ Instance impact: {instance_impact.upper()}")
+            if not safe_to_update:
+                body_parts.append(
+                    "🚫 Config fixes required before updating — see details below."
+                )
+        elif breaking_changes:
+            body_parts.append(
+                "✅ None of the breaking changes affect your install. Safe to proceed."
+            )
+
+        _rs = get_resource_status()
+        disk_headroom_warning: Optional[str] = None
+        if update.component in ("core", "os") and _rs is not None:
+            import config as _cfg
+
+            if _rs.disk_free_gb < _cfg.HA_DISK_CRITICAL_GB + 1.0:
+                disk_headroom_warning = (
+                    f"⚠️ Disk free is {_rs.disk_free_gb:.1f} GB — "
+                    "consider running disk recovery before approving."
+                )
+                body_parts.append(disk_headroom_warning)
+
+        body = "\n".join(body_parts)
+        subject = (
+            f"Update available: {update.component} "
+            f"{update.installed_version} → {update.latest_version}"
+        )
+        payload: dict = {
+            "notification_id": stable_nid(suppression_key),
+            "card_type": CARD_TYPE_UPDATE,
+            "suppression_key": suppression_key,
+            "component": update.component,
+            "entity_id": update.entity_id,
+            "installed_version": update.installed_version,
+            "latest_version": update.latest_version,
+            "release_url": update.release_url,
+            "release_summary": update.release_summary,
+            "risk": (
+                "CRITICAL"
+                if update.component in ("core", "os")
+                else "HIGH" if update.component == "supervisor" else "MEDIUM"
+            ),
+            "severity": (
+                "CRITICAL"
+                if update.component in ("core", "os")
+                else "HIGH" if update.component == "supervisor" else "MEDIUM"
+            ),
+            "breaking_changes": breaking_changes,
+            "affected_config_keys": affected_config_keys,
+            "pueo_command_risks": pueo_command_risks,
+            "advisory": recommendation,
+            "safe_to_update": safe_to_update,
+            "instance_impact": instance_impact,
+            "effective_safe_to_update": safe_to_update,
+            "instance_impact_summary": recommendation,
+            "proposed_config_fixes": proposed_config_fixes,
+            "disk_headroom_warning": disk_headroom_warning,
+        }
+        await asyncio.to_thread(
+            _update_mark_card_sent,
+            suppression_key,
+            CARD_TYPE_UPDATE,
+            subject,
+        )
+        await self._notifier.send(subject=subject, body=body, payload=payload)
+        log.info(
+            "update_hitl_card_sent",
+            component=update.component,
+            version=update.latest_version,
+            suppression_key=suppression_key,
+        )
+        return ToolResult(
+            tool_name="finish_update_analysis",
+            success=True,
+            output=f"Update approval card sent for {update.component} {update.latest_version}.",
+        )
