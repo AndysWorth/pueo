@@ -1004,6 +1004,22 @@ class AgentLoop:
                     }
                 )
 
+                if tool_result.discard_previous:
+                    reason = tool_call.arguments.get("reason", "")
+                    for _i in range(len(messages) - 2, -1, -1):
+                        if (
+                            messages[_i].get("role") == "tool"
+                            and messages[_i].get("name") != "discard_result"
+                        ):
+                            messages[_i]["content"] = f"[Discarded: {reason}]"
+                            log.info(
+                                "tool_result_discarded",
+                                step=tool_call_count,
+                                prev_tool=messages[_i].get("name"),
+                                reason=reason[:120],
+                            )
+                            break
+
                 log.info(
                     "agent_loop_step",
                     step=tool_call_count,

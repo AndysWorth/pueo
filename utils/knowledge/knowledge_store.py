@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+_log = logging.getLogger("knowledge_store")
 
 
 def _matches_where(meta: dict, where: Optional[dict]) -> bool:
@@ -121,9 +124,30 @@ class ChromaKnowledgeStore:  # pragma: no cover
         self._client = chroma_client or chromadb.PersistentClient(path=path)
         ef = _OllamaEmbeddingFunction(embed_model, ollama_endpoint)
         self._cols = {
-            name: self._client.get_or_create_collection(name, embedding_function=ef)  # type: ignore[arg-type]
-            for name in COLLECTIONS
+            name: self._get_cosine_collection(name, ef) for name in COLLECTIONS
         }
+
+    def _get_cosine_collection(self, name: str, ef: Any) -> Any:  # type: ignore[return]
+        """Return a cosine-distance collection, migrating from L2 if necessary."""
+        cosine_meta = {"hnsw:space": "cosine"}
+        try:
+            existing = self._client.get_collection(name)
+            if (existing.metadata or {}).get("hnsw:space") != "cosine":
+                _log.warning(
+                    "kb_collection_migrating",
+                    extra={
+                        "collection": name,
+                        "found": (existing.metadata or {}).get("hnsw:space"),
+                    },
+                )
+                self._client.delete_collection(name)
+        except Exception:  # nosec B110
+            pass  # collection does not exist yet — normal on first run
+        return self._client.get_or_create_collection(  # type: ignore[return-value]
+            name,
+            embedding_function=ef,  # type: ignore[arg-type]
+            metadata=cosine_meta,
+        )
 
     def upsert(
         self,
@@ -160,7 +184,9 @@ class ChromaKnowledgeStore:  # pragma: no cover
                         text=doc,
                         source=meta.get("source", ""),  # type: ignore[arg-type]
                         collection=col,
-                        score=max(0.0, 1.0 - dist),
+                        score=max(
+                            0.0, 1.0 - dist
+                        ),  # cosine dist ∈ [0,2]; score ∈ [0,1]
                         metadata=meta,  # type: ignore[arg-type]
                     )
                 )

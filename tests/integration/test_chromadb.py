@@ -137,3 +137,104 @@ class TestChromeKnowledgeStoreRoundTrip:
             "template" in results[0].text.lower()
             or results[0].source == "ha_release_2025.7"
         )
+        assert results[0].score > 0.0, "score must be > 0 with cosine distance"
+
+
+class TestChromeKnowledgeStoreCosineMigration:
+    """Verify cosine-space migration logic in ChromaKnowledgeStore.__init__."""
+
+    @staticmethod
+    def _make_store(client, monkeypatch):
+        from utils.knowledge.knowledge_store import (
+            ChromaKnowledgeStore,
+            _OllamaEmbeddingFunction,
+        )
+
+        def _embed(self, texts):
+            return [[float(i) for i in range(16)] for _ in texts]
+
+        monkeypatch.setattr(_OllamaEmbeddingFunction, "_embed", _embed)
+        return ChromaKnowledgeStore(
+            path="",
+            embed_model="nomic-embed-text",
+            ollama_endpoint="http://localhost:11434",
+            chroma_client=client,
+        )
+
+    def test_collections_created_with_cosine_space(self, monkeypatch):
+        try:
+            import chromadb
+        except ImportError:
+            pytest.skip("chromadb not installed")
+        from utils.knowledge.knowledge_store import COLLECTIONS
+
+        client = chromadb.EphemeralClient()
+        store = self._make_store(client, monkeypatch)
+        for name in COLLECTIONS:
+            col = client.get_collection(name)
+            assert (col.metadata or {}).get(
+                "hnsw:space"
+            ) == "cosine", f"collection {name!r} should use cosine distance"
+        assert store is not None
+
+    def test_migration_resets_l2_collection_to_cosine(self, monkeypatch):
+        try:
+            import chromadb
+        except ImportError:
+            pytest.skip("chromadb not installed")
+
+        client = chromadb.EphemeralClient()
+        # Pre-create a collection with L2 (no metadata = ChromaDB default L2)
+        client.create_collection("ha_release_notes")
+        pre = client.get_collection("ha_release_notes")
+        assert (pre.metadata or {}).get("hnsw:space") != "cosine"
+
+        self._make_store(client, monkeypatch)
+
+        post = client.get_collection("ha_release_notes")
+        assert (post.metadata or {}).get("hnsw:space") == "cosine"
+        assert post.count() == 0  # migrated collection starts empty
+
+    def test_min_score_filter_works_with_cosine(self, monkeypatch):
+        """Verify min_score=0.35 actually filters after the cosine fix."""
+        try:
+            import chromadb
+        except ImportError:
+            pytest.skip("chromadb not installed")
+        from utils.knowledge.knowledge_store import (
+            ChromaKnowledgeStore,
+            _OllamaEmbeddingFunction,
+        )
+
+        call_count = [0]
+
+        def _embed_varying(self, texts):
+            # First call (upsert doc): identical vector → self-similarity score=1.0
+            # Second call (query): slightly different → lower score
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [[1.0] * 16 for _ in texts]
+            # Query vector: orthogonal to stored → cosine distance = 1.0 → score = 0.0
+            return [[0.0] * 15 + [1.0] for _ in texts]
+
+        monkeypatch.setattr(_OllamaEmbeddingFunction, "_embed", _embed_varying)
+
+        client = chromadb.EphemeralClient()
+        store = ChromaKnowledgeStore(
+            path="",
+            embed_model="nomic-embed-text",
+            ollama_endpoint="http://localhost:11434",
+            chroma_client=client,
+        )
+        store.upsert(
+            collection="ha_release_notes",
+            ids=["doc1"],
+            documents=["some content"],
+            metadatas=[{"source": "test"}],
+        )
+        results = store.query(
+            "query", top_k=1, collections=["ha_release_notes"], min_score=0.35
+        )
+        assert (
+            results == []
+        ), "orthogonal query should return no results above min_score=0.35"

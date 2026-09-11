@@ -413,6 +413,15 @@ class ToolExecutor:
                     proposed_config_fixes=args.get("proposed_config_fixes", []),
                     create_hitl_card=bool(args.get("create_hitl_card", True)),
                 )
+            if name == "discard_result":
+                reason = args.get("reason", "")
+                log.info("discard_result", extra={"reason": reason[:200]})
+                return ToolResult(
+                    tool_name="discard_result",
+                    success=True,
+                    output=f"Discarded. Reason: {reason}",
+                    discard_previous=True,
+                )
             if name in self._dynamic_tools:
                 result = await self._dynamic_tools[name](args)
                 if isinstance(result, ToolResult):

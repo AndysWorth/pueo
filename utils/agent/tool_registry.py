@@ -34,6 +34,7 @@ class ToolResult(BaseModel):
     output: str
     error: str | None = None
     awaiting_approval: bool = False
+    discard_previous: bool = False
 
 
 class AgentStep(BaseModel):
@@ -980,6 +981,25 @@ REQUEST_ESCALATION = ToolDefinition(
     },
 )
 
+DISCARD_RESULT = ToolDefinition(
+    name="discard_result",
+    description=(
+        "Remove the most recent tool result from the conversation history. "
+        "Use when a tool returned something clearly not useful for this investigation "
+        "(404 for wrong endpoint, version mismatch, wrong entity)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "One-sentence explanation of why the result is not useful.",
+            }
+        },
+        "required": ["reason"],
+    },
+)
+
 FINISH_DIAGNOSIS = ToolDefinition(
     name="finish_diagnosis",
     description=(
@@ -1618,6 +1638,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_HA_PROFILE,
         SEARCH_INTEGRATIONS,
         GET_OLLAMA_STATUS,
+        DISCARD_RESULT,
     ):
         reg.register(tool)
     return reg
@@ -1640,6 +1661,7 @@ def build_code_proposal_registry() -> ToolRegistry:
         SEARCH_HA_DOCS,
         FINISH_REPAIR,
         GET_OLLAMA_STATUS,
+        DISCARD_RESULT,
     ):
         reg.register(tool)
     return reg
@@ -1668,6 +1690,7 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
         GET_OLLAMA_STATUS,
+        DISCARD_RESULT,
     ):
         reg.register(tool)
     return reg
@@ -1716,6 +1739,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
         RESOLVE_HITL_CARD,
+        DISCARD_RESULT,
     ):
         reg.register(tool)
     return reg
