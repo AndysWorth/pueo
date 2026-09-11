@@ -65,7 +65,7 @@ A queued repair (CRITICAL, priority 10) starts only after the currently running 
 
 This satisfies the design requirement: "let a running chat session finish" — the chat won't be interrupted — while ensuring a queued repair starts as soon as the slot is free.
 
-### Mandatory queue rule
+### Mandatory queue rule — AgentLoop
 
 All `AgentLoop.run()` calls that represent a judgment call or HA-state change **must** be submitted through `PueoWorkQueue`. Bypassing the queue (calling `AgentLoop.run()` directly in a supervisor context) is a correctness violation regardless of the calling context.
 
@@ -74,6 +74,12 @@ Use `get_work_queue_or_none()` and fall back to direct execution only when the q
 The only legitimate one-shot LLM calls are:
 - Volume-throttled streaming pre-filters (`analyze_log_line_with_ai`) — fire per log line; sole output is a binary gate before a queue submission
 - Secondary enrichment inside a running tool executor (`_enrich_fix_context`) — called inside an already-running AgentLoop; cannot itself be a queue submission
+
+### Mandatory queue rule — HA interaction
+
+Any operation that writes to or restarts Home Assistant — SSH config writes, `ha backup new`, sandbox test + atomic swap, `ha core restart`, `ha os update`, HA REST API writes (Lovelace config, recorder purge) — must also run inside a `WorkItem`. The queue's single consumer prevents concurrent HA mutations regardless of whether LLM inference is involved. Card handlers in `web/dashboard.py` that perform HA operations without LLM (`_execute_queued_fix`, `_execute_queued_update`, `_execute_disk_recovery`, etc.) are subject to this rule. Bypassing the queue for HA writes during supervised operation is a correctness violation equivalent to bypassing the backup-before-write invariant (ADR 002).
+
+See ADR 026 for the rationale and full context.
 
 ### Callers
 
@@ -90,6 +96,7 @@ The only legitimate one-shot LLM calls are:
 | `netalertx/diagnosis.py` health diagnosis | `netalertx_diagnosis` | HIGH | `netalertx_diagnosis` |
 | `utils/disk/resource.py` disk recovery | `disk_recovery` | HIGH | `disk_recovery` |
 | `web/dashboard.py` chat | `chat` | NORMAL | `chat` |
+| `web/dashboard.py` `approve()` + `apply_fixes()` | `card_execution` | HIGH | `card_{nid}` / `config_fixes_{nid}` |
 
 `utils/agent/config_analysis.py` is excluded: it is always called within a repair pipeline item (CRITICAL), and its AgentLoop inherits the queue's serialization implicitly.
 
