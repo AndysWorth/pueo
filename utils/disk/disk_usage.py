@@ -396,4 +396,9 @@ class DiskUsagePoller:
                     _sv.touch("disk_usage_poll", outcome=_outcome)
             except Exception:  # nosec B110
                 pass
-            await asyncio.sleep(self._interval)
+            try:
+                from utils.agent.supervisor import supervised_sleep
+
+                await supervised_sleep("disk_usage_poll", self._interval)
+            except ImportError:
+                await asyncio.sleep(self._interval)
