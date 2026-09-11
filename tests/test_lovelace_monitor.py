@@ -198,7 +198,7 @@ class TestExtractEntityRefs:
 
 class TestFuzzyCandidates:
     def test_same_domain_preferred(self):
-        from agents.ha_lovelace_monitor import _fuzzy_candidates
+        from utils.ha.lovelace_utils import _fuzzy_candidates
 
         registry_ids = {
             "sensor.temperature_bedroom",
@@ -211,53 +211,11 @@ class TestFuzzyCandidates:
             assert c.startswith("sensor.")
 
     def test_no_candidates_when_domain_absent(self):
-        from agents.ha_lovelace_monitor import _fuzzy_candidates
+        from utils.ha.lovelace_utils import _fuzzy_candidates
 
         registry_ids = {"light.ceiling", "switch.fan"}
         candidates = _fuzzy_candidates("sensor.foo", registry_ids)
         assert candidates == []
-
-
-# ---------------------------------------------------------------------------
-# DashboardEntityAnalysis
-# ---------------------------------------------------------------------------
-
-
-class TestDashboardEntityAnalysis:
-    def test_valid_construction(self):
-        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
-
-        a = DashboardEntityAnalysis(
-            explanation="Entity was renamed.",
-            likely_cause="renamed",
-            action="replace",
-            proposed_entity_id="sensor.new_name",
-        )
-        assert a.action == "replace"
-        assert a.proposed_entity_id == "sensor.new_name"
-
-    def test_construction_investigate_no_proposed(self):
-        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
-
-        a = DashboardEntityAnalysis(
-            explanation="Unknown.", likely_cause="deleted", action="investigate"
-        )
-        assert a.proposed_entity_id is None
-
-    def test_json_round_trip(self):
-        from agents.ha_lovelace_monitor import DashboardEntityAnalysis
-
-        raw = json.dumps(
-            {
-                "explanation": "Entity deleted.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
-        a = DashboardEntityAnalysis.model_validate_json(raw)
-        assert a.action == "remove"
-        assert a.proposed_entity_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -396,13 +354,13 @@ def _make_ws(lovelace_cfg: dict, entity_registry: list[dict]):  # type: ignore[r
 
 
 class TestPollMissingEntity:
-    def test_missing_entity_sends_card(self, tmp_path):
+    def test_truly_missing_entity_routed_to_investigation(self, tmp_path):
+        """Entities absent from both registry and states are routed to AgentLoop, not a direct card."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
+        from unittest import mock
 
         db_path = _make_hitl_db(tmp_path)
-
         lovelace = {
             "views": [
                 {
@@ -413,37 +371,40 @@ class TestPollMissingEntity:
         }
         ws = _make_ws(lovelace, [{"entity_id": "sensor.present"}])
         notifier = FakeNotifier()
+        investigation_calls: list[list[dict]] = []
 
-        analysis_json = json.dumps(
-            {
-                "explanation": "Entity was deleted.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
-        llm = FakeLLMClient(analysis_json)
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
 
-        async def _run():
-            coro = poll_for_dashboard_entity_issues(
-                ws_client=ws,
-                notifier=notifier,
-                db_path=db_path,
-                interval_minutes=0,
-                llm_client=llm,
-            )
-            task = asyncio.create_task(coro)
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
 
-        asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.missing"
-        assert notifier.sent[0]["payload"]["action"] == "remove"
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        assert len(notifier.sent) == 0
+        assert len(investigation_calls) >= 1
+        first_call = investigation_calls[0]
+        assert any(e["entity_id"] == "sensor.missing" for e in first_call)
+        missing = next(e for e in first_call if e["entity_id"] == "sensor.missing")
+        assert missing["has_state"] is False
 
     def test_present_entity_no_card(self, tmp_path):
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
@@ -460,53 +421,6 @@ class TestPollMissingEntity:
             ]
         }
         ws = _make_ws(lovelace, [{"entity_id": "sensor.present"}])
-        notifier = FakeNotifier()
-        llm = FakeLLMClient("{}")
-
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_dashboard_entity_issues(
-                    ws_client=ws,
-                    notifier=notifier,
-                    db_path=db_path,
-                    interval_minutes=0,
-                    llm_client=llm,
-                )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(_run())
-        assert len(notifier.sent) == 0
-
-    def test_duplicate_suppression(self, tmp_path):
-        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
-
-        db_path = _make_hitl_db(tmp_path)
-
-        # Pre-seed the suppression table so the card is already "sent".
-        from utils.hitl.hitl_tracker import mark_card_sent
-
-        with sqlite3.connect(db_path) as conn:
-            mark_card_sent(
-                conn, "dashboard_entity:sensor.gone", "dashboard_entity", "test"
-            )
-
-        lovelace = {
-            "views": [
-                {
-                    "title": "Main",
-                    "cards": [{"type": "entity", "entity": "sensor.gone"}],
-                }
-            ]
-        }
-        ws = _make_ws(lovelace, [])
         notifier = FakeNotifier()
         llm = FakeLLMClient("{}")
 
@@ -587,14 +501,14 @@ class TestPollMissingEntity:
             ).fetchone()
         assert row is not None and row[0] is not None  # resolved_at set
 
-    def test_named_dashboard_fetched(self, tmp_path):
+    def test_named_dashboard_truly_missing_entity_routed(self, tmp_path):
+        """Entity absent from a named dashboard is routed to AgentLoop, not a direct card."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
+        from unittest import mock
 
         db_path = _make_hitl_db(tmp_path)
-
         dashy_cfg = {
             "views": [
                 {
@@ -608,37 +522,40 @@ class TestPollMissingEntity:
             lovelace_dashboards=[{"url_path": "dashboard-dashy", "title": "Dashy"}],
             lovelace_configs={"dashboard-dashy": dashy_cfg},
         )
-        analysis_json = json.dumps(
-            {
-                "explanation": "Gone.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
         notifier = FakeNotifier()
-        llm = FakeLLMClient(analysis_json)
+        investigation_calls: list[list[dict]] = []
 
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_dashboard_entity_issues(
-                    ws_client=ws,
-                    notifier=notifier,
-                    db_path=db_path,
-                    interval_minutes=0,
-                    llm_client=llm,
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
                 )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_named_dash"
+            asyncio.run(_run())
+
+        assert len(notifier.sent) == 0
+        assert len(investigation_calls) >= 1
+        assert any(
+            e["entity_id"] == "sensor.in_named_dash" for e in investigation_calls[0]
+        )
 
     def test_unregistered_but_present_in_states_goes_to_investigation(self, tmp_path):
         """Entities in hass.states but not the registry are passed to _run_lovelace_investigation."""
@@ -696,12 +613,12 @@ class TestPollMissingEntity:
         # No direct card from the poll loop — classification is delegated to AgentLoop
         assert len(notifier.sent) == 0
 
-    def test_absent_from_both_registry_and_states_fires_card(self, tmp_path):
-        """Entities absent from both registry and hass.states do fire a card."""
+    def test_absent_from_both_registry_and_states_routed(self, tmp_path):
+        """Entities absent from both registry and hass.states are routed to investigation."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
+        from unittest import mock
 
         db_path = _make_hitl_db(tmp_path)
         lovelace = {
@@ -712,116 +629,54 @@ class TestPollMissingEntity:
                 }
             ]
         }
-        # Neither registry nor hass.states has the entity
         ws = FakeHAWebSocketClient(
             entity_registry=[],
             lovelace_configs={None: lovelace},
             states=[{"entity_id": "sensor.something_else", "state": "ok"}],
         )
-        analysis_json = json.dumps(
-            {
-                "explanation": "Deleted.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
         notifier = FakeNotifier()
-        llm = FakeLLMClient(analysis_json)
+        investigation_calls: list[list[dict]] = []
 
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_dashboard_entity_issues(
-                    ws_client=ws,
-                    notifier=notifier,
-                    db_path=db_path,
-                    interval_minutes=0,
-                    llm_client=llm,
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
                 )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.truly_gone"
+            asyncio.run(_run())
 
-    def test_rich_payload_fields_present(self, tmp_path):
-        """Card payload includes dashboard_url_path, card_title, and dash_url."""
-        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
-        from utils.ha.ha_ws_client import FakeHAWebSocketClient
-        from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
-
-        db_path = _make_hitl_db(tmp_path)
-        dashy_cfg = {
-            "views": [
-                {
-                    "title": "Weather",
-                    "cards": [
-                        {
-                            "type": "entities",
-                            "title": "Harbor Tides",
-                            "entities": ["sensor.truly_gone"],
-                        }
-                    ],
-                }
-            ]
-        }
-        ws = FakeHAWebSocketClient(
-            entity_registry=[],
-            lovelace_dashboards=[{"url_path": "dashboard-dashy", "title": "Dashy"}],
-            lovelace_configs={"dashboard-dashy": dashy_cfg},
-            states=[],
+        assert len(notifier.sent) == 0
+        assert len(investigation_calls) >= 1
+        truly_gone = next(
+            e for e in investigation_calls[0] if e["entity_id"] == "sensor.truly_gone"
         )
-        analysis_json = json.dumps(
-            {
-                "explanation": "Deleted.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
-        notifier = FakeNotifier()
-        llm = FakeLLMClient(analysis_json)
+        assert truly_gone["has_state"] is False
 
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_dashboard_entity_issues(
-                    ws_client=ws,
-                    notifier=notifier,
-                    db_path=db_path,
-                    interval_minutes=0,
-                    llm_client=llm,
-                )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        p = notifier.sent[0]["payload"]
-        assert p["dashboard_url_path"] == "dashboard-dashy"
-        assert p["dashboard_title"] == "Dashy"
-        assert p["card_title"] == "Harbor Tides"
-        assert "dashboard-dashy" in p["dash_url"]
-        assert "sensor.truly_gone" in p["body"]
-
-    def test_sections_layout_missing_entity(self, tmp_path):
+    def test_sections_layout_missing_entity_routed(self, tmp_path):
+        """Truly missing entity in a sections-layout dashboard is routed to AgentLoop."""
         from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
+        from unittest import mock
 
         db_path = _make_hitl_db(tmp_path)
-
         sections_cfg = {
             "views": [
                 {
@@ -837,37 +692,40 @@ class TestPollMissingEntity:
             ]
         }
         ws = _make_ws(sections_cfg, [])
-        analysis_json = json.dumps(
-            {
-                "explanation": "Deleted.",
-                "likely_cause": "deleted",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
         notifier = FakeNotifier()
-        llm = FakeLLMClient(analysis_json)
+        investigation_calls: list[list[dict]] = []
 
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_dashboard_entity_issues(
-                    ws_client=ws,
-                    notifier=notifier,
-                    db_path=db_path,
-                    interval_minutes=0,
-                    llm_client=llm,
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
                 )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        asyncio.run(_run())
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["entity_id"] == "sensor.in_section"
+            asyncio.run(_run())
+
+        assert len(notifier.sent) == 0
+        assert len(investigation_calls) >= 1
+        assert any(
+            e["entity_id"] == "sensor.in_section" for e in investigation_calls[0]
+        )
 
     def test_unregistered_entity_delegated_to_investigation(self, tmp_path):
         """Entities with state but no registry entry are delegated to _run_lovelace_investigation."""
@@ -1127,65 +985,6 @@ class TestPollMissingEntity:
                 " WHERE card_key = 'unregistered_entity:sun.sun'"
             ).fetchone()
         assert row is not None and row[0] is not None, "card must be auto-resolved"
-
-
-# ---------------------------------------------------------------------------
-# _analyze_missing_entity — unit test with fake LLM
-# ---------------------------------------------------------------------------
-
-
-class TestAnalyzeMissingEntity:
-    def test_returns_replace_analysis(self):
-        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.llm.ollama_client import FakeLLMClient
-
-        raw = json.dumps(
-            {
-                "explanation": "Renamed.",
-                "likely_cause": "renamed",
-                "action": "replace",
-                "proposed_entity_id": "sensor.new_temp",
-            }
-        )
-        llm = FakeLLMClient(raw)
-        ref = EntityRef("sensor.old_temp", "Main", 0, "card[0].entity")
-        registry = [{"entity_id": "sensor.new_temp"}]
-
-        result = asyncio.run(_analyze_missing_entity(ref, registry, llm))
-        assert result.action == "replace"
-        assert result.proposed_entity_id == "sensor.new_temp"
-        assert result.likely_cause == "renamed"
-
-    def test_returns_remove_analysis(self):
-        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.llm.ollama_client import FakeLLMClient
-
-        raw = json.dumps(
-            {
-                "explanation": "Integration removed.",
-                "likely_cause": "integration_removed",
-                "action": "remove",
-                "proposed_entity_id": None,
-            }
-        )
-        llm = FakeLLMClient(raw)
-        ref = EntityRef("sensor.gone", "Main", 1, "card[1].entity")
-        registry: list[dict] = []
-
-        result = asyncio.run(_analyze_missing_entity(ref, registry, llm))
-        assert result.action == "remove"
-        assert result.proposed_entity_id is None
-
-    def test_llm_failure_returns_safe_default(self):
-        from agents.ha_lovelace_monitor import EntityRef, _analyze_missing_entity
-        from utils.llm.ollama_client import FakeLLMClient
-
-        llm = FakeLLMClient("NOT VALID JSON !!!")
-        ref = EntityRef("sensor.bad", "Main", 0, "card[0].entity")
-
-        result = asyncio.run(_analyze_missing_entity(ref, [], llm))
-        assert result.action == "investigate"
-        assert "sensor.bad" in result.explanation
 
 
 # ---------------------------------------------------------------------------
