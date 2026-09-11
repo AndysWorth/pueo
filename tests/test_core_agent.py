@@ -3623,8 +3623,8 @@ class TestFormatUpdateTable:
 
 class TestRunUpdateCheck:
     def test_returns_updates_with_fake_client(self):
+        import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.hitl.notify import FakeNotifier
 
@@ -3640,13 +3640,17 @@ class TestRunUpdateCheck:
                 }
             ]
         )
-        updates = asyncio.run(
-            run_update_check(
-                ha_rest_client=fake,
-                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
-                notifier=FakeNotifier(approve=False),
+
+        async def _noop(*a, **kw):
+            pass
+
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _noop):
+            updates = asyncio.run(
+                run_update_check(
+                    ha_rest_client=fake,
+                    notifier=FakeNotifier(approve=False),
+                )
             )
-        )
         assert len(updates) == 1
         assert updates[0].component == "core"
 
@@ -3678,100 +3682,10 @@ class TestRunUpdateCheck:
         out = capsys.readouterr().out
         assert "Error" in out
 
-    def test_ssh_read_file_error_is_skipped(self, tmp_path, capsys):
-        """SSH config fetch failure logs a warning but does not abort analysis."""
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl.notify import FakeNotifier
-
-        fake_rest = FakeHARestClient(
-            states=[
-                {
-                    "entity_id": "update.home_assistant_core_update",
-                    "state": "on",
-                    "attributes": {
-                        "installed_version": "2026.6.0",
-                        "latest_version": "2026.7.0",
-                    },
-                }
-            ]
-        )
-
-        class BrokenSSH:
-            async def read_file(self, path):
-                raise OSError("sftp error")
-
-        # Cache dir with no release notes so the loop skips analysis after the
-        # SSH failure — we just need to cover the except branch.
-        updates = asyncio.run(
-            run_update_check(
-                ha_rest_client=fake_rest,
-                ssh_client=BrokenSSH(),
-                cache_dir=str(tmp_path),
-                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
-                notifier=FakeNotifier(approve=False),
-            )
-        )
-        assert len(updates) == 1
-
-    def test_analyze_breaking_changes_error_is_skipped(self, tmp_path, capsys):
-        """analyze_breaking_changes failure prints a warning and returns all updates."""
+    def test_run_update_check_submits_analysis_workitem(self, tmp_path):
+        """run_update_check submits a _run_update_analysis WorkItem for each available update."""
         import unittest.mock as mock
         from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl.notify import FakeNotifier
-
-        fake_rest = FakeHARestClient(
-            states=[
-                {
-                    "entity_id": "update.home_assistant_core_update",
-                    "state": "on",
-                    "attributes": {
-                        "installed_version": "2026.6.0",
-                        "latest_version": "2026.7.0",
-                    },
-                }
-            ]
-        )
-
-        # Write a fake cached release notes file so the loop reaches
-        # analyze_breaking_changes.
-        notes_dir = tmp_path / "release_notes"
-        notes_dir.mkdir()
-        (notes_dir / "2026.7.0.txt").write_text(
-            "## Breaking changes\n- Something changed"
-        )
-
-        with mock.patch(
-            "agents.ha_update_manager.analyze_breaking_changes",
-            side_effect=RuntimeError("llm exploded"),
-        ):
-            updates = asyncio.run(
-                run_update_check(
-                    ha_rest_client=fake_rest,
-                    cache_dir=str(notes_dir),
-                    gate=FakeAutonomyGate(
-                        auto_execute_result=False, approval_result=False
-                    ),
-                    notifier=FakeNotifier(approve=False),
-                )
-            )
-
-        assert len(updates) == 1
-        out = capsys.readouterr().out
-        assert "Warning" in out
-
-    def test_run_update_check_does_not_block_when_updates_available(self, tmp_path):
-        """Standalone --mode update-check must write the HITL card and return immediately.
-
-        Regression for: run_update_check called gate.require_approval (blocking)
-        instead of gate.queue_for_approval (non-blocking), hanging forever when the
-        dashboard was not running to respond to the approval request.
-        """
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.hitl.notify import FakeNotifier
 
@@ -3787,86 +3701,61 @@ class TestRunUpdateCheck:
                 }
             ]
         )
-        gate = FakeAutonomyGate(auto_execute_result=False)
-        notifier = FakeNotifier()
+        called_with = []
 
-        # This must return — not block waiting for an approval file.
-        updates = asyncio.run(
-            run_update_check(
-                ha_rest_client=fake,
-                cache_dir=str(tmp_path),
-                gate=gate,
-                notifier=notifier,
+        async def _capture(update, **kw):
+            called_with.append(update.component)
+
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            updates = asyncio.run(
+                run_update_check(
+                    ha_rest_client=fake,
+                    notifier=FakeNotifier(),
+                )
             )
-        )
 
         assert len(updates) == 1
-        # Card was queued for the dashboard to handle.
-        assert len(notifier.sent) == 1
-        assert notifier.sent[0]["payload"]["component"] == "core"
+        assert "core" in called_with
 
+    def test_execute_update_not_called_when_no_approval(self):
+        """run_update_check does not call execute_update when approval is not given."""
+        import unittest.mock as mock
+        from agents.ha_update_manager import run_update_check
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
 
-# ── UpdateReadinessReport schema ─────────────────────────────────────────────────
-class TestUpdateReadinessReport:
-    def test_valid_construction(self):
-        from agents.ha_update_manager import UpdateReadinessReport
-
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=True,
-            breaking_changes=["Template syntax changed"],
-            affected_config_keys=["template"],
-            pueo_command_risks=[],
-            recommendation="Review template changes before updating.",
+        fake = FakeHARestClient(
+            states=[
+                {
+                    "entity_id": "update.home_assistant_core_update",
+                    "state": "on",
+                    "attributes": {
+                        "installed_version": "2026.6.0",
+                        "latest_version": "2026.7.0",
+                    },
+                }
+            ]
         )
-        assert report.target_version == "2026.7.0"
-        assert report.safe_to_update is True
-        assert len(report.breaking_changes) == 1
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
 
-    def test_empty_lists_valid(self):
-        from agents.ha_update_manager import UpdateReadinessReport
+        async def _noop(*a, **kw):
+            pass
 
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=True,
-            breaking_changes=[],
-            affected_config_keys=[],
-            pueo_command_risks=[],
-            recommendation="No breaking changes found.",
-        )
-        assert report.breaking_changes == []
-        assert report.pueo_command_risks == []
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _noop):
+            with mock.patch(
+                "agents.ha_update_manager.execute_update",
+                new=mock.AsyncMock(return_value=True),
+            ) as mock_exec:
+                asyncio.run(
+                    run_update_check(
+                        ha_rest_client=fake,
+                        gate=gate,
+                        notifier=FakeNotifier(approve=False),
+                    )
+                )
 
-    def test_missing_required_field_raises(self):
-        import pytest
-        from pydantic import ValidationError
-        from agents.ha_update_manager import UpdateReadinessReport
-
-        with pytest.raises(ValidationError):
-            UpdateReadinessReport(
-                safe_to_update=True,
-                breaking_changes=[],
-                affected_config_keys=[],
-                pueo_command_risks=[],
-                recommendation="ok",
-                # missing target_version
-            )
-
-    def test_json_round_trip(self):
-        from agents.ha_update_manager import UpdateReadinessReport
-
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=False,
-            breaking_changes=["CLI rename: ha addons -> ha apps"],
-            affected_config_keys=[],
-            pueo_command_risks=["ha apps info <slug>"],
-            recommendation="CLI command renamed; Pueo self-check required.",
-        )
-        json_str = report.model_dump_json()
-        restored = UpdateReadinessReport.model_validate_json(json_str)
-        assert restored.target_version == report.target_version
-        assert restored.pueo_command_risks == report.pueo_command_risks
+        assert mock_exec.call_count == 0
 
 
 # ── fetch_release_notes_cached ───────────────────────────────────────────────────
@@ -3953,26 +3842,6 @@ class TestFetchReleaseNotesCached:
         )
         assert result == stub
 
-    def test_neutral_advisory_on_stub_notes(self):
-        """analyze_breaking_changes returns neutral report without LLM when notes are a stub."""
-        from agents.ha_update_manager import analyze_breaking_changes
-        from utils.ha.ha_rest_client import UpdateStatus
-
-        update = UpdateStatus(
-            component="core",
-            entity_id="update.home_assistant_core_update",
-            installed_version="2026.7.2",
-            latest_version="2026.8.0",
-            update_available=True,
-            release_summary="",
-            release_url=None,
-            in_progress=False,
-        )
-        stub = "https://www.home-assistant.io/blog/2026/08/06/release-20268/"
-        report = asyncio.run(analyze_breaking_changes(update, stub))
-        assert report.breaking_changes == []
-        assert "home-assistant.io" in report.recommendation
-
     def test_stub_sentinel_written_to_cache(self, tmp_path):
         """fetch_ha_release_notes writes STUB: prefix when body is a short stub."""
         from utils.knowledge.ha_release_notes_scraper import fetch_ha_release_notes
@@ -3996,273 +3865,6 @@ class TestFetchReleaseNotesCached:
         store = FakeKnowledgeStore()
         count = scrape_cached_release_notes(str(tmp_path), store)
         assert count == 0
-
-
-# ── analyze_breaking_changes ─────────────────────────────────────────────────────
-class TestAnalyzeBreakingChanges:
-    @staticmethod
-    def _make_core_update():
-        from utils.ha.ha_rest_client import UpdateStatus
-
-        return UpdateStatus(
-            component="core",
-            entity_id="update.home_assistant_core_update",
-            installed_version="2026.6.0",
-            latest_version="2026.7.0",
-            update_available=True,
-            release_url="https://github.com/home-assistant/core/releases/tag/2026.7.0",
-            release_summary="Bug fixes and improvements",
-            in_progress=False,
-        )
-
-    @staticmethod
-    def _fake_llm(
-        safe_to_update: bool = True,
-        breaking_changes: list | None = None,
-        pueo_command_risks: list | None = None,
-    ):
-        from agents.ha_update_manager import UpdateReadinessReport
-        from utils.llm.ollama_client import FakeLLMClient
-
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=safe_to_update,
-            breaking_changes=breaking_changes or [],
-            affected_config_keys=[],
-            pueo_command_risks=pueo_command_risks or [],
-            recommendation="No breaking changes.",
-        )
-        return FakeLLMClient(report.model_dump_json())
-
-    def test_returns_readiness_report(self):
-        from agents.ha_update_manager import analyze_breaking_changes
-
-        update = self._make_core_update()
-        llm = self._fake_llm()
-        report = asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
-        assert report.target_version == "2026.7.0"
-        assert report.safe_to_update is True
-
-    def test_llm_called_with_version_info(self):
-        from agents.ha_update_manager import analyze_breaking_changes
-
-        update = self._make_core_update()
-        llm = self._fake_llm()
-        asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
-        assert len(llm.calls) == 1
-        messages = llm.calls[0]["messages"]
-        user_content = messages[-1]["content"]
-        assert "2026.7.0" in user_content
-        assert "2026.6.0" in user_content
-
-    def test_breaking_changes_propagated(self):
-        from agents.ha_update_manager import analyze_breaking_changes
-
-        update = self._make_core_update()
-        llm = self._fake_llm(
-            safe_to_update=False,
-            breaking_changes=["Template syntax changed"],
-            pueo_command_risks=["ha apps list renamed"],
-        )
-        report = asyncio.run(analyze_breaking_changes(update, "x" * 600, llm))
-        assert report.safe_to_update is False
-        assert "Template syntax changed" in report.breaking_changes
-        assert len(report.pueo_command_risks) == 1
-
-    def test_analyze_breaking_changes_uses_profile(self):
-        from agents.ha_update_manager import analyze_breaking_changes
-        from utils.ha.ha_environment import HAEnvironmentProfile
-
-        update = self._make_core_update()
-        llm = self._fake_llm()
-        profile = HAEnvironmentProfile(
-            ha_version="2026.6.0",
-            installed_integrations=["zha", "mqtt"],
-            config_yaml_top_keys=["homeassistant", "http", "zha"],
-        )
-        asyncio.run(analyze_breaking_changes(update, "x" * 600, llm, profile=profile))
-        assert len(llm.calls) == 1
-        user_content = llm.calls[0]["messages"][-1]["content"]
-        # Profile summary should appear, not raw YAML
-        assert "zha" in user_content
-        assert "mqtt" in user_content
-        assert "homeassistant" in user_content
-        # Should not contain raw YAML block header
-        assert "configuration.yaml" not in user_content
-
-
-# ── run_update_check + analysis integration ───────────────────────────────────────
-class TestRunUpdateCheckWithAnalysis:
-    @staticmethod
-    def _fake_rest(with_core_update: bool = True):
-        from utils.ha.ha_rest_client import FakeHARestClient
-
-        states = []
-        if with_core_update:
-            states.append(
-                {
-                    "entity_id": "update.home_assistant_core_update",
-                    "state": "on",
-                    "attributes": {
-                        "installed_version": "2026.6.0",
-                        "latest_version": "2026.7.0",
-                        "release_url": "https://github.com/home-assistant/core/releases/tag/2026.7.0",
-                    },
-                }
-            )
-        return FakeHARestClient(states=states)
-
-    def test_analysis_runs_for_core_update(self, tmp_path, capsys):
-        from agents.ha_update_manager import UpdateReadinessReport, run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
-
-        # Pre-populate the cache so no WAN fetch is needed.
-        (tmp_path / "2026.7.0.txt").write_text("Release notes text")
-
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=True,
-            breaking_changes=[],
-            affected_config_keys=[],
-            pueo_command_risks=[],
-            recommendation="No breaking changes found.",
-        )
-        llm = FakeLLMClient(report.model_dump_json())
-
-        updates = asyncio.run(
-            run_update_check(
-                ha_rest_client=self._fake_rest(),
-                llm_client=llm,
-                cache_dir=str(tmp_path),
-                gate=FakeAutonomyGate(auto_execute_result=False, approval_result=False),
-                notifier=FakeNotifier(approve=False),
-            )
-        )
-
-        out = capsys.readouterr().out
-        assert len(updates) == 1
-        assert "Breaking Change Analysis" in out
-
-    def test_no_analysis_when_no_core_update(self, tmp_path, capsys):
-        from agents.ha_update_manager import run_update_check
-        from utils.llm.ollama_client import FakeLLMClient
-
-        llm = FakeLLMClient("{}")
-        updates = asyncio.run(
-            run_update_check(
-                ha_rest_client=self._fake_rest(with_core_update=False),
-                llm_client=llm,
-                cache_dir=str(tmp_path),
-            )
-        )
-        assert updates == []
-        assert llm.calls == []
-
-    def test_analysis_skipped_when_notes_fetch_fails(self, tmp_path, capsys):
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
-        from unittest.mock import AsyncMock, patch
-
-        llm = FakeLLMClient("{}")
-        with patch(
-            "agents.ha_update_manager.fetch_release_notes_cached",
-            new=AsyncMock(side_effect=Exception("GitHub unavailable")),
-        ):
-            asyncio.run(
-                run_update_check(
-                    ha_rest_client=self._fake_rest(),
-                    llm_client=llm,
-                    cache_dir=str(tmp_path),
-                    gate=FakeAutonomyGate(
-                        auto_execute_result=False, approval_result=False
-                    ),
-                    notifier=FakeNotifier(approve=False),
-                )
-            )
-        assert llm.calls == []
-        out = capsys.readouterr().out
-        assert "Warning" in out
-
-    def test_hitl_card_sent_for_core_update(self, tmp_path):
-        """A HITL approval card is dispatched when a Core update is detected."""
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-
-        asyncio.run(
-            run_update_check(
-                ha_rest_client=self._fake_rest(),
-                cache_dir=str(tmp_path),
-                gate=gate,
-                notifier=notifier,
-            )
-        )
-
-        assert len(gate.require_approval_calls) == 1
-        assert gate.require_approval_calls[0]["risk"] == RiskLevel.CRITICAL
-
-    def test_hitl_card_sent_on_approval_but_execute_not_called(self, tmp_path):
-        """run_update_check sends the HITL card but never calls execute_update.
-
-        Execution is the dashboard's responsibility via _execute_queued_update.
-        Keeping execute_update out of run_update_check prevents double-execution
-        when both the dashboard and the one-shot subprocess see the approval sentinel.
-        """
-        import unittest.mock as mock
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-
-        with mock.patch(
-            "agents.ha_update_manager.execute_update",
-            new=mock.AsyncMock(return_value=True),
-        ) as mock_exec:
-            asyncio.run(
-                run_update_check(
-                    ha_rest_client=self._fake_rest(),
-                    cache_dir=str(tmp_path),
-                    gate=gate,
-                    notifier=notifier,
-                )
-            )
-
-        assert mock_exec.call_count == 0
-        assert len(gate.require_approval_calls) == 1
-
-    def test_hitl_rejection_skips_execute_update(self, tmp_path):
-        """When the HITL card is rejected, execute_update is not called."""
-        import unittest.mock as mock
-        from agents.ha_update_manager import run_update_check
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
-        notifier = FakeNotifier(approve=False)
-
-        with mock.patch(
-            "agents.ha_update_manager.execute_update",
-            new=mock.AsyncMock(return_value=True),
-        ) as mock_exec:
-            asyncio.run(
-                run_update_check(
-                    ha_rest_client=self._fake_rest(),
-                    cache_dir=str(tmp_path),
-                    gate=gate,
-                    notifier=notifier,
-                )
-            )
-
-        assert mock_exec.call_count == 0
 
 
 # ── request_update_approval ───────────────────────────────────────────────────────
@@ -4348,36 +3950,7 @@ class TestRequestUpdateApproval:
         assert payload["installed_version"] == "2026.6.0"
         assert payload["latest_version"] == "2026.7.0"
 
-    def test_payload_includes_breaking_changes_from_report(self):
-        from agents.ha_update_manager import (
-            UpdateReadinessReport,
-            request_update_approval,
-        )
-        from utils.agent.autonomy import FakeAutonomyGate
-        from utils.hitl.notify import FakeNotifier
-
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=False,
-            breaking_changes=["Template syntax changed"],
-            affected_config_keys=["template"],
-            pueo_command_risks=["ha apps info <slug>"],
-            recommendation="Review before updating.",
-        )
-        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
-        notifier = FakeNotifier(approve=True)
-        asyncio.run(
-            request_update_approval(
-                self._make_update("core"), gate, notifier, readiness_report=report
-            )
-        )
-        payload = notifier.sent[0]["payload"]
-        assert payload["breaking_changes"] == ["Template syntax changed"]
-        assert payload["affected_config_keys"] == ["template"]
-        assert payload["pueo_command_risks"] == ["ha apps info <slug>"]
-        assert payload["safe_to_update"] is False
-
-    def test_payload_empty_lists_when_no_report(self):
+    def test_payload_has_empty_analysis_fields(self):
         from agents.ha_update_manager import request_update_approval
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.hitl.notify import FakeNotifier
@@ -5895,41 +5468,6 @@ class TestExecuteUpdate:
 # ── Item 37: Pueo self-check ──────────────────────────────────────────────────
 
 
-class TestSelfCheckCommandRisk:
-    def test_valid_construction(self):
-        from agents.ha_update_manager import SelfCheckCommandRisk
-
-        report = SelfCheckCommandRisk(
-            command_risks=["ha addons → ha apps renamed"],
-            summary="One command renamed.",
-        )
-        assert len(report.command_risks) == 1
-        assert "renamed" in report.summary
-
-    def test_empty_risks_valid(self):
-        from agents.ha_update_manager import SelfCheckCommandRisk
-
-        report = SelfCheckCommandRisk(command_risks=[], summary="No risks found.")
-        assert report.command_risks == []
-
-    def test_missing_required_field_raises(self):
-        from pydantic import ValidationError
-        from agents.ha_update_manager import SelfCheckCommandRisk
-
-        with pytest.raises(ValidationError):
-            SelfCheckCommandRisk(command_risks=["something"])  # missing summary
-
-    def test_json_round_trip(self):
-        from agents.ha_update_manager import SelfCheckCommandRisk
-
-        report = SelfCheckCommandRisk(
-            command_risks=["ha core check removed"], summary="CLI broke."
-        )
-        restored = SelfCheckCommandRisk.model_validate_json(report.model_dump_json())
-        assert restored.command_risks == report.command_risks
-        assert restored.summary == report.summary
-
-
 class TestPueoSelfCheckResult:
     def test_all_commands_ok_when_all_pass(self):
         from agents.ha_update_manager import PueoSelfCheckResult
@@ -5981,17 +5519,7 @@ class TestPueoSelfCheckResult:
 
 
 class TestRunPueoSelfCheck:
-    def _make_fake_llm(self, risks: list[str] | None = None):
-        from utils.llm.ollama_client import FakeLLMClient
-        from agents.ha_update_manager import SelfCheckCommandRisk
-
-        r = SelfCheckCommandRisk(
-            command_risks=risks or [],
-            summary="No risks." if not risks else "Risks found.",
-        )
-        return FakeLLMClient(response_json=r.model_dump_json())
-
-    def test_all_ok_with_successful_commands(self, tmp_path):
+    def test_all_ok_with_successful_commands(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6003,21 +5531,14 @@ class TestRunPueoSelfCheck:
                 "ha apps info": (0, '{"data": {"state": "started"}}', ""),
             }
         )
-        result = asyncio.run(
-            run_pueo_self_check(
-                ssh,
-                version="2026.7.0",
-                cache_dir=str(tmp_path),
-                llm_client=self._make_fake_llm(),
-            )
-        )
+        result = asyncio.run(run_pueo_self_check(ssh, version="2026.7.0"))
         assert result.core_check_ok is True
         assert result.core_info_ok is True
         assert result.apps_list_ok is True
         assert result.netalertx_info_ok is True
         assert result.all_commands_ok is True
 
-    def test_failed_core_check_sets_flag_false(self, tmp_path):
+    def test_failed_core_check_sets_flag_false(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6029,13 +5550,11 @@ class TestRunPueoSelfCheck:
                 "ha apps info": (0, "", ""),
             }
         )
-        result = asyncio.run(
-            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
-        )
+        result = asyncio.run(run_pueo_self_check(ssh, version="2026.7.0"))
         assert result.core_check_ok is False
         assert result.all_commands_ok is False
 
-    def test_failed_core_info_sets_flag_false(self, tmp_path):
+    def test_failed_core_info_sets_flag_false(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6047,12 +5566,10 @@ class TestRunPueoSelfCheck:
                 "ha apps info": (0, "", ""),
             }
         )
-        result = asyncio.run(
-            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
-        )
+        result = asyncio.run(run_pueo_self_check(ssh, version="2026.7.0"))
         assert result.core_info_ok is False
 
-    def test_failed_apps_list_sets_flag_false(self, tmp_path):
+    def test_failed_apps_list_sets_flag_false(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6064,12 +5581,10 @@ class TestRunPueoSelfCheck:
                 "ha apps info": (0, "", ""),
             }
         )
-        result = asyncio.run(
-            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
-        )
+        result = asyncio.run(run_pueo_self_check(ssh, version="2026.7.0"))
         assert result.apps_list_ok is False
 
-    def test_failed_netalertx_info_sets_flag_false(self, tmp_path):
+    def test_failed_netalertx_info_sets_flag_false(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6081,52 +5596,42 @@ class TestRunPueoSelfCheck:
                 "ha apps info": (1, "", "not found"),
             }
         )
-        result = asyncio.run(
-            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
-        )
+        result = asyncio.run(run_pueo_self_check(ssh, version="2026.7.0"))
         assert result.netalertx_info_ok is False
 
-    def test_exception_in_cli_command_is_swallowed(self, tmp_path):
+    def test_exception_in_cli_command_is_swallowed(self):
         from agents.ha_update_manager import run_pueo_self_check
 
         class ExplodingSSH:
             async def run(self, command, check=False):
                 raise RuntimeError("SSH died")
 
-        result = asyncio.run(
-            run_pueo_self_check(
-                ExplodingSSH(), version="2026.7.0", cache_dir=str(tmp_path)
-            )
-        )
+        result = asyncio.run(run_pueo_self_check(ExplodingSSH(), version="2026.7.0"))
         assert result.core_check_ok is False
         assert result.all_commands_ok is False
 
-    def test_backup_smoke_skipped_when_disk_constrained(self, tmp_path):
+    def test_backup_smoke_skipped_when_disk_constrained(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=1.0
-            )
+            run_pueo_self_check(ssh, version="2026.7.0", disk_free_gb=1.0)
         )
         assert result.backup_smoke_ok is None
         assert not any("pueo_selfcheck" in cmd for cmd in ssh.commands_run)
 
-    def test_backup_smoke_skipped_when_disk_free_is_none(self, tmp_path):
+    def test_backup_smoke_skipped_when_disk_free_is_none(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
         ssh = FakeSSHClient()
         result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=None
-            )
+            run_pueo_self_check(ssh, version="2026.7.0", disk_free_gb=None)
         )
         assert result.backup_smoke_ok is None
 
-    def test_backup_smoke_ok_when_disk_free_above_threshold(self, tmp_path):
+    def test_backup_smoke_ok_when_disk_free_above_threshold(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6137,13 +5642,11 @@ class TestRunPueoSelfCheck:
             }
         )
         result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=20.0
-            )
+            run_pueo_self_check(ssh, version="2026.7.0", disk_free_gb=20.0)
         )
         assert result.backup_smoke_ok is True
 
-    def test_backup_smoke_false_when_slug_unknown(self, tmp_path):
+    def test_backup_smoke_false_when_slug_unknown(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
@@ -6153,13 +5656,11 @@ class TestRunPueoSelfCheck:
             }
         )
         result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), disk_free_gb=20.0
-            )
+            run_pueo_self_check(ssh, version="2026.7.0", disk_free_gb=20.0)
         )
         assert result.backup_smoke_ok is False
 
-    def test_backup_smoke_exception_sets_false(self, tmp_path):
+    def test_backup_smoke_exception_sets_false(self):
         from agents.ha_update_manager import run_pueo_self_check
         from config import HA_DISK_WARN_GB
 
@@ -6172,63 +5673,20 @@ class TestRunPueoSelfCheck:
                     raise RuntimeError("backup exploded")
                 return 0, "", ""
 
-        ssh = BrokenSSHForBackup()
         result = asyncio.run(
             run_pueo_self_check(
-                ssh,
+                BrokenSSHForBackup(),
                 version="2026.7.0",
-                cache_dir=str(tmp_path),
                 disk_free_gb=HA_DISK_WARN_GB + 10.0,
             )
         )
         assert result.backup_smoke_ok is False
 
-    def test_llm_cross_reference_runs_when_notes_cached(self, tmp_path):
+    def test_command_risks_always_empty(self):
         from agents.ha_update_manager import run_pueo_self_check
         from utils.ha.ssh_client import FakeSSHClient
 
-        notes_path = tmp_path / "2026.7.0.txt"
-        notes_path.write_text(
-            "## Breaking changes\n- ha core check renamed to ha core verify"
-        )
-
-        ssh = FakeSSHClient()
-        llm = self._make_fake_llm(risks=["ha core check → renamed"])
-        result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), llm_client=llm
-            )
-        )
-        assert len(result.command_risks) == 1
-        assert "ha core check" in result.command_risks[0]
-
-    def test_llm_cross_reference_skipped_when_no_cache(self, tmp_path):
-        from agents.ha_update_manager import run_pueo_self_check
-        from utils.ha.ssh_client import FakeSSHClient
-
-        ssh = FakeSSHClient()
-        result = asyncio.run(
-            run_pueo_self_check(ssh, version="2026.7.0", cache_dir=str(tmp_path))
-        )
-        assert result.command_risks == []
-
-    def test_llm_cross_reference_exception_is_swallowed(self, tmp_path):
-        from agents.ha_update_manager import run_pueo_self_check
-        from utils.ha.ssh_client import FakeSSHClient
-
-        notes_path = tmp_path / "2026.7.0.txt"
-        notes_path.write_text("some release notes")
-
-        class BrokenLLM:
-            async def chat(self, **kwargs):
-                raise RuntimeError("LLM unavailable")
-
-        ssh = FakeSSHClient()
-        result = asyncio.run(
-            run_pueo_self_check(
-                ssh, version="2026.7.0", cache_dir=str(tmp_path), llm_client=BrokenLLM()
-            )
-        )
+        result = asyncio.run(run_pueo_self_check(FakeSSHClient(), version="2026.7.0"))
         assert result.command_risks == []
 
 
@@ -7060,9 +6518,10 @@ class TestPollForUpdates:
 
         return fake_sleep
 
-    def test_notifies_on_first_poll_without_sleeping_first(self, monkeypatch):
-        """Updates available at startup must trigger a notification on the first iteration."""
+    def test_calls_run_update_analysis_on_first_poll(self, monkeypatch):
+        """Updates available at startup must trigger _run_update_analysis on the first iteration."""
         import asyncio as asyncio_mod
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
@@ -7075,26 +6534,45 @@ class TestPollForUpdates:
         )
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        called = []
+
+        async def _capture(update, **kw):
+            called.append(update.latest_version)
+
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        assert len(notifier.sent) == 1
-        assert "2026.2.0" in notifier.sent[0]["subject"]
+        assert "2026.2.0" in called
 
-    def test_no_duplicate_notification_for_same_entity(self, monkeypatch):
-        """An entity already in _notified must not fire a second notification."""
+    def test_no_duplicate_analysis_for_same_entity(self, monkeypatch):
+        """Suppression check must prevent _run_update_analysis from being called twice."""
         import asyncio as asyncio_mod
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.hitl.notify import FakeNotifier
 
+        import sqlite3 as _sq3
+
         entity = self._make_update_entity("update.home_assistant_core_update")
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        called = []
+
+        async def _capture(update, **kw):
+            called.append(update.component)
+            from utils.hitl.hitl_tracker import mark_card_sent
+            from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+            with _sq3.connect("") as conn:
+                mark_card_sent(
+                    conn, f"update:{update.entity_id}", CARD_TYPE_UPDATE, "test"
+                )
 
         call_count = [0]
 
@@ -7106,14 +6584,16 @@ class TestPollForUpdates:
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        assert len(notifier.sent) == 1
+        assert len(called) == 1
 
-    def test_clears_notified_when_update_no_longer_available(self, monkeypatch):
-        """Once an entity flips back to off, it should be removable from _notified."""
+    def test_analysis_called_once_then_suppressed(self, monkeypatch):
+        """Once an entity flips back to off after analysis, resuppression resets."""
         import asyncio as asyncio_mod
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
@@ -7124,13 +6604,16 @@ class TestPollForUpdates:
         ]
         client = FakeHARestClient(states=states)
         notifier = FakeNotifier()
+        called = []
+
+        async def _capture(update, **kw):
+            called.append(update.component)
 
         call_count = [0]
 
         async def fake_sleep(seconds: float) -> None:
             call_count[0] += 1
             if call_count[0] == 1:
-                # flip the entity off so the second poll clears _notified
                 states[0]["state"] = "off"
                 states[0]["attributes"]["installed_version"] = "2026.2.0"
             if call_count[0] >= 3:
@@ -7139,16 +6622,16 @@ class TestPollForUpdates:
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        # Only one notification sent (for the first poll when update was available)
-        assert len(notifier.sent) == 1
+        assert len(called) == 1
 
-    def test_notification_payload_has_card_type_update(self, monkeypatch):
-        """Notification payload must include card_type='update' so the dashboard
-        dispatch routes approve() to _execute_queued_update."""
+    def test_run_update_analysis_called_with_component_info(self, monkeypatch):
+        """_run_update_analysis receives the correct component / version info."""
         import asyncio as asyncio_mod
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
@@ -7159,36 +6642,43 @@ class TestPollForUpdates:
             installed="2026.1.0",
             latest="2026.2.0",
         )
+        import sqlite3 as _sq3
+
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        called_updates = []
+
+        async def _capture(update, **kw):
+            called_updates.append(update)
+            from utils.hitl.hitl_tracker import mark_card_sent
+            from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+            with _sq3.connect("") as conn:
+                mark_card_sent(
+                    conn, f"update:{update.entity_id}", CARD_TYPE_UPDATE, "test"
+                )
+
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        assert len(notifier.sent) == 1
-        payload = notifier.sent[0]["payload"]
-        assert payload["card_type"] == "update"
-        assert payload["component"] == "core"
-        assert payload["installed_version"] == "2026.1.0"
-        assert payload["latest_version"] == "2026.2.0"
-        assert payload["risk"] == "CRITICAL"
-        assert payload["severity"] == "CRITICAL"
-        assert "breaking_changes" in payload
+        assert len(called_updates) == 1
+        u = called_updates[0]
+        assert u.component == "core"
+        assert u.installed_version == "2026.1.0"
+        assert u.latest_version == "2026.2.0"
 
-    def test_breaking_change_analysis_included_for_core_update(
-        self, tmp_path, monkeypatch
-    ):
-        """For core updates, breaking-change analysis runs and populates the payload."""
+    def test_run_update_analysis_called_for_core_update(self, monkeypatch):
+        """poll_for_updates calls _run_update_analysis for available updates."""
         import asyncio as asyncio_mod
         import unittest.mock as mock
 
-        from agents.ha_update_manager import UpdateReadinessReport
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.hitl.notify import FakeNotifier
-        from utils.llm.ollama_client import FakeLLMClient
 
         entity = self._make_update_entity(
             "update.home_assistant_core_update",
@@ -7197,46 +6687,22 @@ class TestPollForUpdates:
         )
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        called_components = []
 
-        report = UpdateReadinessReport(
-            target_version="2026.7.0",
-            safe_to_update=False,
-            breaking_changes=["Template syntax changed"],
-            affected_config_keys=["template"],
-            pueo_command_risks=["ha apps info"],
-            recommendation="Review before updating.",
-        )
-        llm = FakeLLMClient(report.model_dump_json())
-
-        # Pre-populate release notes cache so no WAN fetch is needed.
-        notes_dir = tmp_path / "release_notes"
-        notes_dir.mkdir()
-        (notes_dir / "2026.7.0.txt").write_text(
-            "## Breaking changes\n- Template syntax changed\n" + "x" * 500
-        )
+        async def _capture(update, **kw):
+            called_components.append(update.component)
 
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                poll_for_updates(
-                    ha_rest_client=client,
-                    notifier=notifier,
-                    llm_client=llm,
-                    cache_dir=str(notes_dir),
-                )
-            )
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        assert len(notifier.sent) == 1
-        payload = notifier.sent[0]["payload"]
-        assert payload["card_type"] == "update"
-        assert payload["breaking_changes"] == ["Template syntax changed"]
-        assert payload["safe_to_update"] is False
-        assert payload["advisory"] == "Review before updating."
+        assert "core" in called_components
 
-    def test_breaking_change_analysis_skipped_for_addon_update(self, monkeypatch):
-        """Add-on updates do not run breaking-change analysis (only core does)."""
+    def test_run_update_analysis_called_when_space_tight(self, monkeypatch):
+        """Core update triggers _run_update_analysis even when disk is tight."""
         import asyncio as asyncio_mod
         import unittest.mock as mock
 
@@ -7245,133 +6711,53 @@ class TestPollForUpdates:
         from utils.hitl.notify import FakeNotifier
 
         entity = self._make_update_entity(
-            "update.some_addon_update",
-            installed="1.0.0",
-            latest="1.1.0",
+            "update.home_assistant_core_update",
+            installed="2026.8.2",
+            latest="2026.8.3",
         )
-        # Override entity attributes so component is recognized as an add-on
-        entity["attributes"]["installed_version"] = "1.0.0"
-        entity["attributes"]["latest_version"] = "1.1.0"
         client = FakeHARestClient(states=[entity])
         notifier = FakeNotifier()
+        called = []
+
+        async def _capture(update, **kw):
+            called.append(update.component)
+
         monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with mock.patch(
-            "agents.ha_update_manager.analyze_breaking_changes"
-        ) as mock_analyze:
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
             with pytest.raises(asyncio.CancelledError):
                 asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        mock_analyze.assert_not_called()
-        payload = notifier.sent[0]["payload"]
-        assert payload["card_type"] == "update"
-        assert payload["risk"] == "MEDIUM"
+        assert "core" in called
 
-    def test_disk_headroom_warning_added_when_space_tight(self, monkeypatch):
-        """Core update card includes a disk warning when free space is within 1 GB of critical."""
+    def test_analysis_not_called_when_entity_disappears_while_pending(
+        self, monkeypatch
+    ):
+        """Bug 1: update entity goes away while analysis in flight — must not re-trigger."""
         import asyncio as asyncio_mod
-
-        from agents.ha_log_monitor import poll_for_updates
-        from utils.disk.resource import ResourceStatus, update_resource_status
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl.notify import FakeNotifier
-
-        # Simulate 2.5 GB free with a 2.0 GB critical threshold — 0.5 GB margin.
-        update_resource_status(
-            ResourceStatus(
-                disk_free_gb=2.5,
-                disk_total_gb=13.6,
-                disk_used_gb=11.1,
-                mem_available_mb=600.0,
-                mem_total_mb=1886.0,
-                disk_warn=True,
-                disk_critical=False,
-                mem_warn=False,
-            )
-        )
-        monkeypatch.setattr("agents.ha_log_monitor.HA_DISK_CRITICAL_GB", 2.0)
-
-        entity = self._make_update_entity(
-            "update.home_assistant_core_update",
-            installed="2026.8.2",
-            latest="2026.8.3",
-        )
-        client = FakeHARestClient(states=[entity])
-        notifier = FakeNotifier()
-        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
-
-        payload = notifier.sent[0]["payload"]
-        assert payload["disk_headroom_warning"] is not None
-        assert "2.5" in payload["disk_headroom_warning"]
-        assert "⚠️" in notifier.sent[0]["body"]
-
-    def test_disk_headroom_warning_absent_when_space_ample(self, monkeypatch):
-        """Core update card has no disk warning when free space is well above critical + 1 GB."""
-        import asyncio as asyncio_mod
-
-        from agents.ha_log_monitor import poll_for_updates
-        from utils.disk.resource import ResourceStatus, update_resource_status
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl.notify import FakeNotifier
-
-        update_resource_status(
-            ResourceStatus(
-                disk_free_gb=6.0,
-                disk_total_gb=13.6,
-                disk_used_gb=7.6,
-                mem_available_mb=600.0,
-                mem_total_mb=1886.0,
-                disk_warn=False,
-                disk_critical=False,
-                mem_warn=False,
-            )
-        )
-        monkeypatch.setattr("agents.ha_log_monitor.HA_DISK_CRITICAL_GB", 2.0)
-
-        entity = self._make_update_entity(
-            "update.home_assistant_core_update",
-            installed="2026.8.2",
-            latest="2026.8.3",
-        )
-        client = FakeHARestClient(states=[entity])
-        notifier = FakeNotifier()
-        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
-
-        payload = notifier.sent[0]["payload"]
-        assert payload["disk_headroom_warning"] is None
-
-    def test_update_card_not_resolved_when_pending(self, monkeypatch):
-        """Bug 1: update entity goes away while card is still unapproved — must not resolve."""
-        import asyncio as asyncio_mod
-        import sqlite3 as _sq3
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
         from utils.hitl.notify import FakeNotifier
 
-        # First run: update available → card sent, DB updated
         entity = self._make_update_entity(
             "update.home_assistant_core_update", installed="2026.1.0", latest="2026.2.0"
         )
         states = [entity]
         client = FakeHARestClient(states=states)
         notifier = FakeNotifier()
+        called = []
+
+        async def _capture(update, **kw):
+            called.append(update.component)
 
         call_count = [0]
 
         async def fake_sleep(seconds: float) -> None:
             call_count[0] += 1
             if call_count[0] == 1:
-                # Simulate HA restart: update entity briefly disappears
                 states[0]["state"] = "off"
             if call_count[0] >= 3:
                 raise asyncio.CancelledError()
@@ -7379,18 +6765,17 @@ class TestPollForUpdates:
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
-        # Only one notification should have been sent (the initial one).
-        # The entity going to "off" while the card is pending must not resolve
-        # hitl_suppression, so the still-off entity on poll 3 doesn't re-fire.
-        assert len(notifier.sent) == 1
+        assert len(called) == 1
 
     def test_update_card_resolved_when_acted_on(self, monkeypatch):
         """Bug 1: update entity resolves after user acted — must call mark_card_resolved."""
         import asyncio as asyncio_mod
         import sqlite3 as _sq3
+        import unittest.mock as mock
 
         from agents.ha_log_monitor import poll_for_updates
         from utils.ha.ha_rest_client import FakeHARestClient
@@ -7402,6 +6787,15 @@ class TestPollForUpdates:
         states = [entity]
         client = FakeHARestClient(states=states)
         notifier = FakeNotifier()
+
+        async def _capture(update, **kw):
+            from utils.hitl.hitl_tracker import mark_card_sent
+            from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+            with _sq3.connect("") as conn:
+                mark_card_sent(
+                    conn, f"update:{update.entity_id}", CARD_TYPE_UPDATE, "test"
+                )
 
         # The autouse _patch_hitl_tracker fixture routes all sqlite3.connect calls to
         # the same in-memory DB. Access it via _sq3.connect() to simulate user action.
@@ -7423,8 +6817,9 @@ class TestPollForUpdates:
         monkeypatch.setattr(asyncio_mod, "sleep", fake_sleep)
         monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
 
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
+        with mock.patch("agents.ha_update_manager._run_update_analysis", _capture):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
 
         # User acted → entity went off → resolved_at must be set
         with _sq3.connect("") as _c:
@@ -7433,32 +6828,6 @@ class TestPollForUpdates:
                 " WHERE card_key='update:update.home_assistant_core_update'"
             ).fetchone()
         assert row is not None and row[0] is not None
-
-    def test_update_payload_has_stable_notification_id(self, monkeypatch):
-        """Stable notification_id derived from suppression_key must be in the payload."""
-        import asyncio as asyncio_mod
-
-        from agents.ha_log_monitor import poll_for_updates
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.hitl.notify import FakeNotifier
-        from utils.hitl.hitl_tracker import stable_nid
-
-        entity = self._make_update_entity(
-            "update.home_assistant_core_update",
-            installed="2026.1.0",
-            latest="2026.2.0",
-        )
-        client = FakeHARestClient(states=[entity])
-        notifier = FakeNotifier()
-        monkeypatch.setattr(asyncio_mod, "sleep", self._one_shot_sleep())
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(poll_for_updates(ha_rest_client=client, notifier=notifier))
-
-        payload = notifier.sent[0]["payload"]
-        expected_nid = stable_nid("update:update.home_assistant_core_update")
-        assert payload["notification_id"] == expected_nid
 
 
 # ── ha_log_monitor — poll_for_notifications ──────────────────────────────────────
@@ -14161,530 +13530,6 @@ class TestLoadRegisteredToolsPath:
         assert executor.registered == []
 
 
-# ── AffectedChange + InstanceImpactReport schemas ────────────────────────────────
-class TestAffectedChangeSchema:
-    def test_valid_construction(self):
-        from agents.ha_update_manager import AffectedChange
-
-        ac = AffectedChange(
-            description="Template syntax changed",
-            applies=True,
-            reason="config uses old template syntax",
-            config_fix_yaml="template: ...",
-            fix_description="Update template syntax",
-        )
-        assert ac.applies is True
-        assert ac.config_fix_yaml == "template: ..."
-
-    def test_optional_fields_default_none(self):
-        from agents.ha_update_manager import AffectedChange
-
-        ac = AffectedChange(
-            description="Some change",
-            applies=False,
-            reason="not used",
-        )
-        assert ac.config_fix_yaml is None
-        assert ac.fix_description is None
-
-    def test_json_round_trip(self):
-        from agents.ha_update_manager import AffectedChange
-
-        ac = AffectedChange(
-            description="Breaking API",
-            applies=True,
-            reason="uses it",
-            config_fix_yaml="key: value",
-            fix_description="Set key to value",
-        )
-        restored = AffectedChange.model_validate_json(ac.model_dump_json())
-        assert restored.description == ac.description
-        assert restored.config_fix_yaml == ac.config_fix_yaml
-
-
-class TestInstanceImpactReportSchema:
-    def test_valid_none_impact(self):
-        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
-
-        report = InstanceImpactReport(
-            affected_changes=[
-                AffectedChange(
-                    description="Old API",
-                    applies=False,
-                    reason="not used",
-                )
-            ],
-            instance_impact="none",
-            effective_safe_to_update=True,
-            summary="No changes apply.",
-        )
-        assert report.instance_impact == "none"
-        assert report.effective_safe_to_update is True
-
-    def test_valid_high_impact(self):
-        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
-
-        report = InstanceImpactReport(
-            affected_changes=[
-                AffectedChange(
-                    description="Breaking config key removed",
-                    applies=True,
-                    reason="key present in config",
-                    config_fix_yaml="key: new_value",
-                    fix_description="Replace deprecated key",
-                )
-            ],
-            instance_impact="high",
-            effective_safe_to_update=False,
-            summary="Must fix config before updating.",
-        )
-        assert report.instance_impact == "high"
-        assert report.effective_safe_to_update is False
-        assert report.affected_changes[0].applies is True
-
-    def test_json_round_trip(self):
-        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
-
-        report = InstanceImpactReport(
-            affected_changes=[],
-            instance_impact="low",
-            effective_safe_to_update=True,
-            summary="Minor.",
-        )
-        restored = InstanceImpactReport.model_validate_json(report.model_dump_json())
-        assert restored.instance_impact == "low"
-        assert restored.summary == report.summary
-
-
-# ── personalize_breaking_changes ─────────────────────────────────────────────────
-class TestPersonalizeBreakingChanges:
-    @staticmethod
-    def _make_impact_llm(instance_impact: str = "none", applies: bool = False):
-        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
-        from utils.llm.ollama_client import FakeLLMClient
-
-        report = InstanceImpactReport(
-            affected_changes=[
-                AffectedChange(
-                    description="Template syntax changed",
-                    applies=applies,
-                    reason="not present in config" if not applies else "used in config",
-                    config_fix_yaml="template: new" if applies else None,
-                    fix_description="Update template" if applies else None,
-                )
-            ],
-            instance_impact=instance_impact,
-            effective_safe_to_update=(instance_impact != "high"),
-            summary=f"Impact is {instance_impact}.",
-        )
-        return FakeLLMClient(report.model_dump_json())
-
-    def test_returns_none_impact_when_no_changes_apply(self):
-        from agents.ha_update_manager import personalize_breaking_changes
-
-        llm = self._make_impact_llm("none", applies=False)
-        result = asyncio.run(
-            personalize_breaking_changes(
-                ["Template syntax changed"],
-                "homeassistant:\n  name: Home",
-                ["mqtt"],
-                llm,
-            )
-        )
-        assert result.instance_impact == "none"
-        assert result.effective_safe_to_update is True
-
-    def test_returns_high_impact_when_changes_apply(self):
-        from agents.ha_update_manager import personalize_breaking_changes
-
-        llm = self._make_impact_llm("high", applies=True)
-        result = asyncio.run(
-            personalize_breaking_changes(
-                ["Template syntax changed"],
-                "template:\n  - trigger: ...",
-                ["template"],
-                llm,
-            )
-        )
-        assert result.instance_impact == "high"
-        assert result.effective_safe_to_update is False
-        assert result.affected_changes[0].applies is True
-        assert result.affected_changes[0].config_fix_yaml is not None
-
-    def test_empty_breaking_changes_returns_safe_default(self):
-        from agents.ha_update_manager import personalize_breaking_changes
-        from utils.llm.ollama_client import FakeLLMClient
-
-        # LLM should not be called when there are no breaking changes
-        llm = FakeLLMClient("")
-        result = asyncio.run(
-            personalize_breaking_changes([], "ha:\n  name: Home", [], llm)
-        )
-        assert result.instance_impact == "none"
-        assert result.effective_safe_to_update is True
-        assert llm.calls == []
-
-    def test_llm_error_returns_safe_default(self):
-        from agents.ha_update_manager import personalize_breaking_changes
-
-        class _ErrorLLM:
-            calls: list = []
-
-            async def chat(self, **kwargs):
-                raise RuntimeError("LLM unavailable")
-
-        result = asyncio.run(
-            personalize_breaking_changes(
-                ["Breaking change"], "ha:\n  name: Home", [], _ErrorLLM()
-            )
-        )
-        assert result.instance_impact == "none"
-        assert result.effective_safe_to_update is True
-
-    def test_invalid_impact_value_coerced_to_low(self):
-        from agents.ha_update_manager import AffectedChange, InstanceImpactReport
-        from agents.ha_update_manager import personalize_breaking_changes
-        from utils.llm.ollama_client import FakeLLMClient
-
-        # Model returns an unrecognized impact value
-        bad_report = InstanceImpactReport(
-            affected_changes=[
-                AffectedChange(description="x", applies=False, reason="no")
-            ],
-            instance_impact="unknown_value",
-            effective_safe_to_update=True,
-            summary="bad",
-        )
-        llm = FakeLLMClient(bad_report.model_dump_json())
-        result = asyncio.run(personalize_breaking_changes(["x"], "ha:", [], llm))
-        assert result.instance_impact == "low"
-
-
-# ── poll_for_updates — disk headroom warning ─────────────────────────────────────
-class TestPollForUpdatesDiskHeadroomWarning:
-    @pytest.fixture(autouse=True)
-    def _patch_hitl_tracker(self, monkeypatch):
-        import sqlite3 as _sq3
-
-        _DDL = (
-            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
-            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
-            "description TEXT NOT NULL DEFAULT '', "
-            "first_sent_at REAL NOT NULL DEFAULT 0, "
-            "last_sent_at REAL NOT NULL DEFAULT 0, "
-            "send_count INTEGER NOT NULL DEFAULT 1, "
-            "last_action TEXT, last_action_at REAL, "
-            "rejection_count INTEGER NOT NULL DEFAULT 0, "
-            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
-            "known_issue_note TEXT, resolved_at REAL)"
-        )
-        _mem = _sq3.connect(":memory:", check_same_thread=False)
-        _mem.execute(_DDL)
-        _mem.commit()
-        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
-
-    @staticmethod
-    def _make_update_entity(component: str = "core") -> dict:
-        return {
-            "entity_id": f"update.home_assistant_{component}_update",
-            "state": "on",
-            "attributes": {
-                "installed_version": "2026.7.0",
-                "latest_version": "2026.8.0",
-                "release_url": "https://github.com/home-assistant/core/releases",
-                "release_summary": "Improvements",
-                "in_progress": False,
-                "friendly_name": f"HA {component.title()} Update",
-            },
-        }
-
-    def _run_one_poll(
-        self,
-        monkeypatch,
-        tmp_path,
-        disk_free_gb: float,
-        disk_critical_gb: float = 2.0,
-        component: str = "core",
-    ):
-        from agents.ha_log_monitor import poll_for_updates
-        from utils.disk.resource import ResourceStatus
-        from utils.ha.ha_rest_client import FakeHARestClient
-
-        monkeypatch.setattr("config.HA_DISK_CRITICAL_GB", disk_critical_gb)
-        monkeypatch.setattr("config.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-        monkeypatch.setattr("config.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
-        monkeypatch.setattr(
-            "agents.ha_log_monitor.HA_DISK_CRITICAL_GB", disk_critical_gb
-        )
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
-        monkeypatch.setattr(
-            "agents.ha_log_monitor.DB_PATH", str(tmp_path / "db.sqlite")
-        )
-        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
-
-        _status = ResourceStatus(
-            disk_free_gb=disk_free_gb,
-            disk_total_gb=32.0,
-            disk_used_gb=32.0 - disk_free_gb,
-            mem_available_mb=2048.0,
-            mem_total_mb=4096.0,
-            disk_warn=disk_free_gb < 4.0,
-            disk_critical=disk_free_gb < disk_critical_gb,
-            mem_warn=False,
-        )
-        monkeypatch.setattr("utils.disk.resource._last_resource_status", _status)
-
-        _rest = FakeHARestClient([self._make_update_entity(component)])
-        _sent = []
-
-        class _FakeNotifier:
-            async def send(self, *, subject, body, payload=None):
-                _sent.append({"subject": subject, "body": body, "payload": payload})
-
-        # Patch analyze_breaking_changes to return no breaking changes (fast path)
-        from agents.ha_update_manager import UpdateReadinessReport
-
-        _readiness = UpdateReadinessReport(
-            target_version="2026.8.0",
-            safe_to_update=True,
-            breaking_changes=[],
-            affected_config_keys=[],
-            pueo_command_risks=[],
-            recommendation="Safe.",
-        )
-
-        async def _fake_analyze(*a, **kw):
-            return _readiness
-
-        async def _fake_notes(*a, **kw):
-            return "x" * 600
-
-        monkeypatch.setattr(
-            "agents.ha_update_manager.analyze_breaking_changes", _fake_analyze
-        )
-        monkeypatch.setattr(
-            "agents.ha_update_manager.fetch_release_notes_cached", _fake_notes
-        )
-
-        async def _run():
-            import asyncio
-
-            task = asyncio.create_task(
-                poll_for_updates(
-                    ha_rest_client=_rest,
-                    notifier=_FakeNotifier(),
-                    cache_dir=str(tmp_path),
-                )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(_run())
-        return _sent
-
-    def test_disk_headroom_warning_added_when_space_tight(self, monkeypatch, tmp_path):
-        sent = self._run_one_poll(
-            monkeypatch, tmp_path, disk_free_gb=2.5, disk_critical_gb=2.0
-        )
-        assert len(sent) == 1
-        payload = sent[0]["payload"]
-        assert payload["disk_headroom_warning"] is not None
-        assert "2.5" in payload["disk_headroom_warning"]
-        assert "⚠️" in payload["disk_headroom_warning"]
-
-    def test_disk_headroom_warning_absent_when_space_ample(self, monkeypatch, tmp_path):
-        sent = self._run_one_poll(
-            monkeypatch, tmp_path, disk_free_gb=6.0, disk_critical_gb=2.0
-        )
-        assert len(sent) == 1
-        assert sent[0]["payload"]["disk_headroom_warning"] is None
-
-    def test_disk_headroom_warning_absent_for_addon_update(self, monkeypatch, tmp_path):
-        """Disk warning is only added for core/os updates, not add-on updates."""
-        sent = self._run_one_poll(
-            monkeypatch,
-            tmp_path,
-            disk_free_gb=2.1,
-            disk_critical_gb=2.0,
-            component="addon",
-        )
-        # Add-on update cards may not fire (depends on notify flag), but if they do,
-        # disk_headroom_warning should not be in payload for non-core components.
-        if sent:
-            assert sent[0]["payload"].get("disk_headroom_warning") is None
-
-
-# ── poll_for_updates — personalized breaking changes wired ───────────────────────
-class TestPollForUpdatesPersonalization:
-    @pytest.fixture(autouse=True)
-    def _patch_hitl_tracker(self, monkeypatch):
-        import sqlite3 as _sq3
-
-        _DDL = (
-            "CREATE TABLE IF NOT EXISTS hitl_suppression ("
-            "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
-            "description TEXT NOT NULL DEFAULT '', "
-            "first_sent_at REAL NOT NULL DEFAULT 0, "
-            "last_sent_at REAL NOT NULL DEFAULT 0, "
-            "send_count INTEGER NOT NULL DEFAULT 1, "
-            "last_action TEXT, last_action_at REAL, "
-            "rejection_count INTEGER NOT NULL DEFAULT 0, "
-            "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
-            "known_issue_note TEXT, resolved_at REAL)"
-        )
-        _mem = _sq3.connect(":memory:", check_same_thread=False)
-        _mem.execute(_DDL)
-        _mem.commit()
-        monkeypatch.setattr(_sq3, "connect", lambda *a, **kw: _mem)
-
-    def _run_poll_with_personalization(self, monkeypatch, tmp_path, impact: str):
-        from agents.ha_log_monitor import poll_for_updates
-        from agents.ha_update_manager import (
-            AffectedChange,
-            InstanceImpactReport,
-            UpdateReadinessReport,
-        )
-        from utils.ha.ha_rest_client import FakeHARestClient
-        from utils.ha.ssh_client import FakeSSHClient
-
-        monkeypatch.setattr("config.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-        monkeypatch.setattr("config.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", True)
-        monkeypatch.setattr("agents.ha_log_monitor.HA_UPDATE_CHECK_INTERVAL_HOURS", 1)
-        monkeypatch.setattr(
-            "agents.ha_log_monitor.DB_PATH", str(tmp_path / "db.sqlite")
-        )
-        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr("utils.disk.resource._last_resource_status", None)
-
-        _update_entity = {
-            "entity_id": "update.home_assistant_core_update",
-            "state": "on",
-            "attributes": {
-                "installed_version": "2026.7.0",
-                "latest_version": "2026.8.0",
-                "release_url": "https://github.com/home-assistant/core/releases",
-                "release_summary": "Improvements",
-                "in_progress": False,
-                "friendly_name": "HA Core Update",
-            },
-        }
-        _rest = FakeHARestClient([_update_entity])
-
-        _readiness = UpdateReadinessReport(
-            target_version="2026.8.0",
-            safe_to_update=True,
-            breaking_changes=["Template syntax changed"],
-            affected_config_keys=["template"],
-            pueo_command_risks=[],
-            recommendation="Review template usage.",
-        )
-
-        _impact_report = InstanceImpactReport(
-            affected_changes=[
-                AffectedChange(
-                    description="Template syntax changed",
-                    applies=(impact != "none"),
-                    reason="present in config" if impact != "none" else "not used",
-                    config_fix_yaml="template: new" if impact == "high" else None,
-                    fix_description="Fix template" if impact == "high" else None,
-                )
-            ],
-            instance_impact=impact,
-            effective_safe_to_update=(impact != "high"),
-            summary=f"Impact is {impact}.",
-        )
-
-        async def _fake_analyze(*a, **kw):
-            return _readiness
-
-        async def _fake_personalize(*a, **kw):
-            return _impact_report
-
-        async def _fake_notes(*a, **kw):
-            return "x" * 600
-
-        # SSH client that returns dummy config YAML for /config/configuration.yaml
-        _ssh = FakeSSHClient(
-            command_results={
-                "cat /config/configuration.yaml": (0, "ha:\n  name: Home", "")
-            }
-        )
-
-        monkeypatch.setattr(
-            "agents.ha_update_manager.analyze_breaking_changes", _fake_analyze
-        )
-        monkeypatch.setattr(
-            "agents.ha_update_manager.personalize_breaking_changes", _fake_personalize
-        )
-        monkeypatch.setattr(
-            "agents.ha_update_manager.fetch_release_notes_cached", _fake_notes
-        )
-        monkeypatch.setattr(
-            "utils.ha.ha_environment.load_environment_profile", lambda *a, **kw: None
-        )
-
-        _sent = []
-
-        class _FakeNotifier:
-            async def send(self, *, subject, body, payload=None):
-                _sent.append({"subject": subject, "body": body, "payload": payload})
-
-        async def _run():
-            task = asyncio.create_task(
-                poll_for_updates(
-                    ha_rest_client=_rest,
-                    notifier=_FakeNotifier(),
-                    ssh_client=_ssh,
-                    cache_dir=str(tmp_path),
-                )
-            )
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(_run())
-        return _sent
-
-    def test_none_impact_included_in_payload(self, monkeypatch, tmp_path):
-        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="none")
-        assert len(sent) == 1
-        payload = sent[0]["payload"]
-        assert payload["instance_impact"] == "none"
-        assert payload["effective_safe_to_update"] is True
-        assert payload["proposed_config_fixes"] == []
-
-    def test_high_impact_sets_safe_to_update_false(self, monkeypatch, tmp_path):
-        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="high")
-        assert len(sent) == 1
-        payload = sent[0]["payload"]
-        assert payload["instance_impact"] == "high"
-        assert payload["effective_safe_to_update"] is False
-        assert len(payload["proposed_config_fixes"]) == 1
-        assert payload["proposed_config_fixes"][0]["config_fix_yaml"] == "template: new"
-
-    def test_none_impact_risk_downgraded_from_critical(self, monkeypatch, tmp_path):
-        sent = self._run_poll_with_personalization(monkeypatch, tmp_path, impact="none")
-        assert len(sent) == 1
-        # When instance_impact is "none", CRITICAL is downgraded to HIGH
-        assert sent[0]["payload"]["risk"] == "HIGH"
-
-    def test_personalize_prompt_loads_without_error(self):
-        from utils.core.prompts import load_prompt
-
-        text = load_prompt("personalize_breaking_changes")
-        assert "breaking changes" in text.lower()
-        assert "instance_impact" in text
-
-
 class TestFinishDiagnosisDispatch:
     """Terminal tool dispatch cases added by Issue #381."""
 
@@ -14829,66 +13674,6 @@ class TestAnalyzeConfigLocallyAgentLoop:
         )
         assert report is not None
         assert trace is not None  # one-shot path returns LLMTrace
-
-
-class TestPersonalizeBreakingChangesAgentLoop:
-    """AgentLoop path for personalize_breaking_changes (Issue #381)."""
-
-    def _make_llm(self, impact: str = "none"):
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
-
-        return FakeToolCallingLLMClient(
-            [
-                {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "finish_impact_analysis",
-                                "arguments": {
-                                    "affected_changes": [],
-                                    "instance_impact": impact,
-                                    "effective_safe_to_update": impact != "high",
-                                    "summary": f"Impact is {impact}.",
-                                },
-                            }
-                        }
-                    ]
-                }
-            ]
-        )
-
-    def test_agent_loop_path_returns_report(self, fake_ssh_client):
-        from agents.ha_update_manager import personalize_breaking_changes
-
-        changes = ["template syntax changed: old syntax no longer supported"]
-        report = asyncio.run(
-            personalize_breaking_changes(
-                breaking_changes=changes,
-                installed_integrations=["template"],
-                ha_config_yaml="template:\n  - sensor:\n",
-                llm_client=self._make_llm("low"),
-                ssh_client=fake_ssh_client,
-            )
-        )
-        assert report is not None
-        assert report.instance_impact == "low"
-        assert report.effective_safe_to_update is True
-
-    def test_agent_loop_high_impact(self, fake_ssh_client):
-        from agents.ha_update_manager import personalize_breaking_changes
-
-        changes = ["zha: config key renamed; database_path is now db_path"]
-        report = asyncio.run(
-            personalize_breaking_changes(
-                breaking_changes=changes,
-                installed_integrations=["zha"],
-                ha_config_yaml="zha:\n  database_path: /config/zigbee.db\n",
-                llm_client=self._make_llm("high"),
-                ssh_client=fake_ssh_client,
-            )
-        )
-        assert report.instance_impact == "high"
-        assert report.effective_safe_to_update is False
 
 
 class TestAgentLoopStuckOutcome:
