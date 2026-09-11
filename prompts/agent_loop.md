@@ -18,6 +18,10 @@ Phase 2 — FORM A HYPOTHESIS: State what you think is happening before gatherin
 Phase 3 — GATHER EVIDENCE: Use get_disk_usage, read_config, read_logs, run_ha_command,
   read_pueo_log, search_log, investigate_device, fetch_ha_docs,
   get_dashboard_entity_health as appropriate.
+  RESULT DISCARD: If a tool returns something clearly not useful for this investigation
+  (404 for wrong endpoint, version mismatch, data about the wrong entity or component),
+  call discard_result(reason="...") immediately before your next tool call. This removes
+  the irrelevant result from future context and reduces token cost for subsequent calls.
   When reading individual files is not sufficient — e.g. cross-referencing the entity
   registry against dashboard refs, parsing structured JSON, or testing Pueo utilities
   against live data — use execute_local_python to write and run a diagnostic script.

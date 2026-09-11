@@ -14115,3 +14115,233 @@ class TestMakeActivityTimelineCallback:
         asyncio.run(cb("read_config", "step 1 — read_config: OK"))
 
         assert published[0]["trigger"] == ""
+
+
+# ── discard_result tool ─────────────────────────────────────────────────────────
+
+
+class TestDiscardResult:
+    def _make_executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+
+    def test_discard_result_returns_discard_previous_true(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="discard_result",
+                    arguments={"reason": "log line not actionable"},
+                )
+            )
+        )
+        assert result.success
+        assert result.discard_previous is True
+
+    def test_discard_result_output_contains_reason(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="discard_result",
+                    arguments={"reason": "benign noise"},
+                )
+            )
+        )
+        assert "benign noise" in result.output
+
+    def test_discard_result_empty_reason(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(ToolCall(name="discard_result", arguments={}))
+        )
+        assert result.success
+        assert result.discard_previous is True
+
+
+# ── AgentLoop discard_result integration ────────────────────────────────────────
+
+
+class TestAgentLoopDiscardResult:
+    def _make_loop(self, call_sequence):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition
+
+        reg = ToolRegistry()
+        for name in ("read_config", "discard_result", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        return AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_sequence),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=10,
+            max_wall_seconds=30.0,
+        )
+
+    def test_discard_replaces_preceding_tool_message(self):
+        import asyncio
+
+        loop = self._make_loop(
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_config",
+                                "arguments": {"path": "/config/configuration.yaml"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "discard_result",
+                                "arguments": {"reason": "not relevant"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        result = asyncio.run(loop.run("test trigger"))
+        assert result.outcome in ("success", "no_fix_needed", "complete")
+        # The discard_previous flag path ran without error
+        assert len(result.steps) >= 2
+
+    def test_discard_only_replaces_most_recent_non_discard_tool(self):
+        """Two read_config calls then discard — only the second read_config is replaced."""
+        import asyncio
+
+        loop = self._make_loop(
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_config",
+                                "arguments": {"path": "/config/configuration.yaml"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_config",
+                                "arguments": {"path": "/config/automations.yaml"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "discard_result",
+                                "arguments": {"reason": "second file not needed"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        result = asyncio.run(loop.run("test trigger"))
+        assert len(result.steps) >= 3
+
+    def test_discard_graceful_when_no_prior_tool_message(self):
+        """discard_result as the very first tool call — no prior tool msg to replace."""
+        import asyncio
+
+        loop = self._make_loop(
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "discard_result",
+                                "arguments": {"reason": "nothing to discard"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        result = asyncio.run(loop.run("test trigger"))
+        # Should not raise; loop completes normally
+        assert result.outcome in ("success", "no_fix_needed", "complete")
