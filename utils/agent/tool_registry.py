@@ -1007,6 +1007,10 @@ FINISH_DIAGNOSIS = ToolDefinition(
                 "type": "string",
                 "description": "Corrected YAML snippet if applicable, or null",
             },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion summarising the diagnosis outcome.",
+            },
         },
         "required": ["is_valid", "severity", "identified_issues"],
     },
@@ -1273,6 +1277,10 @@ FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
                     ],
                 },
             },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion summarising the investigation outcome.",
+            },
         },
         "required": ["findings"],
     },
@@ -1304,6 +1312,10 @@ FINISH_REPAIR_ISSUE = ToolDefinition(
                 "type": "string",
                 "enum": ["reboot", "restart", "dismiss"],
                 "description": "The action the HITL card should offer.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion summarising the investigation outcome.",
             },
         },
         "required": [
@@ -1347,6 +1359,10 @@ FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
             "dismiss_now": {
                 "type": "boolean",
                 "description": "True to auto-dismiss the notification from HA immediately.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion summarising the investigation outcome.",
             },
         },
         "required": ["human_explanation", "recommended_action", "requires_hitl"],
@@ -1523,6 +1539,10 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
             "create_hitl_card": {
                 "type": "boolean",
                 "description": "True to send an approval card to the user. Usually true for core/os updates.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence conclusion summarising the update analysis outcome.",
             },
         },
         "required": [

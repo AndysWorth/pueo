@@ -569,6 +569,7 @@ async def _run_repair_issue_investigation(
         timeline_callback=make_activity_timeline_callback(
             "repair_issue", trigger=f"HA repair: {issue.domain}/{issue.issue_id}"
         ),
+        capture_llm=True,
     )
     increment_active_agent()
     try:

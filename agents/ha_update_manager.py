@@ -494,6 +494,7 @@ async def _run_update_analysis(
                 "update_analysis",
                 trigger=f"Update: {update.component} → {update.latest_version}",
             ),
+            capture_llm=True,
         )
         increment_active_agent()
         try:

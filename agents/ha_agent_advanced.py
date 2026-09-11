@@ -453,6 +453,12 @@ def _migrate_v33(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v34(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE repair_episodes ADD COLUMN initial_context TEXT")
+    cursor.execute("ALTER TABLE repair_episodes ADD COLUMN activity_type TEXT")
+    cursor.execute("ALTER TABLE llm_calls ADD COLUMN thinking_text TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -487,6 +493,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (31, _migrate_v31),
     (32, _migrate_v32),
     (33, _migrate_v33),
+    (34, _migrate_v34),
 ]
 
 
