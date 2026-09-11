@@ -1109,64 +1109,67 @@ async def _execute_code_proposal(
     parameters_schema = payload.get("parameters_schema", "")
     code = payload.get("code", "")
 
-    if not name or not code:
-        data["error"] = "Missing tool_name or code in payload"
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.rejected").touch()
-        return
-
     try:
-        user_tools_dir = get_dirs().state_dir / "tools"
-        user_tools_dir.mkdir(parents=True, exist_ok=True)
-        init_file = user_tools_dir / "__init__.py"
-        if not init_file.exists():
-            init_file.write_text("")
+        if not name or not code:
+            data["error"] = "Missing tool_name or code in payload"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+            return
 
-        tool_file = user_tools_dir / f"{name}.py"
-        tool_file.write_text(code)
+        try:
+            user_tools_dir = get_dirs().state_dir / "tools"
+            user_tools_dir.mkdir(parents=True, exist_ok=True)
+            init_file = user_tools_dir / "__init__.py"
+            if not init_file.exists():
+                init_file.write_text("")
 
-        module_name = f"pueo_tools.{name}"
-        if module_name in sys.modules:
-            del sys.modules[module_name]
-        spec = importlib.util.spec_from_file_location(module_name, tool_file)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load module spec for {module_name}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            tool_file = user_tools_dir / f"{name}.py"
+            tool_file.write_text(code)
 
-        fn = getattr(mod, "tool_implementation", None) or getattr(mod, name, None)
-        if fn is None:
-            raise AttributeError(
-                f"Module must define 'tool_implementation' or '{name}'"
-            )
+            module_name = f"pueo_tools.{name}"
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            spec = importlib.util.spec_from_file_location(module_name, tool_file)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load module spec for {module_name}")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = mod
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
-        sv = get_supervisor_instance()
-        if sv is not None and sv._tool_executor is not None:
-            sv._tool_executor.register_dynamic_tool(name, fn)
-
-        _tool_row = (name, description, parameters_schema, code, time.time())
-
-        def _register_tool_in_db(_row: tuple) -> None:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO registered_tools"
-                    " (name, description, parameters_json, code, created_at)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    _row,
+            fn = getattr(mod, "tool_implementation", None) or getattr(mod, name, None)
+            if fn is None:
+                raise AttributeError(
+                    f"Module must define 'tool_implementation' or '{name}'"
                 )
 
-        await asyncio.to_thread(_register_tool_in_db, _tool_row)
+            sv = get_supervisor_instance()
+            if sv is not None and sv._tool_executor is not None:
+                sv._tool_executor.register_dynamic_tool(name, fn)
 
-        data["tool_registered"] = True
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.approved").touch()
-        publish_event({"event_type": "tool_registered", "name": name})
+            _tool_row = (name, description, parameters_schema, code, time.time())
 
-    except Exception as exc:
-        data["error"] = str(exc)
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.rejected").touch()
+            def _register_tool_in_db(_row: tuple) -> None:
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO registered_tools"
+                        " (name, description, parameters_json, code, created_at)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        _row,
+                    )
+
+            await asyncio.to_thread(_register_tool_in_db, _tool_row)
+
+            data["tool_registered"] = True
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+            publish_event({"event_type": "tool_registered", "name": name})
+
+        except Exception as exc:
+            data["error"] = str(exc)
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
 async def _execute_cloud_escalation(
@@ -1209,58 +1212,61 @@ async def _execute_cloud_escalation(
             pass
 
     try:
-        ssh = AsyncSSHClient()
-        notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
-        gate = AutonomyGate(AUTONOMY_LEVEL)
-        registry = build_ha_tool_registry()
+        try:
+            ssh = AsyncSSHClient()
+            notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+            gate = AutonomyGate(AUTONOMY_LEVEL)
+            registry = build_ha_tool_registry()
 
-        result = await run_cloud_escalation(
-            initial_context=initial_context,
-            tool_registry=registry,
-            gate=gate,
-            ha_ssh_client=ssh,
-            notifier=notifier,
-            incident_id=nid,
-            timeline_callback=_on_timeline,
-        )
-
-        data["cloud_outcome"] = result.outcome
-        data["cloud_steps"] = len(result.steps)
-        json_path.write_text(json.dumps(data, indent=2))
-
-        if result.outcome == "success":
-            (watch_dir / f"{nid}.approved").touch()
-            from utils.agent.supervisor import publish_event as _pe
-
-            _pe(
-                {
-                    "event_type": "repair_done",
-                    "outcome": result.outcome,
-                    "card_id": card_id,
-                    "activity": "ha_repair",
-                }
+            result = await run_cloud_escalation(
+                initial_context=initial_context,
+                tool_registry=registry,
+                gate=gate,
+                ha_ssh_client=ssh,
+                notifier=notifier,
+                incident_id=nid,
+                timeline_callback=_on_timeline,
             )
-        else:
+
+            data["cloud_outcome"] = result.outcome
+            data["cloud_steps"] = len(result.steps)
+            json_path.write_text(json.dumps(data, indent=2))
+
+            if result.outcome == "success":
+                (watch_dir / f"{nid}.approved").touch()
+                from utils.agent.supervisor import publish_event as _pe
+
+                _pe(
+                    {
+                        "event_type": "repair_done",
+                        "outcome": result.outcome,
+                        "card_id": card_id,
+                        "activity": "ha_repair",
+                    }
+                )
+            else:
+                (watch_dir / f"{nid}.rejected").touch()
+                from utils.agent.supervisor import publish_event as _pe
+
+                _pe(
+                    {
+                        "event_type": "repair_failed",
+                        "outcome": result.outcome,
+                        "card_id": card_id,
+                        "activity": "ha_repair",
+                    }
+                )
+
+        except BillingCapError as exc:
+            data["error"] = f"Billing cap exceeded: {exc}"
+            json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
-            from utils.agent.supervisor import publish_event as _pe
-
-            _pe(
-                {
-                    "event_type": "repair_failed",
-                    "outcome": result.outcome,
-                    "card_id": card_id,
-                    "activity": "ha_repair",
-                }
-            )
-
-    except BillingCapError as exc:
-        data["error"] = f"Billing cap exceeded: {exc}"
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.rejected").touch()
-    except Exception as exc:
-        data["error"] = str(exc)
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.rejected").touch()
+        except Exception as exc:
+            data["error"] = str(exc)
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
 async def _execute_open_pr(
@@ -1640,12 +1646,18 @@ _CARD_DISPATCH: dict[
 
 @app.post("/approve/{nid}")
 async def approve(nid: str, request: Request = None) -> RedirectResponse:  # type: ignore[assignment]
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
+    # Belt-and-suspenders guard: reject if handler already dispatched for this card.
+    if (watch_dir / f"{nid}.in_progress").exists():
+        return RedirectResponse(url="/queue", status_code=303)
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         data = json.loads(json_path.read_text())
         payload = data.get("payload", {})
         card_type = payload.get("card_type", "")
+        _wq = get_work_queue_or_none()
 
         if card_type == CARD_TYPE_REPAIR or (
             not card_type and payload.get("pending_fix_yaml")
@@ -1654,11 +1666,25 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
             yaml_content = payload.get("pending_fix_yaml", "")
             description = payload.get("pending_fix_description", "")
             (watch_dir / f"{nid}.in_progress").touch()
-            asyncio.create_task(
-                _execute_queued_fix(
-                    nid, yaml_content, description, data, json_path, watch_dir
+            if _wq is not None:
+                await _wq.submit(
+                    WorkItem(
+                        priority=PRIORITY_HIGH,
+                        activity_type="card_execution",
+                        description=f"Card {nid}: repair fix",
+                        dedup_key=f"card_{nid}",
+                        suppress_while_running=frozenset(),
+                        coro_factory=lambda: _execute_queued_fix(
+                            nid, yaml_content, description, data, json_path, watch_dir
+                        ),
+                    )
                 )
-            )
+            else:
+                asyncio.create_task(
+                    _execute_queued_fix(
+                        nid, yaml_content, description, data, json_path, watch_dir
+                    )
+                )
             suppression_key = payload.get("suppression_key", "")
             if suppression_key:
                 from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
@@ -1689,7 +1715,19 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
             (watch_dir / f"{nid}.in_progress").touch()
-            asyncio.create_task(handler(nid, data, json_path, watch_dir))
+            if _wq is not None:
+                await _wq.submit(
+                    WorkItem(
+                        priority=PRIORITY_HIGH,
+                        activity_type="card_execution",
+                        description=f"Card {nid}: {card_type}",
+                        dedup_key=f"card_{nid}",
+                        suppress_while_running=frozenset(),
+                        coro_factory=lambda: handler(nid, data, json_path, watch_dir),
+                    )
+                )
+            else:
+                asyncio.create_task(handler(nid, data, json_path, watch_dir))
         else:
             (watch_dir / f"{nid}.approved").touch()
 
@@ -1725,29 +1763,32 @@ async def _execute_queued_fix(
 
     ssh = AsyncSSHClient()
     try:
-        slug = await execute_remote_backup(ssh_client=ssh)
-        record_backup_slug(slug)
-        await offload_backup_to_local(slug, ssh_client=ssh)
-        await enforce_ha_retention(ssh_client=ssh)
-        purge_local_backups()
+        try:
+            slug = await execute_remote_backup(ssh_client=ssh)
+            record_backup_slug(slug)
+            await offload_backup_to_local(slug, ssh_client=ssh)
+            await enforce_ha_retention(ssh_client=ssh)
+            purge_local_backups()
 
-        passed = await deploy_and_test_in_sandbox(yaml_content, ssh_client=ssh)
-        if not passed:
-            data["fix_error"] = "Sandbox test failed; production not modified"
+            passed = await deploy_and_test_in_sandbox(yaml_content, ssh_client=ssh)
+            if not passed:
+                data["fix_error"] = "Sandbox test failed; production not modified"
+                json_path.write_text(json.dumps(data, indent=2))
+                (watch_dir / f"{nid}.rejected").touch()
+                return
+
+            await commit_atomic_swap(yaml_content, ssh_client=ssh)
+            data["fix_applied"] = True
+            data["fix_backup_slug"] = slug
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+
+        except Exception as exc:
+            data["fix_error"] = str(exc)
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
-            return
-
-        await commit_atomic_swap(yaml_content, ssh_client=ssh)
-        data["fix_applied"] = True
-        data["fix_backup_slug"] = slug
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.approved").touch()
-
-    except Exception as exc:
-        data["fix_error"] = str(exc)
-        json_path.write_text(json.dumps(data, indent=2))
-        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
 class RepairInjectRequest(BaseModel):
@@ -1810,7 +1851,26 @@ async def apply_fixes(nid: str) -> RedirectResponse:
     if not fixes:
         return RedirectResponse(url="/queue", status_code=303)
 
-    asyncio.create_task(_execute_config_fixes(nid, fixes, data, json_path, watch_dir))
+    from utils.agent.work_queue import PRIORITY_HIGH, WorkItem, get_work_queue_or_none
+
+    _wq = get_work_queue_or_none()
+    if _wq is not None:
+        await _wq.submit(
+            WorkItem(
+                priority=PRIORITY_HIGH,
+                activity_type="card_execution",
+                description=f"Card {nid}: config fixes",
+                dedup_key=f"config_fixes_{nid}",
+                suppress_while_running=frozenset(),
+                coro_factory=lambda: _execute_config_fixes(
+                    nid, fixes, data, json_path, watch_dir
+                ),
+            )
+        )
+    else:
+        asyncio.create_task(
+            _execute_config_fixes(nid, fixes, data, json_path, watch_dir)
+        )
     return RedirectResponse(url="/queue", status_code=303)
 
 

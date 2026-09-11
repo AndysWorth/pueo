@@ -2724,6 +2724,237 @@ class TestCardTypeDispatch:
         assert CARD_TYPE_RESOURCE_ACTION == "resource_action"
 
 
+# ── WorkItem routing through PueoWorkQueue ────────────────────────────────────────
+
+
+class TestApproveWorkQueueRouting:
+    """Verify approve() and handler finally-blocks use PueoWorkQueue correctly."""
+
+    @pytest.fixture()
+    def watch_dir(self, tmp_path):
+        d = tmp_path / "hitl"
+        d.mkdir()
+        return d
+
+    def _write_card(self, watch_dir, nid, payload):
+        import json as _json
+        import time
+
+        card = {
+            "notification_id": nid,
+            "subject": "Test card",
+            "body": "body",
+            "payload": payload,
+            "sent_at": int(time.time()),
+        }
+        (watch_dir / f"{nid}.json").write_text(_json.dumps(card))
+
+    def test_approve_repair_submits_work_item(self, watch_dir, monkeypatch):
+        """approve() with a repair card submits a WorkItem to PueoWorkQueue."""
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+        from utils.agent.work_queue import PRIORITY_HIGH
+
+        submitted = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                submitted.append(item)
+                return True
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+        self._write_card(
+            watch_dir,
+            "r-wq1",
+            {
+                "card_type": "repair",
+                "pending_fix_yaml": "homeassistant:\n  name: Fixed\n",
+                "pending_fix_description": "test fix",
+            },
+        )
+
+        asyncio.run(dashboard.approve("r-wq1"))
+
+        assert len(submitted) == 1
+        item = submitted[0]
+        assert item.activity_type == "card_execution"
+        assert item.priority == PRIORITY_HIGH
+        assert item.dedup_key == "card_r-wq1"
+
+    def test_approve_dispatch_card_submits_work_item(self, watch_dir, monkeypatch):
+        """approve() with a dispatch-table card submits a WorkItem to PueoWorkQueue."""
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+        from utils.agent.work_queue import PRIORITY_HIGH
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+        submitted = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                submitted.append(item)
+                return True
+
+        async def _noop_handler(nid, data, json_path, wd):
+            pass
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+        monkeypatch.setitem(dashboard._CARD_DISPATCH, CARD_TYPE_UPDATE, _noop_handler)
+        self._write_card(
+            watch_dir,
+            "u-wq1",
+            {"card_type": "update", "component": "core", "latest_version": "2026.7.5"},
+        )
+
+        asyncio.run(dashboard.approve("u-wq1"))
+
+        assert len(submitted) == 1
+        item = submitted[0]
+        assert item.activity_type == "card_execution"
+        assert item.priority == PRIORITY_HIGH
+        assert item.dedup_key == "card_u-wq1"
+
+    def test_approve_in_progress_guard_blocks_second_submission(
+        self, watch_dir, monkeypatch
+    ):
+        """approve() early-exits without submitting when .in_progress already exists."""
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+
+        submitted = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                submitted.append(item)
+                return True
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+        self._write_card(
+            watch_dir,
+            "r-guard1",
+            {
+                "card_type": "repair",
+                "pending_fix_yaml": "homeassistant:\n  name: Fixed\n",
+            },
+        )
+        # Simulate card already executing — .in_progress sentinel already present
+        (watch_dir / "r-guard1.in_progress").touch()
+
+        asyncio.run(dashboard.approve("r-guard1"))
+
+        assert len(submitted) == 0, "submit must not be called when .in_progress exists"
+
+    def test_approve_falls_back_to_create_task_when_no_queue(
+        self, watch_dir, monkeypatch
+    ):
+        """When PueoWorkQueue is not initialised, approve() falls back to create_task."""
+        import web.dashboard as dashboard
+
+        called = []
+
+        async def _fake_fix(nid, yaml_content, description, data, json_path, wd):
+            called.append(nid)
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "_execute_queued_fix", _fake_fix)
+        self._write_card(
+            watch_dir,
+            "r-fallback1",
+            {
+                "card_type": "repair",
+                "pending_fix_yaml": "homeassistant:\n  name: Fixed\n",
+                "pending_fix_description": "fallback test",
+            },
+        )
+
+        async def _run():
+            await dashboard.approve("r-fallback1")
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+        assert "r-fallback1" in called
+
+    def test_execute_queued_fix_finally_cleans_in_progress(self, tmp_path, monkeypatch):
+        """_execute_queued_fix removes .in_progress in finally even when backup raises."""
+        import json as _json
+        import web.dashboard as dashboard
+        from agents import ha_agent_sandbox_engine
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        nid = "fix-finally-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {}
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("backup exploded")
+
+        monkeypatch.setattr(ha_agent_sandbox_engine, "execute_remote_backup", _fail)
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        asyncio.run(
+            dashboard._execute_queued_fix(
+                nid,
+                "homeassistant:\n  name: Home\n",
+                "desc",
+                data,
+                json_path,
+                tmp_path,
+            )
+        )
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        assert (tmp_path / f"{nid}.rejected").exists()
+
+    def test_execute_cloud_escalation_finally_cleans_in_progress(
+        self, tmp_path, monkeypatch
+    ):
+        """_execute_cloud_escalation removes .in_progress in finally when AsyncSSHClient raises."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ha.ssh_client as ssh_mod
+
+        nid = "cloud-finally-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"payload": {"initial_context": "test error context"}}
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        class _FailSSHClient:
+            def __init__(self):
+                raise RuntimeError("SSH unavailable in test")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", _FailSSHClient)
+
+        asyncio.run(dashboard._execute_cloud_escalation(nid, data, json_path, tmp_path))
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        assert (tmp_path / f"{nid}.rejected").exists()
+
+    def test_execute_code_proposal_finally_cleans_in_progress(self, tmp_path):
+        """_execute_code_proposal removes .in_progress even on early return for empty payload."""
+        import json as _json
+        import web.dashboard as dashboard
+
+        nid = "cp-finally-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {
+            "payload": {}
+        }  # no tool_name or code — triggers early return path
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        asyncio.run(dashboard._execute_code_proposal(nid, data, json_path, tmp_path))
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        assert (tmp_path / f"{nid}.rejected").exists()
+
+
 # ── _execute_queued_update (item 57) ─────────────────────────────────────────────
 
 
