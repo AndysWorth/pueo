@@ -426,9 +426,8 @@ async def overview(request: Request) -> HTMLResponse:
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
-    pending_count = sum(
-        1 for f in watch_dir.glob("*.json") if _status(f.stem, watch_dir) == "PENDING"
-    )
+    pending_requests = await asyncio.to_thread(_load_requests, watch_dir)
+    pending_count = len(pending_requests)
     sv = get_supervisor_instance()
     loop_statuses = sv.get_statuses() if sv else []
     resource = get_resource_status()
