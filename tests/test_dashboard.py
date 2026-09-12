@@ -180,6 +180,26 @@ class TestLoadHITLRequests:
         assert results[0].notification_id == "p1"
         assert results[0].status == "PENDING"
 
+    def test_notification_card_excluded_from_load_requests(self, tmp_path):
+        import json as _json, time as _time
+        from web.dashboard import _load_requests
+
+        (tmp_path / "notif.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif",
+                    "subject": "s",
+                    "body": "b",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()) - 60,
+                }
+            )
+        )
+        self._write_request(tmp_path, "regular")
+        results = _load_requests(tmp_path)
+        assert len(results) == 1
+        assert results[0].notification_id == "regular"
+
 
 # ── main.py dashboard mode ────────────────────────────────────────────────────────
 
@@ -3916,6 +3936,42 @@ class TestOverviewRoute:
         html = client.get("/").text
         # pending_count=1 should appear somewhere in the page
         assert "1" in html
+
+    def test_overview_pending_count_excludes_notification_cards(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json, time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        # One regular card + one notification card — overview must show 1, not 2
+        (tmp_path / "regular.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "regular",
+                    "subject": "repair",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        (tmp_path / "notif.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif",
+                    "subject": "http_login",
+                    "body": "b",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert 'class="pending-badge">1<' in html
 
     def test_queue_route_returns_200(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
