@@ -150,6 +150,7 @@ class ToolExecutor:
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
         self._pending_update_status: Optional[Any] = None
+        self._lovelace_suspicious: list[str] = []
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -182,6 +183,11 @@ class ToolExecutor:
     def set_update_status(self, update_status: Any) -> None:
         """Store the pending UpdateStatus so finish_update_analysis can create the card."""
         self._pending_update_status = update_status
+
+    def set_lovelace_suspicious(self, entity_ids: list[str]) -> None:
+        """Store entity IDs under investigation so _finish_lovelace_investigation can
+        write benign suppression records when findings is empty."""
+        self._lovelace_suspicious = list(entity_ids)
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -2494,6 +2500,23 @@ class ToolExecutor:
                 chat_needed=chat_needed,
             )
             cards_created += 1
+
+        # When all entities are benign (no findings), record suppression so the
+        # poll loop skips re-investigation until the entity joins the registry.
+        if not findings and self._lovelace_suspicious:
+            from utils.hitl.card_types import CARD_TYPE_LOVELACE_BENIGN
+
+            for eid in self._lovelace_suspicious:
+                card_key = f"lovelace_benign:{eid}"
+                with sqlite3.connect(self._db_path) as conn:
+                    mark_card_sent(
+                        conn,
+                        card_key,
+                        CARD_TYPE_LOVELACE_BENIGN,
+                        "Benign sub-platform entity",
+                    )
+                log.info("lovelace_entity_marked_benign", entity_id=eid)
+
         return ToolResult(
             tool_name="finish_lovelace_investigation",
             success=True,

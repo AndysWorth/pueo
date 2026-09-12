@@ -71,6 +71,7 @@ async def _run_lovelace_investigation(
         knowledge_store=knowledge_store,
         db_path=db_path,
     )
+    executor.set_lovelace_suspicious([e["entity_id"] for e in suspicious])
 
     registry = build_lovelace_investigation_registry()
     system_prompt = load_prompt("agent_loop_lovelace").format(
@@ -139,6 +140,7 @@ async def poll_for_dashboard_entity_issues(
     from utils.hitl.card_types import (
         CARD_TYPE_DASHBOARD_ENTITY,
         CARD_TYPE_HA_CONFIG_ISSUE,
+        CARD_TYPE_LOVELACE_BENIGN,
         CARD_TYPE_UNREGISTERED_ENTITY,
     )
     from utils.ha.ha_ws_client import HAWebSocketClient
@@ -227,6 +229,16 @@ async def poll_for_dashboard_entity_issues(
                 dash_label = ref.dashboard_title or ref.dashboard_url_path
             else:
                 dash_label = "Default"
+
+            # Skip entities already confirmed benign in a prior investigation.
+            _benign_key = f"lovelace_benign:{ref.entity_id}"
+            with sqlite3.connect(_db_path) as conn:
+                _benign_row = conn.execute(
+                    "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                    (_benign_key,),
+                ).fetchone()
+            if _benign_row is not None and _benign_row[0] is None:
+                continue
 
             if ref.entity_id in state_ids:
                 # Entity has live state but no entity registry entry.
@@ -338,6 +350,23 @@ async def poll_for_dashboard_entity_issues(
                     mark_card_resolved(conn, pending_key)
                 log.info(
                     "lovelace_unregistered_entity_resolved",
+                    entity_id=pending_entity_id,
+                )
+
+        # Reconcile benign suppression records: clear when the entity joins the registry.
+        with sqlite3.connect(_db_path) as conn:
+            benign_rows = conn.execute(
+                "SELECT card_key FROM hitl_suppression"
+                " WHERE card_type = ? AND resolved_at IS NULL",
+                (CARD_TYPE_LOVELACE_BENIGN,),
+            ).fetchall()
+        for (pending_key,) in benign_rows:
+            pending_entity_id = pending_key.removeprefix("lovelace_benign:")
+            if pending_entity_id in registry_ids:
+                with sqlite3.connect(_db_path) as conn:
+                    mark_card_resolved(conn, pending_key)
+                log.info(
+                    "lovelace_benign_cleared_entity_joined_registry",
                     entity_id=pending_entity_id,
                 )
 
