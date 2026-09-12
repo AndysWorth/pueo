@@ -110,7 +110,13 @@
             </div>
             {% endif %}
 
-            <div style="margin-top:0.6rem;font-size:0.75rem;color:#888;">ID: {{ ep.id }}</div>
+            <div style="margin-top:0.6rem;font-size:0.75rem;color:#888;display:flex;align-items:center;gap:1rem;">
+              ID: {{ ep.id }}
+              {% if ep.id in debug_urls %}
+              <a href="{{ debug_urls[ep.id] }}" target="_blank"
+                 style="font-size:0.75rem;color:#1a73e8;text-decoration:none;">View debug episode ↗</a>
+              {% endif %}
+            </div>
           </td>
         </tr>
         {% endfor %}

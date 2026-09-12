@@ -603,12 +603,13 @@ class AgentLoop:
                 from paths import get_dirs as _get_dirs
                 import datetime as _datetime
 
-                _ts = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 _ep_dir = (
-                    _get_dirs().data_dir / "debug_episodes" / f"{self._trigger}_{_ts}"
+                    _get_dirs().data_dir
+                    / "debug_episodes"
+                    / f"{self._trigger}_{self._episode_id}"
                 )
                 _session_meta = {
-                    "session_id": _ts,
+                    "session_id": self._episode_id,
                     "outcome": outcome,
                     "model": self._model,
                     "provider": "local",
