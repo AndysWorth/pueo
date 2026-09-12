@@ -1167,3 +1167,208 @@ class TestRunLovelaceInvestigation:
         assert (
             row is not None and row[0] is not None
         ), "ha_config_issue card must be resolved"
+
+
+# ---------------------------------------------------------------------------
+# Benign entity suppression
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_executor(db_path: str):
+    """Return a ToolExecutor wired to a real SQLite DB with fake dependencies."""
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.hitl.notify import FakeNotifier
+
+    class _NullSSH:
+        async def read_file(self, path: str) -> str:
+            return ""
+
+        async def write_file(self, path: str, content: str) -> None:
+            pass
+
+        async def run(self, command: str, check: bool = False) -> tuple[int, str, str]:
+            return (0, "", "")
+
+        async def stream_lines(self, command: str):  # type: ignore[return]
+            pass
+
+    return ToolExecutor(
+        ha_ssh_client=_NullSSH(),  # type: ignore[arg-type]
+        gate=FakeAutonomyGate(auto_execute_result=True),  # type: ignore[arg-type]
+        notifier=FakeNotifier(),
+        db_path=db_path,
+    )
+
+
+class TestBenignSuppression:
+    def test_finish_benign_writes_suppression_records(self, tmp_path):
+        """Empty findings with set_lovelace_suspicious writes a lovelace_benign row per entity."""
+        db_path = _make_hitl_db(tmp_path)
+        executor = _make_minimal_executor(db_path)
+        executor.set_lovelace_suspicious(["sensor.high_tide", "sun.sun"])
+
+        asyncio.run(executor._finish_lovelace_investigation(findings=[]))
+
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT card_key, card_type, resolved_at FROM hitl_suppression"
+                " WHERE card_type = 'lovelace_benign'"
+            ).fetchall()
+        keys = {r[0] for r in rows}
+        assert "lovelace_benign:sensor.high_tide" in keys
+        assert "lovelace_benign:sun.sun" in keys
+        # Records are active (not resolved)
+        for _, _, resolved_at in rows:
+            assert resolved_at is None
+
+    def test_finish_with_findings_does_not_write_benign(self, tmp_path):
+        """When findings are present, no lovelace_benign rows are written."""
+        db_path = _make_hitl_db(tmp_path)
+        executor = _make_minimal_executor(db_path)
+        executor.set_lovelace_suspicious(["sensor.foo"])
+
+        findings = [
+            {
+                "entity_ids": ["sensor.foo"],
+                "title": "YAML entity missing unique_id",
+                "description": "No unique_id",
+                "suggested_actions": [],
+                "chat_needed": False,
+                "initial_chat_message": "",
+            }
+        ]
+        asyncio.run(executor._finish_lovelace_investigation(findings=findings))
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_key FROM hitl_suppression WHERE card_type = 'lovelace_benign'"
+            ).fetchone()
+        assert row is None
+
+    def test_poll_skips_benign_suppressed_entity(self, tmp_path):
+        """An entity with an active lovelace_benign record is not passed to _run_lovelace_investigation."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from utils.hitl.notify import FakeNotifier
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+
+        # Pre-seed a benign suppression record for sensor.high_tide.
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(
+                conn,
+                "lovelace_benign:sensor.high_tide",
+                "lovelace_benign",
+                "Benign sub-platform entity",
+            )
+
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
+        )
+        notifier = FakeNotifier()
+        investigation_calls: list[list[dict]] = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        # Entity is benign-suppressed — investigation should not be triggered
+        assert investigation_calls == [] or all(
+            not any(e["entity_id"] == "sensor.high_tide" for e in call)
+            for call in investigation_calls
+        )
+
+    def test_benign_record_cleared_when_entity_joins_registry(self, tmp_path):
+        """A lovelace_benign record is resolved when the entity gains a registry entry."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+
+        db_path = _make_hitl_db(tmp_path)
+
+        # Pre-seed a benign suppression record.
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(
+                conn,
+                "lovelace_benign:sensor.high_tide",
+                "lovelace_benign",
+                "Benign sub-platform entity",
+            )
+
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        # Entity now in the registry — benign record should be cleared.
+        ws = FakeHAWebSocketClient(
+            entity_registry=[{"entity_id": "sensor.high_tide"}],
+            lovelace_configs={None: lovelace},
+        )
+        notifier = FakeNotifier()
+        llm = FakeLLMClient("{}")
+
+        async def _run():
+            task = asyncio.create_task(
+                poll_for_dashboard_entity_issues(
+                    ws_client=ws,
+                    notifier=notifier,
+                    db_path=db_path,
+                    interval_minutes=0,
+                    llm_client=llm,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'lovelace_benign:sensor.high_tide'"
+            ).fetchone()
+        assert row is not None and row[0] is not None, "benign record must be cleared"
