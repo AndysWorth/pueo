@@ -106,11 +106,18 @@
   <div class="card">
     <div class="section-title">Pending Actions</div>
     {% if pending_count > 0 %}
-    <div style="display:flex;align-items:center;gap:0.75rem;padding:0.4rem 0;">
+    <div style="display:flex;align-items:center;gap:0.75rem;padding:0.3rem 0;">
       <span class="pending-badge">{{ pending_count }}</span>
       <a href="/queue" style="font-size:0.88rem;color:#1a73e8;">View approval queue →</a>
     </div>
-    {% else %}
+    {% endif %}
+    {% if notification_count > 0 %}
+    <div style="display:flex;align-items:center;gap:0.75rem;padding:0.3rem 0;">
+      <span class="pending-badge" style="background:#dbeafe;color:#1d4ed8;border-color:#93c5fd;">{{ notification_count }}</span>
+      <a href="/notifications" style="font-size:0.88rem;color:#1a73e8;">View notifications →</a>
+    </div>
+    {% endif %}
+    {% if pending_count == 0 and notification_count == 0 %}
     <p style="color:#888;font-size:0.85rem;padding:0.3rem 0;">No pending approvals — Pueo is watching.</p>
     {% endif %}
   </div>
@@ -252,10 +259,9 @@
       <span id="active-activity-count" style="font-size:0.75rem;color:var(--muted);display:none;"></span>
       <span id="queue-pending-badge" hidden style="margin-left:auto;font-size:0.72rem;padding:1px 7px;border-radius:10px;background:#e9d5ff;color:#6b21a8;font-weight:600;"></span>
     </div>
-    <div style="display:flex;align-items:baseline;gap:0.5rem;margin-bottom:0.25rem;">
-      <span id="active-activity-trigger" style="font-size:0.75rem;color:var(--muted);font-style:italic;"></span>
-    </div>
-    <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:8em;overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;"></ul>
+    <!-- One row per active running loop -->
+    <ul id="active-running-list" style="list-style:none;padding:0;margin:0 0 0.4rem;font-size:0.78rem;display:flex;flex-direction:column;gap:2px;"></ul>
+    <ul id="active-activity-steps" style="list-style:none;padding:0;margin:0;max-height:min(16em,50vh);overflow-y:auto;font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;"></ul>
     <ul id="queue-pending-list" hidden style="list-style:none;padding:0;margin:0.5rem 0 0;font-size:0.78rem;color:var(--muted);border-top:1px solid var(--border);padding-top:0.4rem;display:flex;flex-direction:column;gap:2px;"></ul>
   </div>
 
@@ -899,6 +905,17 @@
     return ACTIVITY_HEADINGS[actType] || actType;
   }
 
+  function _rebuildRunningList() {
+    var ul = document.getElementById('active-running-list');
+    if (!ul) return;
+    var keys = Object.keys(_activeLoops);
+    ul.innerHTML = keys.map(function(k) {
+      var trig = _activeLoops[k] ? ' — <span style="color:var(--muted);font-style:italic;">' + _activeLoops[k] + '</span>' : '';
+      return '<li><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#28a745;margin-right:5px;"></span>'
+        + '<strong>Running:</strong> ' + _activityShortLabel(k) + trig + '</li>';
+    }).join('');
+  }
+
   function showActivityWidget(statusLine, activityType, trigger) {
     if (activityType) _activeLoops[activityType] = trigger || '';
 
@@ -928,10 +945,11 @@
         var prefix = n > 1 ? '[' + _activityShortLabel(activityType) + '] ' : '';
         li.textContent = prefix + statusLine;
         list.insertBefore(li, list.firstChild);
-        while (list.children.length > 8) list.removeChild(list.lastChild);
+        while (list.children.length > 20) list.removeChild(list.lastChild);
       }
     }
 
+    _rebuildRunningList();
     var widget = document.getElementById('active-activity-widget');
     if (widget) widget.style.display = '';
     if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
@@ -953,6 +971,7 @@
         if (n > 1) { countEl.textContent = '(' + n + ' active)'; countEl.style.display = ''; }
         else { countEl.style.display = 'none'; }
       }
+      _rebuildRunningList();
       return;
     }
     if (_activityHideTimer) clearTimeout(_activityHideTimer);
@@ -961,6 +980,8 @@
       if (widget) widget.style.display = 'none';
       var list = document.getElementById('active-activity-steps');
       if (list) list.innerHTML = '';
+      var runList = document.getElementById('active-running-list');
+      if (runList) runList.innerHTML = '';
       var trigEl = document.getElementById('active-activity-trigger');
       if (trigEl) trigEl.textContent = '';
       _activeLoops = {};

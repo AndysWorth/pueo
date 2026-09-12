@@ -4090,6 +4090,117 @@ class TestOverviewRoute:
         html = client.get("/").text
         assert "both local and cloud" in html
 
+    def test_count_pending_notification_cards_excludes_non_notification(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json, time as _time
+        import web.dashboard as dashboard
+
+        (tmp_path / "regular.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "regular",
+                    "subject": "repair",
+                    "body": "b",
+                    "payload": {},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        (tmp_path / "notif.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif",
+                    "subject": "http_login",
+                    "body": "b",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        count = dashboard._count_pending_notification_cards(tmp_path)
+        assert count == 1
+
+    def test_count_pending_notification_cards_excludes_approved(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json, time as _time
+        import web.dashboard as dashboard
+
+        (tmp_path / "notif.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif",
+                    "subject": "http_login",
+                    "body": "b",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        (tmp_path / "notif.approved").write_text("")
+        count = dashboard._count_pending_notification_cards(tmp_path)
+        assert count == 0
+
+    def test_overview_shows_notification_count(self, tmp_path, monkeypatch):
+        import json as _json, time as _time
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        (tmp_path / "notif.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": "notif",
+                    "subject": "http_login",
+                    "body": "b",
+                    "payload": {"is_notification_card": True},
+                    "sent_at": int(_time.time()),
+                }
+            )
+        )
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "View notifications" in html
+
+
+class TestServeDebugEpisodeRoute:
+    def test_serve_debug_episode_general_route(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from paths import PueoDirectories
+
+        ep_dir = "ha_log_abc-uuid-123"
+        ep_path = tmp_path / "debug_episodes" / ep_dir
+        ep_path.mkdir(parents=True)
+        (ep_path / "index.html").write_text("<html>debug episode</html>")
+
+        fake_dirs = PueoDirectories(
+            data_dir=tmp_path,
+            state_dir=tmp_path,
+            cache_dir=tmp_path,
+            log_dir=tmp_path,
+            config_dir=tmp_path,
+            runtime_dir=tmp_path,
+            resources_dir=tmp_path,
+        )
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: fake_dirs)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get(f"/debug-episodes/{ep_dir}/index.html")
+        assert resp.status_code == 200
+        assert b"debug episode" in resp.content
+
+    def test_serve_debug_episode_rejects_path_traversal(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.get("/debug-episodes/..%2Fsecret/index.html")
+        assert resp.status_code in (400, 404)
+
 
 class TestLogsHaApps:
     """Tests for GET /logs/ha-apps."""
@@ -6433,6 +6544,38 @@ class TestEpisodesTab:
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.get("/episodes/export")
         assert resp.status_code == 404
+
+    def test_episodes_tab_includes_debug_url_when_dir_exists(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        import web.dashboard as dashboard
+        from paths import PueoDirectories
+        from pathlib import Path
+        from starlette.testclient import TestClient
+
+        ep_id = "abc-123-uuid"
+        ep_trigger = "ha_log"
+        ep_dir_name = f"{ep_trigger}_{ep_id}"
+        debug_root = tmp_path / "debug_episodes" / ep_dir_name
+        debug_root.mkdir(parents=True)
+        (debug_root / "index.html").write_text("<html>debug</html>")
+
+        fake_dirs = PueoDirectories(
+            data_dir=tmp_path,
+            state_dir=tmp_path,
+            cache_dir=tmp_path,
+            log_dir=tmp_path,
+            config_dir=tmp_path,
+            runtime_dir=tmp_path,
+            resources_dir=tmp_path,
+        )
+        monkeypatch.setattr(dashboard, "_get_dirs", lambda: fake_dirs)
+        self._insert_episode(db_path, id=ep_id, trigger=ep_trigger)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/episodes").text
+        assert "View debug episode" in html
+        expected_href = f"/debug-episodes/{ep_dir_name}/index.html"
+        assert expected_href in html
 
 
 # ---------------------------------------------------------------------------

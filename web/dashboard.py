@@ -351,6 +351,22 @@ def _status(nid: str, watch_dir: Path) -> str:
     return "PENDING"
 
 
+def _count_pending_notification_cards(watch_dir: Path) -> int:
+    count = 0
+    for json_file in watch_dir.glob("*.json"):
+        try:
+            data = json.loads(json_file.read_text())
+            nid = data.get("notification_id", json_file.stem)
+            if (
+                data.get("payload", {}).get("is_notification_card")
+                and _status(nid, watch_dir) == "PENDING"
+            ):
+                count += 1
+        except Exception:  # nosec B110
+            pass
+    return count
+
+
 def _load_requests(watch_dir: Path) -> list[HITLRequest]:
     requests: list[HITLRequest] = []
     now = int(time.time())
@@ -426,7 +442,10 @@ async def overview(request: Request) -> HTMLResponse:
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     watch_dir.mkdir(parents=True, exist_ok=True)
-    pending_requests = await asyncio.to_thread(_load_requests, watch_dir)
+    pending_requests, notification_count = await asyncio.gather(
+        asyncio.to_thread(_load_requests, watch_dir),
+        asyncio.to_thread(_count_pending_notification_cards, watch_dir),
+    )
     pending_count = len(pending_requests)
     sv = get_supervisor_instance()
     loop_statuses = sv.get_statuses() if sv else []
@@ -451,6 +470,7 @@ async def overview(request: Request) -> HTMLResponse:
             "loop_statuses": loop_statuses,
             "resource": resource,
             "pending_count": pending_count,
+            "notification_count": notification_count,
             "last_backup": last_backup,
             "recent_events": recent_events,
             "llm_location_label": llm_location_label,
@@ -2954,20 +2974,22 @@ async def get_debug_mode() -> JSONResponse:
     )
 
 
-@app.get("/debug-episodes/session_{session_id}/{filename:path}")
-async def serve_debug_episode(session_id: int, filename: str) -> Response:
-    """Serve static HTML debug episode files."""
+@app.get("/debug-episodes/{ep_dir}/{filename:path}")
+async def serve_debug_episode(ep_dir: str, filename: str) -> Response:
+    """Serve debug episode files for both chat sessions and repair episodes."""
     if _debug_level_enabled < 1:
         raise HTTPException(status_code=404, detail="Debug mode is off")
-    import os
+    import re
 
-    safe_filename = Path(filename).name  # no path traversal
-    episode_dir = _get_dirs().data_dir / "debug_episodes" / f"session_{session_id}"
-    file_path = episode_dir / safe_filename
+    if not re.match(r"^[a-zA-Z0-9_-]+$", ep_dir):
+        raise HTTPException(status_code=400, detail="Invalid episode directory")
+    safe_filename = Path(filename).name
+    file_path = _get_dirs().data_dir / "debug_episodes" / ep_dir / safe_filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Episode file not found")
-    content_type = "text/html; charset=utf-8"
-    return Response(content=file_path.read_bytes(), media_type=content_type)
+    return Response(
+        content=file_path.read_bytes(), media_type="text/html; charset=utf-8"
+    )
 
 
 @app.get("/chat/events")
@@ -3446,6 +3468,12 @@ async def episodes_tab(
         episodes = [ep for ep in episodes if ep.verification_result]
     elif outcome == "failed":
         episodes = [ep for ep in episodes if not ep.verification_result]
+    debug_root = _get_dirs().data_dir / "debug_episodes"
+    debug_urls: dict[str, str] = {}
+    for ep in episodes:
+        ep_dir_name = f"{ep.trigger}_{ep.id}"
+        if (debug_root / ep_dir_name).is_dir():
+            debug_urls[ep.id] = f"/debug-episodes/{ep_dir_name}/index.html"
     return templates.TemplateResponse(
         request,
         "episodes.html",
@@ -3453,6 +3481,7 @@ async def episodes_tab(
             "episodes": episodes,
             "filter_trigger": trigger,
             "filter_outcome": outcome,
+            "debug_urls": debug_urls,
         },
     )
 
