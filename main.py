@@ -1075,13 +1075,13 @@ def main() -> None:
         "--episode-id",
         metavar="UUID",
         default=None,
-        help="episode UUID to replay (replay-episode mode)",
+        help="episode UUID to replay; find IDs in ~/Library/Application Support/Pueo/data/debug_episodes/ or the dashboard Episodes tab",
     )
     parser.add_argument(
         "--fresh",
         action="store_true",
         default=False,
-        help="replay-episode: re-run with live LLM/tools instead of deterministic mock",
+        help="replay-episode: re-run with live LLM/tools and store a new episode instead of using the deterministic mock",
     )
     args = parser.parse_args()
 

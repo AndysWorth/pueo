@@ -119,9 +119,17 @@ pueo --mode install-service     # install as macOS launchd service
 pueo --mode stop-service        # stop the launchd service (stays stopped until start-service)
 pueo --mode start-service       # re-enable and start the launchd service
 pueo --mode restart-service     # bounce the service; launchd KeepAlive restarts it immediately
+
+# Development and debugging
+pueo --mode replay-episode --episode-id <UUID>          # replay a recorded agent loop episode deterministically
+pueo --mode replay-episode --episode-id <UUID> --fresh  # re-run with live LLM/tools (stores a new episode)
+pueo --mode export-episodes                             # export all repair episodes as anonymized YAML
+pueo --mode export-episodes --since 2026-09-01          # export episodes on or after a date
 ```
 
 > **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`, `audit`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts.
+>
+> **`replay-episode` and `export-episodes`** are developer/debugging tools, not operational one-shots — they don't generate dashboard cards. `replay-episode` requires `--episode-id`; see the **Episode Replay** section below.
 
 ---
 
@@ -179,6 +187,30 @@ pueo --mode rag-refresh
 
 Embedded data is stored in `~/Library/Application Support/Pueo/chromadb/`. The embeddings use
 `nomic-embed-text` running locally via Ollama — zero WAN traffic after the initial scrape.
+
+---
+
+## 🔁 Episode Replay
+
+Every production agent session (repair, notification triage, update analysis, Lovelace investigation) automatically records a debug episode — a snapshot of every LLM response and tool result in the session — in `~/Library/Application Support/Pueo/data/debug_episodes/`. Episodes are retained for 30 days (configurable via `debug_episode_retention_days` in `config.yaml`).
+
+**Why replay matters:** when you upgrade to a new Ollama model, change a prompt, or refactor the agent loop, you can verify that Pueo would produce the same outcome on previously seen incidents rather than discovering regressions in production.
+
+**Finding an episode ID:** browse `~/Library/Application Support/Pueo/data/debug_episodes/`, check the dashboard Episodes tab (in dev mode), or query the `repair_episodes` SQLite table.
+
+**Deterministic replay** — replays stored LLM responses and tool results exactly, then reports whether the outcome matches:
+
+```bash
+pueo --mode replay-episode --episode-id <UUID>
+```
+
+Output: `✓ PASS` / `✗ FAIL` with the divergence point (LLM call # or tool call # where behaviour changed).
+
+**Fresh replay** — re-runs the episode from scratch using live LLM inference and real HA tools, starting from the same `initial_context`. Useful for checking whether a new model handles an old incident correctly:
+
+```bash
+pueo --mode replay-episode --episode-id <UUID> --fresh
+```
 
 ---
 
