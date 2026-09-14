@@ -3425,6 +3425,7 @@ async def _run_chat_loop(
                     _session_meta,
                     result.llm_captures,
                     _conv,
+                    result.tool_call_records or None,
                 )
                 debug_log_path = str(episode_dir)
 

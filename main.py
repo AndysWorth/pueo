@@ -1060,6 +1060,7 @@ def main() -> None:
             "restart-service",
             "audit",
             "export-episodes",
+            "replay-episode",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -1069,6 +1070,18 @@ def main() -> None:
         metavar="DATE",
         default=None,
         help="ISO date (YYYY-MM-DD) — export episodes on or after this date (export-episodes mode)",
+    )
+    parser.add_argument(
+        "--episode-id",
+        metavar="UUID",
+        default=None,
+        help="episode UUID to replay (replay-episode mode)",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        default=False,
+        help="replay-episode: re-run with live LLM/tools instead of deterministic mock",
     )
     args = parser.parse_args()
 
@@ -1238,6 +1251,141 @@ def main() -> None:
             sys.stderr.write("No repair episodes found.\n")
             sys.exit(0)
         print(export_episodes_yaml(episodes), end="")
+    elif args.mode == "replay-episode":
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(_run_replay(args))
+
+
+async def _run_replay(args: Any) -> None:
+    """Deterministic or fresh replay of a recorded agent loop episode."""
+    import sqlite3
+
+    from paths import get_dirs
+    from utils.replay.episode_replayer import EpisodeReplayer
+
+    episode_id = args.episode_id
+    if not episode_id:
+        import sys
+
+        sys.stderr.write("✘  --episode-id is required for replay-episode mode\n")
+        sys.exit(1)
+
+    from agents import ha_agent_advanced
+
+    data_dir = get_dirs().data_dir
+    replayer = EpisodeReplayer()
+
+    # Resolve episode directory (search by ID when trigger is unknown).
+    episode_dir = replayer.find_episode_dir_by_id(data_dir, episode_id)
+    if episode_dir is None:
+        # Fall back to querying DB for debug_log_path.
+        try:
+            with sqlite3.connect(ha_agent_advanced.DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT debug_log_path FROM repair_episodes WHERE id = ?",
+                    (episode_id,),
+                ).fetchone()
+            if row and row[0]:
+                import os
+
+                episode_dir = Path(os.path.dirname(row[0]))
+        except Exception:  # nosec B110
+            pass
+
+    if episode_dir is None or not episode_dir.exists():
+        import sys
+
+        sys.stderr.write(
+            f"✘  No debug episode directory found for episode {episode_id}\n"
+            "   Make sure the episode was captured with capture_llm=True "
+            "and episode_data.json exists.\n"
+        )
+        sys.exit(1)
+
+    if args.fresh:
+        await _run_fresh_replay(episode_dir, replayer)
+        return
+
+    try:
+        data = replayer.load_episode_data(episode_dir)
+    except FileNotFoundError as exc:
+        import sys
+
+        sys.stderr.write(f"✘  {exc}\n")
+        sys.exit(1)
+
+    print(
+        f"Replaying episode {episode_id} (trigger: {data.get('trigger')}, "
+        f"model: {data.get('model')}) ..."
+    )
+    result = await replayer.run_deterministic(data)
+    _print_replay_result(result)
+
+
+async def _run_fresh_replay(episode_dir: Any, replayer: Any) -> None:
+    """Re-run with live LLM/tools using stored initial_context."""
+    import sys
+
+    try:
+        data = replayer.load_episode_data(episode_dir)
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"✘  {exc}\n")
+        sys.exit(1)
+
+    initial_context = data.get("initial_context", "")
+    if not initial_context:
+        sys.stderr.write(
+            "✘  No initial_context in episode data — cannot fresh-replay\n"
+        )
+        sys.exit(1)
+
+    import config as _cfg
+
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.hitl.autonomy import AutonomyGate
+    from utils.hitl.notify import FakeNotifier
+    from utils.llm.llm_factory import make_llm_client
+    from utils.replay.episode_replayer import _registry_for_trigger
+    from utils.ssh.async_ssh_client import AsyncSSHClient
+
+    trigger = data.get("trigger", "manual")
+    registry = _registry_for_trigger(trigger)
+    llm_client = make_llm_client()
+    executor = ToolExecutor(
+        ha_ssh_client=AsyncSSHClient(_cfg.HA_HOST, _cfg.HA_USER, _cfg.SSH_KEY_PATH),
+        gate=AutonomyGate(_cfg.AUTONOMY_LEVEL),
+        notifier=FakeNotifier(),
+        db_path=_cfg.DB_PATH,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm_client,
+        tool_executor=executor,
+        tool_registry=registry,
+        trigger=trigger,
+        capture_llm=True,
+    )
+    result = await loop.run(initial_context)
+    print(f"Fresh rerun outcome: {result.outcome} ({len(result.steps)} tool calls)")
+    if result.debug_log_path:
+        print(f"Debug episode: {result.debug_log_path}")
+
+
+def _print_replay_result(result: Any) -> None:
+    status = "✓ PASS" if result.matched else "✗ FAIL"
+    print(f"\n{status}")
+    print(f"  Original outcome : {result.original_outcome}")
+    print(f"  Replay outcome   : {result.replay_outcome}")
+    if not result.matched:
+        if result.diverged_at_llm_call is not None:
+            print(f"  Diverged at LLM call #{result.diverged_at_llm_call}")
+        if result.diverged_at_tool_call is not None:
+            print(f"  Diverged at tool call #{result.diverged_at_tool_call}")
+        if result.error:
+            print(f"  Error: {result.error}")
 
 
 if __name__ == "__main__":

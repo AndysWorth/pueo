@@ -31,6 +31,7 @@ from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
 from utils.agent.tool_result_guardrail import ToolResultGuardrail
+from utils.debug.capture import ToolCallRecord
 
 _UNSET = object()  # sentinel for provider-aware model default
 
@@ -181,6 +182,7 @@ class AgentLoop:
         self._on_llm_call_done = on_llm_call_done
         self._capture_llm = capture_llm
         self._llm_captures: list = []
+        self._tool_call_records: list[ToolCallRecord] = []
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
         self._episode_id: str = ""  # set at start of run()
@@ -482,6 +484,7 @@ class AgentLoop:
         """
         self._executor.reset()
         self._llm_captures = []
+        self._tool_call_records = []
         self._episode_id = str(uuid.uuid4())
         self._raw_initial_context = initial_context
 
@@ -615,6 +618,7 @@ class AgentLoop:
                     "provider": "local",
                     "timestamp": _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "trigger": self._trigger,
+                    "initial_context": self._raw_initial_context,
                 }
                 _conv = [m for m in messages if m.get("role") in ("user", "assistant")]
                 await asyncio.to_thread(
@@ -623,6 +627,7 @@ class AgentLoop:
                     _session_meta,
                     self._llm_captures,
                     _conv,
+                    list(self._tool_call_records),
                 )
                 debug_log_path = str(_ep_dir / "index.html")
                 log.info("episode_html_written", path=debug_log_path)
@@ -639,6 +644,7 @@ class AgentLoop:
             capability_gap=bool((episode_stub or {}).get("capability_gap", False)),
             gap_description=(episode_stub or {}).get("gap_description", ""),
             llm_captures=list(self._llm_captures),
+            tool_call_records=list(self._tool_call_records),
             debug_log_path=debug_log_path,
         )
 
@@ -967,6 +973,22 @@ class AgentLoop:
                 if self._pre_step_callback is not None:
                     await self._pre_step_callback(tool_call)
                 tool_result: ToolResult = await self._executor.execute(tool_call)
+                _tc_duration_ms = round((time.time() - ts) * 1000, 1)
+                if self._capture_llm:
+                    self._tool_call_records.append(
+                        ToolCallRecord(
+                            seq=tool_call_count,
+                            name=tool_call.name,
+                            args=dict(tool_call.arguments),
+                            output=tool_result.output if tool_result.success else "",
+                            error=(
+                                tool_result.error if not tool_result.success else None
+                            ),
+                            success=tool_result.success,
+                            discard_previous=tool_result.discard_previous,
+                            duration_ms=_tc_duration_ms,
+                        )
+                    )
                 tool_call_count += 1
 
                 step = AgentStep(

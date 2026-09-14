@@ -8,6 +8,20 @@ from typing import Any
 
 
 @dataclass
+class ToolCallRecord:
+    """Records one tool invocation for deterministic episode replay."""
+
+    seq: int
+    name: str
+    args: dict[str, Any]
+    output: str  # raw tool output before guardrail processing
+    error: str | None  # error message when success=False
+    success: bool
+    discard_previous: bool
+    duration_ms: float
+
+
+@dataclass
 class LLMCallRecord:
     seq: int
     request_messages: list[dict[str, Any]]
