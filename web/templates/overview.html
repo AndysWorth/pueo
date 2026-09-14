@@ -100,6 +100,16 @@
       <span class="stat-label">LLM location</span>
       <span class="stat-value">{{ llm_location_label }}</span>
     </div>
+    <div class="stat-row">
+      <span class="stat-label">Knowledge base</span>
+      {% if kb_health and kb_health.status == "ok" %}
+      <span class="stat-value">{{ kb_health.doc_count }} runbook{% if kb_health.doc_count != 1 %}s{% endif %}</span>
+      {% elif kb_health and kb_health.status == "empty" %}
+      <span class="stat-value" style="color:var(--warn-color,#b45309);">empty — run rag-refresh</span>
+      {% else %}
+      <span class="stat-value" style="color:var(--err-color,#dc3545);">offline — run rag-refresh</span>
+      {% endif %}
+    </div>
   </div>
 
   <!-- Pending Actions -->

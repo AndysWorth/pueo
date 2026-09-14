@@ -96,12 +96,19 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
 ]
 
 
-def seed_strategies(store: "KnowledgeStoreClientProtocol") -> int:
+def seed_strategies(
+    store: "KnowledgeStoreClientProtocol",
+    db_path: str = "",
+) -> int:
     """Embed seed runbook documents into the 'strategies' collection.
 
     Uses the prompt file name as the document ID so repeated calls are
-    idempotent (upsert semantics). Returns the number of documents upserted.
+    idempotent (upsert semantics). Also writes seed entries to the
+    agent_strategies SQLite table (INSERT OR IGNORE) so they appear in
+    the dashboard Runbook Review tab. Returns the number of documents upserted.
     """
+    import sqlite3
+
     prompts_dir = Path(__file__).parent.parent.parent / "prompts"
     n = 0
     for filename, title, trigger_pattern in _SEED_PROMPTS:
@@ -128,4 +135,16 @@ def seed_strategies(store: "KnowledgeStoreClientProtocol") -> int:
             n += 1
         except Exception:  # nosec B110
             pass
+        if db_path:
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO agent_strategies"
+                        " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                        " VALUES (?, ?, ?, ?, 'seed', datetime('now'))",
+                        (doc_id, title, trigger_pattern, content),
+                    )
+                    conn.commit()
+            except Exception:  # nosec B110
+                pass
     return n

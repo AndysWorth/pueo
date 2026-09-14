@@ -38,6 +38,51 @@ def _write_pid_file() -> None:
         pass
 
 
+def _reembed_orphaned_runbooks(
+    store: "KnowledgeStoreClientProtocol", db_path: str, log: "Any"
+) -> int:
+    """Upsert agent_strategies rows that were never embedded in ChromaDB.
+
+    Runs at every RAG refresh so runbooks saved while the store was offline
+    become retrievable in subsequent sessions. Uses upsert semantics so it
+    is safe to run repeatedly — only updates entries already in ChromaDB,
+    does not duplicate them.
+    """
+    import sqlite3
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, title, trigger_pattern, approach, runbook_state"
+                " FROM agent_strategies"
+            ).fetchall()
+    except Exception as exc:
+        log.warning("reembed_runbooks_db_read_failed", error=str(exc))
+        return 0
+
+    n = 0
+    for row_id, title, trigger_pattern, approach, runbook_state in rows:
+        text = (
+            f"# {title}\n\n"
+            f"Trigger: {trigger_pattern or ''}\n\n"
+            f"Type: {runbook_state or 'candidate'}\n\n"
+            f"{approach or ''}"
+        )
+        meta = {
+            "source": "agent_learned",
+            "title": title or "",
+            "trigger_pattern": trigger_pattern or "",
+            "strategy_id": row_id,
+            "runbook_type": runbook_state or "candidate",
+        }
+        try:
+            store.upsert("strategies", [row_id], [text], [meta])
+            n += 1
+        except Exception as exc:
+            log.warning("reembed_runbook_failed", strategy_id=row_id, error=str(exc))
+    return n
+
+
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
     from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
@@ -182,10 +227,17 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     from utils.knowledge.strategy_seeder import seed_strategies
 
     _log.info("rag_refresh_step", step="seed_strategies")
-    n_strategies = seed_strategies(store)
+    n_strategies = seed_strategies(store, db_path=config.DB_PATH)
     _log.info("rag_refresh_step_done", step="seed_strategies", seeded=n_strategies)
 
-    total = n_ha + n_hacs + n_docs + n_concepts + n_strategies
+    # ── 6. Re-embed orphaned SQLite runbooks ─────────────────────────────────
+    _log.info("rag_refresh_step", step="reembed_orphaned_runbooks")
+    n_reembedded = _reembed_orphaned_runbooks(store, config.DB_PATH, _log)
+    _log.info(
+        "rag_refresh_step_done", step="reembed_orphaned_runbooks", embedded=n_reembedded
+    )
+
+    total = n_ha + n_hacs + n_docs + n_concepts + n_strategies + n_reembedded
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
     )
@@ -597,7 +649,13 @@ async def supervisor_main(config_path: Path) -> None:
         )
         _ks_log.info("knowledge_store_ready", path=str(chroma_path))
     except Exception as exc:  # pragma: no cover
-        _get_logger("main").warning("knowledge_store_init_failed", error=str(exc))
+        import traceback as _tb
+
+        _get_logger("main").error(
+            "knowledge_store_init_failed",
+            error=str(exc),
+            traceback=_tb.format_exc(),
+        )
 
     # Wire NAX clients at construction time so chat tools (INVESTIGATE_DEVICE,
     # RESTART_NETALERTX, etc.) receive the same clients as the automated pipeline.

@@ -1318,11 +1318,11 @@ class TestLLMProviderStartupGuards:
 
 
 class TestFederatedCasesRepoConfig:
-    def test_pueo_kb_repo_default_empty(self, isolated_config):
+    def test_pueo_kb_repo_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.PUEO_KB_REPO == ""
+        assert config.PUEO_KB_REPO == "AndysWorth/pueo-kb"
 
     def test_pueo_kb_repo_from_yaml(self, isolated_config):
         isolated_config.write_text(
