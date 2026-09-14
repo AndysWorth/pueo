@@ -57,6 +57,7 @@ class AgentLoopResult(BaseModel):
     capability_gap: bool = False
     gap_description: str = ""
     llm_captures: list[Any] = []  # list[LLMCallRecord] when capture_llm=True
+    tool_call_records: list[Any] = []  # list[ToolCallRecord] when capture_llm=True
     debug_log_path: str | None = None  # path to HTML episode file when capture_llm=True
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import html
 import json
 import shutil
@@ -9,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from utils.debug.capture import LLMCallRecord
+from utils.debug.capture import LLMCallRecord, ToolCallRecord
 
 _INLINE_THRESHOLD = 2048  # bytes: content below this is inlined in <details>
 
@@ -238,15 +239,57 @@ def write_episode_html(
     session_meta: dict[str, Any],
     captures: list[LLMCallRecord],
     conversation: list[dict[str, Any]],
+    tool_call_records: list[ToolCallRecord] | None = None,
 ) -> None:
     """Write an HTML debug episode bundle to *episode_dir*.
 
     Generates index.html plus per-call request/response files (only when
-    content exceeds the inline threshold).
+    content exceeds the inline threshold).  When tool_call_records is provided,
+    also writes episode_data.json for deterministic replay.
     """
     episode_dir.mkdir(parents=True, exist_ok=True)
     index_html = _build_index(session_meta, captures, conversation, episode_dir)
     (episode_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+    if tool_call_records is not None:
+        _write_episode_data_json(episode_dir, session_meta, captures, tool_call_records)
+
+
+def _write_episode_data_json(
+    episode_dir: Path,
+    session_meta: dict[str, Any],
+    captures: list[LLMCallRecord],
+    tool_call_records: list[ToolCallRecord],
+) -> None:
+    """Write machine-readable episode_data.json for replay support."""
+
+    def _llm_call_to_dict(rec: LLMCallRecord) -> dict[str, Any]:
+        return {
+            "seq": rec.seq,
+            "request_messages": rec.request_messages,
+            "request_tools": rec.request_tools,
+            "response_content": rec.response_content,
+            "response_tool_calls": rec.response_tool_calls,
+            "thinking": rec.thinking,
+            "nudges_injected": rec.nudges_injected,
+            "duration_ms": rec.duration_ms,
+            "outcome_path": rec.outcome_path,
+        }
+
+    episode_data = {
+        "episode_id": session_meta.get("session_id", ""),
+        "trigger": session_meta.get("trigger", ""),
+        "model": session_meta.get("model", ""),
+        "outcome": session_meta.get("outcome", ""),
+        "timestamp": session_meta.get("timestamp", ""),
+        "initial_context": session_meta.get("initial_context", ""),
+        "llm_calls": [_llm_call_to_dict(r) for r in captures],
+        "tool_calls": [dataclasses.asdict(r) for r in tool_call_records],
+    }
+    (episode_dir / "episode_data.json").write_text(
+        json.dumps(episode_data, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
 
 
 def rotate_old_episodes(base_dir: Path, retention_days: int) -> int:
