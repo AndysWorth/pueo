@@ -885,7 +885,9 @@ async def supervisor_main(config_path: Path) -> None:
     if cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
         supervisor.start(
             "notification_poll",
-            lambda: poll_for_notifications(notifier=notifier),
+            lambda: poll_for_notifications(
+                notifier=notifier, knowledge_store=knowledge_store
+            ),
             interval_seconds=cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60,
         )
 
@@ -893,7 +895,9 @@ async def supervisor_main(config_path: Path) -> None:
     if cfg.HA_REPAIR_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
         supervisor.start(
             "repair_poll",
-            lambda: poll_for_repairs(notifier=notifier),
+            lambda: poll_for_repairs(
+                notifier=notifier, knowledge_store=knowledge_store
+            ),
             interval_seconds=cfg.HA_REPAIR_POLL_INTERVAL_MINUTES * 60,
         )
 
@@ -903,7 +907,9 @@ async def supervisor_main(config_path: Path) -> None:
 
         supervisor.start(
             "lovelace_poll",
-            lambda: poll_for_dashboard_entity_issues(notifier=notifier),
+            lambda: poll_for_dashboard_entity_issues(
+                notifier=notifier, knowledge_store=knowledge_store
+            ),
             interval_seconds=cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES * 60,
         )
 

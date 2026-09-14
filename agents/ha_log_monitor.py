@@ -1022,6 +1022,7 @@ async def poll_for_notifications(
     ha_ws_client: Optional[HAWebSocketClientProtocol] = None,
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     db_path: str = DB_PATH,
+    knowledge_store: Optional[Any] = None,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires approval alerts."""
     from .ha_notification_manager import (
@@ -1122,6 +1123,7 @@ async def poll_for_notifications(
                         llm_client=_llm_ref,
                         netalertx_client=_nax_ref,
                         ws_client=_ws_ref,
+                        knowledge_store=knowledge_store,
                     )
 
                 from utils.agent.work_queue import (
@@ -1166,6 +1168,7 @@ async def poll_for_repairs(
     notifier: Optional[NotifierProtocol] = None,
     db_path: str = DB_PATH,
     llm_client: Optional[LLMClientProtocol] = None,
+    knowledge_store: Optional[Any] = None,
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from .ha_agent_advanced import (
@@ -1246,6 +1249,7 @@ async def poll_for_repairs(
                         notifier=_notifier_ref,
                         db_path=_db_ref,
                         llm_client=_llm_ref,
+                        knowledge_store=knowledge_store,
                     )
 
                 from utils.agent.work_queue import (
