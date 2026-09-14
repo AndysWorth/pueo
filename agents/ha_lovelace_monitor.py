@@ -134,6 +134,7 @@ async def poll_for_dashboard_entity_issues(
     db_path: Optional[str] = None,
     interval_minutes: Optional[int] = None,
     llm_client: Optional[LLMClientProtocol] = None,
+    knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
 ) -> None:
     """Polling loop — checks all Lovelace dashboards for missing or unregistered entity references."""
     import config as _cfg
@@ -294,6 +295,7 @@ async def poll_for_dashboard_entity_issues(
                             db_path=_db_ref,
                             notifier=_notifier_ref,
                             llm_client=_llm_ref,
+                            knowledge_store=knowledge_store,
                         ),
                     )
                 )
@@ -304,6 +306,7 @@ async def poll_for_dashboard_entity_issues(
                     db_path=_db_ref,
                     notifier=_notifier_ref,
                     llm_client=_llm_ref,
+                    knowledge_store=knowledge_store,
                 )
 
         # Reconcile missing-entity cards.
