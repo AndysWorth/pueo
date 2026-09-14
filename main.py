@@ -1170,8 +1170,10 @@ def main() -> None:
         asyncio.run(ha_notification_manager.run_notifications())
     elif args.mode == "rag-refresh":  # pragma: no cover
         import config
+        from agents import ha_agent_advanced
         from utils.knowledge.knowledge_store import ChromaKnowledgeStore
 
+        ha_agent_advanced.init_local_database()
         store = ChromaKnowledgeStore(
             config.CHROMADB_PATH, config.RAG_EMBED_MODEL, config.OLLAMA_ENDPOINT
         )
