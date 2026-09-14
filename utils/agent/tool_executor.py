@@ -2864,6 +2864,18 @@ class ToolExecutor:
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
         if not create_hitl_card:
+            if self._pending_update_status is not None:
+                from agents.ha_log_monitor import _update_mark_card_sent
+                from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+                _u = self._pending_update_status
+                analyzed_key = f"update_analyzed:{_u.entity_id}:{_u.latest_version}"
+                await asyncio.to_thread(
+                    _update_mark_card_sent,
+                    analyzed_key,
+                    CARD_TYPE_UPDATE,
+                    f"Analysis: {_u.component} {_u.latest_version} — no card needed",
+                )
             return ToolResult(
                 tool_name="finish_update_analysis",
                 success=True,

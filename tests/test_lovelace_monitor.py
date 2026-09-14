@@ -1372,3 +1372,109 @@ class TestBenignSuppression:
                 " WHERE card_key = 'lovelace_benign:sensor.high_tide'"
             ).fetchone()
         assert row is not None and row[0] is not None, "benign record must be cleared"
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateAnalyzedSuppression
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateAnalyzedSuppression:
+    """Tests for the no-card-needed suppression path in _finish_update_analysis."""
+
+    def test_no_card_writes_analyzed_suppression(self, tmp_path):
+        """_finish_update_analysis(create_hitl_card=False) writes update_analyzed row."""
+        from utils.ha.ha_rest_client import UpdateStatus
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        executor = _make_minimal_executor(db_path)
+
+        update = UpdateStatus(
+            component="core",
+            entity_id="update.home_assistant_core_update",
+            installed_version="2026.9.1",
+            latest_version="2026.9.2",
+            update_available=True,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+        executor.set_update_status(update)
+
+        # _update_mark_card_sent reads DB_PATH from ha_log_monitor._config.
+        with mock.patch("agents.ha_log_monitor._config") as mc:
+            mc.DB_PATH = db_path
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="No breaking changes affect your install.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                )
+            )
+
+        analyzed_key = "update_analyzed:update.home_assistant_core_update:2026.9.2"
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_type, resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (analyzed_key,),
+            ).fetchone()
+        assert row is not None, "analyzed suppression row must exist"
+        assert row[1] is None, "row must be active (not resolved)"
+
+    def test_already_analyzed_returns_true_for_active_row(self, tmp_path):
+        """_update_already_analyzed returns True when an active analyzed row exists."""
+        from agents.ha_log_monitor import _update_already_analyzed
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        analyzed_key = "update_analyzed:update.home_assistant_core_update:2026.9.2"
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(conn, analyzed_key, "update", "Analysis: no card needed")
+
+        with mock.patch("agents.ha_log_monitor._config") as mc:
+            mc.DB_PATH = db_path
+            result = _update_already_analyzed(analyzed_key)
+
+        assert result is True, "must detect active analyzed row"
+
+    def test_already_analyzed_returns_false_when_no_row(self, tmp_path):
+        """_update_already_analyzed returns False when no row exists for the key."""
+        from agents.ha_log_monitor import _update_already_analyzed
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        key = "update_analyzed:update.home_assistant_core_update:2026.9.2"
+
+        with mock.patch("agents.ha_log_monitor._config") as mc:
+            mc.DB_PATH = db_path
+            result = _update_already_analyzed(key)
+
+        assert result is False, "must return False when no row present"
+
+    def test_analyzed_key_is_version_specific(self, tmp_path):
+        """An analyzed row for v2026.9.2 does NOT suppress analysis of v2026.9.3."""
+        from agents.ha_log_monitor import _update_already_analyzed
+        from utils.hitl.hitl_tracker import mark_card_sent
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+
+        # Seed analyzed record for 2026.9.2.
+        old_key = "update_analyzed:update.home_assistant_core_update:2026.9.2"
+        with sqlite3.connect(db_path) as conn:
+            mark_card_sent(conn, old_key, "update", "Analysis: no card needed")
+
+        new_key = "update_analyzed:update.home_assistant_core_update:2026.9.3"
+
+        with mock.patch("agents.ha_log_monitor._config") as mc:
+            mc.DB_PATH = db_path
+            result = _update_already_analyzed(new_key)
+
+        assert result is False, "new version must not be suppressed by old analyzed row"

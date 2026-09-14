@@ -155,6 +155,16 @@ def _update_mark_card_sent(
         mark_card_sent(_conn, suppression_key, card_type, description)
 
 
+def _update_already_analyzed(analyzed_key: str) -> bool:
+    """Return True if this specific version was already analyzed with no card needed."""
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        row = _conn.execute(
+            "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (analyzed_key,),
+        ).fetchone()
+    return row is not None and row[0] is None
+
+
 def _update_check_pending(suppression_key: str) -> bool:
     """Return True if an update card for suppression_key is currently pending."""
     with sqlite3.connect(_config.DB_PATH) as _conn:
@@ -170,8 +180,14 @@ def _update_resolve_card(suppression_key: str) -> None:
     """Mark an update card as resolved in hitl_suppression."""
     from utils.hitl.hitl_tracker import mark_card_resolved
 
+    entity_id = suppression_key.removeprefix("update:")
     with sqlite3.connect(_config.DB_PATH) as _conn:
         mark_card_resolved(_conn, suppression_key)
+        _conn.execute(
+            "UPDATE hitl_suppression SET resolved_at = ?"
+            " WHERE card_key LIKE ? AND resolved_at IS NULL",
+            (time.time(), f"update_analyzed:{entity_id}:%"),
+        )
 
 
 def _update_sweep_absent_pending(seen_keys: set) -> list:
@@ -818,8 +834,14 @@ def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> 
     except Exception:  # nosec B110
         pass
 
+    entity_id = suppression_key.removeprefix("update:")
     with sqlite3.connect(DB_PATH) as _conn:
         mark_card_resolved(_conn, suppression_key)
+        _conn.execute(
+            "UPDATE hitl_suppression SET resolved_at = ?"
+            " WHERE card_key LIKE ? AND resolved_at IS NULL",
+            (time.time(), f"update_analyzed:{entity_id}:%"),
+        )
 
     try:
         from utils.core.timeline import write_timeline_event
@@ -900,6 +922,10 @@ async def poll_for_updates(
                     _update_check_should_send, suppression_key
                 )
                 if not _should_send:
+                    continue
+                # Skip if already analyzed for this specific version with no card needed.
+                analyzed_key = f"update_analyzed:{u.entity_id}:{u.latest_version}"
+                if await asyncio.to_thread(_update_already_analyzed, analyzed_key):
                     continue
                 log.info(
                     "update_available",
