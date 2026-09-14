@@ -428,6 +428,31 @@ def _load_last_backup() -> dict:
     return {"slug": slug, "age": age, "location": location}
 
 
+def _get_kb_health(sv: Any) -> dict:
+    """Return knowledge base health info for the overview dashboard.
+
+    Returns a dict with:
+      - status: "offline" | "empty" | "ok"
+      - doc_count: int  (strategies collection count, -1 if unknown)
+      - store_available: bool
+    """
+    store = None
+    if (
+        sv is not None
+        and hasattr(sv, "_tool_executor")
+        and sv._tool_executor is not None
+    ):
+        store = getattr(sv._tool_executor, "_knowledge_store", None)
+    if store is None:
+        return {"status": "offline", "doc_count": -1, "store_available": False}
+    try:
+        count = store.collection_count("strategies")
+        status = "empty" if count == 0 else "ok"
+        return {"status": status, "doc_count": count, "store_available": True}
+    except Exception:
+        return {"status": "offline", "doc_count": -1, "store_available": False}
+
+
 def _hitl_write(fn: Any, *args: Any) -> None:
     """Run a hitl_tracker write function with a fresh SQLite connection (sync; use to_thread)."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -463,6 +488,7 @@ async def overview(request: Request) -> HTMLResponse:
         asyncio.to_thread(_load_last_backup),
         asyncio.to_thread(load_timeline_events, 10),
     )
+    kb_health = await asyncio.to_thread(_get_kb_health, sv)
     return templates.TemplateResponse(
         request,
         "overview.html",
@@ -474,6 +500,7 @@ async def overview(request: Request) -> HTMLResponse:
             "last_backup": last_backup,
             "recent_events": recent_events,
             "llm_location_label": llm_location_label,
+            "kb_health": kb_health,
         },
     )
 

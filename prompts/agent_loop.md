@@ -50,10 +50,12 @@ Phase 5 — ACT: Apply the fix, answer the question, or recommend an action.
   attempt the repair — do not return advice-only unless the fix requires human action
   that no tool can perform.
 
-KB CONTRIBUTION: If you used a novel approach not in your Phase 1 results, call
-  save_runbook(type="candidate") describing the approach and outcome before calling
-  {terminal_tool}. If query_knowledge returned nothing useful, also flag the gap with
-  save_runbook(type="gap") so future sessions and developers can see the coverage hole.
+KB CONTRIBUTION: A query_knowledge error or empty result is always a gap — save a gap
+  runbook before calling {terminal_tool} regardless of whether the session was successful.
+  If you used a novel approach not in your Phase 1 results, also call
+  save_runbook(type="candidate") describing the approach and outcome. This applies even
+  when query_knowledge errored — if you followed a diagnostic sequence not returned by
+  Phase 1, save it as a candidate so the KB grows from what actually works.
   Save runbooks at the most general level that still captures the diagnostic approach.
   Use the specific integration, entity, or error message as an *example*, not as the scope.
   A runbook titled "Diagnosing transient cloud integration connectivity errors" is reusable

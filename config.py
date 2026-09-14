@@ -167,7 +167,7 @@ AGENT_MAX_WALL_SECONDS: float = AGENT_PER_CALL_MIN_TIMEOUT_SECONDS
 HA_PROFILE_REFRESH_HOURS: int = int(_agent.get("ha_profile_refresh_hours", 24))
 
 # Federated Knowledge Base — manifest-driven runbook/case sharing
-PUEO_KB_REPO: str = _agent.get("pueo_kb_repo", "")
+PUEO_KB_REPO: str = _agent.get("pueo_kb_repo", "AndysWorth/pueo-kb")
 KB_SYNC_INTERVAL_HOURS: int = int(_agent.get("kb_sync_interval_hours", 168))
 KB_SYNC_CACHE_DIR: str = _agent.get(
     "kb_sync_cache_dir", str(_dirs.cache_dir / "kb_sync")

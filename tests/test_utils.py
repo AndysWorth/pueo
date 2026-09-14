@@ -5940,6 +5940,179 @@ class TestStrategySeeder:
 
         assert "strategies" in COLLECTIONS
 
+    def test_seed_writes_to_sqlite(self, tmp_path, monkeypatch):
+        """seed_strategies with db_path writes INSERT OR IGNORE rows to agent_strategies."""
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        store = FakeKnowledgeStore()
+        n = seed_strategies(store, db_path=db)
+        assert n > 0
+
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT id, runbook_state FROM agent_strategies"
+            ).fetchall()
+        assert len(rows) == n
+        assert all(state == "seed" for _, state in rows)
+
+    def test_seed_sqlite_idempotent(self, tmp_path, monkeypatch):
+        """Calling seed_strategies twice with db_path does not duplicate rows."""
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        store = FakeKnowledgeStore()
+        n1 = seed_strategies(store, db_path=db)
+        n2 = seed_strategies(store, db_path=db)
+        assert n1 == n2
+
+        with sqlite3.connect(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == n1
+
+    def test_seed_no_db_path_skips_sqlite(self):
+        """seed_strategies without db_path does not attempt SQLite writes."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        store = FakeKnowledgeStore()
+        n = seed_strategies(store)
+        assert n > 0
+
+
+class TestReembedOrphanedRunbooks:
+    def _make_db(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        return db
+
+    def test_reembeds_sqlite_runbooks_into_chroma(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = self._make_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+                " runbook_state, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (
+                    "abc123",
+                    "Test runbook",
+                    "test trigger",
+                    "test approach",
+                    "candidate",
+                ),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        from utils.core.logging import get_logger
+
+        from main import _reembed_orphaned_runbooks
+
+        log = get_logger("test")
+        n = _reembed_orphaned_runbooks(store, db, log)
+        assert n == 1
+        chunks = store.query("test trigger", top_k=5, collections=["strategies"])
+        assert any("Test runbook" in c.text for c in chunks)
+
+    def test_empty_db_returns_zero(self, tmp_path, monkeypatch):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = self._make_db(tmp_path, monkeypatch)
+        store = FakeKnowledgeStore()
+        from utils.core.logging import get_logger
+
+        from main import _reembed_orphaned_runbooks
+
+        log = get_logger("test")
+        n = _reembed_orphaned_runbooks(store, db, log)
+        assert n == 0
+
+    def test_bad_db_path_returns_zero(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        from utils.core.logging import get_logger
+
+        from main import _reembed_orphaned_runbooks
+
+        log = get_logger("test")
+        n = _reembed_orphaned_runbooks(store, "/nonexistent/path/db.sqlite", log)
+        assert n == 0
+
+
+class TestGetKbHealth:
+    def test_offline_when_no_supervisor(self):
+        from web.dashboard import _get_kb_health
+
+        result = _get_kb_health(None)
+        assert result["status"] == "offline"
+        assert result["store_available"] is False
+
+    def test_offline_when_no_tool_executor(self):
+        from web.dashboard import _get_kb_health
+
+        class FakeSv:
+            _tool_executor = None
+
+        result = _get_kb_health(FakeSv())
+        assert result["status"] == "offline"
+
+    def test_ok_when_store_has_docs(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from web.dashboard import _get_kb_health
+
+        store = FakeKnowledgeStore()
+        store.upsert("strategies", ["s1"], ["text"], [{"source": "test"}])
+
+        class FakeExec:
+            _knowledge_store = store
+
+        class FakeSv:
+            _tool_executor = FakeExec()
+
+        result = _get_kb_health(FakeSv())
+        assert result["status"] == "ok"
+        assert result["doc_count"] == 1
+        assert result["store_available"] is True
+
+    def test_empty_when_store_has_no_docs(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from web.dashboard import _get_kb_health
+
+        store = FakeKnowledgeStore()
+
+        class FakeExec:
+            _knowledge_store = store
+
+        class FakeSv:
+            _tool_executor = FakeExec()
+
+        result = _get_kb_health(FakeSv())
+        assert result["status"] == "empty"
+        assert result["doc_count"] == 0
+
 
 class TestParseConceptDoc:
     def test_strips_frontmatter(self):
