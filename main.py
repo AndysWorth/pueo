@@ -960,6 +960,14 @@ async def supervisor_main(config_path: Path) -> None:
     # Start the serialized work queue (must be called inside the running event loop).
     work_queue.start()
 
+    # Start the MCP server if enabled (separate port, reachable from HA over LAN).
+    _mcp_server_obj = None
+    if cfg.MCP_ENABLED:
+        from utils.mcp.pueo_mcp_server import PueoMCPServer
+
+        _mcp_server_obj = PueoMCPServer(executor=_shared_executor)
+        supervisor.start("mcp_server", _mcp_server_obj.run)
+
     # Register signal handlers for clean shutdown.
     # cancel_all() cancels asyncio tasks; server.should_exit stops uvicorn.
     # call_later forces an exit after 3 s in case SSH streams or Ollama
@@ -973,6 +981,8 @@ async def supervisor_main(config_path: Path) -> None:
         logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
         supervisor.cancel_all()
         server.should_exit = True
+        if _mcp_server_obj is not None:
+            _mcp_server_obj.stop()
         loop.call_later(3.0, sys.exit, 0)
 
     for sig in (signal.SIGTERM, signal.SIGINT):

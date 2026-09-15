@@ -13,3 +13,4 @@ manuf
 pyyaml
 uvicorn
 websockets
+mcp
