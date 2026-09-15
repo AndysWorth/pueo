@@ -671,6 +671,7 @@ async def _run_code_proposal_loop(
     notifier: "NotifierProtocol",
     llm_client: "LLMClientProtocol",
     db_path: str = DB_PATH,
+    knowledge_store: "Optional[KnowledgeStoreClientProtocol]" = None,
 ) -> None:
     """Run a code-proposal loop in response to a capability gap detected by finish_repair.
 
@@ -688,6 +689,7 @@ async def _run_code_proposal_loop(
         notifier=notifier,
         db_path=db_path,
         llm_client=llm_client,
+        knowledge_store=knowledge_store,
     )
     registry = build_code_proposal_registry()
     from utils.agent.supervisor import (
@@ -705,6 +707,7 @@ async def _run_code_proposal_loop(
         trigger="gap_detection",
         activity_type="code_proposal",
         capture_llm=True,
+        knowledge_store=knowledge_store,
         timeline_callback=make_activity_timeline_callback(
             "code_proposal", trigger="Capability gap detected"
         ),
@@ -887,6 +890,7 @@ async def main(
             gate=_gate,
             notifier=_notifier,
             llm_client=_llm,
+            knowledge_store=_knowledge_store,
         )
 
     # When running in "both" mode and the local loop is unable to resolve the
