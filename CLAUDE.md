@@ -229,6 +229,16 @@ Every code change follows this procedure in order. Never commit directly to `mai
 
 `.mcp.json` configures a Home Assistant MCP server for use during development, giving Claude Code direct access to live HA state and entities. Requires `mcp-homeassistant` installed (`uvx mcp-homeassistant`) and `HA_TOKEN` set in the environment. See `.mcp.json` for the full config shape.
 
+## Knowledge Base
+
+`pueo-kb` ([AndysWorth/pueo-kb](https://github.com/AndysWorth/pueo-kb)) is the
+federated runbook library. Pueo pulls from it at every RAG refresh
+(`--mode rag-refresh`) via `utils/knowledge/kb_ingester.py` and contributes
+reviewed runbooks back via `utils/knowledge/kb_contributor.py`.
+
+Configured via `PUEO_KB_REPO` in `config.yaml` (default `"AndysWorth/pueo-kb"`).
+Seed runbooks in `prompts/seed_*.md` are mirrored there under `runbooks/`.
+
 ## Work Tracking
 
 New bugs, enhancements, and feature work are tracked in [GitHub Issues](https://github.com/AndysWorth/pueo/issues). Use labels `bug`, `enhancement`, `security`, `ux`, or `discussion`.

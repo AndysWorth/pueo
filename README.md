@@ -188,6 +188,8 @@ pueo --mode rag-refresh
 Embedded data is stored in `~/Library/Application Support/Pueo/chromadb/`. The embeddings use
 `nomic-embed-text` running locally via Ollama — zero WAN traffic after the initial scrape.
 
+Investigation runbooks are pooled in the community [pueo-kb](https://github.com/AndysWorth/pueo-kb) library and ingested automatically at each RAG refresh.
+
 ---
 
 ## 🔁 Episode Replay
