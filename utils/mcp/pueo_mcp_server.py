@@ -126,10 +126,10 @@ class PueoMCPServer:
 
         mcp_server = Server("pueo-diagnostics")
 
-        @mcp_server.list_tools()
+        @mcp_server.list_tools()  # type: ignore[attr-defined]
         async def list_tools() -> list[types.Tool]:
             return [
-                types.Tool(
+                types.Tool(  # type: ignore[call-arg]
                     name=td.name,
                     description=td.description,
                     inputSchema=td.parameters,
@@ -137,7 +137,7 @@ class PueoMCPServer:
                 for td in tool_defs
             ]
 
-        @mcp_server.call_tool()
+        @mcp_server.call_tool()  # type: ignore[attr-defined]
         async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             text = await self._dispatch(name, arguments)
             return [types.TextContent(type="text", text=text)]
