@@ -55,6 +55,7 @@ def _reembed_orphaned_runbooks(
             rows = conn.execute(
                 "SELECT id, title, trigger_pattern, approach, runbook_state"
                 " FROM agent_strategies"
+                " WHERE runbook_state != 'seed'"
             ).fetchall()
     except Exception as exc:
         log.warning("reembed_runbooks_db_read_failed", error=str(exc))

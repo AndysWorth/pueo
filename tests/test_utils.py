@@ -6061,6 +6061,56 @@ class TestReembedOrphanedRunbooks:
         n = _reembed_orphaned_runbooks(store, "/nonexistent/path/db.sqlite", log)
         assert n == 0
 
+    def test_seed_rows_are_skipped(self, tmp_path, monkeypatch):
+        """Seed runbooks must not be overwritten with source='agent_learned'."""
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = self._make_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            # Insert a seed row and a candidate row
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+                " runbook_state, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (
+                    "seed:example.md",
+                    "Seed runbook",
+                    "seed trigger",
+                    "seed approach",
+                    "seed",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+                " runbook_state, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (
+                    "cand1",
+                    "Candidate runbook",
+                    "cand trigger",
+                    "cand approach",
+                    "candidate",
+                ),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        from utils.core.logging import get_logger
+
+        from main import _reembed_orphaned_runbooks
+
+        log = get_logger("test")
+        n = _reembed_orphaned_runbooks(store, db, log)
+        # Only the candidate row should be re-embedded; seed is skipped
+        assert n == 1
+        chunks = store.query("cand trigger", top_k=5, collections=["strategies"])
+        assert any("Candidate runbook" in c.text for c in chunks)
+        seed_chunks = store.query("seed trigger", top_k=5, collections=["strategies"])
+        # Seed was not re-embedded by _reembed_orphaned_runbooks
+        assert not any(
+            "seed:example.md" in c.metadata.get("strategy_id", "") for c in seed_chunks
+        )
+
 
 class TestGetKbHealth:
     def test_offline_when_no_supervisor(self):

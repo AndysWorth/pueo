@@ -13571,6 +13571,73 @@ class TestCodeProposalPromptFile:
         assert "finish_repair" in text
 
 
+class TestRunCodeProposalLoopKBWiring:
+    """knowledge_store must be threaded into ToolExecutor and AgentLoop."""
+
+    def test_knowledge_store_passed_to_tool_executor_and_agent_loop(
+        self, tmp_path, monkeypatch, pueo_dirs
+    ):
+        import asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeLLMClient
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import AgentLoopResult
+        import utils.agent.tool_executor as _te_mod
+        import utils.agent.agent_loop as _al_mod
+        import utils.agent.supervisor as _sup_mod
+        import utils.agent.tool_registry as _reg_mod
+
+        captured_executor_ks = []
+        captured_loop_ks = []
+
+        original_te = _te_mod.ToolExecutor
+        original_al = _al_mod.AgentLoop
+
+        class CapturingToolExecutor(original_te):
+            def __init__(self, *args, **kwargs):
+                captured_executor_ks.append(kwargs.get("knowledge_store"))
+                super().__init__(*args, **kwargs)
+
+        class CapturingAgentLoop(original_al):
+            def __init__(self, *args, **kwargs):
+                captured_loop_ks.append(kwargs.get("knowledge_store"))
+                # Don't call super().__init__ to avoid real loop setup
+
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="success")
+
+        monkeypatch.setattr(_te_mod, "ToolExecutor", CapturingToolExecutor)
+        monkeypatch.setattr(_al_mod, "AgentLoop", CapturingAgentLoop)
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+
+        from agents.ha_agent_sandbox_engine import _run_code_proposal_loop
+
+        ks = FakeKnowledgeStore()
+        asyncio.run(
+            _run_code_proposal_loop(
+                gap_description="test gap",
+                ssh_client=FakeSSHClient(),
+                gate=FakeAutonomyGate(),
+                notifier=FakeNotifier(),
+                llm_client=FakeLLMClient('{"outcome": "success"}'),
+                knowledge_store=ks,
+            )
+        )
+
+        assert captured_executor_ks == [
+            ks
+        ], "ToolExecutor did not receive knowledge_store"
+        assert captured_loop_ks == [ks], "AgentLoop did not receive knowledge_store"
+
+
 class TestLoadRegisteredToolsPath:
     """_load_registered_tools reads tool files from state_dir/tools/, not user_tools/."""
 
