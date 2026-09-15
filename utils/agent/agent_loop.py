@@ -27,6 +27,7 @@ from config import (
     AGENT_PER_CALL_MIN_TIMEOUT_SECONDS,
     AGENT_PER_CALL_TIMEOUT_FACTOR,
 )
+from utils.llm.model_options import ModelCallOptions, derive_call_options
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
 from utils.agent.tool_registry import AgentLoopResult, AgentStep, ToolCall, ToolResult
@@ -107,6 +108,51 @@ def _parse_content_as_tool_call(
 
 
 _UNSET_PROMPT = object()  # sentinel for auto-loaded, terminal-tool-aware default
+
+
+def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
+    """Derive ModelCallOptions for an agent loop session.
+
+    Called in a thread (via asyncio.to_thread) to avoid blocking the event loop
+    during the subprocess calls in detect_local_hardware() and list_ollama_models().
+    """
+    import config as _cfg
+    from utils.disk.hardware import detect_local_hardware, list_ollama_models
+    from utils.agent.work_queue import get_work_queue_or_none
+
+    hw = detect_local_hardware()
+    models = list_ollama_models()
+    model_info_map = {m.name: m for m in models}
+    info = model_info_map.get(model_name)
+
+    if info is not None:
+        available_ram_gb = max(0.0, hw.ram_gb - info.size_gb)
+        has_thinking = info.has_thinking
+        recommended_temperature = info.recommended_temperature
+        context_length = info.context_length
+    else:
+        available_ram_gb = hw.ram_gb * 0.35  # conservative fallback
+        has_thinking = False
+        recommended_temperature = None
+        context_length = 0
+
+    keep_alive_cfg = _cfg.OLLAMA_KEEP_ALIVE
+    supervisor_mode = get_work_queue_or_none() is not None
+    if keep_alive_cfg != "auto":
+        # Explicit override — translate into supervisor_mode equivalent
+        supervisor_mode = keep_alive_cfg == "-1"
+
+    return derive_call_options(
+        has_thinking=has_thinking,
+        recommended_temperature=recommended_temperature,
+        context_length=context_length,
+        available_ram_gb=available_ram_gb,
+        debug_level=_cfg.DEBUG_LEVEL,
+        think_mode_cfg=_cfg.OLLAMA_THINK_MODE,
+        num_ctx_override=_cfg.OLLAMA_NUM_CTX,
+        supervisor_mode=supervisor_mode,
+        one_shot=False,
+    )
 
 
 class AgentLoop:
@@ -711,6 +757,9 @@ class AgentLoop:
         # Compute timeout once per session; P95 latency doesn't change within a run.
         per_call_secs = await asyncio.to_thread(self._per_call_timeout_seconds)
 
+        # Derive call options once per session from model capabilities + runtime context.
+        _call_opts = await asyncio.to_thread(_derive_loop_call_options, self._model)
+
         while True:
             # Budget check at top of loop so extensions can continue without restart.
             if tool_call_count >= self._max_tool_calls:
@@ -728,12 +777,18 @@ class AgentLoop:
                     self._on_llm_call_start(self._model, self._trigger)
                 except Exception:  # nosec B110
                     pass
+            _call_options: dict = {"temperature": _call_opts.temperature}
+            if _call_opts.num_ctx > 0:
+                _call_options["num_ctx"] = _call_opts.num_ctx
             try:
                 response = await asyncio.wait_for(
                     self._llm.chat_with_tools(
                         model=self._model,
                         messages=messages,
                         tools=tools,
+                        options=_call_options,
+                        think=_call_opts.think,
+                        keep_alive=_call_opts.keep_alive,
                     ),
                     timeout=per_call_secs,
                 )

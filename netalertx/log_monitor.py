@@ -268,13 +268,15 @@ async def analyze_log_line_with_ai(
     except Exception:  # nosec B110
         pass
     try:
+        from utils.llm.model_options import one_shot_options
+
         response = await client.chat(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            options={"temperature": 0.0},
+            options=one_shot_options(model),
             format=LogEvaluation.model_json_schema(),
         )
         raw_output = response["message"]["content"]

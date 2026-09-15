@@ -2700,7 +2700,9 @@ class TestKnowledgeInjectionOrdering:
         from utils.llm.ollama_client import FakeToolCallingLLMClient
 
         class _CapturingLLM(FakeToolCallingLLMClient):
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 captured_messages.append(list(messages))
                 return await super().chat_with_tools(
                     model, messages, tools, options=options

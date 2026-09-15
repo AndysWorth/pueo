@@ -7105,7 +7105,9 @@ class TestPollForNotifications:
             async def chat(self, model, messages, options, format):
                 raise RuntimeError("LLM exploded")
 
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 raise RuntimeError("LLM exploded")
 
         notif = self._make_notification_entity("http_login", "Login", "Bad creds")
@@ -9546,7 +9548,9 @@ class TestAgentLoop:
         snapshots: list[list[dict]] = []
 
         class _CapturingClient:
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 snapshots.append(list(messages))  # snapshot at call time
                 return (
                     responses.pop(0)
@@ -9619,7 +9623,9 @@ class TestAgentLoop:
         snapshots: list[list[dict]] = []
 
         class _CapturingClient:
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 snapshots.append(list(messages))
                 return (
                     responses.pop(0)
@@ -9834,7 +9840,9 @@ class TestAgentLoop:
         snapshots: list[list[dict]] = []
 
         class _CapturingClient:
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 snapshots.append(list(messages))
                 return (
                     responses.pop(0)
@@ -10170,7 +10178,9 @@ class TestAgentLoop:
                 self.review_calls += 1
                 return {"message": {"content": self._review_json}}
 
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 if self._idx >= len(self._seq):
                     return {"role": "assistant", "content": ""}
                 resp = dict(self._seq[self._idx])
@@ -10282,7 +10292,9 @@ class TestAgentLoop:
                 self.review_calls += 1
                 return {"message": {"content": always_extend.model_dump_json()}}
 
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 self.tool_calls += 1
                 return {
                     "role": "assistant",
@@ -10476,7 +10488,9 @@ class TestAgentLoop:
                     }
                 }
 
-            async def chat_with_tools(self, model, messages, tools, options=None):
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
                 return {"role": "assistant", **read_call}
 
         reg = ToolRegistry()

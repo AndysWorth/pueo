@@ -297,6 +297,8 @@ class ClaudeAPIClient:
         messages: list[dict],
         tools: list[dict],
         options: dict | None = None,
+        think: Any = None,  # accepted for interface compat; Anthropic uses its own mechanism
+        keep_alive: str | None = None,  # accepted for interface compat; no-op for cloud
     ) -> dict:
         """Tool-calling chat against the Anthropic Messages API.
 
@@ -367,6 +369,16 @@ class ClaudeAPIClient:
         if tool_calls:
             result["tool_calls"] = tool_calls
 
+        # Extract thinking blocks unconditionally so they are persisted to SQLite
+        # and visible in debug episodes regardless of log level.
+        thinking_blocks = [
+            getattr(b, "thinking", "")
+            for b in response.content
+            if getattr(b, "type", "") == "thinking"
+        ]
+        if thinking_blocks:
+            result["_thinking"] = "\n".join(thinking_blocks)
+
         duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
             "llm_response",
@@ -376,11 +388,6 @@ class ClaudeAPIClient:
             duration_ms=duration_ms,
         )
         if log._logger.isEnabledFor(logging.DEBUG):
-            thinking_blocks = [
-                getattr(b, "thinking", "")
-                for b in response.content
-                if getattr(b, "type", "") == "thinking"
-            ]
             text_blocks = [
                 getattr(b, "text", "")
                 for b in response.content
