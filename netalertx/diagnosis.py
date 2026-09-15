@@ -264,13 +264,15 @@ async def _diagnose_one_shot(
     user_prompt = f"Diagnose the following NetAlertX issues:\n\n{context}"
     _t0_nd = __import__("time").monotonic()
     try:
+        from utils.llm.model_options import one_shot_options
+
         response = await client.chat(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            options={"temperature": 0.0},
+            options=one_shot_options(model),
             format=NetAlertXDiagnostic.model_json_schema(),
         )
         raw_output = response["message"]["content"]

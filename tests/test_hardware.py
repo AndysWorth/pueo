@@ -12,11 +12,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from utils.disk.hardware import (
-    CANDIDATE_MODELS,
     HardwareProfile,
     OllamaModelInfo,
     _check_model_caps,
+    _extract_param_count_b,
     _parse_size_from_parts,
+    _score_model,
     apply_model_selection,
     detect_local_hardware,
     list_ollama_models,
@@ -38,13 +39,20 @@ def _profile(
 
 
 def _model(
-    name: str, size_gb: float, has_tools: bool = True, ctx: int = 32768
+    name: str,
+    size_gb: float,
+    has_tools: bool = True,
+    ctx: int = 32768,
+    has_thinking: bool = False,
+    recommended_temperature: float | None = None,
 ) -> OllamaModelInfo:
     return OllamaModelInfo(
         name=name,
         size_gb=size_gb,
         has_tools=has_tools,
         context_length=ctx,
+        has_thinking=has_thinking,
+        recommended_temperature=recommended_temperature,
         last_seen_at=_now(),
     )
 
@@ -162,7 +170,9 @@ class TestCheckModelCaps:
         with patch(
             "utils.disk.hardware.subprocess.check_output", return_value=show_out
         ):
-            has_tools, ctx = _check_model_caps("qwen2.5-coder:7b")
+            has_tools, ctx, has_thinking, rec_temp = _check_model_caps(
+                "qwen2.5-coder:7b"
+            )
         assert has_tools is True
         assert ctx == 32768
 
@@ -171,7 +181,9 @@ class TestCheckModelCaps:
         with patch(
             "utils.disk.hardware.subprocess.check_output", return_value=show_out
         ):
-            has_tools, ctx = _check_model_caps("some-model:latest")
+            has_tools, ctx, has_thinking, rec_temp = _check_model_caps(
+                "some-model:latest"
+            )
         assert has_tools is False
         assert ctx == 8192
 
@@ -179,9 +191,55 @@ class TestCheckModelCaps:
         with patch(
             "utils.disk.hardware.subprocess.check_output", side_effect=FileNotFoundError
         ):
-            has_tools, ctx = _check_model_caps("missing:model")
+            has_tools, ctx, has_thinking, rec_temp = _check_model_caps("missing:model")
         assert has_tools is False
         assert ctx == 0
+        assert has_thinking is False
+        assert rec_temp is None
+
+    def test_thinking_detected(self):
+        show_out = (
+            "  Capabilities:\n    completion  tools  thinking\n"
+            "  context length: 131072\n"
+            "  Parameters:\n    temperature  0.6\n"
+        )
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
+            has_tools, ctx, has_thinking, rec_temp = _check_model_caps("qwen3:32b")
+        assert has_thinking is True
+        assert rec_temp == pytest.approx(0.6)
+
+    def test_thinking_absent(self):
+        show_out = "  Capabilities:\n    completion  tools\n  context length: 32768\n"
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
+            has_tools, ctx, has_thinking, rec_temp = _check_model_caps(
+                "qwen2.5-coder:7b"
+            )
+        assert has_thinking is False
+        assert rec_temp is None
+
+    def test_recommended_temperature_captured(self):
+        show_out = (
+            "  Capabilities:\n    tools  thinking\n"
+            "  context length: 32768\n"
+            "  Parameters:\n    stop           <|im_end|>\n    temperature    0.6\n"
+        )
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
+            _, _, _, rec_temp = _check_model_caps("qwen3:32b")
+        assert rec_temp == pytest.approx(0.6)
+
+    def test_recommended_temperature_absent(self):
+        show_out = "  Capabilities:\n    tools\n  context length: 32768\n"
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", return_value=show_out
+        ):
+            _, _, _, rec_temp = _check_model_caps("qwen2.5-coder:7b")
+        assert rec_temp is None
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +285,30 @@ class TestListOllamaModels:
         qwen = next(m for m in models if m.name == "qwen2.5-coder:7b")
         assert qwen.size_gb == pytest.approx(4.7)
         assert qwen.has_tools is True
+        assert qwen.has_thinking is False  # show output above has no "thinking"
+
+    def test_thinking_model_populated(self):
+        ollama_list = "NAME        ID      SIZE      MODIFIED\nqwen3:32b   abc123  20.0 GB   1 hour ago\n"
+        show_out = (
+            "  Capabilities:\n    completion  tools  thinking\n"
+            "  context length: 131072\n"
+            "  Parameters:\n    temperature  0.6\n"
+        )
+
+        def fake_check_output(cmd, **kwargs):
+            if cmd == ["ollama", "list"]:
+                return ollama_list
+            return show_out
+
+        with patch(
+            "utils.disk.hardware.subprocess.check_output", side_effect=fake_check_output
+        ):
+            models = list_ollama_models()
+
+        assert len(models) == 1
+        m = models[0]
+        assert m.has_thinking is True
+        assert m.recommended_temperature == pytest.approx(0.6)
 
     def test_returns_empty_when_ollama_not_running(self):
         with patch(
@@ -242,7 +324,8 @@ class TestListOllamaModels:
 
 
 class TestRecommendModel:
-    def test_picks_best_tier_for_large_ram(self):
+    def test_picks_highest_scoring_model(self):
+        # Dynamic scoring: 32b > 7b by parameter count
         profile = _profile(ram_gb=64.0)
         available = [
             _model("qwen2.5-coder:32b", size_gb=19.0),
@@ -288,57 +371,55 @@ class TestRecommendModel:
         result = recommend_model(profile, [])
         assert result is None
 
-    def test_fallback_to_largest_unknown_model(self):
-        # No model matches the candidate list by name, but two fit the budget
+    def test_fallback_for_unknown_model_names(self):
+        # No "b" in model names → fallback to size_gb * 0.5; larger wins
         profile = _profile(ram_gb=32.0)
         available = [
             _model("custom-llm:latest", size_gb=12.0, has_tools=True),
             _model("another-llm:v2", size_gb=8.0, has_tools=True),
         ]
         result = recommend_model(profile, available)
-        assert result == "custom-llm:latest"  # largest fitting model
+        assert result == "custom-llm:latest"  # size_gb=12.0 → score 6.0 > 4.0
 
-    def test_variant_tag_matches_candidate(self):
-        # qwen2.5-coder:32b-q4_K_M should match the "qwen2.5-coder" base
+    def test_variant_tag_with_param_count(self):
+        # qwen2.5-coder:32b-q4_K_M → "32b" extracted → score 32.0
         profile = _profile(ram_gb=64.0)
         available = [_model("qwen2.5-coder:32b-q4_K_M", size_gb=19.0, has_tools=True)]
         result = recommend_model(profile, available)
         assert result == "qwen2.5-coder:32b-q4_K_M"
 
-    def test_qwen3_32b_preferred_over_qwen25_32b(self):
-        # qwen3 has better tool compliance — prefer it when both are installed
+    def test_larger_param_count_wins(self):
+        # 32b > 7b by score regardless of family
         profile = _profile(ram_gb=64.0)
         available = [
             _model("qwen3:32b", size_gb=20.0),
-            _model("qwen2.5-coder:32b", size_gb=19.0),
+            _model("qwen2.5-coder:7b", size_gb=4.7),
         ]
         result = recommend_model(profile, available)
         assert result == "qwen3:32b"
 
-    def test_qwen3_30b_moe_preferred_over_qwen25_32b(self):
-        # qwen3:30b-a3b MoE fits in smaller memory; should win at tier 7
+    def test_thinking_bonus_breaks_tie(self):
+        # Two 32b models: one has thinking (+2.0 bonus) → thinking model wins
         profile = _profile(ram_gb=64.0)
         available = [
-            _model("qwen3:30b-a3b", size_gb=17.0),
-            _model("qwen2.5-coder:32b", size_gb=19.0),
+            _model("qwen3:32b", size_gb=20.0, has_thinking=True),
+            _model("qwen2.5-coder:32b", size_gb=19.0, has_thinking=False),
         ]
         result = recommend_model(profile, available)
-        assert result == "qwen3:30b-a3b"
+        assert result == "qwen3:32b"
 
-    def test_qwen3_14b_preferred_over_qwen25_32b(self):
-        # qwen3 family beats qwen2.5-coder at any size: better tool-call compliance
-        # matters more than parameter count for Pueo's tool-calling workload.
-        # Users can override via SWITCH_MODEL or the settings UI.
+    def test_larger_model_beats_smaller_thinking_model(self):
+        # Dynamic scoring: 32b (score 32) beats 14b+thinking (score 16)
         profile = _profile(ram_gb=64.0)
         available = [
-            _model("qwen2.5-coder:32b", size_gb=19.0),
-            _model("qwen3:14b", size_gb=9.0),
+            _model("qwen2.5-coder:32b", size_gb=19.0, has_thinking=False),
+            _model("qwen3:14b", size_gb=9.0, has_thinking=True),
         ]
         result = recommend_model(profile, available)
-        assert result == "qwen3:14b"
+        assert result == "qwen2.5-coder:32b"  # 32 > 16
 
-    def test_qwen3_8b_preferred_over_qwen25_7b(self):
-        # qwen3:8b (tier 4) beats qwen2.5-coder:7b (tier 3)
+    def test_qwen3_8b_beats_qwen25_7b(self):
+        # 8b (score 8) beats 7b (score 7)
         profile = _profile(ram_gb=16.0)
         available = [
             _model("qwen3:8b", size_gb=5.2),
@@ -346,6 +427,50 @@ class TestRecommendModel:
         ]
         result = recommend_model(profile, available)
         assert result == "qwen3:8b"
+
+    def test_no_candidate_models_constant(self):
+        # CANDIDATE_MODELS was removed; this import must not exist
+        import utils.disk.hardware as hw
+
+        assert not hasattr(hw, "CANDIDATE_MODELS")
+
+
+# ---------------------------------------------------------------------------
+# _extract_param_count_b and _score_model
+# ---------------------------------------------------------------------------
+
+
+class TestExtractParamCountAndScore:
+    def test_simple_param_count(self):
+        assert _extract_param_count_b("qwen3:32b") == pytest.approx(32.0)
+
+    def test_decimal_param_count(self):
+        assert _extract_param_count_b("qwen3.8:27b-mlx") == pytest.approx(27.0)
+
+    def test_no_param_count(self):
+        assert _extract_param_count_b("custom-llm:latest") is None
+
+    def test_moe_model(self):
+        assert _extract_param_count_b("qwen3:30b-a3b") == pytest.approx(30.0)
+
+    def test_score_no_thinking(self):
+        m = _model("qwen3:32b", size_gb=20.0, has_thinking=False)
+        assert _score_model(m) == pytest.approx(32.0)
+
+    def test_score_thinking_bonus(self):
+        m = _model("qwen3:32b", size_gb=20.0, has_thinking=True)
+        assert _score_model(m) == pytest.approx(34.0)  # 32 + 2
+
+    def test_score_fallback_no_param_count(self):
+        m = _model("custom-llm:latest", size_gb=12.0, has_thinking=False)
+        assert _score_model(m) == pytest.approx(6.0)  # 12.0 * 0.5
+
+    def test_has_thinking_defaults_false(self):
+        m = OllamaModelInfo(
+            name="test:7b", size_gb=4.0, has_tools=True, context_length=32768
+        )
+        assert m.has_thinking is False
+        assert m.recommended_temperature is None
 
 
 # ---------------------------------------------------------------------------

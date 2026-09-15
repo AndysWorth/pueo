@@ -1,6 +1,6 @@
 """Protocol interfaces for SSH, LLM, HA REST, and knowledge store clients."""
 
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Literal, Protocol, Union
 
 
 class SSHClientProtocol(Protocol):
@@ -30,6 +30,8 @@ class LLMClientProtocol(Protocol):
         messages: list[dict],
         tools: list[dict],
         options: dict | None = None,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
+        keep_alive: str | None = None,
     ) -> dict: ...
 
 

@@ -1435,3 +1435,42 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.DEBUG_EPISODE_RETENTION_DAYS == 7
+
+    def test_ollama_think_mode_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_THINK_MODE == "auto"
+
+    def test_ollama_think_mode_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"ollama": {"think_mode": "off"}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_THINK_MODE == "off"
+
+    def test_ollama_num_ctx_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_NUM_CTX == 0
+
+    def test_ollama_num_ctx_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"ollama": {"num_ctx": 16384}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_NUM_CTX == 16384
+
+    def test_ollama_keep_alive_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_KEEP_ALIVE == "auto"
+
+    def test_ollama_keep_alive_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"ollama": {"keep_alive": "-1"}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_KEEP_ALIVE == "-1"

@@ -1370,12 +1370,13 @@ class ToolExecutor:
         try:
             import config as _cfg
             import time as _time_te
+            from utils.llm.model_options import one_shot_options
 
             _t0_te = _time_te.monotonic()
             response = await self._llm_client.chat(
                 model=_cfg.OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.0},
+                options=one_shot_options(_cfg.OLLAMA_MODEL),
                 format=FixEnrichment.model_json_schema(),
             )
             content = response.get("message", {}).get("content", "")

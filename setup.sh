@@ -395,10 +395,12 @@ else
         awk -F': ' '/model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "Unknown")
     info "Hardware: ${CHIP} — ${RAM_GB} GB RAM"
 
-    if   [ "${RAM_GB}" -ge 48 ]; then RECOMMENDED_MODEL="qwen2.5-coder:32b"
-    elif [ "${RAM_GB}" -ge 20 ]; then RECOMMENDED_MODEL="qwen2.5-coder:14b"
-    elif [ "${RAM_GB}" -ge 10 ]; then RECOMMENDED_MODEL="qwen2.5-coder:7b"
-    else                               RECOMMENDED_MODEL="qwen2.5-coder:7b"
+    # qwen3 family preferred: better tool-call compliance and thinking mode support.
+    # model_auto: true in config.yaml overrides this with dynamic scoring at runtime.
+    if   [ "${RAM_GB}" -ge 48 ]; then RECOMMENDED_MODEL="qwen3:32b"
+    elif [ "${RAM_GB}" -ge 20 ]; then RECOMMENDED_MODEL="qwen3:14b"
+    elif [ "${RAM_GB}" -ge 10 ]; then RECOMMENDED_MODEL="qwen3:8b"
+    else                               RECOMMENDED_MODEL="qwen3:8b"
     fi
     info "Recommended model for your hardware: ${RECOMMENDED_MODEL}"
 
@@ -792,6 +794,9 @@ ollama:
   model: "${OLLAMA_MODEL}"
   model_auto: ${OLLAMA_MODEL_AUTO}
   endpoint: "${ollama_endpoint}"
+  # think_mode: "auto"    # "auto" | "off" | "low" | "medium" | "high"
+  # num_ctx: 0            # 0 = auto-derive from model context_length + available RAM
+  # keep_alive: "auto"    # "auto" = "-1" in supervisor, "5m" in one-shot
 
 llm:
   provider: "${LLM_PROVIDER}"

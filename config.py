@@ -41,6 +41,15 @@ OLLAMA_MODEL: str = _ollama.get("model", "qwen2.5-coder:7b")
 OLLAMA_MODEL_AUTO: bool = bool(_ollama.get("model_auto", False))
 OLLAMA_ENDPOINT: str = _ollama.get("endpoint", "http://localhost:11434")
 RAG_EMBED_MODEL: str = _ollama.get("embed_model", "nomic-embed-text")
+OLLAMA_THINK_MODE: str = _ollama.get("think_mode", "auto")
+# "auto": think=False in production (DEBUG_LEVEL=0), 'low' at level 1, 'high' at level 2+
+# "off":  always disable thinking (maximum reliability)
+# "low" / "medium" / "high": fixed budget (debug/inspection use)
+OLLAMA_NUM_CTX: int = int(_ollama.get("num_ctx", 0))
+# 0 = auto-derive from model context_length + available RAM
+# Derived: 131072 on 40+ GB available, 32768 on 20-40 GB, 16384 on 10-20 GB, 8192 else
+OLLAMA_KEEP_ALIVE: str = _ollama.get("keep_alive", "auto")
+# "auto" = "-1" in supervisor mode, "5m" in one-shot; or set a duration string
 
 DB_PATH: str = _agent.get("db_path", str(_dirs.state_dir / "ha_agent_state.db"))
 CONFIDENCE_THRESHOLD: float = float(_agent.get("log_confidence_threshold", 0.7))

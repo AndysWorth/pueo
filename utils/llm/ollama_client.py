@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Literal, Union
 
 import ollama
 
@@ -83,6 +83,8 @@ class OllamaClient:
         messages: list[dict],
         tools: list[dict],
         options: dict | None = None,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
+        keep_alive: str | None = None,
     ) -> dict:
         t0 = time.monotonic()
         log.debug(
@@ -90,6 +92,7 @@ class OllamaClient:
             model=model,
             messages_count=len(messages),
             tools_count=len(tools) if tools else 0,
+            think=think,
             last_user_msg=(
                 str(messages[-1].get("content", ""))[:300] if messages else ""
             ),
@@ -104,14 +107,17 @@ class OllamaClient:
                 messages=messages,
                 tools=[t["function"]["name"] for t in (tools or [])],
             )
-        resp = await asyncio.to_thread(
-            lambda: self._client.chat(
-                model=model,
-                messages=messages,
-                tools=tools,
-                options=options or {"temperature": 0.0},
-            )
+        call_kwargs: dict[str, Any] = dict(
+            model=model,
+            messages=messages,
+            tools=tools,
+            options=options or {"temperature": 0.0},
         )
+        if think is not None:
+            call_kwargs["think"] = think
+        if keep_alive is not None:
+            call_kwargs["keep_alive"] = keep_alive
+        resp = await asyncio.to_thread(lambda: self._client.chat(**call_kwargs))
         msg = resp.message
         result: dict = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:
@@ -204,8 +210,10 @@ class FakeLLMClient:
         messages: list[dict],
         tools: list[dict],
         options: dict | None = None,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
+        keep_alive: str | None = None,
     ) -> dict:
-        self.calls.append({"model": model, "messages": messages})
+        self.calls.append({"model": model, "messages": messages, "think": think})
         return {"role": "assistant", "content": ""}
 
 
@@ -241,8 +249,10 @@ class FakeToolCallingLLMClient:
         messages: list[dict],
         tools: list[dict],
         options: dict | None = None,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
+        keep_alive: str | None = None,
     ) -> dict:
-        self.calls.append({"model": model, "messages": messages})
+        self.calls.append({"model": model, "messages": messages, "think": think})
         if self._index >= len(self._sequence):
             return {"role": "assistant", "content": ""}
         resp = dict(self._sequence[self._index])

@@ -19,6 +19,13 @@ ollama:
   model_auto: false                   # If true, select the best-fit model for this hardware at startup
   endpoint: "http://localhost:11434"  # Ollama API endpoint (default local)
   # embed_model: "nomic-embed-text"   # Embedding model for RAG knowledge store (requires `ollama pull nomic-embed-text`)
+  # think_mode: "auto"                # "auto" | "off" | "low" | "medium" | "high"
+  #   auto: think=false in production (DEBUG_LEVEL=0); think='low' at debug_level=1; 'high' at debug_level>=2
+  #   WARNING: think=false recommended for production — Ollama issue #17617: leaked </think> in history
+  #   can lock an agentic loop into an infinite tool-call cycle. off/auto are both safe.
+  # num_ctx: 0                        # 0 = auto-derived from model context_length + available RAM
+  #   Derived values: 131072 on 40+ GB available, 32768 on 20-40 GB, 16384 on 10-20 GB, 8192 else
+  # keep_alive: "auto"                # "auto" = "-1" in supervisor mode, "5m" in one-shot; or set explicitly
 
 llm:
   provider: "local"  # "local" | "cloud" | "both"
