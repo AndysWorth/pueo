@@ -84,7 +84,7 @@ class OllamaClient:
         tools: list[dict],
         options: dict | None = None,
         think: Union[bool, Literal["low", "medium", "high"], None] = None,
-        keep_alive: str | None = None,
+        keep_alive: int | str | None = None,
     ) -> dict:
         t0 = time.monotonic()
         log.debug(
@@ -211,7 +211,7 @@ class FakeLLMClient:
         tools: list[dict],
         options: dict | None = None,
         think: Union[bool, Literal["low", "medium", "high"], None] = None,
-        keep_alive: str | None = None,
+        keep_alive: int | str | None = None,
     ) -> dict:
         self.calls.append({"model": model, "messages": messages, "think": think})
         return {"role": "assistant", "content": ""}
@@ -250,7 +250,7 @@ class FakeToolCallingLLMClient:
         tools: list[dict],
         options: dict | None = None,
         think: Union[bool, Literal["low", "medium", "high"], None] = None,
-        keep_alive: str | None = None,
+        keep_alive: int | str | None = None,
     ) -> dict:
         self.calls.append({"model": model, "messages": messages, "think": think})
         if self._index >= len(self._sequence):
