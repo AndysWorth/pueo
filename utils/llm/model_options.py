@@ -21,7 +21,7 @@ class ModelCallOptions:
     )
     num_ctx: int  # 0 = let Ollama decide (not recommended); derived value otherwise
     temperature: float
-    keep_alive: str  # "-1" = permanent; "5m" = 5 minute default
+    keep_alive: int | str  # -1 = permanent; "5m" = 5 minute default
     num_predict: Optional[int] = None  # None = unlimited
     seed: Optional[int] = None
 
@@ -113,8 +113,9 @@ def derive_call_options(
         temperature = 0.0
 
     # --- keep_alive ---
+    # -1 (int) = keep loaded forever; Ollama rejects "-1" string (no time unit).
     if supervisor_mode:
-        keep_alive = "-1"
+        keep_alive: int | str = -1
     else:
         keep_alive = "5m"
 

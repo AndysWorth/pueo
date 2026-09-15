@@ -154,7 +154,7 @@ class TestDeriveTemperature:
 class TestDeriveKeepAlive:
     def test_supervisor_mode_keeps_alive_forever(self):
         opts = _derive(supervisor_mode=True)
-        assert opts.keep_alive == "-1"
+        assert opts.keep_alive == -1
 
     def test_oneshot_mode_uses_5m(self):
         opts = _derive(supervisor_mode=False)

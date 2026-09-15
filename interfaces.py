@@ -31,7 +31,7 @@ class LLMClientProtocol(Protocol):
         tools: list[dict],
         options: dict | None = None,
         think: Union[bool, Literal["low", "medium", "high"], None] = None,
-        keep_alive: str | None = None,
+        keep_alive: int | str | None = None,
     ) -> dict: ...
 
 

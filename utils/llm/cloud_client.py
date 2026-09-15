@@ -298,7 +298,9 @@ class ClaudeAPIClient:
         tools: list[dict],
         options: dict | None = None,
         think: Any = None,  # accepted for interface compat; Anthropic uses its own mechanism
-        keep_alive: str | None = None,  # accepted for interface compat; no-op for cloud
+        keep_alive: (
+            int | str | None
+        ) = None,  # accepted for interface compat; no-op for cloud
     ) -> dict:
         """Tool-calling chat against the Anthropic Messages API.
 
