@@ -564,6 +564,9 @@ CONFIGURED_MODEL="${CONFIGURED_MODEL:-qwen2.5-coder:7b}"
 NAX_DOCKER_CONFIG_PATH=""
 NAX_API_TOKEN=""
 HA_KNOWN_VERSION=""
+MCP_ENABLED=false
+MCP_PORT=8765
+MCP_TOKEN=""
 
 if $WRITE_CONFIG; then
     echo "  Press Enter to accept each default."
@@ -881,6 +884,11 @@ agent:
   ha_repair_poll_interval_minutes: 5
   lovelace_check_interval_minutes: 30
   # update_notify_on_available: true
+
+mcp:
+  enabled: ${MCP_ENABLED}
+  port: ${MCP_PORT}
+  token: "${MCP_TOKEN}"
 EOF
     }
 
@@ -956,6 +964,32 @@ if [[ "${NAX_SETUP_DESIRED:-false}" == "true" ]]; then
 else
     info "NetAlertX setup is disabled."
     info "To enable: set 'netalertx.setup_desired: true' in config.yaml and restart Pueo."
+fi
+
+# ── 5.5. MCP server (optional) ───────────────────────────────────────────────────
+hdr "5.5. MCP Server (optional)"
+
+if [[ "$_RESET_MODE" != "true" ]]; then
+    echo
+    read -rp "  Enable Pueo MCP server (lets HA's AI assistants call Pueo tools)? [y/N]: " _mcp_ans
+    if [[ "$_mcp_ans" =~ ^[Yy] ]]; then
+        MCP_ENABLED=true
+        read -rp "  MCP server port [8765]: " _mcp_port_ans
+        MCP_PORT="${_mcp_port_ans:-8765}"
+        echo -n "  MCP auth token (blank = no auth on trusted LAN): "
+        read -rs MCP_TOKEN
+        echo
+        ok "MCP server enabled on port $MCP_PORT."
+        echo
+        info "Add the following to HA's configuration.yaml:"
+        echo "    mcp:"
+        echo "      servers:"
+        echo "        - name: \"Pueo\""
+        echo "          url: \"http://<this-machine>:${MCP_PORT}/sse\""
+        [[ -n "$MCP_TOKEN" ]] && echo "            token: \"<your MCP_TOKEN>\""
+    else
+        info "MCP server disabled. Enable later: set 'mcp.enabled: true' in config.yaml."
+    fi
 fi
 
 # ── 6. launchd service ───────────────────────────────────────────────────────────

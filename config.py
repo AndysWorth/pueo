@@ -313,3 +313,9 @@ AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 2)
 
 # Escalation routing when the agent is stuck and calls request_escalation()
 ESCALATION_PREFERENCE: str = str(_agent.get("escalation_preference", "hitl"))
+
+# MCP server — expose diagnostic tools to HA's conversation agents
+_mcp = _cfg.get("mcp", {})
+MCP_ENABLED: bool = bool(_mcp.get("enabled", False))
+MCP_PORT: int = int(_mcp.get("port", 8765))
+MCP_TOKEN: str = str(_mcp.get("token", ""))

@@ -71,6 +71,11 @@ netalertx:
   docker_min_disk_gb: 5.0                     # Abort Docker install if host has less free space (GB)
   severity_confidence_threshold: 0.9          # Minimum confidence score to classify as HIGH severity
 
+# mcp:
+#   enabled: false    # Set true to expose Pueo's diagnostic tools to HA's conversation agents
+#   port: 8765        # Separate port (must be reachable from HA host over LAN)
+#   token: ""         # Bearer token; leave empty for no auth on a trusted LAN
+
 agent:
   # db_path: ""    # SQLite state file; default: ~/Library/Application Support/Pueo/ha_agent_state.db (macOS)
   log_confidence_threshold: 0.7      # Minimum AI confidence score to trigger autonomous repair

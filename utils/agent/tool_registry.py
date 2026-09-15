@@ -1736,6 +1736,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
         GET_DASHBOARD_ENTITY_HEALTH,
+        CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
