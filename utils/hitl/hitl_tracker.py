@@ -144,6 +144,18 @@ def mark_card_deferred(
     conn.commit()
 
 
+_STUCK_BACKOFF_HOURS: float = 0.5  # 30-minute back-off when a loop gets stuck
+
+
+def mark_investigation_backoff(conn: sqlite3.Connection, card_key: str) -> None:
+    """Temporarily defer re-investigation when AgentLoop exits without terminal tool.
+
+    Prevents the poll loop from immediately re-triggering on the same event after a
+    stuck/exhausted/failed outcome. Expires after _STUCK_BACKOFF_HOURS.
+    """
+    mark_card_deferred(conn, card_key, hours=_STUCK_BACKOFF_HOURS)
+
+
 def mark_card_approved(conn: sqlite3.Connection, card_key: str) -> None:
     """Mark card as approved; treats this occurrence as resolved so future polls can re-fire."""
     now = time.time()

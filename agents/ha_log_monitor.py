@@ -593,6 +593,19 @@ async def _run_repair_issue_investigation(
     try:
         result = await loop.run(initial_context=initial_context)
         publish_activity_done("repair_issue", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3.connect(db_path) as _conn:
+                mark_investigation_backoff(
+                    _conn, f"repair_issue_backoff:{issue.issue_key}"
+                )
+            log.warning(
+                "repair_issue_stuck_backoff",
+                outcome=result.outcome,
+                issue_key=issue.issue_key,
+            )
     except Exception as exc:
         log.error(
             "repair_issue_investigation_failed",
@@ -1235,6 +1248,13 @@ async def poll_for_repairs(
             )
 
             if not already_sent:
+                _backoff_key = f"repair_issue_backoff:{issue.issue_key}"
+                from utils.hitl.hitl_tracker import should_send_card as _ssc
+
+                with _sqlite3.connect(db_path) as _conn:
+                    if not _ssc(_conn, _backoff_key):
+                        continue
+
                 _issue_snap = issue
                 _notifier_snap = _notifier
                 _llm_snap = llm_client

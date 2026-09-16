@@ -1478,3 +1478,190 @@ class TestUpdateAnalyzedSuppression:
             result = _update_already_analyzed(new_key)
 
         assert result is False, "new version must not be suppressed by old analyzed row"
+
+
+# ---------------------------------------------------------------------------
+# Stuck-loop backoff — _run_lovelace_investigation
+# ---------------------------------------------------------------------------
+
+
+class TestLovelaceStuckBackoff:
+    """When AgentLoop returns a non-success outcome, backoff rows must be written."""
+
+    def _make_db(self, tmp_path: Path) -> str:
+        return _make_hitl_db(tmp_path)
+
+    def test_stuck_outcome_writes_backoff_for_each_entity(self, tmp_path):
+        """outcome='stuck' writes a deferred hitl_suppression row for every entity."""
+        import asyncio
+        import sqlite3
+        import time
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = self._make_db(tmp_path)
+        suspicious = [
+            {"entity_id": "sensor.missing_a", "has_state": False},
+            {"entity_id": "sensor.missing_b", "has_state": False},
+        ]
+
+        fake_result = AgentLoopResult(outcome="stuck")
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_lovelace_monitor import _run_lovelace_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_lovelace_investigation(
+                    suspicious=suspicious,
+                    ws_client=MagicMock(),
+                    db_path=db_path,
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        with sqlite3.connect(db_path) as conn:
+            for eid in ("sensor.missing_a", "sensor.missing_b"):
+                row = conn.execute(
+                    "SELECT last_action, next_allowed_at FROM hitl_suppression"
+                    " WHERE card_key = ?",
+                    (f"lovelace_benign:{eid}",),
+                ).fetchone()
+                assert row is not None, f"expected backoff row for {eid}"
+                assert row[0] == "deferred"
+                assert row[1] > time.time()
+
+    def test_success_outcome_does_not_write_backoff(self, tmp_path):
+        """outcome='success' must NOT write a deferred backoff row."""
+        import asyncio
+        import sqlite3
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = self._make_db(tmp_path)
+        suspicious = [{"entity_id": "sensor.ok", "has_state": True}]
+        fake_result = AgentLoopResult(outcome="success")
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_lovelace_monitor import _run_lovelace_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_lovelace_investigation(
+                    suspicious=suspicious,
+                    ws_client=MagicMock(),
+                    db_path=db_path,
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT last_action FROM hitl_suppression"
+                " WHERE card_key = 'lovelace_benign:sensor.ok'"
+            ).fetchone()
+        assert row is None, "success outcome must not write a backoff row"
+
+    def test_backoff_row_suppresses_next_poll_cycle(self, tmp_path):
+        """An entity under stuck backoff is skipped by poll_for_dashboard_entity_issues."""
+        import asyncio
+        import sqlite3
+        import time
+        from unittest import mock
+
+        db_path = self._make_db(tmp_path)
+
+        # Pre-seed a stuck backoff row (30 min from now).
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, description, first_sent_at, last_sent_at,"
+                "  last_action, last_action_at, next_allowed_at)"
+                " VALUES (?, '', '', ?, ?, 'deferred', ?, ?)",
+                (
+                    "lovelace_benign:sensor.stuck",
+                    time.time(),
+                    time.time(),
+                    time.time(),
+                    time.time() + 1800,
+                ),
+            )
+
+        lovelace = {
+            "views": [
+                {
+                    "title": "Main",
+                    "cards": [{"type": "entity", "entity": "sensor.stuck"}],
+                }
+            ]
+        }
+        ws = _make_ws(lovelace, [])
+        investigation_calls: list = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+            from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+            from utils.hitl.notify import FakeNotifier
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=FakeNotifier(),
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        # sensor.stuck should not appear in any investigation call.
+        for call in investigation_calls:
+            assert not any(e["entity_id"] == "sensor.stuck" for e in call)

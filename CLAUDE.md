@@ -100,6 +100,8 @@ Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor
 
 **Rate limiter / debouncer**: `Debouncer` and `RateLimiter` in `utils/core/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
 
+**Stuck-loop backoff**: Every `_run_*_investigation` caller writes a 30-minute deferred suppression row (`mark_investigation_backoff` in `utils/hitl/hitl_tracker.py`) for any `outcome != "success"`. This prevents poll loops from immediately re-triggering the same session after a timeout or budget exhaustion. The backoff key format is `<session_type>_backoff:<entity_or_issue_key>`. The lovelace benign gate uses `should_send_card` (not a raw SQL check) so it respects both permanent benign suppression and the time-limited stuck backoff.
+
 **Token budget management**: `estimate_tokens()` and `truncate_to_budget()` in `utils/core/context.py` enforce the 8,000-token evaluation matrix constraint. Every Ollama call site must trim content to `MAX_PROMPT_TOKENS` before dispatch — never pass unbounded YAML or log content.
 
 **Dependency injection via Protocol interfaces**: `interfaces.py` defines `SSHClientProtocol` and `LLMClientProtocol`. Agent functions accept these optional injected clients, falling back to real implementations when `None`. Tests pass `FakeSSHClient` / `FakeLLMClient`; SSH and Ollama are never called in the unit suite.
