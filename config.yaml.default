@@ -152,7 +152,7 @@ agent:
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
   # chromadb_path: ""           # ChromaDB vector store; default: ~/Library/Application Support/Pueo/chromadb (macOS)
   # rag_top_k: 5                # Number of knowledge chunks returned per query_knowledge call
-  # rag_ha_versions_to_fetch: 12  # How many recent HA releases to fetch from GitHub on rag-refresh
+  # rag_ha_versions_to_fetch: 24  # How many recent HA releases to fetch from GitHub on rag-refresh (~2 years of monthly releases)
   # rag_hacs_cache_dir: ""      # HACS changelog cache; default: ~/Library/Caches/Pueo/hacs_changelogs (macOS)
   # rag_ha_docs_cache_dir: ""   # HA docs cache; default: ~/Library/Caches/Pueo/ha_docs (macOS)
   # ha_source_cache_dir: ""     # HA source cache; default: ~/Library/Caches/Pueo/ha_source (macOS)

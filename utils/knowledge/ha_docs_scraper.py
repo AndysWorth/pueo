@@ -195,6 +195,8 @@ _SOURCE_PREFETCH_FILENAMES = (
     "__init__.py",
     "manifest.json",
     "const.py",
+    "config_flow.py",
+    "strings.json",
     "sensor.py",
     "binary_sensor.py",
     "switch.py",
@@ -220,6 +222,16 @@ def prefetch_installed_integration_sources(  # pragma: no cover
     Returns count of files newly fetched.
     """
     import urllib.request
+    from utils.core.logging import get_logger
+
+    log = get_logger("ha_docs_scraper")
+    if not domains:
+        log.warning(
+            "ha_source_prefetch_skipped",
+            reason="no_domains_discovered",
+            hint="HA may be unreachable or HA_API_TOKEN not set",
+        )
+        return 0
 
     fetched = 0
     base = Path(cache_dir)
@@ -240,8 +252,21 @@ def prefetch_installed_integration_sources(  # pragma: no cover
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         dest.write_bytes(resp.read())
                         fetched += 1
-            except Exception:  # nosec B110 — 404s and timeouts are expected
-                pass
+                    else:
+                        log.debug(
+                            "ha_source_fetch_skipped",
+                            domain=domain,
+                            filename=filename,
+                            status=resp.status,
+                        )
+            except Exception as exc:  # nosec B110 — 404s and timeouts are expected
+                log.debug(
+                    "ha_source_fetch_error",
+                    domain=domain,
+                    filename=filename,
+                    error=str(exc),
+                )
+    log.info("ha_source_prefetch_complete", domains=len(domains), files_fetched=fetched)
     return fetched
 
 
