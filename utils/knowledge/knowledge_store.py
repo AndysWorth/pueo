@@ -32,6 +32,32 @@ class KnowledgeChunk:
     collection: str
     score: float = 0.0
     metadata: dict = field(default_factory=dict)
+    authority_score: float = 0.0
+
+
+def _authority_score(collection: str, metadata: dict) -> float:
+    """Return a trust score [0,1] for a chunk based on its origin.
+
+    Used to blend with cosine similarity so official docs rank above
+    unreviewed community content when relevance is otherwise equal.
+    """
+    if collection in ("ha_integration_docs", "ha_concepts", "ha_release_notes"):
+        return 1.0
+    if collection == "strategies":
+        src = metadata.get("source", "")
+        if src == "seed_prompt":
+            return 0.8
+        runbook_type = metadata.get("runbook_type", "")
+        if runbook_type == "seed":
+            return 0.8
+        # pueo_kb runbooks that have been reviewed are community-grade
+        if src == "pueo_kb":
+            return 0.7
+        return 0.6  # candidate / agent_learned
+    if collection == "repair_history":
+        return 0.5
+    # hacs_changelogs and any future community collections
+    return 0.6
 
 
 COLLECTIONS: tuple[str, ...] = (
@@ -84,6 +110,7 @@ class FakeKnowledgeStore:
                 if not _matches_where(meta, where):
                     continue
                 if query_text.lower() in doc.lower():
+                    auth = _authority_score(col, meta)
                     results.append(
                         KnowledgeChunk(
                             text=doc,
@@ -91,8 +118,12 @@ class FakeKnowledgeStore:
                             collection=col,
                             score=1.0,
                             metadata=meta,
+                            authority_score=auth,
                         )
                     )
+        results.sort(
+            key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
+        )
         filtered = [c for c in results if c.score >= min_score]
         return filtered[:top_k]
 
@@ -180,18 +211,21 @@ class ChromaKnowledgeStore:  # pragma: no cover
             metas = (res.get("metadatas") or [[]])[0]
             dists = (res.get("distances") or [[]])[0]
             for doc, meta, dist in zip(docs, metas, dists):
+                sim = max(0.0, 1.0 - dist)  # cosine dist ∈ [0,2]; score ∈ [0,1]
+                auth = _authority_score(col, meta)  # type: ignore[arg-type]
                 results.append(
                     KnowledgeChunk(
                         text=doc,
                         source=meta.get("source", ""),  # type: ignore[arg-type]
                         collection=col,
-                        score=max(
-                            0.0, 1.0 - dist
-                        ),  # cosine dist ∈ [0,2]; score ∈ [0,1]
+                        score=sim,
                         metadata=meta,  # type: ignore[arg-type]
+                        authority_score=auth,
                     )
                 )
-        results.sort(key=lambda c: c.score, reverse=True)
+        results.sort(
+            key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
+        )
         filtered = [c for c in results if c.score >= min_score]
         return filtered[:top_k]
 

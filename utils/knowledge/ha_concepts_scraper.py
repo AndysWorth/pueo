@@ -116,6 +116,7 @@ def embed_cached_concept_docs(
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
     collected_ids: set[str] | None = None,
+    scraped_for_ha_version: str = "",
 ) -> int:
     """Read cached concept doc .md files and embed into ha_concepts collection.
 
@@ -136,9 +137,10 @@ def embed_cached_concept_docs(
         if not chunks:
             continue
         ids = [f"ha-concepts-{doc_id}-{i}" for i in range(len(chunks))]
-        metadatas = [
-            {"source": f"ha_concepts/{doc_id}", "doc_id": doc_id} for _ in chunks
-        ]
+        base_meta: dict = {"source": f"ha_concepts/{doc_id}", "doc_id": doc_id}
+        if scraped_for_ha_version:
+            base_meta["scraped_for_ha_version"] = scraped_for_ha_version
+        metadatas = [dict(base_meta) for _ in chunks]
         if collected_ids is not None:
             collected_ids.update(ids)
         knowledge_store.upsert(

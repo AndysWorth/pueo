@@ -86,6 +86,7 @@ def _reembed_orphaned_runbooks(
 
 def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     import config
+    from utils.ha.ha_environment import load_environment_profile
     from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
     from utils.knowledge.ha_docs_scraper import (
         discover_installed_integrations,
@@ -109,6 +110,10 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
 
     ha_url = f"http://{config.HA_HOST}:{config.HA_API_PORT}"
     ha_token = config.HA_API_TOKEN
+
+    # Load the last-known HA version to tag chunks with version metadata
+    _env_profile = load_environment_profile(config.DB_PATH)
+    _ha_version = _env_profile.ha_version if _env_profile else ""
 
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh started (manual/scheduled)"
@@ -160,7 +165,9 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
 
     _log.info("rag_refresh_step", step="embed_hacs")
     hacs_ids: set[str] = set()
-    n_hacs = embed_cached_changelogs(config.RAG_HACS_CACHE_DIR, store, hacs_ids)
+    n_hacs = embed_cached_changelogs(
+        config.RAG_HACS_CACHE_DIR, store, hacs_ids, _ha_version
+    )
     _log.info("rag_refresh_step_done", step="embed_hacs", embedded=n_hacs)
     if hacs_ids:
         store.prune("hacs_changelogs", hacs_ids)
@@ -197,7 +204,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     _log.info("rag_refresh_step", step="embed_integration_docs")
     docs_ids: set[str] = set()
     n_docs = embed_cached_integration_docs(
-        config.RAG_HA_DOCS_CACHE_DIR, store, docs_ids
+        config.RAG_HA_DOCS_CACHE_DIR, store, docs_ids, _ha_version
     )
     _log.info("rag_refresh_step_done", step="embed_integration_docs", embedded=n_docs)
     if docs_ids:
@@ -218,7 +225,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     _log.info("rag_refresh_step", step="embed_concept_docs")
     concepts_ids: set[str] = set()
     n_concepts = embed_cached_concept_docs(
-        config.HA_CONCEPTS_CACHE_DIR, store, concepts_ids
+        config.HA_CONCEPTS_CACHE_DIR, store, concepts_ids, _ha_version
     )
     _log.info("rag_refresh_step_done", step="embed_concept_docs", embedded=n_concepts)
     if concepts_ids:

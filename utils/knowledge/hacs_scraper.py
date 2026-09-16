@@ -45,6 +45,7 @@ def chunk_changelog(
     changelog_text: str,
     slug: str,
     collected_ids: set[str] | None = None,
+    scraped_for_ha_version: str = "",
 ) -> tuple[list[str], list[str], list[dict]]:
     """Parse changelog into (ids, documents, metadatas) for a ChromaDB upsert.
 
@@ -54,14 +55,16 @@ def chunk_changelog(
     if not chunks:
         return [], [], []
     ids = [f"hacs-{slug}-{i}" for i in range(len(chunks))]
-    metadatas = [
-        {
+    metadatas = []
+    for chunk in chunks:
+        meta: dict = {
             "source": f"hacs/{slug}",
             "slug": slug,
             "version": _version_from_section(chunk),
         }
-        for chunk in chunks
-    ]
+        if scraped_for_ha_version:
+            meta["scraped_for_ha_version"] = scraped_for_ha_version
+        metadatas.append(meta)
     if collected_ids is not None:
         collected_ids.update(ids)
     return ids, chunks, metadatas
@@ -221,6 +224,7 @@ def embed_cached_changelogs(
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
     collected_ids: set[str] | None = None,
+    scraped_for_ha_version: str = "",
 ) -> int:
     """Read all cached HACS changelog .md files and embed them.
 
@@ -237,7 +241,9 @@ def embed_cached_changelogs(
             content = fp.read_text(encoding="utf-8")
         except OSError:
             continue
-        ids, docs, metas = chunk_changelog(content, slug, collected_ids)
+        ids, docs, metas = chunk_changelog(
+            content, slug, collected_ids, scraped_for_ha_version
+        )
         if ids:
             knowledge_store.upsert(
                 "hacs_changelogs", ids=ids, documents=docs, metadatas=metas

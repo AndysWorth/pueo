@@ -1933,3 +1933,114 @@ class TestRepeatQuery:
         result = repeat_query(system, user)
         assert user in result
         assert system in result
+
+
+class TestQueryKnowledgeAuthorityLabels:
+    """Tests for authority labels in _query_knowledge output."""
+
+    def _make_executor_with_store(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory "
+                "(key TEXT, content TEXT, source TEXT, ts REAL)"
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        return executor, store
+
+    def test_official_label_in_output(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_integration_docs",
+            ids=["doc-1"],
+            documents=["mqtt broker configuration"],
+            metadatas=[{"source": "ha_docs/mqtt"}],
+        )
+        result = asyncio.run(executor._query_knowledge("mqtt"))
+        assert result.success is True
+        assert "[OFFICIAL]" in result.output
+
+    def test_seed_runbook_label_in_output(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "strategies",
+            ids=["seed-1"],
+            documents=["seed runbook for disk space"],
+            metadatas=[{"source": "seed_prompt", "title": "disk"}],
+        )
+        result = asyncio.run(executor._query_knowledge("disk space"))
+        assert result.success is True
+        assert "[SEED RUNBOOK]" in result.output
+
+    def test_candidate_runbook_label_in_output(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "strategies",
+            ids=["cand-1"],
+            documents=["candidate runbook for network"],
+            metadatas=[{"source": "agent_learned", "runbook_type": "candidate"}],
+        )
+        result = asyncio.run(executor._query_knowledge("network"))
+        assert result.success is True
+        assert "CANDIDATE RUNBOOK" in result.output
+
+    def test_past_repair_label_in_output(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["past repair for zwave"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        result = asyncio.run(executor._query_knowledge("zwave"))
+        assert result.success is True
+        assert "[PAST REPAIR]" in result.output
+
+    def test_authority_label_method_official(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label("ha_release_notes", {})
+            == "[OFFICIAL]"
+        )
+        assert (
+            ToolExecutor._knowledge_authority_label("ha_concepts", {}) == "[OFFICIAL]"
+        )
+        assert (
+            ToolExecutor._knowledge_authority_label("ha_integration_docs", {})
+            == "[OFFICIAL]"
+        )
+
+    def test_authority_label_method_community(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label("hacs_changelogs", {})
+            == "[COMMUNITY]"
+        )

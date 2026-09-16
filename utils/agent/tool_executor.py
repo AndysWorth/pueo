@@ -614,6 +614,27 @@ class ToolExecutor:
                 tool_name="read_file", success=False, output="", error=str(exc)
             )
 
+    @staticmethod
+    def _knowledge_authority_label(collection: str, metadata: dict) -> str:
+        """Return a human-readable trust label for a knowledge chunk."""
+        if collection in ("ha_integration_docs", "ha_concepts", "ha_release_notes"):
+            return "[OFFICIAL]"
+        if collection == "strategies":
+            src = metadata.get("source", "")
+            if src == "seed_prompt":
+                return "[SEED RUNBOOK]"
+            runbook_type = metadata.get("runbook_type", "")
+            if runbook_type == "seed":
+                return "[SEED RUNBOOK]"
+            if runbook_type == "candidate":
+                return "[CANDIDATE RUNBOOK – unreviewed]"
+            if src == "pueo_kb":
+                return "[COMMUNITY RUNBOOK]"
+            return "[CANDIDATE RUNBOOK – unreviewed]"
+        if collection == "repair_history":
+            return "[PAST REPAIR]"
+        return "[COMMUNITY]"
+
     async def _query_knowledge(
         self,
         query: str,
@@ -638,7 +659,11 @@ class ToolExecutor:
                 success=True,
                 output="No relevant knowledge found.",
             )
-        output = "\n\n".join(f"[{c.collection} | {c.source}]\n{c.text}" for c in chunks)
+        output = "\n\n".join(
+            f"{self._knowledge_authority_label(c.collection, c.metadata)} "
+            f"[{c.collection} | {c.source}]\n{c.text}"
+            for c in chunks
+        )
         return ToolResult(tool_name="query_knowledge", success=True, output=output)
 
     # ------------------------------------------------------------------

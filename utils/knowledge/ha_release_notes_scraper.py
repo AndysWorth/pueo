@@ -163,6 +163,8 @@ def chunk_release_notes(
                 "release_type": rt,
                 "category": cat,
                 "impacted_integration": domain,
+                "ha_version_min": version,
+                "ha_version_max": version,
             }
         )
     if collected_ids is not None:

@@ -274,6 +274,7 @@ def embed_cached_integration_docs(
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
     collected_ids: set[str] | None = None,
+    scraped_for_ha_version: str = "",
 ) -> int:
     """Read cached integration doc .md files and embed into ha_integration_docs.
 
@@ -294,10 +295,14 @@ def embed_cached_integration_docs(
         if not chunks:
             continue
         ids = [f"ha-docs-{domain}-{i}" for i in range(len(chunks))]
-        metadatas = [
-            {"source": f"ha_docs/{domain}", "domain": domain, "is_installed": True}
-            for _ in chunks
-        ]
+        base_meta: dict = {
+            "source": f"ha_docs/{domain}",
+            "domain": domain,
+            "is_installed": True,
+        }
+        if scraped_for_ha_version:
+            base_meta["scraped_for_ha_version"] = scraped_for_ha_version
+        metadatas = [dict(base_meta) for _ in chunks]
         if collected_ids is not None:
             collected_ids.update(ids)
         knowledge_store.upsert(
