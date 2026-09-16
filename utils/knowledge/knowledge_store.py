@@ -41,7 +41,12 @@ def _authority_score(collection: str, metadata: dict) -> float:
     Used to blend with cosine similarity so official docs rank above
     unreviewed community content when relevance is otherwise equal.
     """
-    if collection in ("ha_integration_docs", "ha_concepts", "ha_release_notes"):
+    if collection in (
+        "ha_integration_docs",
+        "ha_concepts",
+        "ha_release_notes",
+        "ha_developer_docs",
+    ):
         return 1.0
     if collection == "strategies":
         src = metadata.get("source", "")
@@ -65,6 +70,7 @@ COLLECTIONS: tuple[str, ...] = (
     "hacs_changelogs",
     "ha_integration_docs",
     "ha_concepts",
+    "ha_developer_docs",
     "strategies",
     "repair_history",
 )
