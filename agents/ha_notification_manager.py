@@ -321,6 +321,19 @@ async def _run_notification_investigation(
     try:
         result = await loop.run(initial_context=initial_context)
         publish_activity_done("notification", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3.connect(db_path) as _conn:
+                mark_investigation_backoff(
+                    _conn, f"notification_backoff:{notification_id}"
+                )
+            log.warning(
+                "notification_stuck_backoff",
+                outcome=result.outcome,
+                notification_id=notification_id,
+            )
     except Exception as exc:
         log.error(
             "notification_investigation_failed",
@@ -551,6 +564,15 @@ async def run_notifications(
         if row and row[0] is not None:
             log.debug("notification_card_already_sent", ha_notification_id=ha_nid)
             continue
+
+        with sqlite3.connect(db_path) as _bconn:
+            from utils.hitl.hitl_tracker import should_send_card as _ssc
+
+            if not _ssc(_bconn, f"notification_backoff:{ha_nid}"):
+                log.debug(
+                    "notification_stuck_backoff_active", ha_notification_id=ha_nid
+                )
+                continue
 
         # Capture loop-local variables for the async closure.
         _ha_nid = ha_nid

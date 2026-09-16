@@ -121,6 +121,20 @@ async def _run_lovelace_investigation(
     try:
         result = await loop.run(initial_context=initial_context)
         publish_activity_done("lovelace_investigation", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3.connect(db_path) as _conn:
+                for e in suspicious:
+                    mark_investigation_backoff(
+                        _conn, f"lovelace_benign:{e['entity_id']}"
+                    )
+            log.warning(
+                "lovelace_investigation_stuck_backoff",
+                outcome=result.outcome,
+                entity_count=len(suspicious),
+            )
     except Exception as exc:
         log.warning("lovelace_investigation_failed", error=str(exc))
         publish_activity_done("lovelace_investigation", "failed")
@@ -231,15 +245,13 @@ async def poll_for_dashboard_entity_issues(
             else:
                 dash_label = "Default"
 
-            # Skip entities already confirmed benign in a prior investigation.
+            # Skip entities suppressed (benign) or under stuck-loop backoff.
             _benign_key = f"lovelace_benign:{ref.entity_id}"
+            from utils.hitl.hitl_tracker import should_send_card
+
             with sqlite3.connect(_db_path) as conn:
-                _benign_row = conn.execute(
-                    "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
-                    (_benign_key,),
-                ).fetchone()
-            if _benign_row is not None and _benign_row[0] is None:
-                continue
+                if not should_send_card(conn, _benign_key):
+                    continue
 
             if ref.entity_id in state_ids:
                 # Entity has live state but no entity registry entry.

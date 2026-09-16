@@ -530,7 +530,19 @@ async def _run_update_analysis(
         )
         increment_active_agent()
         try:
-            await loop.run(initial_context)
+            result = await loop.run(initial_context)
+            if result.outcome != "success":
+                import sqlite3 as _sqlite3
+                from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+                _backoff_key = f"update_analysis_backoff:{update.entity_id}"
+                with _sqlite3.connect(DB_PATH) as _conn:
+                    mark_investigation_backoff(_conn, _backoff_key)
+                log.warning(
+                    "update_analysis_stuck_backoff",
+                    outcome=result.outcome,
+                    component=update.component,
+                )
         finally:
             decrement_active_agent()
 

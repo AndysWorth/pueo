@@ -15,6 +15,7 @@ from utils.hitl.hitl_tracker import (
     mark_card_rejected,
     mark_card_resolved,
     mark_card_sent,
+    mark_investigation_backoff,
     should_send_card,
     stable_nid,
     touch_reminder_sent,
@@ -219,6 +220,38 @@ def test_deferred_zero_hours_allows_send(conn):
     mark_card_sent(conn, "k", "t", "d")
     mark_card_deferred(conn, "k", hours=0.0)
     assert should_send_card(conn, "k") is True
+
+
+# ---------------------------------------------------------------------------
+# mark_investigation_backoff
+# ---------------------------------------------------------------------------
+
+
+def test_investigation_backoff_blocks_immediately(conn):
+    mark_investigation_backoff(conn, "repair_issue_backoff:abc-123")
+    assert should_send_card(conn, "repair_issue_backoff:abc-123") is False
+
+
+def test_investigation_backoff_writes_deferred_action(conn):
+    mark_investigation_backoff(conn, "lovelace_benign:sensor.foo")
+    row = conn.execute(
+        "SELECT last_action, next_allowed_at FROM hitl_suppression"
+        " WHERE card_key = 'lovelace_benign:sensor.foo'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "deferred"
+    assert row[1] > time.time()
+
+
+def test_investigation_backoff_expires_after_cooldown(conn):
+    mark_investigation_backoff(conn, "notification_backoff:n1")
+    # Simulate expiry: update next_allowed_at to the past
+    conn.execute(
+        "UPDATE hitl_suppression SET next_allowed_at = ? WHERE card_key = ?",
+        (time.time() - 1, "notification_backoff:n1"),
+    )
+    conn.commit()
+    assert should_send_card(conn, "notification_backoff:n1") is True
 
 
 # ---------------------------------------------------------------------------
