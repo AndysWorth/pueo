@@ -152,9 +152,17 @@ class TestDeriveTemperature:
 
 
 class TestDeriveKeepAlive:
-    def test_supervisor_mode_keeps_alive_forever(self):
+    def test_supervisor_mode_default_idle_30m(self):
         opts = _derive(supervisor_mode=True)
+        assert opts.keep_alive == "30m"
+
+    def test_supervisor_mode_forever_when_zero(self):
+        opts = _derive(supervisor_mode=True, idle_unload_minutes=0)
         assert opts.keep_alive == -1
+
+    def test_supervisor_mode_custom_idle_minutes(self):
+        opts = _derive(supervisor_mode=True, idle_unload_minutes=60)
+        assert opts.keep_alive == "60m"
 
     def test_oneshot_mode_uses_5m(self):
         opts = _derive(supervisor_mode=False)

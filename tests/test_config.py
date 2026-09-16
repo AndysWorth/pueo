@@ -1474,3 +1474,16 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.OLLAMA_KEEP_ALIVE == "-1"
+
+    def test_ollama_idle_unload_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_IDLE_UNLOAD_MINUTES == 30
+
+    def test_ollama_idle_unload_minutes_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"ollama": {"idle_unload_minutes": 0}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OLLAMA_IDLE_UNLOAD_MINUTES == 0

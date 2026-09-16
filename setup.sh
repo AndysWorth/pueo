@@ -800,6 +800,7 @@ ollama:
   # think_mode: "auto"    # "auto" | "off" | "low" | "medium" | "high"
   # num_ctx: 0            # 0 = auto-derive from model context_length + available RAM
   # keep_alive: "auto"    # "auto" = "-1" in supervisor, "5m" in one-shot
+  # idle_unload_minutes: 30  # 0 = keep loaded forever; >0 = unload after N idle minutes
 
 llm:
   provider: "${LLM_PROVIDER}"

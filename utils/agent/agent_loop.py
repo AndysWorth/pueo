@@ -138,9 +138,11 @@ def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
 
     keep_alive_cfg = _cfg.OLLAMA_KEEP_ALIVE
     supervisor_mode = get_work_queue_or_none() is not None
+    idle_unload_minutes = _cfg.OLLAMA_IDLE_UNLOAD_MINUTES
     if keep_alive_cfg != "auto":
         # Explicit override — translate into supervisor_mode equivalent
         supervisor_mode = keep_alive_cfg == "-1"
+        idle_unload_minutes = 0  # explicit keep_alive wins; disable idle unload
 
     return derive_call_options(
         has_thinking=has_thinking,
@@ -151,6 +153,7 @@ def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
         think_mode_cfg=_cfg.OLLAMA_THINK_MODE,
         num_ctx_override=_cfg.OLLAMA_NUM_CTX,
         supervisor_mode=supervisor_mode,
+        idle_unload_minutes=idle_unload_minutes,
         one_shot=False,
     )
 

@@ -50,6 +50,9 @@ OLLAMA_NUM_CTX: int = int(_ollama.get("num_ctx", 0))
 # Derived: 131072 on 40+ GB available, 32768 on 20-40 GB, 16384 on 10-20 GB, 8192 else
 OLLAMA_KEEP_ALIVE: str = _ollama.get("keep_alive", "auto")
 # "auto" = "-1" in supervisor mode, "5m" in one-shot; or set a duration string
+OLLAMA_IDLE_UNLOAD_MINUTES: int = int(_ollama.get("idle_unload_minutes", 30))
+# 0 = keep model loaded forever (old behavior); >0 = unload after N idle minutes
+# Ignored when OLLAMA_KEEP_ALIVE is set explicitly (not "auto").
 
 DB_PATH: str = _agent.get("db_path", str(_dirs.state_dir / "ha_agent_state.db"))
 CONFIDENCE_THRESHOLD: float = float(_agent.get("log_confidence_threshold", 0.7))
