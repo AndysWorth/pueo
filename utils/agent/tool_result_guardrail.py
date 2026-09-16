@@ -111,7 +111,7 @@ class ToolResultGuardrail:
         checks: list[GuardrailCheck] = [
             self._check_hallucinated_tool(tool_name),
             self._check_output_too_large(raw_output),
-            self._check_error_pattern(raw_output, success),
+            self._check_error_pattern(raw_output, success, tool_name),
             self._check_repetition(tool_name, tool_args),
             self._check_cascade_failure(success),
             self._check_empty_output(tool_name, raw_output, success),
@@ -187,8 +187,14 @@ class ToolResultGuardrail:
             )
         return GuardrailCheck(triggered=False)
 
-    def _check_error_pattern(self, output: str, success: bool) -> GuardrailCheck:
+    def _check_error_pattern(
+        self, output: str, success: bool, tool_name: str = ""
+    ) -> GuardrailCheck:
         if not success:
+            return GuardrailCheck(triggered=False)
+        # KB and source-reading tools return trusted internal content that
+        # may legitimately contain security terms or error descriptions.
+        if tool_name in {"query_knowledge", "recall", "read_source"}:
             return GuardrailCheck(triggered=False)
         if _ERROR_PATTERNS.search(output):
             return GuardrailCheck(

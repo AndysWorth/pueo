@@ -3932,6 +3932,66 @@ class TestFetchReleaseNotesCached:
         )
         assert result == stub
 
+    def test_non_ha_core_version_uses_release_url(self, tmp_path):
+        """Non-HA-Core versions (e.g. HACS v0.7.1) fetch from release_url, not HA core API."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from agents.ha_update_manager import fetch_release_notes_cached
+
+        mock_fetch = AsyncMock(return_value='{"body": "HACS release notes"}')
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url", mock_fetch
+        ):
+            result = asyncio.run(
+                fetch_release_notes_cached(
+                    "v0.7.1",
+                    str(tmp_path),
+                    release_url="https://api.github.com/repos/hacs/hacs/releases/tags/v0.7.1",
+                )
+            )
+
+        mock_fetch.assert_called_once()
+        assert result == '{"body": "HACS release notes"}'
+        # Result should be cached
+        assert (tmp_path / "v0.7.1.txt").exists()
+
+    def test_ha_core_version_ignores_release_url(self, tmp_path):
+        """HA Core versions (YYYY.M.P) use the core GitHub API, not release_url."""
+
+        async def fake_fetcher(version: str) -> str:
+            return f"HA Core notes for {version}"
+
+        from agents.ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(
+            fetch_release_notes_cached(
+                "2026.9.2",
+                str(tmp_path),
+                release_url="https://should-not-be-used.example.com",
+                _fetcher=fake_fetcher,
+            )
+        )
+        assert result == "HA Core notes for 2026.9.2"
+
+    def test_non_ha_core_no_release_url_falls_through_to_fetcher(self, tmp_path):
+        """Non-HA-Core version with no release_url falls through to the core fetcher."""
+
+        async def fake_fetcher(version: str) -> str:
+            return "notes from core fetcher"
+
+        from agents.ha_update_manager import fetch_release_notes_cached
+
+        result = asyncio.run(
+            fetch_release_notes_cached(
+                "3.2.0",
+                str(tmp_path),
+                _fetcher=fake_fetcher,
+            )
+        )
+        assert result == "notes from core fetcher"
+
     def test_stub_sentinel_written_to_cache(self, tmp_path):
         """fetch_ha_release_notes writes STUB: prefix when body is a short stub."""
         from utils.knowledge.ha_release_notes_scraper import fetch_ha_release_notes
@@ -8319,6 +8379,61 @@ class TestToolExecutor:
         result = asyncio.run(
             executor.execute(
                 ToolCall(name="run_ha_command", arguments={"command": "rm -rf /"})
+            )
+        )
+        assert not result.success
+        assert "not in allowlist" in result.error
+
+    def test_run_ha_command_ha_core_info_raw_json_allowed(self):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info --raw-json": (0, '{"version":"2026.9.2"}', "")
+            }
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha core info --raw-json"},
+                )
+            )
+        )
+        assert result.success
+        assert "not in allowlist" not in (result.error or "")
+
+    def test_run_ha_command_ha_apps_info_slug_allowed(self):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha apps info mosquitto": (0, "state: running", "")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha apps info mosquitto"},
+                )
+            )
+        )
+        assert result.success
+
+    def test_run_ha_command_ha_apps_info_multi_word_slug_rejected(self):
+        """ha apps info with multiple slug words is not allowed (injection risk)."""
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha apps info foo bar"},
+                )
             )
         )
         assert not result.success

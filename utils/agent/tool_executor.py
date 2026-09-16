@@ -50,6 +50,8 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha core check",
         "ha core restart",
         "ha core stop",
+        "ha core info",
+        "ha core info --raw-json",
         "ha host info",
         "ha backups list",
         "ha apps list",
@@ -542,7 +544,12 @@ class ToolExecutor:
 
     async def _run_ha_command(self, command: str) -> ToolResult:
         normalized = command.strip()
-        if normalized not in _HA_COMMAND_ALLOWLIST:
+        # Allow parameterized read-only commands via prefix-match: ha apps info <slug>
+        _allowed = normalized in _HA_COMMAND_ALLOWLIST or (
+            normalized.startswith("ha apps info ")
+            and len(normalized.split()) == 4  # ha + apps + info + slug
+        )
+        if not _allowed:
             log.warning("run_ha_command_rejected", command=normalized)
             return ToolResult(
                 tool_name="run_ha_command",
@@ -2770,7 +2777,7 @@ class ToolExecutor:
             )
 
     async def _get_update_release_notes(self, target_version: str) -> ToolResult:
-        """Fetch release notes for a specific HA version."""
+        """Fetch release notes for a specific HA version or HACS/App update."""
         if not target_version:
             return ToolResult(
                 tool_name="get_update_release_notes",
@@ -2782,8 +2789,18 @@ class ToolExecutor:
             from agents.ha_update_manager import fetch_release_notes_cached
             import config as _cfg
 
+            # Pass release_url from the stored update status when the version
+            # matches — allows HACS/App updates to fetch from their own repos
+            # instead of the HA core GitHub API (which 404s for non-core versions).
+            _release_url: Optional[str] = None
+            if self._pending_update_status is not None:
+                if self._pending_update_status.latest_version == target_version:
+                    _release_url = self._pending_update_status.release_url
+
             notes = await fetch_release_notes_cached(
-                target_version, _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR
+                target_version,
+                _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
+                release_url=_release_url,
             )
             return ToolResult(
                 tool_name="get_update_release_notes",

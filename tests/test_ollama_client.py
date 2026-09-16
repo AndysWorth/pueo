@@ -229,3 +229,66 @@ class TestOllamaClientChatWithToolsLogging:
         events = [r.msg for r in caplog.records]
         assert "llm_request_full" not in events
         assert "llm_response_full" not in events
+
+
+class TestOllamaClientTokenCounts:
+    """OllamaClient.chat_with_tools() exposes token counts in _ollama_timing."""
+
+    def _make_client_with_token_counts(self, monkeypatch, input_tokens, output_tokens):
+        import ollama
+
+        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        import importlib
+        import utils.llm.ollama_client as mod
+
+        importlib.reload(mod)
+        client = mod.OllamaClient()
+        fake_resp = unittest.mock.MagicMock()
+        fake_resp.message.content = "answer"
+        fake_resp.message.tool_calls = []
+        fake_resp.eval_duration = None
+        fake_resp.load_duration = None
+        fake_resp.prompt_eval_count = input_tokens
+        fake_resp.eval_count = output_tokens
+        client._client.chat.return_value = fake_resp
+        return client
+
+    def test_token_counts_present_in_ollama_timing(self, monkeypatch):
+        """chat_with_tools() returns _ollama_timing with input_tokens and output_tokens."""
+        client = self._make_client_with_token_counts(monkeypatch, 123, 45)
+        result = asyncio.run(
+            client.chat_with_tools(
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        )
+        timing = result.get("_ollama_timing", {})
+        assert timing.get("input_tokens") == 123
+        assert timing.get("output_tokens") == 45
+
+    def test_token_counts_none_when_missing(self, monkeypatch):
+        """When Ollama does not return token counts, _ollama_timing values are None."""
+        import ollama
+
+        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        import importlib
+        import utils.llm.ollama_client as mod
+
+        importlib.reload(mod)
+        client = mod.OllamaClient()
+        fake_resp = unittest.mock.MagicMock(spec=[])
+        fake_resp.message = unittest.mock.MagicMock()
+        fake_resp.message.content = "answer"
+        fake_resp.message.tool_calls = []
+        client._client.chat.return_value = fake_resp
+        result = asyncio.run(
+            client.chat_with_tools(
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+            )
+        )
+        timing = result.get("_ollama_timing", {})
+        assert timing.get("input_tokens") is None
+        assert timing.get("output_tokens") is None

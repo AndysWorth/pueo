@@ -140,6 +140,8 @@ class OllamaClient:
         result["_ollama_timing"] = {
             "eval_ms": eval_ns / 1_000_000 if eval_ns else None,
             "load_ms": load_ns / 1_000_000 if load_ns else None,
+            "input_tokens": getattr(resp, "prompt_eval_count", None),
+            "output_tokens": getattr(resp, "eval_count", None),
         }
         # Extract thinking text for SQLite persistence.
         _thinking_raw = getattr(msg, "thinking", None)
