@@ -395,16 +395,16 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 
 **Objective:** Fix the gaps revealed by an audit of Pueo's ChromaDB knowledge base: empty `ha_source` cache, incomplete HA concepts coverage, repair episodes not embedded (ADR 014 pre-injection was broken), and no authority ranking or version-awareness in retrieval. The milestone also expands content coverage to HA developer docs and adds hybrid dense+sparse retrieval.
 
-**Delivered so far (Sessions 1–3):**
+**Delivered so far (Sessions 1–7):**
 - **Session 1 (PR #665):** Fixed `ha_source` logging, `ha_concepts` 404 logging; expanded release note scraping from 12 to 24 versions (`RAG_N_VERSIONS` config key)
 - **Session 2 (PR #667):** Added `repair_history` ChromaDB collection; `repair_episode_embedder.py` embeds completed repairs at refresh time; completed ADR 014 pre-injection; `pre_inject_similar_episodes` log events; ADR 031
 - **Session 3 (PR #668):** Authority-ranked retrieval: `authority_score` on `KnowledgeChunk`; blended sort `(authority × 0.3) + (similarity × 0.7)`; `[OFFICIAL]`/`[SEED RUNBOOK]`/`[PAST REPAIR]`/etc. labels in `query_knowledge` output; `ha_version_min`/`ha_version_max` metadata on release note and scraper-fetched chunks; ADR 030
+- **Session 4 (PR #671):** `ha_developer_docs_scraper.py` — config flows, entity model, WebSocket API, REST API; new `ha_developer_docs` ChromaDB collection
+- **Session 5 (PR #673):** Expanded `ha_concepts` from 15 to 31 pages; auto-generated `seed_home_profile.md` from live HA at RAG refresh; `seed_home_profile()` in `strategy_seeder.py`
+- **Session 6 (PR #675):** Updated `prompts/agent_loop.md` Phase 4 with `remember()` instruction; new `prompts/seed_supervisor_cli.md` Supervisor CLI reference runbook
+- **Session 7 (PR #677):** `query_type` routing in `query_knowledge` (diagnostic / procedural / generative / version_check); `ToolExecutor._QUERY_TYPE_COLLECTIONS` routing map; Phase 1 prompt guidance updated
 
 **Remaining sessions:**
-- Session 4 (C1): `ha_developer_docs_scraper.py` — config flows, entity model, WebSocket API; new `ha_developer_docs` collection — COMPLETE PR #670 (2026-09-16)
-- Session 5 (C2+D3): Expand `_CONCEPT_DOCS` to ~30 pages; auto-generated `seed_home_profile.md` from live HA at refresh — COMPLETE PR #672 (2026-09-16)
-- Session 6 (D2+C3): Prompt `agent_loop.md` to use `remember()`; `seed_supervisor_cli.md`
-- Session 7 (E1): `query_type` routing in `query_knowledge` (diagnostic / procedural / generative / version_check)
 - Session 8 (B3): rank-bm25 hybrid retrieval; `RAG_HYBRID_WEIGHT` config key; ADR 029
 - Session 9 (E2): `ha_version` score boosting using `ha_version_min`/`ha_version_max` metadata
 

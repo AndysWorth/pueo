@@ -306,7 +306,14 @@ QUERY_KNOWLEDGE = ToolDefinition(
     name="query_knowledge",
     description=(
         "Query the local RAG knowledge base for HA breaking changes, integration docs, "
-        "and HACS changelogs. Pass integration_filter to scope results to specific domains."
+        "runbooks, repair history, and developer docs. "
+        "Use query_type to route to the most relevant collections: "
+        "'diagnostic' for error/repair queries (repair history + release notes + integration docs); "
+        "'procedural' for how-to/implementation queries (developer docs + concepts + integration docs); "
+        "'generative' for automation/template authoring (concepts + integration docs + strategies); "
+        "'version_check' for breaking-change queries about a specific HA version (release notes only). "
+        "Omit query_type to search all collections. "
+        "Pass integration_filter to scope results to specific domains."
     ),
     parameters={
         "type": "object",
@@ -314,6 +321,17 @@ QUERY_KNOWLEDGE = ToolDefinition(
             "query": {
                 "type": "string",
                 "description": "Search query text",
+            },
+            "query_type": {
+                "type": "string",
+                "enum": ["diagnostic", "procedural", "generative", "version_check"],
+                "description": (
+                    "Route query to relevant collections: "
+                    "'diagnostic' = repair_history + ha_release_notes + ha_integration_docs; "
+                    "'procedural' = ha_developer_docs + ha_concepts + ha_integration_docs; "
+                    "'generative' = ha_concepts + ha_integration_docs + strategies; "
+                    "'version_check' = ha_release_notes only"
+                ),
             },
             "integration_filter": {
                 "type": "array",

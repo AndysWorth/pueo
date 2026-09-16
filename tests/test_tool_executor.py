@@ -2044,3 +2044,202 @@ class TestQueryKnowledgeAuthorityLabels:
             ToolExecutor._knowledge_authority_label("hacs_changelogs", {})
             == "[COMMUNITY]"
         )
+
+
+class TestQueryKnowledgeTypeRouting:
+    """Tests for query_type routing in _query_knowledge."""
+
+    def _make_executor_with_store(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory "
+                "(key TEXT, content TEXT, source TEXT, ts REAL)"
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        return executor, store
+
+    def test_diagnostic_routes_to_repair_history_and_release_notes(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["past repair for mqtt broker"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        store.upsert(
+            "strategies",
+            ids=["strat-1"],
+            documents=["mqtt broker runbook"],
+            metadatas=[{"source": "seed_prompt"}],
+        )
+        result = asyncio.run(
+            executor._query_knowledge("mqtt broker", query_type="diagnostic")
+        )
+        assert result.success is True
+        # repair_history included
+        assert "[PAST REPAIR]" in result.output
+        # strategies not included for diagnostic
+        assert "runbook" not in result.output
+
+    def test_version_check_routes_to_release_notes_only(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["zha breaking change notes"],
+            metadatas=[{"source": "release_notes", "version": "2026.9"}],
+        )
+        store.upsert(
+            "ha_integration_docs",
+            ids=["doc-1"],
+            documents=["zha integration config docs"],
+            metadatas=[{"source": "ha_docs/zha"}],
+        )
+        result = asyncio.run(
+            executor._query_knowledge("zha breaking", query_type="version_check")
+        )
+        assert result.success is True
+        assert "[OFFICIAL]" in result.output
+        # integration_docs not in version_check collections
+        assert "integration config docs" not in result.output
+
+    def test_procedural_routes_to_developer_docs_and_concepts(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_developer_docs",
+            ids=["dev-1"],
+            documents=["how to implement a config flow"],
+            metadatas=[{"source": "developer_docs/config_entries"}],
+        )
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["config flow past repair episode"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        result = asyncio.run(
+            executor._query_knowledge("config flow", query_type="procedural")
+        )
+        assert result.success is True
+        assert "implement a config flow" in result.output
+        # repair_history not included for procedural
+        assert "[PAST REPAIR]" not in result.output
+
+    def test_generative_routes_to_concepts_and_strategies(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "strategies",
+            ids=["strat-1"],
+            documents=["template sensor automation pattern"],
+            metadatas=[{"source": "seed_prompt", "title": "template"}],
+        )
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["template sensor automation repair"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        result = asyncio.run(
+            executor._query_knowledge(
+                "template sensor automation", query_type="generative"
+            )
+        )
+        assert result.success is True
+        assert "[SEED RUNBOOK]" in result.output
+        # repair_history not included for generative
+        assert "[PAST REPAIR]" not in result.output
+
+    def test_no_query_type_uses_all_collections(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["mqtt release note"],
+            metadatas=[{"source": "release_notes", "version": "2026.9"}],
+        )
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["mqtt repair history"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        result = asyncio.run(executor._query_knowledge("mqtt"))
+        assert result.success is True
+        # Both collections returned when no query_type
+        assert "[OFFICIAL]" in result.output
+        assert "[PAST REPAIR]" in result.output
+
+    def test_unknown_query_type_falls_back_to_all_collections(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["zha release note"],
+            metadatas=[{"source": "release_notes", "version": "2026.9"}],
+        )
+        store.upsert(
+            "repair_history",
+            ids=["rep-1"],
+            documents=["zha repair history"],
+            metadatas=[{"source": "repair_episode", "outcome": "success"}],
+        )
+        result = asyncio.run(
+            executor._query_knowledge("zha", query_type="nonexistent_type")
+        )
+        assert result.success is True
+        # Unknown type: all collections searched
+        assert "[OFFICIAL]" in result.output
+        assert "[PAST REPAIR]" in result.output
+
+    def test_query_type_routing_map_keys(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert "diagnostic" in ToolExecutor._QUERY_TYPE_COLLECTIONS
+        assert "procedural" in ToolExecutor._QUERY_TYPE_COLLECTIONS
+        assert "generative" in ToolExecutor._QUERY_TYPE_COLLECTIONS
+        assert "version_check" in ToolExecutor._QUERY_TYPE_COLLECTIONS
+
+    def test_diagnostic_collections_include_repair_history(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        cols = ToolExecutor._QUERY_TYPE_COLLECTIONS["diagnostic"]
+        assert "repair_history" in cols
+        assert "ha_release_notes" in cols
+        assert "ha_integration_docs" in cols
+
+    def test_version_check_only_release_notes(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        cols = ToolExecutor._QUERY_TYPE_COLLECTIONS["version_check"]
+        assert cols == ["ha_release_notes"]
