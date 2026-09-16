@@ -157,6 +157,7 @@ agent:
   # rag_ha_docs_cache_dir: ""   # HA docs cache; default: ~/Library/Caches/Pueo/ha_docs (macOS)
   # ha_source_cache_dir: ""     # HA source cache; default: ~/Library/Caches/Pueo/ha_source (macOS)
   # ha_concepts_cache_dir: ""   # HA concept docs cache; default: ~/Library/Caches/Pueo/ha_concepts (macOS)
+  # ha_developer_docs_cache_dir: ""  # HA developer docs cache; default: ~/Library/Caches/Pueo/ha_developer_docs (macOS)
   # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
   # diagnostic_wan_timeout_seconds: 60  # Timeout for fetch_url calls (seconds)

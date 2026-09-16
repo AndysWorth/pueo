@@ -231,6 +231,29 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     if concepts_ids:
         store.prune("ha_concepts", concepts_ids)
 
+    # ── 3.7. HA developer docs ───────────────────────────────────────────────
+    from utils.knowledge.ha_developer_docs_scraper import (
+        embed_cached_developer_docs,
+        fetch_developer_docs,
+    )
+
+    _log.info("rag_refresh_step", step="fetch_developer_docs")
+    n_fetched_dev = fetch_developer_docs(config.HA_DEVELOPER_DOCS_CACHE_DIR)
+    _log.info(
+        "rag_refresh_step_done", step="fetch_developer_docs", fetched=n_fetched_dev
+    )
+
+    _log.info("rag_refresh_step", step="embed_developer_docs")
+    dev_ids: set[str] = set()
+    n_developer_docs = embed_cached_developer_docs(
+        config.HA_DEVELOPER_DOCS_CACHE_DIR, store, dev_ids, _ha_version
+    )
+    _log.info(
+        "rag_refresh_step_done", step="embed_developer_docs", embedded=n_developer_docs
+    )
+    if dev_ids:
+        store.prune("ha_developer_docs", dev_ids)
+
     # ── 5. Strategy seeding ──────────────────────────────────────────────────
     from utils.knowledge.strategy_seeder import seed_strategies
 
@@ -255,7 +278,14 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     )
 
     total = (
-        n_ha + n_hacs + n_docs + n_concepts + n_strategies + n_reembedded + n_episodes
+        n_ha
+        + n_hacs
+        + n_docs
+        + n_concepts
+        + n_developer_docs
+        + n_strategies
+        + n_reembedded
+        + n_episodes
     )
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
@@ -263,7 +293,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     _log.info(
         "rag_refresh_complete",
         total_embedded=total,
-        collections=6,
+        collections=7,
     )
 
 

@@ -6471,6 +6471,189 @@ class TestHaConceptsCollection:
         assert "ha_concepts" in COLLECTIONS
 
 
+class TestParseDeveloperDoc:
+    def test_strips_frontmatter(self):
+        from utils.knowledge.ha_developer_docs_scraper import parse_developer_doc
+
+        doc = "---\ntitle: Entities\nsidebar_label: Entity\n---\n## Overview\nEntity model concepts."
+        result = parse_developer_doc(doc)
+        assert result
+        assert all("---" not in c for c in result)
+        assert any("Entity model concepts" in c for c in result)
+
+    def test_splits_by_headings(self):
+        from utils.knowledge.ha_developer_docs_scraper import parse_developer_doc
+
+        doc = "## Config Flow\nFlow description.\n## Options Flow\nOptions description."
+        result = parse_developer_doc(doc)
+        assert len(result) == 2
+
+    def test_word_boundary_truncation(self):
+        from utils.knowledge.ha_developer_docs_scraper import parse_developer_doc
+
+        long_section = "word " * 700  # ~3500 chars
+        doc = f"## Section\n{long_section}"
+        result = parse_developer_doc(doc)
+        assert len(result) == 1
+        assert len(result[0]) <= 3000
+        assert not result[0].endswith("wor")
+
+    def test_strips_empty_sections(self):
+        from utils.knowledge.ha_developer_docs_scraper import parse_developer_doc
+
+        doc = "## Header\n\n## Content\nActual text here"
+        result = parse_developer_doc(doc)
+        assert all(c.strip() for c in result)
+
+    def test_handles_doc_without_frontmatter(self):
+        from utils.knowledge.ha_developer_docs_scraper import parse_developer_doc
+
+        doc = "## WebSocket API\nSend authentication message."
+        result = parse_developer_doc(doc)
+        assert result
+        assert "WebSocket API" in result[0]
+
+
+class TestEmbedCachedDeveloperDocs:
+    def test_returns_zero_for_missing_dir(self):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_developer_docs("/nonexistent/path", store) == 0
+
+    def test_processes_md_files(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "core_entity.md").write_text(
+            "## Entity model\nBase entity description.\n## State\nState management."
+        )
+
+        store = FakeKnowledgeStore()
+        result = embed_cached_developer_docs(str(cache), store)
+        assert result == 1
+        hits = store.query("entity description", top_k=5)
+        assert len(hits) > 0
+        assert hits[0].collection == "ha_developer_docs"
+
+    def test_collected_ids_populated(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "api_websocket.md").write_text(
+            "## Authentication\nSend auth message.\n## Commands\nCommand reference."
+        )
+
+        store = FakeKnowledgeStore()
+        collected: set[str] = set()
+        embed_cached_developer_docs(str(cache), store, collected)
+        assert len(collected) == 2
+        assert "ha-developer-docs-api_websocket-0" in collected
+
+    def test_skips_non_md_files(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "readme.txt").write_text("## Overview\nSome text")
+
+        store = FakeKnowledgeStore()
+        assert embed_cached_developer_docs(str(cache), store) == 0
+
+    def test_metadata_source_and_category_fields(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "config_entries_index.md").write_text(
+            "## Config entries\nConfig flow entry."
+        )
+
+        store = FakeKnowledgeStore()
+        embed_cached_developer_docs(str(cache), store)
+        hits = store.query("Config flow entry", top_k=5)
+        assert hits
+        assert (
+            hits[0].metadata.get("source") == "ha_developer_docs/config_entries_index"
+        )
+        assert hits[0].metadata.get("category") == "config_flow"
+
+    def test_unknown_doc_id_gets_general_category(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "some_unknown_page.md").write_text("## Section\nContent here.")
+
+        store = FakeKnowledgeStore()
+        embed_cached_developer_docs(str(cache), store)
+        hits = store.query("Content here", top_k=5)
+        assert hits
+        assert hits[0].metadata.get("category") == "general"
+
+    def test_scraped_for_ha_version_in_metadata(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "core_entity.md").write_text("## Entity\nBase class description.")
+        store = FakeKnowledgeStore()
+        embed_cached_developer_docs(
+            str(cache), store, scraped_for_ha_version="2026.9.0"
+        )
+        hits = store.query("Base class description", top_k=5)
+        assert hits[0].metadata.get("scraped_for_ha_version") == "2026.9.0"
+
+    def test_scraped_for_ha_version_omitted_when_empty(self, tmp_path):
+        from utils.knowledge.ha_developer_docs_scraper import (
+            embed_cached_developer_docs,
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "developer_docs"
+        cache.mkdir()
+        (cache / "core_entity.md").write_text("## Entity\nBase class description.")
+        store = FakeKnowledgeStore()
+        embed_cached_developer_docs(str(cache), store)
+        hits = store.query("Base class description", top_k=5)
+        assert "scraped_for_ha_version" not in hits[0].metadata
+
+
+class TestHaDeveloperDocsCollection:
+    def test_ha_developer_docs_in_collections(self):
+        from utils.knowledge.knowledge_store import COLLECTIONS
+
+        assert "ha_developer_docs" in COLLECTIONS
+
+    def test_ha_developer_docs_authority_score_is_one(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("ha_developer_docs", {}) == 1.0
+
+
 class TestReleaseNotesDefaultVersions:
     def test_fetch_ha_release_notes_default_n_versions(self):
         import inspect

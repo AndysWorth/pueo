@@ -988,6 +988,22 @@ class TestHAUpdateManagerConfig:
 
         assert config.HA_CONCEPTS_CACHE_DIR == "/data/ha_concepts"
 
+    def test_ha_developer_docs_cache_dir_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert Path(config.HA_DEVELOPER_DOCS_CACHE_DIR).is_absolute()
+        assert Path(config.HA_DEVELOPER_DOCS_CACHE_DIR).name == "ha_developer_docs"
+
+    def test_ha_developer_docs_cache_dir_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_developer_docs_cache_dir": "/data/ha_dev_docs"}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_DEVELOPER_DOCS_CACHE_DIR == "/data/ha_dev_docs"
+
     def test_rag_refresh_interval_hours_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
