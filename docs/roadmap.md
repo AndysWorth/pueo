@@ -402,7 +402,7 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 
 **Remaining sessions:**
 - Session 4 (C1): `ha_developer_docs_scraper.py` — config flows, entity model, WebSocket API; new `ha_developer_docs` collection — COMPLETE PR #670 (2026-09-16)
-- Session 5 (C2+D3): Expand `_CONCEPT_DOCS` to ~30 pages; auto-generated `seed_home_profile.md` from live HA at refresh
+- Session 5 (C2+D3): Expand `_CONCEPT_DOCS` to ~30 pages; auto-generated `seed_home_profile.md` from live HA at refresh — COMPLETE PR #672 (2026-09-16)
 - Session 6 (D2+C3): Prompt `agent_loop.md` to use `remember()`; `seed_supervisor_cli.md`
 - Session 7 (E1): `query_type` routing in `query_knowledge` (diagnostic / procedural / generative / version_check)
 - Session 8 (B3): rank-bm25 hybrid retrieval; `RAG_HYBRID_WEIGHT` config key; ADR 029

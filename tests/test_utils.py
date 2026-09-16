@@ -6162,6 +6162,132 @@ class TestStrategySeeder:
         assert n > 0
 
 
+class TestSeedHomeProfile:
+    def test_returns_one_on_success(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        assert seed_home_profile(store) == 1
+
+    def test_upserts_to_strategies_collection(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        seed_home_profile(store)
+        hits = store.query(
+            "installed integrations", top_k=5, collections=["strategies"]
+        )
+        assert len(hits) > 0
+
+    def test_document_id_is_ha_instance_profile(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        seed_home_profile(store)
+        # FakeKnowledgeStore stores (doc_id, doc, meta) tuples
+        assert any(
+            doc_id == "ha_instance_profile"
+            for doc_id, _, _ in store._docs.get("strategies", [])
+        )
+
+    def test_with_env_profile_includes_version(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.9.0",
+            os_version="14.2",
+            supervisor_version="2024.09.0",
+            installed_integrations=["mqtt", "zha", "hue"],
+            hacs_integrations=["mushroom"],
+            config_yaml_top_keys=["homeassistant", "mqtt"],
+        )
+        store = FakeKnowledgeStore()
+        n = seed_home_profile(store, env_profile=profile)
+        assert n == 1
+        hits = store.query("2026.9.0", top_k=5, collections=["strategies"])
+        assert hits
+        doc_text = hits[0].text
+        assert "2026.9.0" in doc_text
+        assert "mqtt" in doc_text
+        assert "mushroom" in doc_text
+
+    def test_with_env_profile_lists_integrations(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        profile = HAEnvironmentProfile(
+            installed_integrations=["zha", "hue", "mqtt"],
+        )
+        store = FakeKnowledgeStore()
+        seed_home_profile(store, env_profile=profile)
+        hits = store.query(
+            "installed integrations", top_k=5, collections=["strategies"]
+        )
+        assert hits
+        doc_text = hits[0].text
+        assert "zha" in doc_text
+
+    def test_none_profile_includes_fallback_message(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        seed_home_profile(store, env_profile=None)
+        hits = store.query("HA instance", top_k=5, collections=["strategies"])
+        assert hits
+        doc_text = hits[0].text
+        assert "No live HA profile available" in doc_text
+
+    def test_writes_to_sqlite(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        seed_home_profile(store, db_path=db)
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT id FROM agent_strategies WHERE id = 'ha_instance_profile'"
+            ).fetchone()
+        assert row is not None
+
+    def test_idempotent(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_home_profile
+
+        store = FakeKnowledgeStore()
+        seed_home_profile(store)
+        seed_home_profile(store)
+        hits = store.query(
+            "installed integrations", top_k=50, collections=["strategies"]
+        )
+        profile_hits = [h for h in hits if "instance_profile" in str(h.metadata)]
+        # Idempotent: upsert replaces, so only one profile doc
+        assert len(profile_hits) <= 1
+
+    def test_template_file_is_valid_markdown(self):
+        from pathlib import Path
+
+        template = Path(__file__).parent.parent / "prompts" / "seed_home_profile.md"
+        assert template.exists()
+        content = template.read_text("utf-8")
+        assert len(content) > 10
+
+
 class TestReembedOrphanedRunbooks:
     def _make_db(self, tmp_path, monkeypatch):
         import agents.ha_agent_advanced as haa
@@ -6687,13 +6813,33 @@ class TestConceptDocsList:
     def test_concept_docs_length(self):
         from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
 
-        assert len(_CONCEPT_DOCS) >= 15
+        assert len(_CONCEPT_DOCS) >= 30
 
     def test_concept_docs_have_unique_ids(self):
         from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
 
         ids = [doc_id for doc_id, _ in _CONCEPT_DOCS]
         assert len(ids) == len(set(ids)), "duplicate doc_ids in _CONCEPT_DOCS"
+
+    def test_all_paths_distinct(self):
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        paths = [path for _, path in _CONCEPT_DOCS]
+        assert len(paths) == len(set(paths))
+
+    def test_new_concepts_present(self):
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        doc_ids = {doc_id for doc_id, _ in _CONCEPT_DOCS}
+        for expected in (
+            "templating",
+            "blueprint_overview",
+            "input_boolean",
+            "input_number",
+            "zones",
+            "scenes",
+        ):
+            assert expected in doc_ids, f"Expected concept doc '{expected}' not found"
 
 
 class TestFetchConceptDocsLogging:
