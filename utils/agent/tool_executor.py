@@ -248,6 +248,7 @@ class ToolExecutor:
                 return await self._query_knowledge(
                     args.get("query", ""),
                     integration_filter=args.get("integration_filter"),
+                    query_type=args.get("query_type"),
                 )
             if name == "remember":
                 return await self._remember(
@@ -635,10 +636,19 @@ class ToolExecutor:
             return "[PAST REPAIR]"
         return "[COMMUNITY]"
 
+    # Collections queried per query_type; None → all collections (default behaviour).
+    _QUERY_TYPE_COLLECTIONS: dict[str, list[str]] = {
+        "diagnostic": ["repair_history", "ha_release_notes", "ha_integration_docs"],
+        "procedural": ["ha_developer_docs", "ha_concepts", "ha_integration_docs"],
+        "generative": ["ha_concepts", "ha_integration_docs", "strategies"],
+        "version_check": ["ha_release_notes"],
+    }
+
     async def _query_knowledge(
         self,
         query: str,
         integration_filter: list[str] | None = None,
+        query_type: str | None = None,
     ) -> ToolResult:
         if self._knowledge_store is None:
             return ToolResult(
@@ -649,10 +659,13 @@ class ToolExecutor:
             )
         from config import RAG_TOP_K
 
+        collections = self._QUERY_TYPE_COLLECTIONS.get(query_type or "", None)
         where = None
         if integration_filter:
             where = {"impacted_integration": {"$in": integration_filter}}
-        chunks = self._knowledge_store.query(query, top_k=RAG_TOP_K, where=where)
+        chunks = self._knowledge_store.query(
+            query, top_k=RAG_TOP_K, collections=collections, where=where
+        )
         if not chunks:
             return ToolResult(
                 tool_name="query_knowledge",
