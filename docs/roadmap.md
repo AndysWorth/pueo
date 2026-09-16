@@ -27,6 +27,7 @@ Strategic capabilities in delivery order.
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
 | 12. Agent self-knowledge + HA live lookup     | ✅ Complete (2026-08-18)  | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
 | 13. Unified Agent Methodology                 | ✅ Complete (2026-08-24) | `prompts/agent_loop.md`, `utils/knowledge/strategy_seeder.py`, `utils/agent/tool_registry.py` |
+| 14. Knowledge Quality                         | 🔄 In Progress (2026-09-16) | `utils/knowledge/`, `utils/agent/tool_executor.py` |
 
 ### Implementation Phases
 
