@@ -50,7 +50,7 @@ class ModelCallOptions:
 
 **`temperature`**: `0.0` always except when thinking is active and the model has a `recommended_temperature` (e.g. 0.6 for qwen3 — temperature 0 + thinking produces repetitive reasoning loops; the model's own recommendation is the right choice).
 
-**`keep_alive`**: `"-1"` in supervisor mode (model stays loaded while Pueo is alive); `"5m"` in one-shot mode.
+**`keep_alive`**: `"Nm"` in supervisor mode where N = `OLLAMA_IDLE_UNLOAD_MINUTES` (default 30); the model unloads after N minutes of no LLM calls. Setting `OLLAMA_IDLE_UNLOAD_MINUTES=0` keeps the model loaded forever (`-1`). `"5m"` in one-shot mode. When `OLLAMA_KEEP_ALIVE` is set explicitly (not `"auto"`), it takes precedence.
 
 **`num_predict`**: `1024` for one-shot triage/analysis calls (caps runaway generation in structured output calls); `None` (unlimited) for agent loops.
 
@@ -86,4 +86,4 @@ OLLAMA_KEEP_ALIVE  (config.py + config.yaml.default + setup.sh)
 ## Related decisions
 - [ADR 003 — Structured LLM output](003-structured-llm-output.md): `temperature=0.0` rule for structured output calls is preserved; the exception (thinking mode) is explicitly documented here.
 - [ADR 006 — LLM provider abstraction](006-llm-provider-abstraction.md): `ClaudeAPIClient` accepts and ignores `think=` to maintain interface conformance.
-- [ADR 022 — Adaptive per-call LLM timeout](022-adaptive-per-call-timeout.md): `keep_alive="-1"` in supervisor mode reduces the `load_duration` contribution to the latency percentile, which in turn reduces estimated timeouts over time.
+- [ADR 022 — Adaptive per-call LLM timeout](022-adaptive-per-call-timeout.md): `keep_alive="30m"` in supervisor mode (default) reduces the `load_duration` contribution to the latency percentile during active periods, which in turn reduces estimated timeouts over time.

@@ -26,6 +26,8 @@ ollama:
   # num_ctx: 0                        # 0 = auto-derived from model context_length + available RAM
   #   Derived values: 131072 on 40+ GB available, 32768 on 20-40 GB, 16384 on 10-20 GB, 8192 else
   # keep_alive: "auto"                # "auto" = "-1" in supervisor mode, "5m" in one-shot; or set explicitly
+  # idle_unload_minutes: 30           # 0 = keep loaded forever; >0 = unload after N idle minutes (cold reload ~4 s)
+  #                                   # ignored when keep_alive is set explicitly (not "auto")
 
 llm:
   provider: "local"  # "local" | "cloud" | "both"

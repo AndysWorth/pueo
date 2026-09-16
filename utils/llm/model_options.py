@@ -21,7 +21,7 @@ class ModelCallOptions:
     )
     num_ctx: int  # 0 = let Ollama decide (not recommended); derived value otherwise
     temperature: float
-    keep_alive: int | str  # -1 = permanent; "5m" = 5 minute default
+    keep_alive: int | str  # -1 = permanent; "Nm" = unload after N idle minutes
     num_predict: Optional[int] = None  # None = unlimited
     seed: Optional[int] = None
 
@@ -49,6 +49,7 @@ def derive_call_options(
     think_mode_cfg: str,
     num_ctx_override: int,
     supervisor_mode: bool,
+    idle_unload_minutes: int = 30,
     one_shot: bool = False,
     seed: Optional[int] = None,
 ) -> ModelCallOptions:
@@ -71,7 +72,9 @@ def derive_call_options(
     num_ctx_override:
         OLLAMA_NUM_CTX config value; 0 = auto-derive.
     supervisor_mode:
-        True when the work queue is running (keep model loaded).
+        True when the work queue is running.
+    idle_unload_minutes:
+        Minutes of inactivity before Ollama unloads the model. 0 = keep forever.
     one_shot:
         True for triage/analysis calls that only need a short JSON response.
     seed:
@@ -115,7 +118,10 @@ def derive_call_options(
     # --- keep_alive ---
     # -1 (int) = keep loaded forever; Ollama rejects "-1" string (no time unit).
     if supervisor_mode:
-        keep_alive: int | str = -1
+        if idle_unload_minutes > 0:
+            keep_alive: int | str = f"{idle_unload_minutes}m"
+        else:
+            keep_alive = -1  # explicit "forever" (OLLAMA_IDLE_UNLOAD_MINUTES=0)
     else:
         keep_alive = "5m"
 
