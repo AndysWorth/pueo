@@ -67,16 +67,19 @@ def parse_concept_doc(doc_text: str) -> list[str]:
 def fetch_concept_docs(cache_dir: str) -> int:  # pragma: no cover
     """Fetch curated HA concept docs from GitHub and cache locally.
 
-    Returns count of files newly fetched (cached files are skipped, 404s silently
-    ignored).
+    Returns count of files newly fetched (cached files are skipped).
+    Logs a warning for each page that returns a non-200 status or errors.
     """
     import urllib.request
+    from utils.core.logging import get_logger
 
+    log = get_logger("ha_concepts_scraper")
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
     fetched = 0
     for doc_id, path in _CONCEPT_DOCS:
         cache_path = Path(cache_dir) / f"{doc_id}.md"
         if cache_path.exists():
+            log.debug("ha_concept_cached", doc_id=doc_id)
             continue
         url = f"{_HA_DOCS_RAW_BASE}/{path}.markdown"
         try:
@@ -89,8 +92,23 @@ def fetch_concept_docs(cache_dir: str) -> int:  # pragma: no cover
                 if resp.status == 200:
                     cache_path.write_bytes(resp.read())
                     fetched += 1
-        except Exception:  # nosec B110 — 404s and timeouts are expected
-            pass
+                    log.info("ha_concept_fetched", doc_id=doc_id, path=path)
+                else:
+                    log.warning(
+                        "ha_concept_fetch_failed",
+                        doc_id=doc_id,
+                        url=url,
+                        status=resp.status,
+                    )
+        except Exception as exc:  # nosec B110 — 404s and timeouts are expected
+            log.warning(
+                "ha_concept_fetch_error", doc_id=doc_id, url=url, error=str(exc)
+            )
+    log.info(
+        "ha_concepts_fetch_complete",
+        total=len(_CONCEPT_DOCS),
+        fetched=fetched,
+    )
     return fetched
 
 

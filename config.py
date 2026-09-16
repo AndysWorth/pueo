@@ -134,7 +134,7 @@ KNOWN_ISSUE_REMINDER_DAYS: int = int(_agent.get("known_issue_reminder_days", 7))
 # RAG knowledge layer
 CHROMADB_PATH: str = _agent.get("chromadb_path", str(_dirs.data_dir / "chromadb"))
 RAG_TOP_K: int = int(_agent.get("rag_top_k", 5))
-RAG_HA_VERSIONS_TO_FETCH: int = int(_agent.get("rag_ha_versions_to_fetch", 12))
+RAG_HA_VERSIONS_TO_FETCH: int = int(_agent.get("rag_ha_versions_to_fetch", 24))
 RAG_HACS_CACHE_DIR: str = _agent.get(
     "rag_hacs_cache_dir", str(_dirs.cache_dir / "hacs_changelogs")
 )

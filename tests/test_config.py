@@ -913,7 +913,7 @@ class TestHAUpdateManagerConfig:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.RAG_HA_VERSIONS_TO_FETCH == 12
+        assert config.RAG_HA_VERSIONS_TO_FETCH == 24
 
     def test_rag_ha_versions_to_fetch_from_yaml(self, isolated_config):
         isolated_config.write_text(

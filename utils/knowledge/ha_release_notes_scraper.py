@@ -52,7 +52,7 @@ _GITHUB_RELEASES_URL = "https://api.github.com/repos/home-assistant/core/release
 
 
 def fetch_ha_release_notes(
-    cache_dir: str, n_versions: int = 12, *, _releases=None
+    cache_dir: str, n_versions: int = 24, *, _releases=None
 ) -> int:
     """Fetch the last n_versions HA releases from GitHub and cache as .txt files.
 

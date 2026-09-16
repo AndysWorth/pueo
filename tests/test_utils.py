@@ -6281,6 +6281,98 @@ class TestHaConceptsCollection:
         assert "ha_concepts" in COLLECTIONS
 
 
+class TestReleaseNotesDefaultVersions:
+    def test_fetch_ha_release_notes_default_n_versions(self):
+        import inspect
+
+        from utils.knowledge.ha_release_notes_scraper import fetch_ha_release_notes
+
+        sig = inspect.signature(fetch_ha_release_notes)
+        default = sig.parameters["n_versions"].default
+        assert default == 24, f"expected 24, got {default}"
+
+
+class TestSourcePrefetchFilenames:
+    def test_config_flow_in_prefetch_filenames(self):
+        from utils.knowledge.ha_docs_scraper import _SOURCE_PREFETCH_FILENAMES
+
+        assert "config_flow.py" in _SOURCE_PREFETCH_FILENAMES
+
+    def test_strings_json_in_prefetch_filenames(self):
+        from utils.knowledge.ha_docs_scraper import _SOURCE_PREFETCH_FILENAMES
+
+        assert "strings.json" in _SOURCE_PREFETCH_FILENAMES
+
+    def test_core_filenames_still_present(self):
+        from utils.knowledge.ha_docs_scraper import _SOURCE_PREFETCH_FILENAMES
+
+        for fname in ("__init__.py", "manifest.json", "const.py"):
+            assert fname in _SOURCE_PREFETCH_FILENAMES, f"{fname} missing"
+
+
+class TestConceptDocsList:
+    def test_concept_docs_length(self):
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        assert len(_CONCEPT_DOCS) >= 15
+
+    def test_concept_docs_have_unique_ids(self):
+        from utils.knowledge.ha_concepts_scraper import _CONCEPT_DOCS
+
+        ids = [doc_id for doc_id, _ in _CONCEPT_DOCS]
+        assert len(ids) == len(set(ids)), "duplicate doc_ids in _CONCEPT_DOCS"
+
+
+class TestFetchConceptDocsLogging:
+    class _FakeLog:
+        def __init__(self):
+            self.warnings = []
+            self.infos = []
+
+        def debug(self, *a, **kw):
+            pass
+
+        def warning(self, msg, **kw):
+            self.warnings.append(msg)
+
+        def info(self, msg, **kw):
+            self.infos.append(msg)
+
+    def test_logs_warning_on_fetch_error(self, tmp_path, monkeypatch):
+        import urllib.request
+
+        import utils.core.logging as _log_mod
+        from utils.knowledge.ha_concepts_scraper import fetch_concept_docs
+
+        def _raise(req, timeout):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _raise)
+        fake_log = self._FakeLog()
+        monkeypatch.setattr(_log_mod, "get_logger", lambda _: fake_log)
+
+        fetch_concept_docs(str(tmp_path))
+
+        assert "ha_concept_fetch_error" in fake_log.warnings
+
+    def test_logs_completion_summary(self, tmp_path, monkeypatch):
+        import urllib.request
+
+        import utils.core.logging as _log_mod
+        from utils.knowledge.ha_concepts_scraper import fetch_concept_docs
+
+        def _raise(req, timeout):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _raise)
+        fake_log = self._FakeLog()
+        monkeypatch.setattr(_log_mod, "get_logger", lambda _: fake_log)
+
+        fetch_concept_docs(str(tmp_path))
+
+        assert "ha_concepts_fetch_complete" in fake_log.infos
+
+
 class TestSupervisorActivityCounters:
     def test_chat_counter_increment_decrement(self):
         import utils.agent.supervisor as sup

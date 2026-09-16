@@ -1054,7 +1054,7 @@ else
         else
             echo
             echo "  Pueo uses a local ChromaDB vector store (RAG) for HA knowledge: release"
-            echo "  notes (last N versions), HACS integration changelogs (auto-discovered"
+            echo "  notes (last 24 versions / ~2 years), HACS integration changelogs (auto-discovered"
             echo "  from your HA instance), and HA integration documentation. A weekly"
             echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
             echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
