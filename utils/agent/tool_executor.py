@@ -111,6 +111,54 @@ _BACKUP_INVARIANT_SYMBOLS: tuple[str, ...] = (
 )
 
 
+def _parse_ha_version_tuple(version: str) -> tuple[int, int] | None:
+    """Parse an HA version string (YYYY.M[.N][bX]) to (year, month).
+
+    Returns None when the string is absent or unparseable.
+    """
+    import re
+
+    m = re.match(r"^(\d{4})\.(\d{1,2})", version or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _version_score_multiplier(
+    metadata: dict,
+    current: tuple[int, int],
+) -> float:
+    """Return a score multiplier based on how version-current a chunk is.
+
+    1.2  — chunk's version range includes the current HA version or is open-ended after min
+    0.5  — chunk is older than 12 months
+    1.0  — no version metadata or within the last year but not a direct match
+    """
+    current_months = current[0] * 12 + current[1]
+
+    v_min_raw = metadata.get("ha_version_min") or metadata.get("scraped_for_ha_version")
+    v_max_raw = metadata.get("ha_version_max") or metadata.get("scraped_for_ha_version")
+
+    v_min = _parse_ha_version_tuple(v_min_raw or "")
+    if v_min is None:
+        return 1.0
+
+    chunk_months = v_min[0] * 12 + v_min[1]
+    months_ago = current_months - chunk_months
+
+    if months_ago > 12:
+        return 0.5
+
+    v_max = _parse_ha_version_tuple(v_max_raw or "")
+    if v_max is None:
+        return 1.2
+    max_months = v_max[0] * 12 + v_max[1]
+    if chunk_months <= current_months <= max_months:
+        return 1.2
+
+    return 1.0
+
+
 class ToolExecutor:
     """Executes tool calls on behalf of AgentLoop.
 
@@ -249,6 +297,7 @@ class ToolExecutor:
                     args.get("query", ""),
                     integration_filter=args.get("integration_filter"),
                     query_type=args.get("query_type"),
+                    ha_version=args.get("ha_version"),
                 )
             if name == "remember":
                 return await self._remember(
@@ -649,6 +698,7 @@ class ToolExecutor:
         query: str,
         integration_filter: list[str] | None = None,
         query_type: str | None = None,
+        ha_version: str | None = None,
     ) -> ToolResult:
         if self._knowledge_store is None:
             return ToolResult(
@@ -666,6 +716,22 @@ class ToolExecutor:
         chunks = self._knowledge_store.query(
             query, top_k=RAG_TOP_K, collections=collections, where=where
         )
+
+        # Version-aware score boosting: use explicit ha_version or auto-detect from profile.
+        effective_version = ha_version
+        if not effective_version and self._ha_profile is not None:
+            effective_version = self._ha_profile.ha_version or None
+        if effective_version:
+            current = _parse_ha_version_tuple(effective_version)
+            if current is not None:
+                for chunk in chunks:
+                    multiplier = _version_score_multiplier(chunk.metadata, current)
+                    if multiplier != 1.0:
+                        chunk.score = chunk.score * multiplier
+                chunks.sort(
+                    key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
+                )
+
         if not chunks:
             return ToolResult(
                 tool_name="query_knowledge",

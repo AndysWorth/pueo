@@ -2243,3 +2243,192 @@ class TestQueryKnowledgeTypeRouting:
 
         cols = ToolExecutor._QUERY_TYPE_COLLECTIONS["version_check"]
         assert cols == ["ha_release_notes"]
+
+
+class TestVersionScoreBoosting:
+    """Tests for ha_version score boosting in _query_knowledge."""
+
+    # ------------------------------------------------------------------
+    # _parse_ha_version_tuple helper
+    # ------------------------------------------------------------------
+
+    def test_parse_version_standard(self):
+        from utils.agent.tool_executor import _parse_ha_version_tuple
+
+        assert _parse_ha_version_tuple("2026.9.0") == (2026, 9)
+
+    def test_parse_version_minor_only(self):
+        from utils.agent.tool_executor import _parse_ha_version_tuple
+
+        assert _parse_ha_version_tuple("2025.11") == (2025, 11)
+
+    def test_parse_version_beta(self):
+        from utils.agent.tool_executor import _parse_ha_version_tuple
+
+        assert _parse_ha_version_tuple("2026.10.0b3") == (2026, 10)
+
+    def test_parse_version_empty_returns_none(self):
+        from utils.agent.tool_executor import _parse_ha_version_tuple
+
+        assert _parse_ha_version_tuple("") is None
+        assert _parse_ha_version_tuple("not_a_version") is None
+
+    # ------------------------------------------------------------------
+    # _version_score_multiplier helper
+    # ------------------------------------------------------------------
+
+    def test_multiplier_matching_version_returns_boost(self):
+        from utils.agent.tool_executor import _version_score_multiplier
+
+        meta = {"ha_version_min": "2026.9.0", "ha_version_max": "2026.9.0"}
+        assert _version_score_multiplier(meta, (2026, 9)) == 1.2
+
+    def test_multiplier_older_than_12_months_returns_penalty(self):
+        from utils.agent.tool_executor import _version_score_multiplier
+
+        # 13 months before 2026.9
+        meta = {"ha_version_min": "2025.8.0", "ha_version_max": "2025.8.0"}
+        assert _version_score_multiplier(meta, (2026, 9)) == 0.5
+
+    def test_multiplier_within_12_months_not_matching_returns_neutral(self):
+        from utils.agent.tool_executor import _version_score_multiplier
+
+        # 6 months old, but version range does not span current
+        meta = {"ha_version_min": "2026.3.0", "ha_version_max": "2026.3.0"}
+        result = _version_score_multiplier(meta, (2026, 9))
+        assert result == 1.0
+
+    def test_multiplier_no_version_metadata_returns_neutral(self):
+        from utils.agent.tool_executor import _version_score_multiplier
+
+        assert _version_score_multiplier({}, (2026, 9)) == 1.0
+
+    def test_multiplier_open_ended_max_returns_boost(self):
+        from utils.agent.tool_executor import _version_score_multiplier
+
+        # No ha_version_max → open-ended, assumed current
+        meta = {"ha_version_min": "2026.9.0"}
+        assert _version_score_multiplier(meta, (2026, 9)) == 1.2
+
+    # ------------------------------------------------------------------
+    # _query_knowledge integration with ha_version
+    # ------------------------------------------------------------------
+
+    def _make_executor_with_store(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory "
+                "(key TEXT, content TEXT, source TEXT, ts REAL)"
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        ssh = FakeSSHClient(file_contents={}, command_results={})
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        return executor, store
+
+    def test_version_boost_applied_to_matching_chunk(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        # Chunk matching current version (2026.9) — should score higher
+        store.upsert(
+            "ha_release_notes",
+            ids=["new-chunk"],
+            documents=["zha breaking change 2026.9"],
+            metadatas=[
+                {
+                    "source": "ha_release_notes/2026.9.0",
+                    "ha_version_min": "2026.9.0",
+                    "ha_version_max": "2026.9.0",
+                }
+            ],
+        )
+        # Old chunk (13 months before current) — should score lower
+        store.upsert(
+            "ha_release_notes",
+            ids=["old-chunk"],
+            documents=["zha breaking change 2025.8"],
+            metadatas=[
+                {
+                    "source": "ha_release_notes/2025.8.0",
+                    "ha_version_min": "2025.8.0",
+                    "ha_version_max": "2025.8.0",
+                }
+            ],
+        )
+        result = asyncio.run(
+            executor._query_knowledge("zha breaking change", ha_version="2026.9.0")
+        )
+        assert result.success is True
+        # The newer chunk (2026.9) should appear first
+        assert result.output.index("2026.9") < result.output.index("2025.8")
+
+    def test_no_ha_version_no_change(self, tmp_path):
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_release_notes",
+            ids=["chunk-1"],
+            documents=["mqtt change"],
+            metadatas=[{"source": "ha_release_notes/2026.9.0"}],
+        )
+        # Should succeed without version boost and without error
+        result = asyncio.run(executor._query_knowledge("mqtt change"))
+        assert result.success is True
+
+    def test_auto_detect_version_from_profile(self, tmp_path):
+        import asyncio
+
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        profile = HAEnvironmentProfile()
+        profile.ha_version = "2026.9.0"
+        executor.set_ha_profile(profile)
+
+        store.upsert(
+            "ha_release_notes",
+            ids=["new-v"],
+            documents=["new version content"],
+            metadatas=[
+                {
+                    "source": "ha_release_notes/2026.9.0",
+                    "ha_version_min": "2026.9.0",
+                    "ha_version_max": "2026.9.0",
+                }
+            ],
+        )
+        store.upsert(
+            "ha_release_notes",
+            ids=["old-v"],
+            documents=["old version content"],
+            metadatas=[
+                {
+                    "source": "ha_release_notes/2025.8.0",
+                    "ha_version_min": "2025.8.0",
+                    "ha_version_max": "2025.8.0",
+                }
+            ],
+        )
+        # No explicit ha_version — should auto-detect from profile
+        result = asyncio.run(executor._query_knowledge("version content"))
+        assert result.success is True
+        # Newer chunk should appear before older one
+        assert result.output.index("2026.9") < result.output.index("2025.8")
