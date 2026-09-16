@@ -10,10 +10,11 @@ Called once per RAG refresh cycle.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
+    from utils.ha.ha_environment import HAEnvironmentProfile
 
 # Prompt files to seed as runbook documents.
 # Each entry is (prompt_filename, title, trigger_pattern).
@@ -148,3 +149,92 @@ def seed_strategies(
             except Exception:  # nosec B110
                 pass
     return n
+
+
+def seed_home_profile(
+    store: "KnowledgeStoreClientProtocol",
+    env_profile: "Optional[HAEnvironmentProfile]" = None,
+    db_path: str = "",
+) -> int:
+    """Generate and upsert the HA instance home profile into the strategies collection.
+
+    Produces a single document describing the installed HA instance: versions,
+    integrations, HACS components, and top-level config keys.  The document is
+    stored with ``runbook_type=instance_profile`` and overwritten on each call
+    (upsert semantics).  Returns 1 on success, 0 on failure.
+    """
+    import sqlite3
+
+    prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+    template_path = prompts_dir / "seed_home_profile.md"
+    preamble = template_path.read_text("utf-8") if template_path.exists() else ""
+
+    lines: list[str] = [preamble.strip(), ""]
+    if env_profile is not None:
+        lines.append("## Current Installation")
+        lines.append("")
+        if env_profile.ha_version:
+            lines.append(f"- **HA Core version:** {env_profile.ha_version}")
+        if env_profile.os_version:
+            lines.append(f"- **HA OS version:** {env_profile.os_version}")
+        if env_profile.supervisor_version:
+            lines.append(f"- **Supervisor version:** {env_profile.supervisor_version}")
+        lines.append("")
+        if env_profile.installed_integrations:
+            count = len(env_profile.installed_integrations)
+            domains = ", ".join(sorted(env_profile.installed_integrations))
+            lines.append(f"## Installed Integrations ({count})")
+            lines.append("")
+            lines.append(domains)
+            lines.append("")
+        if env_profile.hacs_integrations:
+            count = len(env_profile.hacs_integrations)
+            slugs = ", ".join(sorted(env_profile.hacs_integrations))
+            lines.append(f"## HACS Custom Components ({count})")
+            lines.append("")
+            lines.append(slugs)
+            lines.append("")
+        if env_profile.config_yaml_top_keys:
+            keys = ", ".join(sorted(env_profile.config_yaml_top_keys))
+            lines.append("## Top-Level configuration.yaml Keys")
+            lines.append("")
+            lines.append(keys)
+            lines.append("")
+    else:
+        lines.append("*No live HA profile available at last RAG refresh.*")
+
+    text = "\n".join(lines).strip()
+    doc_id = "ha_instance_profile"
+    title = "HA instance home profile"
+    trigger = (
+        "installed integrations, ha version, hacs, custom components, home profile"
+    )
+    try:
+        store.upsert(
+            collection="strategies",
+            ids=[doc_id],
+            documents=[text],
+            metadatas=[
+                {
+                    "source": "home_profile",
+                    "title": title,
+                    "trigger_pattern": trigger,
+                    "runbook_type": "instance_profile",
+                }
+            ],
+        )
+    except Exception:  # nosec B110
+        return 0
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO agent_strategies"
+                    " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                    " VALUES (?, ?, ?, ?, 'seed', datetime('now'))",
+                    (doc_id, title, trigger, text),
+                )
+                conn.commit()
+        except Exception:  # nosec B110
+            pass
+    return 1

@@ -255,11 +255,16 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         store.prune("ha_developer_docs", dev_ids)
 
     # ── 5. Strategy seeding ──────────────────────────────────────────────────
-    from utils.knowledge.strategy_seeder import seed_strategies
+    from utils.knowledge.strategy_seeder import seed_home_profile, seed_strategies
 
     _log.info("rag_refresh_step", step="seed_strategies")
     n_strategies = seed_strategies(store, db_path=config.DB_PATH)
     _log.info("rag_refresh_step_done", step="seed_strategies", seeded=n_strategies)
+
+    # ── 5.5. Home profile seed ────────────────────────────────────────────────
+    _log.info("rag_refresh_step", step="seed_home_profile")
+    n_home_profile = seed_home_profile(store, _env_profile, db_path=config.DB_PATH)
+    _log.info("rag_refresh_step_done", step="seed_home_profile", seeded=n_home_profile)
 
     # ── 6. Re-embed orphaned SQLite runbooks ─────────────────────────────────
     _log.info("rag_refresh_step", step="reembed_orphaned_runbooks")
@@ -284,6 +289,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         + n_concepts
         + n_developer_docs
         + n_strategies
+        + n_home_profile
         + n_reembedded
         + n_episodes
     )

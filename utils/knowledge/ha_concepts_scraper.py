@@ -28,21 +28,46 @@ _HA_DOCS_RAW_BASE = (
 # Curated concept pages: (doc_id, path_under_source)
 # path_under_source is appended to _HA_DOCS_RAW_BASE with .markdown extension.
 _CONCEPT_DOCS: list[tuple[str, str]] = [
+    # ── Lovelace / Dashboard ─────────────────────────────────────────────────
     ("lovelace_dashboards", "lovelace/dashboards"),
     ("lovelace_views", "lovelace/views"),
     ("lovelace_entities_card", "lovelace/entities"),
     ("lovelace_entity_card", "lovelace/entity"),
     ("lovelace_glance_card", "lovelace/glance"),
+    ("lovelace_button_card", "lovelace/button"),
+    ("lovelace_conditional_card", "lovelace/conditional"),
+    ("lovelace_markdown_card", "lovelace/markdown"),
+    ("lovelace_gauge_card", "lovelace/gauge"),
+    ("lovelace_history_graph_card", "lovelace/history-graph"),
+    # ── Registries ───────────────────────────────────────────────────────────
     ("entity_registry", "_docs/entity_registry"),
     ("area_registry", "_docs/area_registry"),
     ("device_registry", "_docs/device_registry"),
+    # ── Automation & Scripts ─────────────────────────────────────────────────
     ("automation_basics", "_docs/automation/index"),
     ("automation_trigger", "_docs/automation/trigger"),
     ("automation_condition", "_docs/automation/condition"),
     ("automation_action", "_docs/automation/action"),
+    ("automation_yaml", "_docs/automation/yaml"),
+    ("automation_templating", "_docs/automation/templating"),
+    ("automation_debugging", "_docs/automation/debugging"),
     ("scripts", "_docs/script"),
+    # ── Blueprints ───────────────────────────────────────────────────────────
+    ("blueprint_overview", "_docs/blueprint/index"),
+    # ── Templates ────────────────────────────────────────────────────────────
+    ("templating", "_docs/configuration/templating"),
+    # ── Configuration ────────────────────────────────────────────────────────
     ("configuration_yaml", "_docs/configuration"),
     ("integrations_overview", "_docs/configuration/integrations"),
+    ("configuration_packages", "_docs/configuration/packages"),
+    ("splitting_configuration", "_docs/configuration/splitting_configuration"),
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    ("input_boolean", "_docs/input_boolean"),
+    ("input_number", "_docs/input_number"),
+    ("input_select", "_docs/input_select"),
+    # ── Zones & Scenes ───────────────────────────────────────────────────────
+    ("zones", "_docs/zone"),
+    ("scenes", "_docs/scene"),
 ]
 
 
