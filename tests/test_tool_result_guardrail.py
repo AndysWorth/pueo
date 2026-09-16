@@ -19,6 +19,7 @@ KNOWN_TOOLS = {
     "apply_fix",
     "finish_repair",
     "query_knowledge",
+    "run_ha_command",
 }
 
 
@@ -101,6 +102,35 @@ def test_error_pattern_clean_output_no_trigger() -> None:
         remaining_budget=20,
     )
     assert "error_pattern" not in result
+
+
+def test_error_pattern_not_triggered_for_query_knowledge() -> None:
+    """KB content may contain security terms; error_pattern must not fire on it."""
+    g = make_guardrail()
+    # Simulate a runbook that mentions "Connection refused" and "Error:" as examples
+    output = (
+        "Runbook: Diagnosing SSH connection failures\n"
+        "Step 1: If 'Connection refused' is seen in logs, check the SSH port.\n"
+        "Step 2: 'Error: Permission denied' means wrong key.\n"
+    )
+    result = g.process("query_knowledge", {}, output, success=True, remaining_budget=20)
+    assert "error_pattern" not in result
+
+
+def test_error_pattern_not_triggered_for_read_source() -> None:
+    """Source code containing error-like strings must not trigger error_pattern."""
+    g = make_guardrail()
+    output = 'raise ValueError("Connection refused")\nraise RuntimeError("bad state")'
+    result = g.process("read_source", {}, output, success=True, remaining_budget=20)
+    assert "error_pattern" not in result
+
+
+def test_error_pattern_still_triggers_for_run_ha_command() -> None:
+    """error_pattern should still fire for SSH commands that return error text."""
+    g = make_guardrail()
+    output = "Error: Connection refused to 192.168.1.5"
+    result = g.process("run_ha_command", {}, output, success=True, remaining_budget=20)
+    assert "error_pattern" in result
 
 
 # ---------------------------------------------------------------------------

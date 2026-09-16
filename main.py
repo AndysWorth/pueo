@@ -727,6 +727,24 @@ async def supervisor_main(config_path: Path) -> None:
                     "profile_refresh", cfg.HA_PROFILE_REFRESH_HOURS * 3600
                 )
 
+        # Eagerly build the initial profile before poll loops start so agent
+        # sessions (update_check, repair_poll, lovelace_poll) have integration
+        # data available from the very first session after startup.
+        try:
+            _p_initial = await build_environment_profile(
+                ssh_client=_profile_ssh,
+                ws_client=_profile_ws,
+                ha_token=cfg.HA_API_TOKEN,
+                ha_url=f"http://{cfg.HA_HOST}:{cfg.HA_API_PORT}",
+                config_remote_path=cfg.CONFIG_REMOTE_PATH,
+            )
+            _shared_executor.set_ha_profile(_p_initial)
+            save_environment_profile(_p_initial, cfg.DB_PATH)
+        except Exception as _exc:  # pragma: no cover  # nosec B110
+            from utils.core.logging import get_logger as _gl
+
+            _gl("main").warning("ha_profile_initial_build_failed", exc=str(_exc))
+
         supervisor.start(
             "profile_refresh",
             _profile_refresh_loop,

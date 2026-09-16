@@ -55,3 +55,10 @@ Phase 6 — REPORT: Call {terminal_tool} with a findings list. Each finding cove
   Omit benign sub-platform entities from findings entirely — no card, no noise.
   For YAML-no-unique-id: include in findings with specific YAML advice.
   For not-loaded config entry: include in findings with advice to check the integration.
+
+KB CONTRIBUTION: If any query_knowledge call returned "No relevant knowledge found" and
+  you successfully classified the entities, call save_runbook(type="candidate") before
+  {terminal_tool}. Describe the entity patterns you investigated and how you identified
+  their root cause. This grows the KB so future sessions resolve the same pattern in fewer
+  tool calls. Save at the most general level (e.g. "Classifying sub-platform entities from
+  the sun and noaa_tides integrations") not scoped to the specific entity names.

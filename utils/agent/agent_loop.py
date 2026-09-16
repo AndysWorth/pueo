@@ -831,6 +831,8 @@ class AgentLoop:
                         latency_ms=_latency_ms,
                         ollama_eval_ms=_timing.get("eval_ms"),
                         ollama_load_ms=_timing.get("load_ms"),
+                        input_tokens=_timing.get("input_tokens"),
+                        output_tokens=_timing.get("output_tokens"),
                         episode_id=self._episode_id,
                         thinking_text=_thinking_text,
                     )

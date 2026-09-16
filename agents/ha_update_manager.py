@@ -77,13 +77,30 @@ async def _fetch_github_release_notes(version: str) -> str:  # pragma: no cover
     return data.get("body") or "No release notes available."
 
 
+async def _fetch_release_notes_from_url(url: str) -> str:  # pragma: no cover
+    """Fetch release notes from an arbitrary URL (e.g. HACS or App release pages)."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers={"Accept": "application/json"})
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("body") or data.get("description") or str(data)
+        # Fall back to raw text for non-JSON responses (e.g. changelog pages).
+        resp.raise_for_status()
+        return resp.text
+
+
 async def fetch_release_notes_cached(
     version: str,
     cache_dir: str,
     *,
+    release_url: Optional[str] = None,
     _fetcher=None,  # injectable for tests
 ) -> str:
     """Return cached release notes; fetch from GitHub API if not yet cached.
+
+    For HA Core versions (YYYY.M.P), fetches from the home-assistant/core
+    GitHub API.  For HACS / App updates (non-YYYY versions), fetches from
+    release_url when provided.
 
     GA monthly releases often have a blog-URL stub body (<500 chars).  When
     detected, tries beta tags (b5→b0) for the same minor version to get the
@@ -92,6 +109,18 @@ async def fetch_release_notes_cached(
     cache_path = Path(cache_dir) / f"{version}.txt"
     if cache_path.exists():
         return cache_path.read_text()
+
+    # Non-HA-Core version (HACS, App, add-on): use release_url if available.
+    _is_ha_core = version[:4].isdigit() and version.startswith("20")
+    if not _is_ha_core and release_url:
+        try:
+            notes = await _fetch_release_notes_from_url(release_url)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(notes)
+            return notes
+        except Exception:  # nosec B112
+            return f"Release notes unavailable (fetched from {release_url})."
+
     fetcher = _fetcher or _fetch_github_release_notes
     notes = await fetcher(version)
     if len(notes.strip()) < 500:
@@ -457,9 +486,12 @@ async def _run_update_analysis(
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
     async def _coro() -> None:
+        from utils.ha.ssh_client import AsyncSSHClient
+
         gate = FakeAutonomyGate(auto_execute_result=True)
+        _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
         executor = ToolExecutor(
-            ha_ssh_client=ssh_client,  # type: ignore[arg-type]
+            ha_ssh_client=_ssh,  # type: ignore[arg-type]
             gate=gate,  # type: ignore[arg-type]
             notifier=_notifier,
             knowledge_store=knowledge_store,
