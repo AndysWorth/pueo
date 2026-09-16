@@ -14,3 +14,4 @@ pyyaml
 uvicorn
 websockets
 mcp
+rank-bm25

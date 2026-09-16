@@ -391,7 +391,7 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 
 ### Milestone 14 — Knowledge Quality
 
-**Status:** 🔄 In Progress (2026-09-16, Sessions 1–3 complete of 9)
+**Status:** 🔄 In Progress (2026-09-16, Sessions 1–8 complete of 9)
 
 **Objective:** Fix the gaps revealed by an audit of Pueo's ChromaDB knowledge base: empty `ha_source` cache, incomplete HA concepts coverage, repair episodes not embedded (ADR 014 pre-injection was broken), and no authority ranking or version-awareness in retrieval. The milestone also expands content coverage to HA developer docs and adds hybrid dense+sparse retrieval.
 
@@ -403,15 +403,15 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 - **Session 5 (PR #673):** Expanded `ha_concepts` from 15 to 31 pages; auto-generated `seed_home_profile.md` from live HA at RAG refresh; `seed_home_profile()` in `strategy_seeder.py`
 - **Session 6 (PR #675):** Updated `prompts/agent_loop.md` Phase 4 with `remember()` instruction; new `prompts/seed_supervisor_cli.md` Supervisor CLI reference runbook
 - **Session 7 (PR #677):** `query_type` routing in `query_knowledge` (diagnostic / procedural / generative / version_check); `ToolExecutor._QUERY_TYPE_COLLECTIONS` routing map; Phase 1 prompt guidance updated
+- **Session 8 (PR #679):** Hybrid BM25+cosine retrieval in `ChromaKnowledgeStore`; `rank-bm25` dependency; `RAG_HYBRID_WEIGHT` config key (default 0.3); ADR 029
 
 **Remaining sessions:**
-- Session 8 (B3): rank-bm25 hybrid retrieval; `RAG_HYBRID_WEIGHT` config key; ADR 029
 - Session 9 (E2): `ha_version` score boosting using `ha_version_min`/`ha_version_max` metadata
 
 **ADRs:**
+- [ADR 029 — Hybrid dense+sparse retrieval](decisions/029-hybrid-retrieval.md)
 - [ADR 030 — Authority-ranked knowledge context assembly](decisions/030-authority-ranked-knowledge.md)
 - [ADR 031 — Repair episode embedding](decisions/031-repair-episode-embedding.md)
-- ADR 029: Hybrid dense+sparse retrieval (Session 8)
 
 ---
 

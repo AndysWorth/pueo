@@ -156,6 +156,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
         embed_model: str,
         ollama_endpoint: str,
         chroma_client=None,
+        hybrid_weight: float = 0.3,
     ) -> None:
         import chromadb
 
@@ -164,6 +165,11 @@ class ChromaKnowledgeStore:  # pragma: no cover
         self._cols = {
             name: self._get_cosine_collection(name, ef) for name in COLLECTIONS
         }
+        # BM25 hybrid retrieval: in-memory index per collection.
+        # Each entry is (corpus, id_list) rebuilt lazily on upsert.
+        self._hybrid_weight: float = max(0.0, min(1.0, hybrid_weight))
+        self._bm25_index: dict[str, Any] = {}  # col -> BM25Okapi instance
+        self._bm25_ids: dict[str, list[str]] = {}  # col -> ordered id list
 
     def _get_cosine_collection(self, name: str, ef: Any) -> Any:  # type: ignore[return]
         """Return a cosine-distance collection, migrating from L2 if necessary."""
@@ -187,6 +193,23 @@ class ChromaKnowledgeStore:  # pragma: no cover
             metadata=cosine_meta,
         )
 
+    def _rebuild_bm25(self, collection: str) -> None:
+        """Rebuild the BM25 index for *collection* from the current ChromaDB contents."""
+        try:
+            from rank_bm25 import BM25Okapi
+        except ImportError:
+            return
+        result = self._cols[collection].get()
+        docs = result.get("documents") or []
+        ids = result.get("ids") or []
+        if not docs:
+            self._bm25_index.pop(collection, None)
+            self._bm25_ids.pop(collection, None)
+            return
+        tokenized = [doc.lower().split() for doc in docs]
+        self._bm25_index[collection] = BM25Okapi(tokenized)
+        self._bm25_ids[collection] = list(ids)
+
     def upsert(
         self,
         collection: str,
@@ -195,6 +218,30 @@ class ChromaKnowledgeStore:  # pragma: no cover
         metadatas: list[dict],
     ) -> None:
         self._cols[collection].upsert(ids=ids, documents=documents, metadatas=metadatas)  # type: ignore[arg-type]
+        # Invalidate BM25 index so it is rebuilt on next query.
+        self._bm25_index.pop(collection, None)
+        self._bm25_ids.pop(collection, None)
+
+    def _bm25_scores_for_collection(
+        self, collection: str, query_text: str
+    ) -> dict[str, float]:
+        """Return a {doc_id: normalised_bm25_score} mapping for *collection*.
+
+        Scores are normalised to [0, 1] by dividing by the maximum raw score.
+        Returns an empty dict when rank-bm25 is not installed or the index is empty.
+        """
+        if collection not in self._bm25_index:
+            self._rebuild_bm25(collection)
+        bm25 = self._bm25_index.get(collection)
+        ids = self._bm25_ids.get(collection, [])
+        if bm25 is None or not ids:
+            return {}
+        tokens = query_text.lower().split()
+        raw_scores = bm25.get_scores(tokens)
+        max_score = max(raw_scores) if len(raw_scores) > 0 else 0.0
+        if max_score <= 0:
+            return {}
+        return {doc_id: float(s) / max_score for doc_id, s in zip(ids, raw_scores)}
 
     def query(
         self,
@@ -216,15 +263,27 @@ class ChromaKnowledgeStore:  # pragma: no cover
             docs = (res.get("documents") or [[]])[0]
             metas = (res.get("metadatas") or [[]])[0]
             dists = (res.get("distances") or [[]])[0]
-            for doc, meta, dist in zip(docs, metas, dists):
-                sim = max(0.0, 1.0 - dist)  # cosine dist ∈ [0,2]; score ∈ [0,1]
+            ids = (res.get("ids") or [[]])[0]
+            bm25_map = (
+                self._bm25_scores_for_collection(col, query_text)
+                if self._hybrid_weight > 0
+                else {}
+            )
+            for doc_id, doc, meta, dist in zip(ids, docs, metas, dists):
+                cosine_sim = max(0.0, 1.0 - dist)  # cosine dist ∈ [0,2]; score ∈ [0,1]
+                bm25_sim = bm25_map.get(doc_id, 0.0)
+                # Blend: cosine weight = (1 - hybrid_weight), BM25 weight = hybrid_weight
+                blended = (
+                    cosine_sim * (1.0 - self._hybrid_weight)
+                    + bm25_sim * self._hybrid_weight
+                )
                 auth = _authority_score(col, meta)  # type: ignore[arg-type]
                 results.append(
                     KnowledgeChunk(
                         text=doc,
                         source=meta.get("source", ""),  # type: ignore[arg-type]
                         collection=col,
-                        score=sim,
+                        score=blended,
                         metadata=meta,  # type: ignore[arg-type]
                         authority_score=auth,
                     )

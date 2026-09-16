@@ -700,7 +700,10 @@ async def supervisor_main(config_path: Path) -> None:
         _ks_log = _get_logger("main")
         chroma_path = Path(cfg.CHROMADB_PATH)
         knowledge_store = ChromaKnowledgeStore(
-            str(chroma_path), cfg.RAG_EMBED_MODEL, cfg.OLLAMA_ENDPOINT
+            str(chroma_path),
+            cfg.RAG_EMBED_MODEL,
+            cfg.OLLAMA_ENDPOINT,
+            hybrid_weight=cfg.RAG_HYBRID_WEIGHT,
         )
         _ks_log.info("knowledge_store_ready", path=str(chroma_path))
     except Exception as exc:  # pragma: no cover
@@ -1277,7 +1280,10 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         store = ChromaKnowledgeStore(
-            config.CHROMADB_PATH, config.RAG_EMBED_MODEL, config.OLLAMA_ENDPOINT
+            config.CHROMADB_PATH,
+            config.RAG_EMBED_MODEL,
+            config.OLLAMA_ENDPOINT,
+            hybrid_weight=config.RAG_HYBRID_WEIGHT,
         )
         run_rag_refresh(store)
     elif args.mode == "dashboard":
