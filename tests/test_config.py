@@ -1019,6 +1019,19 @@ class TestHAUpdateManagerConfig:
 
         assert config.RAG_REFRESH_INTERVAL_HOURS == 24
 
+    def test_rag_hybrid_weight_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HYBRID_WEIGHT == 0.3
+
+    def test_rag_hybrid_weight_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"rag_hybrid_weight": 0.0}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_HYBRID_WEIGHT == 0.0
+
     def test_chat_memory_top_k_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

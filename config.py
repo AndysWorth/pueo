@@ -151,6 +151,7 @@ HA_DEVELOPER_DOCS_CACHE_DIR: str = _agent.get(
     "ha_developer_docs_cache_dir", str(_dirs.cache_dir / "ha_developer_docs")
 )
 RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 168))
+RAG_HYBRID_WEIGHT: float = float(_agent.get("rag_hybrid_weight", 0.3))
 
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 30))

@@ -1059,7 +1059,7 @@ else
             echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
             echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
             echo "  rag_ha_docs_cache_dir, ha_source_cache_dir, ha_concepts_cache_dir, ha_developer_docs_cache_dir,"
-            echo "  rag_refresh_interval_hours (default 168, i.e. weekly),"
+            echo "  rag_refresh_interval_hours (default 168, i.e. weekly), rag_hybrid_weight (default 0.3),"
             echo "  pueo_kb_repo (default AndysWorth/pueo-kb), kb_sync_interval_hours,"
             echo "  kb_sync_cache_dir — see config.yaml.default for details."
             echo

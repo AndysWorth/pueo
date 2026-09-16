@@ -23,6 +23,7 @@ from config import (
     AUTONOMY_LEVEL,
     CHROMADB_PATH,
     RAG_EMBED_MODEL,
+    RAG_HYBRID_WEIGHT,
     LLM_PROVIDER,
     CLOUD_MODEL,
     CLOUD_MAX_COST_PER_INCIDENT_USD,
@@ -778,6 +779,7 @@ async def main(
             path=CHROMADB_PATH,
             embed_model=RAG_EMBED_MODEL,
             ollama_endpoint=OLLAMA_ENDPOINT,
+            hybrid_weight=RAG_HYBRID_WEIGHT,
         )
     executor = ToolExecutor(
         ha_ssh_client=_ssh,
