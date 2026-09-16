@@ -14,6 +14,9 @@ Phase 1 — RETRIEVE PLAN: Call query_knowledge with your trigger or question. U
   - query_type="version_check" for breaking-change questions about a specific HA version (release notes only)
   - query_type="generative" for automation/template authoring (concepts + integration docs + strategies)
   - omit query_type to search all collections when uncertain
+  For version_check queries, pass ha_version (e.g. "2026.9.0") to boost results matching the
+  current HA version and penalise stale content; omit ha_version to auto-detect from the
+  running instance.
   The result may include both background context and an investigation plan (runbook). If a runbook
   is returned, follow it as your starting point. If nothing relevant is returned, note
   this as a knowledge gap and proceed with first-principles reasoning — but you must

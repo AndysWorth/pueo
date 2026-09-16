@@ -27,7 +27,7 @@ Strategic capabilities in delivery order.
 | 11. Transparent operation                     | ✅ Complete (2026-08-18) | `utils/agent_loop.py`, `web/dashboard.py`, `web/templates/chat.html`, `web/templates/overview.html` |
 | 12. Agent self-knowledge + HA live lookup     | ✅ Complete (2026-08-18)  | `utils/tool_registry.py`, `utils/tool_executor.py`, `utils/ha_docs_scraper.py`, `utils/agent_loop.py` |
 | 13. Unified Agent Methodology                 | ✅ Complete (2026-08-24) | `prompts/agent_loop.md`, `utils/knowledge/strategy_seeder.py`, `utils/agent/tool_registry.py` |
-| 14. Knowledge Quality                         | 🔄 In Progress (2026-09-16) | `utils/knowledge/`, `utils/agent/tool_executor.py` |
+| 14. Knowledge Quality                         | ✅ Complete (2026-09-16) | `utils/knowledge/`, `utils/agent/tool_executor.py` |
 
 ### Implementation Phases
 
@@ -391,11 +391,11 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 
 ### Milestone 14 — Knowledge Quality
 
-**Status:** 🔄 In Progress (2026-09-16, Sessions 1–8 complete of 9)
+**Status:** ✅ Complete (2026-09-16, all 9 sessions delivered)
 
 **Objective:** Fix the gaps revealed by an audit of Pueo's ChromaDB knowledge base: empty `ha_source` cache, incomplete HA concepts coverage, repair episodes not embedded (ADR 014 pre-injection was broken), and no authority ranking or version-awareness in retrieval. The milestone also expands content coverage to HA developer docs and adds hybrid dense+sparse retrieval.
 
-**Delivered so far (Sessions 1–7):**
+**Delivered (Sessions 1–9):**
 - **Session 1 (PR #665):** Fixed `ha_source` logging, `ha_concepts` 404 logging; expanded release note scraping from 12 to 24 versions (`RAG_N_VERSIONS` config key)
 - **Session 2 (PR #667):** Added `repair_history` ChromaDB collection; `repair_episode_embedder.py` embeds completed repairs at refresh time; completed ADR 014 pre-injection; `pre_inject_similar_episodes` log events; ADR 031
 - **Session 3 (PR #668):** Authority-ranked retrieval: `authority_score` on `KnowledgeChunk`; blended sort `(authority × 0.3) + (similarity × 0.7)`; `[OFFICIAL]`/`[SEED RUNBOOK]`/`[PAST REPAIR]`/etc. labels in `query_knowledge` output; `ha_version_min`/`ha_version_max` metadata on release note and scraper-fetched chunks; ADR 030
@@ -404,9 +404,7 @@ ADR: [ADR 018 — Unified Agent Methodology](decisions/018-unified-agent-methodo
 - **Session 6 (PR #675):** Updated `prompts/agent_loop.md` Phase 4 with `remember()` instruction; new `prompts/seed_supervisor_cli.md` Supervisor CLI reference runbook
 - **Session 7 (PR #677):** `query_type` routing in `query_knowledge` (diagnostic / procedural / generative / version_check); `ToolExecutor._QUERY_TYPE_COLLECTIONS` routing map; Phase 1 prompt guidance updated
 - **Session 8 (PR #679):** Hybrid BM25+cosine retrieval in `ChromaKnowledgeStore`; `rank-bm25` dependency; `RAG_HYBRID_WEIGHT` config key (default 0.3); ADR 029
-
-**Remaining sessions:**
-- Session 9 (E2): `ha_version` score boosting using `ha_version_min`/`ha_version_max` metadata
+- **Session 9 (PR #681):** Version-aware score boosting in `query_knowledge`: `ha_version` param (explicit or auto-detected from `self._ha_profile`); 1.2× boost for version-matching chunks; 0.5× penalty for chunks older than 12 months; Phase 1 prompt guidance updated
 
 **ADRs:**
 - [ADR 029 — Hybrid dense+sparse retrieval](decisions/029-hybrid-retrieval.md)

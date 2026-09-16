@@ -313,6 +313,8 @@ QUERY_KNOWLEDGE = ToolDefinition(
         "'generative' for automation/template authoring (concepts + integration docs + strategies); "
         "'version_check' for breaking-change queries about a specific HA version (release notes only). "
         "Omit query_type to search all collections. "
+        "Pass ha_version (e.g. '2026.9.0') to boost results matching that HA version and penalise "
+        "content older than 12 months; auto-detected from the running HA instance when omitted. "
         "Pass integration_filter to scope results to specific domains."
     ),
     parameters={
@@ -331,6 +333,14 @@ QUERY_KNOWLEDGE = ToolDefinition(
                     "'procedural' = ha_developer_docs + ha_concepts + ha_integration_docs; "
                     "'generative' = ha_concepts + ha_integration_docs + strategies; "
                     "'version_check' = ha_release_notes only"
+                ),
+            },
+            "ha_version": {
+                "type": "string",
+                "description": (
+                    "Optional HA version string (e.g. '2026.9.0'). Boosts chunks whose version "
+                    "range includes this version (1.2×) and penalises chunks older than 12 months "
+                    "(0.5×). Auto-detected from the running instance when omitted."
                 ),
             },
             "integration_filter": {
