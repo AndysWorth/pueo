@@ -382,6 +382,11 @@ class AgentLoop:
             return initial_context
         if not chunks:
             return initial_context
+        repair_chunks = [
+            c for c in chunks if getattr(c, "collection", "") == "repair_history"
+        ]
+        if repair_chunks:
+            log.info("pre_inject_similar_episodes", count=len(repair_chunks))
         parts = ["Relevant context (use as reference, verify before applying):"]
         for chunk in chunks:
             parts.append(f"\n{chunk.text}")

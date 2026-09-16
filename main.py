@@ -238,14 +238,25 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         "rag_refresh_step_done", step="reembed_orphaned_runbooks", embedded=n_reembedded
     )
 
-    total = n_ha + n_hacs + n_docs + n_concepts + n_strategies + n_reembedded
+    # ── 7. Repair episode embedding ──────────────────────────────────────────
+    from utils.knowledge.repair_episode_embedder import embed_repair_episodes
+
+    _log.info("rag_refresh_step", step="embed_repair_episodes")
+    n_episodes = embed_repair_episodes(store, config.DB_PATH)
+    _log.info(
+        "rag_refresh_step_done", step="embed_repair_episodes", embedded=n_episodes
+    )
+
+    total = (
+        n_ha + n_hacs + n_docs + n_concepts + n_strategies + n_reembedded + n_episodes
+    )
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
     )
     _log.info(
         "rag_refresh_complete",
         total_embedded=total,
-        collections=5,
+        collections=6,
     )
 
 

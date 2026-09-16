@@ -40,6 +40,7 @@ COLLECTIONS: tuple[str, ...] = (
     "ha_integration_docs",
     "ha_concepts",
     "strategies",
+    "repair_history",
 )
 
 
