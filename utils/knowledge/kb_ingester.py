@@ -150,6 +150,10 @@ def download_and_embed(
             "tags": ",".join(entry.tags),
             "collection": collection,
         }
+        if entry.ha_version_min:
+            metadata["ha_version_min"] = entry.ha_version_min
+        if entry.ha_version_max:
+            metadata["ha_version_max"] = entry.ha_version_max
         try:
             knowledge_store.upsert(
                 collection,

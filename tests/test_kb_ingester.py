@@ -267,6 +267,35 @@ class TestDownloadAndEmbed:
         call_args = store.upsert.call_args
         assert call_args[0][0] == "strategies"
 
+    def test_ha_version_propagated_to_metadata(self):
+        entry = _entry(
+            id="ver1",
+            sha256="hv1",
+            type="runbook",
+            integrations=["all"],
+            ha_version_min="2026.1",
+            ha_version_max="2026.9",
+        )
+        store = self._fake_store()
+        raw = _make_gh_response("version-gated runbook")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            download_and_embed([entry], "owner/pueo-kb", store)
+        call_kwargs = store.upsert.call_args
+        metadata = call_kwargs.kwargs["metadatas"][0]
+        assert metadata["ha_version_min"] == "2026.1"
+        assert metadata["ha_version_max"] == "2026.9"
+
+    def test_ha_version_omitted_when_none(self):
+        entry = _entry(id="ver2", sha256="hv2", type="runbook", integrations=["all"])
+        store = self._fake_store()
+        raw = _make_gh_response("no version runbook")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            download_and_embed([entry], "owner/pueo-kb", store)
+        call_kwargs = store.upsert.call_args
+        metadata = call_kwargs.kwargs["metadatas"][0]
+        assert "ha_version_min" not in metadata
+        assert "ha_version_max" not in metadata
+
 
 # ── load/save sync state ──────────────────────────────────────────────────────
 

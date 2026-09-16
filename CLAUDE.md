@@ -126,6 +126,8 @@ All agent sessions follow the **6-phase investigation cycle** (encoded in `promp
 
 **Repair history**: `repair_history` is a sixth ChromaDB collection (in `COLLECTIONS` in `knowledge_store.py`) that stores completed repair episodes as searchable text chunks. `embed_repair_episodes()` in `utils/knowledge/repair_episode_embedder.py` reads rows where `embedded_at IS NULL` from `repair_episodes` SQLite, embeds them via `format_episode_for_embedding()`, and marks `embedded_at`. Called as step 7 of `run_rag_refresh` in `main.py`. `AgentLoop._pre_inject_knowledge()` queries all `COLLECTIONS` including `repair_history`, so similar past repairs automatically appear as context before the first LLM call. A `pre_inject_similar_episodes` log entry is emitted when repair history chunks are injected. See ADR 031.
 
+**Authority-ranked knowledge retrieval**: `KnowledgeChunk` carries an `authority_score: float` set at query time by `_authority_score(collection, metadata)`. Scores range from 1.0 (official HA docs) to 0.30 (unreviewed candidate runbooks); see ADR 030 for the full tier table. `ChromaKnowledgeStore.query()` sorts results by `(authority_score × 0.3) + (cosine_similarity × 0.7)` so semantics dominate but official sources edge out speculation at similar similarity. `_query_knowledge` in `tool_executor.py` prepends a text label (`[OFFICIAL]`, `[SEED RUNBOOK]`, `[CANDIDATE RUNBOOK – unreviewed]`, `[COMMUNITY RUNBOOK]`, `[PAST REPAIR]`, `[COMMUNITY]`) to each chunk so the model can reason about source trust. Knowledge chunks also carry optional `ha_version_min`/`ha_version_max` metadata set by scrapers at refresh time; version-based score boosting is planned for Session 9. See ADR 030.
+
 **Agent self-awareness**: `read_source` is registered in all agent registries (`build_ha_tool_registry`, `build_netalertx_tool_registry`, `build_chat_tool_registry`, `build_code_proposal_registry`) in `utils/agent/tool_registry.py`. The LLM can call `read_source("utils/agent/tool_registry.py")` during any session to inspect which tools are available. Safety-critical paths (`utils/hitl/autonomy.py`, `interfaces.py`, `config.py`) remain write-blocked by `_SAFETY_CRITICAL_PATHS` in `propose_patch` but are readable. See ADR 010.
 
 **HA live lookup**: `fetch_ha_docs(domain, filename)` in `utils/agent/tool_executor.py` fetches HA component source or docs from GitHub raw (`homeassistant/core/dev/homeassistant/components/{domain}/{filename}`). In `local` mode it serves from cache only — a cache miss raises `ToolError` and makes no network call. In `cloud`/`both` mode it fetches live and writes to cache. Cache lives at `HA_SOURCE_CACHE_DIR` (default `~/Library/Caches/Pueo/ha_source/`). The RAG refresh cycle pre-populates cache for all installed integrations. Allowed filenames: `__init__.py`, `manifest.json`, `config_flow.py`, `const.py`, `strings.json`, and any `*.md` file. See ADR 011.
@@ -282,3 +284,7 @@ Rationale for key architectural choices is in `docs/decisions/`:
 @docs/decisions/017-chat-tool-parity.md
 
 @docs/decisions/023-external-api-resilience.md
+
+@docs/decisions/030-authority-ranked-knowledge.md
+
+@docs/decisions/031-repair-episode-embedding.md

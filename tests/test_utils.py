@@ -1476,6 +1476,107 @@ class TestKnowledgeChunk:
         assert chunk.score == 0.9
         assert chunk.metadata["version"] == "2024.1"
 
+    def test_authority_score_defaults_to_zero(self):
+        from utils.knowledge.knowledge_store import KnowledgeChunk
+
+        chunk = KnowledgeChunk(text="x", source="s", collection="ha_release_notes")
+        assert chunk.authority_score == 0.0
+
+
+class TestAuthorityScore:
+    def test_official_docs_score_one(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("ha_integration_docs", {}) == 1.0
+        assert _authority_score("ha_concepts", {}) == 1.0
+        assert _authority_score("ha_release_notes", {}) == 1.0
+
+    def test_seed_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"source": "seed_prompt"}) == 0.8
+        assert _authority_score("strategies", {"runbook_type": "seed"}) == 0.8
+
+    def test_pueo_kb_community_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"source": "pueo_kb"}) == 0.7
+
+    def test_candidate_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"runbook_type": "candidate"}) == 0.6
+        assert _authority_score("strategies", {}) == 0.6  # default
+
+    def test_repair_history_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("repair_history", {}) == 0.5
+
+    def test_community_fallback_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("hacs_changelogs", {}) == 0.6
+        assert _authority_score("unknown_collection", {}) == 0.6
+
+
+class TestAuthorityBlendedSorting:
+    def test_official_ranks_above_candidate(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        # Equal match score (both contain "mqtt") — official should rank higher
+        store.upsert(
+            "strategies",
+            ids=["cand-1"],
+            documents=["mqtt connection tips (candidate)"],
+            metadatas=[{"source": "agent_learned", "runbook_type": "candidate"}],
+        )
+        store.upsert(
+            "ha_integration_docs",
+            ids=["official-1"],
+            documents=["mqtt integration documentation"],
+            metadatas=[{"source": "ha_docs/mqtt"}],
+        )
+        results = store.query("mqtt", top_k=5)
+        assert len(results) == 2
+        # official doc (authority 1.0) should outrank candidate (0.6)
+        assert results[0].collection == "ha_integration_docs"
+        assert results[1].collection == "strategies"
+
+    def test_seed_runbook_ranks_above_candidate(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["cand-2"],
+            documents=["zha recovery steps (candidate)"],
+            metadatas=[{"source": "agent_learned", "runbook_type": "candidate"}],
+        )
+        store.upsert(
+            "strategies",
+            ids=["seed-1"],
+            documents=["zha recovery steps (seed)"],
+            metadatas=[{"source": "seed_prompt"}],
+        )
+        results = store.query("zha", top_k=5)
+        assert len(results) == 2
+        assert results[0].metadata.get("source") == "seed_prompt"
+
+    def test_authority_score_field_set_on_result(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["breaking change in zwave"],
+            metadatas=[{"source": "ha_release_notes/2026.9"}],
+        )
+        results = store.query("zwave", top_k=1)
+        assert results[0].authority_score == 1.0
+
 
 class TestFakeKnowledgeStore:
     def test_upsert_and_query_basic(self):
@@ -1814,6 +1915,15 @@ class TestChunkReleaseNotes:
         notes = "## New Integrations\nAdded `matter` support.\n"
         _, _, metas = chunk_release_notes(notes, "2026.8.0")
         assert all(m["impacted_integration"] == "" for m in metas)
+
+    def test_chunk_release_notes_has_version_range_metadata(self):
+        from utils.knowledge.ha_release_notes_scraper import chunk_release_notes
+
+        _, _, metas = chunk_release_notes(
+            "## Breaking Changes\nzwave changed.\n", "2026.9.0"
+        )
+        assert all(m["ha_version_min"] == "2026.9.0" for m in metas)
+        assert all(m["ha_version_max"] == "2026.9.0" for m in metas)
 
 
 class TestKnowledgeStoreWhereClause:
@@ -2212,6 +2322,36 @@ class TestEmbedCachedChangelogs:
         assert result == 0
 
 
+class TestHacsScrapedForHaVersion:
+    def test_chunk_changelog_includes_version_when_provided(self):
+        from utils.knowledge.hacs_scraper import chunk_changelog
+
+        _, _, metas = chunk_changelog(
+            "## 1.0.0\nFixed bug", "myint", scraped_for_ha_version="2026.9.0"
+        )
+        assert all(m.get("scraped_for_ha_version") == "2026.9.0" for m in metas)
+
+    def test_chunk_changelog_omits_version_when_empty(self):
+        from utils.knowledge.hacs_scraper import chunk_changelog
+
+        _, _, metas = chunk_changelog("## 1.0.0\nFixed bug", "myint")
+        assert all("scraped_for_ha_version" not in m for m in metas)
+
+    def test_embed_cached_changelogs_passes_version(self, tmp_path):
+        from utils.knowledge.hacs_scraper import embed_cached_changelogs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "hacs"
+        cache.mkdir()
+        (cache / "myint.md").write_text("## 1.0.0\nFixed bug")
+        store = FakeKnowledgeStore()
+        embed_cached_changelogs(str(cache), store, scraped_for_ha_version="2026.9.0")
+        chunks = store.query("Fixed bug", top_k=5)
+        assert all(
+            c.metadata.get("scraped_for_ha_version") == "2026.9.0" for c in chunks
+        )
+
+
 class TestRepoFromReleaseUrl:
     def test_extracts_org_repo(self):
         from utils.knowledge.hacs_scraper import _repo_from_release_url
@@ -2425,6 +2565,32 @@ class TestEmbedCachedIntegrationDocs:
         hits = store.query("ZHA integration", top_k=5)
         assert hits
         assert hits[0].metadata.get("is_installed") is True
+
+    def test_scraped_for_ha_version_in_metadata(self, tmp_path):
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "zha.md").write_text("## Overview\nZHA integration docs.")
+        store = FakeKnowledgeStore()
+        embed_cached_integration_docs(
+            str(cache), store, scraped_for_ha_version="2026.9.0"
+        )
+        hits = store.query("ZHA integration", top_k=5)
+        assert hits[0].metadata.get("scraped_for_ha_version") == "2026.9.0"
+
+    def test_scraped_for_ha_version_omitted_when_empty(self, tmp_path):
+        from utils.knowledge.ha_docs_scraper import embed_cached_integration_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "docs"
+        cache.mkdir()
+        (cache / "zha.md").write_text("## Overview\nZHA integration docs.")
+        store = FakeKnowledgeStore()
+        embed_cached_integration_docs(str(cache), store)
+        hits = store.query("ZHA integration", top_k=5)
+        assert "scraped_for_ha_version" not in hits[0].metadata
 
 
 class TestKnowledgeCollections:
@@ -6272,6 +6438,30 @@ class TestEmbedCachedConceptDocs:
         hits = store.query("Trigger on event", top_k=5)
         assert hits
         assert hits[0].metadata.get("source") == "ha_concepts/automation_basics"
+
+    def test_scraped_for_ha_version_in_metadata(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "automation_basics.md").write_text("## Automation\nTrigger on event.")
+        store = FakeKnowledgeStore()
+        embed_cached_concept_docs(str(cache), store, scraped_for_ha_version="2026.9.0")
+        hits = store.query("Trigger on event", top_k=5)
+        assert hits[0].metadata.get("scraped_for_ha_version") == "2026.9.0"
+
+    def test_scraped_for_ha_version_omitted_when_empty(self, tmp_path):
+        from utils.knowledge.ha_concepts_scraper import embed_cached_concept_docs
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        cache = tmp_path / "concepts"
+        cache.mkdir()
+        (cache / "automation_basics.md").write_text("## Automation\nTrigger on event.")
+        store = FakeKnowledgeStore()
+        embed_cached_concept_docs(str(cache), store)
+        hits = store.query("Trigger on event", top_k=5)
+        assert "scraped_for_ha_version" not in hits[0].metadata
 
 
 class TestHaConceptsCollection:
