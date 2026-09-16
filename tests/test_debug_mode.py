@@ -207,6 +207,69 @@ class TestEpisodeWriter:
         assert "cdn.jsdelivr.net" not in html
         assert "cdnjs.cloudflare.com" not in html
 
+    def test_build_index_shows_tool_name_in_thread(self, tmp_path):
+        """role='tool' rows show 'tool: <name>' in the role column."""
+        from utils.debug.episode_writer import write_episode_html
+
+        conv = [
+            {"role": "user", "content": "check config"},
+            {"role": "tool", "content": "home_assistant: true", "name": "read_config"},
+        ]
+        episode_dir = tmp_path / "ep"
+        write_episode_html(episode_dir, self._make_session_meta(), [], conv)
+        html = (episode_dir / "index.html").read_text()
+        assert "tool: read_config" in html
+
+    def test_build_index_tool_call_log_section(self, tmp_path):
+        """Tool Call Log section appears when tool_call_records is provided."""
+        from utils.debug.episode_writer import write_episode_html
+        from utils.debug.capture import ToolCallRecord
+
+        records = [
+            ToolCallRecord(
+                seq=1,
+                name="read_config",
+                args={"path": "configuration.yaml"},
+                output="domain: homeassistant",
+                error=None,
+                success=True,
+                discard_previous=False,
+                duration_ms=24.0,
+            ),
+            ToolCallRecord(
+                seq=2,
+                name="apply_fix",
+                args={"yaml": "x: 1"},
+                output="",
+                error="Backup required",
+                success=False,
+                discard_previous=True,
+                duration_ms=5.0,
+            ),
+        ]
+        episode_dir = tmp_path / "ep"
+        write_episode_html(
+            episode_dir, self._make_session_meta(), [], [], tool_call_records=records
+        )
+        html = (episode_dir / "index.html").read_text()
+        assert "Tool Call Log" in html
+        assert "read_config" in html
+        assert "apply_fix" in html
+        assert "previous result discarded" in html
+        assert "Tool calls:" in html
+
+    def test_build_index_no_tool_call_log_when_records_none(self, tmp_path):
+        """Tool Call Log section is absent when tool_call_records is None."""
+        from utils.debug.episode_writer import write_episode_html
+
+        episode_dir = tmp_path / "ep"
+        write_episode_html(
+            episode_dir, self._make_session_meta(), [], [], tool_call_records=None
+        )
+        html = (episode_dir / "index.html").read_text()
+        assert "Tool Call Log" not in html
+        assert "Tool calls:" not in html
+
 
 # ---------------------------------------------------------------------------
 # TestLLMCallRecord
