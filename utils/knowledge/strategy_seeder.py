@@ -94,6 +94,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA update breaking-change analysis",
         "HA update available, breaking changes, deprecated config key, OS update, CLI change, HACS incompatibility, release notes unavailable",
     ),
+    (
+        "seed_supervisor_cli.md",
+        "HA Supervisor CLI reference",
+        "run_ha_command, ha apps, ha core, ha os, ha backups, ha supervisor, ha network, restart HA, list backups, check config, CLI command",
+    ),
 ]
 
 

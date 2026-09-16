@@ -6161,6 +6161,28 @@ class TestStrategySeeder:
         n = seed_strategies(store)
         assert n > 0
 
+    def test_supervisor_cli_seed_is_included(self):
+        """seed_supervisor_cli.md is registered in _SEED_PROMPTS and upserts."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, seed_strategies
+
+        filenames = [f for f, _, _ in _SEED_PROMPTS]
+        assert "seed_supervisor_cli.md" in filenames
+
+        store = FakeKnowledgeStore()
+        n = seed_strategies(store)
+        chunks = store.query("ha backups new", top_k=10, collections=["strategies"])
+        assert any("supervisor" in (c.text or "").lower() for c in chunks)
+        assert n >= len(_SEED_PROMPTS) - 1  # all registered seeds upserted
+
+    def test_agent_loop_prompt_loads(self):
+        """prompts/agent_loop.md loads without error and contains remember instruction."""
+        from utils.core.prompts import load_prompt
+
+        text = load_prompt("agent_loop")
+        assert "remember" in text.lower()
+        assert "Phase 4" in text
+
 
 class TestSeedHomeProfile:
     def test_returns_one_on_success(self):
