@@ -10650,6 +10650,7 @@ class TestRunRagRefresh:
     def _patch_network(self, monkeypatch, tmp_path):
         """Patch all network-dependent functions to no-ops."""
         import utils.knowledge.ha_docs_scraper as docs_mod
+        import utils.knowledge.ha_developer_docs_scraper as dev_docs_mod
         import utils.knowledge.ha_release_notes_scraper as ha_mod
         import utils.knowledge.hacs_scraper as hacs_mod
 
@@ -10660,12 +10661,16 @@ class TestRunRagRefresh:
             docs_mod, "discover_installed_integrations", lambda *a, **kw: []
         )
         monkeypatch.setattr(docs_mod, "fetch_integration_doc", lambda *a, **kw: -1)
+        monkeypatch.setattr(dev_docs_mod, "fetch_developer_docs", lambda *a, **kw: 0)
         monkeypatch.setattr("config.HA_API_TOKEN", "test-token")
         monkeypatch.setattr(
             "config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "ha_notes")
         )
         monkeypatch.setattr("config.RAG_HACS_CACHE_DIR", str(tmp_path / "hacs"))
         monkeypatch.setattr("config.RAG_HA_DOCS_CACHE_DIR", str(tmp_path / "docs"))
+        monkeypatch.setattr(
+            "config.HA_DEVELOPER_DOCS_CACHE_DIR", str(tmp_path / "dev_docs")
+        )
 
     def test_produces_progress_output(self, tmp_path, monkeypatch, caplog):
         import logging
