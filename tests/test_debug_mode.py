@@ -334,7 +334,7 @@ class TestAgentLoopCaptureLLM:
     """AgentLoop capture_llm=True stores LLMCallRecord objects in result."""
 
     @pytest.fixture
-    def db_path(self, monkeypatch, tmp_path):
+    def db_path(self, monkeypatch, tmp_path, pueo_dirs):
         from agents import ha_agent_advanced
 
         path = str(tmp_path / "test_agent.db")
