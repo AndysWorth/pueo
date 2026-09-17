@@ -20,6 +20,35 @@ if TYPE_CHECKING:
 log = get_logger("ha_lovelace_monitor")
 
 
+def _classify_entity_without_llm(
+    entity_id: str,
+    components: set[str],
+    loaded_integration_domains: set[str],
+) -> Optional[str]:
+    """Return a classification string if the entity is benign without LLM, else None.
+
+    Caller must only invoke this when the entity has live state (has_state=True).
+
+    Rule 1 — sub-platform: some loaded integration creates entities in this domain
+    via the sub-platform mechanism.  These appear in the components list as
+    "{integration}.{entity_domain}" (e.g. "sun.binary_sensor", "noaa_tides.sensor").
+
+    Rule 2 — direct legacy: the entity's own domain matches a loaded config entry
+    domain (e.g. sun.sun where the "sun" integration has a config entry).  The
+    integration creates the entity directly via hass.states rather than the registry.
+    """
+    entity_domain = entity_id.split(".")[0]
+
+    for domain in loaded_integration_domains:
+        if f"{domain}.{entity_domain}" in components:
+            return "benign_sub_platform"
+
+    if entity_domain in loaded_integration_domains:
+        return "benign_direct_legacy"
+
+    return None
+
+
 async def _run_lovelace_investigation(
     suspicious: list[dict],
     ws_client: HAWebSocketClientProtocol,
@@ -236,6 +265,29 @@ async def poll_for_dashboard_entity_issues(
         active_missing: set[str] = set()
         suspicious_unregistered: list[dict] = []
 
+        # Lazy pre-filter data: fetched once when the first has_state=True entity appears.
+        _prefilter_components: Optional[set[str]] = None
+        _prefilter_domains: Optional[set[str]] = None
+
+        async def _get_prefilter_data() -> tuple[set[str], set[str]]:
+            nonlocal _prefilter_components, _prefilter_domains
+            if _prefilter_components is None:
+                try:
+                    _raw = await _ws.get_ha_components()
+                    _prefilter_components = set(_raw)
+                except Exception:
+                    _prefilter_components = set()
+                try:
+                    _raw_entries = await _ws.get_all_config_entries()
+                    _prefilter_domains = {
+                        e.get("domain", "")
+                        for e in _raw_entries
+                        if e.get("state") == "loaded"
+                    }
+                except Exception:
+                    _prefilter_domains = set()
+            return _prefilter_components, _prefilter_domains  # type: ignore[return-value]
+
         for ref in entity_refs:
             if ref.entity_id in registry_ids:
                 continue
@@ -255,7 +307,27 @@ async def poll_for_dashboard_entity_issues(
 
             if ref.entity_id in state_ids:
                 # Entity has live state but no entity registry entry.
-                # Pass to AgentLoop for LLM-driven classification.
+                # Check programmatic rules first — no LLM call needed for benign entities.
+                _comps, _doms = await _get_prefilter_data()
+                _classification = _classify_entity_without_llm(
+                    ref.entity_id, _comps, _doms
+                )
+                if _classification is not None:
+                    _ck = f"lovelace_benign:{ref.entity_id}"
+                    from utils.hitl.hitl_tracker import mark_card_sent
+
+                    with sqlite3.connect(_db_path) as conn:
+                        mark_card_sent(
+                            conn, _ck, CARD_TYPE_LOVELACE_BENIGN, _classification
+                        )
+                    log.info(
+                        "lovelace_prefilter_benign",
+                        entity_id=ref.entity_id,
+                        reason=_classification,
+                    )
+                    continue
+
+                # No programmatic classification — pass to AgentLoop.
                 suspicious_unregistered.append(
                     {
                         "entity_id": ref.entity_id,

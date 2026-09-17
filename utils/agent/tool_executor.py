@@ -2613,21 +2613,27 @@ class ToolExecutor:
             )
             cards_created += 1
 
-        # When all entities are benign (no findings), record suppression so the
-        # poll loop skips re-investigation until the entity joins the registry.
-        if not findings and self._lovelace_suspicious:
+        # Record suppression for every entity NOT in any finding — even when other
+        # findings exist (e.g. an advisory YAML card for a different entity in the
+        # same batch).  Without this, a single advisory card prevents benign entities
+        # from ever getting suppressed and they re-enter LLM investigation every cycle.
+        if self._lovelace_suspicious:
             from utils.hitl.card_types import CARD_TYPE_LOVELACE_BENIGN
 
+            entities_with_findings: set[str] = {
+                eid for f in findings for eid in f.get("entity_ids", [])
+            }
             for eid in self._lovelace_suspicious:
-                card_key = f"lovelace_benign:{eid}"
-                with sqlite3.connect(self._db_path) as conn:
-                    mark_card_sent(
-                        conn,
-                        card_key,
-                        CARD_TYPE_LOVELACE_BENIGN,
-                        "Benign sub-platform entity",
-                    )
-                log.info("lovelace_entity_marked_benign", entity_id=eid)
+                if eid not in entities_with_findings:
+                    card_key = f"lovelace_benign:{eid}"
+                    with sqlite3.connect(self._db_path) as conn:
+                        mark_card_sent(
+                            conn,
+                            card_key,
+                            CARD_TYPE_LOVELACE_BENIGN,
+                            "Benign sub-platform entity",
+                        )
+                    log.info("lovelace_entity_marked_benign", entity_id=eid)
 
         return ToolResult(
             tool_name="finish_lovelace_investigation",

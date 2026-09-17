@@ -21,6 +21,10 @@ Phase 2 — FORM A HYPOTHESIS: For each entity, state what you think is happenin
   - YAML entity without unique_id: entity is YAML-defined but has no unique_id so it
     never enters the entity registry. It IS real and usable — just unregistered.
   - Not-loaded config entry: the config entry exists but failed to load (check "state" field).
+  - Legacy built-in platform entity: the entity's domain exactly matches a loaded
+    integration's config entry domain (e.g. sun.sun where "sun" has a config entry with
+    source="import"). These are HA-managed via hass.states, predate the entity registry,
+    and will NEVER enter it. Treat as benign — no card, suppress permanently.
   - Truly misconfigured: the entity_id is wrong, outdated, or removed.
 
 Phase 3 — GATHER EVIDENCE: Use these tools in order:
@@ -35,6 +39,8 @@ Phase 3 — GATHER EVIDENCE: Use these tools in order:
 
 Phase 4 — CONFIRM ROOT CAUSE: Classify each entity as one of:
   - "benign_sub_platform": entity is created by a sub-platform integration; no action needed
+  - "benign_direct_legacy": entity domain matches a loaded config entry (e.g. sun.sun);
+    HA-managed, will never enter the registry; no action needed
   - "benign_yaml_no_uid": YAML entity without unique_id; surfacing advice to add one is useful
   - "benign_not_loaded": config entry exists but not currently loaded; surface advice
   - "needs_investigation": entity appears broken, misconfigured, or removed
@@ -52,7 +58,7 @@ Phase 6 — REPORT: Call {terminal_tool} with a findings list. Each finding cove
     chat_needed: bool — true if root cause is unclear or advice is complex
     initial_chat_message: pre-filled message for chat agent (include card_key for resolution)
 
-  Omit benign sub-platform entities from findings entirely — no card, no noise.
+  Omit benign sub-platform and legacy entities from findings entirely — no card, no noise.
   For YAML-no-unique-id: include in findings with specific YAML advice.
   For not-loaded config entry: include in findings with advice to check the integration.
 
