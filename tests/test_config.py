@@ -1434,22 +1434,6 @@ class TestFederatedCasesRepoConfig:
 
         assert config.DEBUG_LEVEL == 3
 
-    def test_debug_level_backward_compat_debug_mode(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"debug_mode": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_LEVEL >= 1
-        assert config.DEBUG_MODE is True
-
-    def test_debug_level_backward_compat_debug_verbose(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"debug_verbose": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_LEVEL >= 2
-        assert config.DEBUG_VERBOSE is True
-
     def test_debug_episode_retention_days_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

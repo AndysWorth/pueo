@@ -736,51 +736,19 @@ class TestDebugModeConfig:
 
         assert config.DEBUG_LEVEL == 0
 
-    def test_debug_mode_default_false(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_MODE is False
-
-    def test_debug_verbose_default_false(self, isolated_config):
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_VERBOSE is False
-
     def test_debug_level_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"debug_level": 2}}))
         importlib.reload(sys.modules["config"])
         import config
 
         assert config.DEBUG_LEVEL == 2
-        assert config.DEBUG_MODE is True
-        assert config.DEBUG_VERBOSE is True
 
-    def test_debug_level_1_sets_mode_only(self, isolated_config):
+    def test_debug_level_1_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"debug_level": 1}}))
         importlib.reload(sys.modules["config"])
         import config
 
         assert config.DEBUG_LEVEL == 1
-        assert config.DEBUG_MODE is True
-        assert config.DEBUG_VERBOSE is False
-
-    def test_debug_mode_from_yaml(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"debug_mode": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_MODE is True
-        assert config.DEBUG_LEVEL >= 1
-
-    def test_debug_verbose_from_yaml(self, isolated_config):
-        isolated_config.write_text(yaml.dump({"agent": {"debug_verbose": True}}))
-        importlib.reload(sys.modules["config"])
-        import config
-
-        assert config.DEBUG_VERBOSE is True
-        assert config.DEBUG_LEVEL >= 2
 
 
 # ---------------------------------------------------------------------------

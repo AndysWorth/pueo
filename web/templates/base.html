@@ -206,9 +206,11 @@
       <a class="nav-link{% if p.startswith('/control') %} active{% endif %}" href="/control">Control</a>
       <a class="nav-link{% if p.startswith('/settings') %} active{% endif %}" href="/settings">Settings</a>
       <a class="nav-link{% if p.startswith('/logs') %} active{% endif %}" href="/logs">Logs</a>
-      {% if dev_mode %}
+      {% if dev_mode or debug_level_enabled %}
       <span class="nav-dev-sep">|</span>
       <a class="nav-link nav-link-dev{% if p.startswith('/episodes') %} active{% endif %}" href="/episodes">Episodes</a>
+      {% endif %}
+      {% if dev_mode %}
       <a class="nav-link nav-link-dev{% if p.startswith('/runbooks') %} active{% endif %}" href="/runbooks">Runbooks</a>
       {% endif %}
     </nav>

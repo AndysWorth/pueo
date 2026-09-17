@@ -28,8 +28,6 @@ from config import (
     DASHBOARD_PORT,
     DB_PATH,
     DEBUG_LEVEL,
-    DEBUG_MODE,
-    DEBUG_VERBOSE,
     DEVELOPMENT_MODE,
     NOTIFY_WATCH_DIR,
     PUEO_KB_REPO,
@@ -61,6 +59,7 @@ app.mount(
 )
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["dev_mode"] = DEVELOPMENT_MODE
+templates.env.globals["debug_level_enabled"] = DEBUG_LEVEL >= 1
 templates.env.filters["epoch_to_iso"] = lambda ts: (
     datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
 )
@@ -2601,6 +2600,7 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
         global _debug_level_enabled
         _debug_level_enabled = int(_config.DEBUG_LEVEL)
         set_log_level("DEBUG" if _debug_level_enabled >= 1 else "INFO")
+        templates.env.globals["debug_level_enabled"] = _debug_level_enabled >= 1
 
     # Emit SSE event so the browser can flash a confirmation
     try:
@@ -2980,6 +2980,7 @@ async def set_debug_mode(body: DebugModeRequest) -> JSONResponse:
     else:
         _debug_level_enabled = 0
     set_log_level("DEBUG" if _debug_level_enabled >= 1 else "INFO")
+    templates.env.globals["debug_level_enabled"] = _debug_level_enabled >= 1
     return JSONResponse(
         {
             "enabled": _debug_level_enabled >= 1,
@@ -3483,9 +3484,10 @@ async def episodes_tab(
 ) -> HTMLResponse:
     import config as _config
 
-    if not _config.DEVELOPMENT_MODE:
+    if _debug_level_enabled < 1 and not _config.DEVELOPMENT_MODE:
         raise HTTPException(
-            status_code=404, detail="Episodes requires development_mode: true"
+            status_code=404,
+            detail="Episodes requires debug_level >= 1 or development_mode: true",
         )
     from utils.repair.repair_episode import load_episodes
 
@@ -3521,9 +3523,10 @@ async def export_episodes(
     """Return anonymized YAML of all episodes (optionally filtered by --since date)."""
     import config as _config
 
-    if not _config.DEVELOPMENT_MODE:
+    if _debug_level_enabled < 1 and not _config.DEVELOPMENT_MODE:
         raise HTTPException(
-            status_code=404, detail="Episodes requires development_mode: true"
+            status_code=404,
+            detail="Episodes requires debug_level >= 1 or development_mode: true",
         )
     from datetime import datetime
 

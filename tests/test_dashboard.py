@@ -6531,6 +6531,7 @@ class TestEpisodesTab:
         import web.dashboard as dashboard
 
         monkeypatch.setattr(_config, "DEVELOPMENT_MODE", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 0)
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.get("/episodes")
         assert resp.status_code == 404
@@ -6541,9 +6542,32 @@ class TestEpisodesTab:
         import web.dashboard as dashboard
 
         monkeypatch.setattr(_config, "DEVELOPMENT_MODE", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 0)
         client = TestClient(dashboard.app, raise_server_exceptions=False)
         resp = client.get("/episodes/export")
         assert resp.status_code == 404
+
+    def test_episodes_returns_200_with_debug_level_1(self, db_path, monkeypatch):
+        import config as _config
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(_config, "DEVELOPMENT_MODE", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes")
+        assert resp.status_code == 200
+
+    def test_episodes_export_returns_200_with_debug_level_1(self, db_path, monkeypatch):
+        import config as _config
+        from starlette.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(_config, "DEVELOPMENT_MODE", False)
+        monkeypatch.setattr(dashboard, "_debug_level_enabled", 1)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/episodes/export")
+        assert resp.status_code == 200
 
     def test_episodes_tab_includes_debug_url_when_dir_exists(
         self, db_path, tmp_path, monkeypatch
