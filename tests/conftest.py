@@ -120,6 +120,12 @@ def _patch_timeline_db(monkeypatch, tmp_path):
     monkeypatch.setattr(utils.core.timeline, "DB_PATH", tmp_db)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_data_dir(monkeypatch, tmp_path):
+    """Redirect PUEO_DATA_DIR so debug episodes never write to ~/Library during tests."""
+    monkeypatch.setenv("PUEO_DATA_DIR", str(tmp_path / "data"))
+
+
 def _reload_all_modules():
     agent_modules = [
         "config",
