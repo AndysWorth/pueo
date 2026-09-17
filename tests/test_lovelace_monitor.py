@@ -1665,3 +1665,372 @@ class TestLovelaceStuckBackoff:
         # sensor.stuck should not appear in any investigation call.
         for call in investigation_calls:
             assert not any(e["entity_id"] == "sensor.stuck" for e in call)
+
+
+# ---------------------------------------------------------------------------
+# _classify_entity_without_llm — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyEntityWithoutLLM:
+    def test_sub_platform_via_components(self):
+        """sensor.high_tide matches noaa_tides.sensor in components → benign_sub_platform."""
+        from agents.ha_lovelace_monitor import _classify_entity_without_llm
+
+        result = _classify_entity_without_llm(
+            "sensor.high_tide",
+            components={"noaa_tides.sensor", "sun.binary_sensor"},
+            loaded_integration_domains={"noaa_tides", "sun"},
+        )
+        assert result == "benign_sub_platform"
+
+    def test_direct_legacy_sun_sun(self):
+        """sun.sun: entity domain 'sun' is a loaded integration → benign_direct_legacy."""
+        from agents.ha_lovelace_monitor import _classify_entity_without_llm
+
+        result = _classify_entity_without_llm(
+            "sun.sun",
+            components={"sun.binary_sensor", "sun.sensor"},
+            loaded_integration_domains={"sun"},
+        )
+        # Rule 1: 'sun.sun' domain is 'sun'; check if any domain.sun is in components.
+        # 'sun' → check 'sun.sun' in components? No.
+        # Rule 2: entity domain 'sun' in loaded_integration_domains → yes.
+        assert result == "benign_direct_legacy"
+
+    def test_binary_sensor_sub_platform(self):
+        """binary_sensor.sun_rising matches sun.binary_sensor in components."""
+        from agents.ha_lovelace_monitor import _classify_entity_without_llm
+
+        result = _classify_entity_without_llm(
+            "binary_sensor.sun_rising",
+            components={"sun.binary_sensor"},
+            loaded_integration_domains={"sun"},
+        )
+        assert result == "benign_sub_platform"
+
+    def test_unknown_entity_returns_none(self):
+        """Entity with no sub-platform or legacy match returns None → goes to LLM."""
+        from agents.ha_lovelace_monitor import _classify_entity_without_llm
+
+        result = _classify_entity_without_llm(
+            "sensor.weird_unknown",
+            components={"sun.binary_sensor"},
+            loaded_integration_domains={"sun"},
+        )
+        assert result is None
+
+    def test_empty_data_returns_none(self):
+        """Empty components and loaded_domains → None for every entity."""
+        from agents.ha_lovelace_monitor import _classify_entity_without_llm
+
+        assert _classify_entity_without_llm("sensor.anything", set(), set()) is None
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 fix: benign suppression per-entity even when other findings exist
+# ---------------------------------------------------------------------------
+
+
+class TestBenignSuppressionMixedFindings:
+    def test_benign_entities_suppressed_even_when_other_findings_exist(self, tmp_path):
+        """Entities NOT in any finding get benign records even when other findings exist."""
+        db_path = _make_hitl_db(tmp_path)
+        executor = _make_minimal_executor(db_path)
+        executor.set_lovelace_suspicious(["sensor.high_tide", "sun.sun"])
+
+        # high_tide has a finding; sun.sun is benign and omitted from findings.
+        findings = [
+            {
+                "entity_ids": ["sensor.high_tide"],
+                "title": "YAML entity missing unique_id",
+                "description": "No unique_id",
+                "suggested_actions": ["Add unique_id"],
+                "chat_needed": False,
+                "initial_chat_message": "",
+            }
+        ]
+        asyncio.run(executor._finish_lovelace_investigation(findings=findings))
+
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT card_key, resolved_at FROM hitl_suppression"
+                " WHERE card_type = 'lovelace_benign'"
+            ).fetchall()
+        keys = {r[0] for r in rows}
+        # sun.sun was benign (omitted from findings) → must get suppression record
+        assert "lovelace_benign:sun.sun" in keys
+        # high_tide was in findings → must NOT get a benign suppression record
+        assert "lovelace_benign:sensor.high_tide" not in keys
+        # The suppression record is active (not resolved)
+        for key, resolved_at in rows:
+            if key == "lovelace_benign:sun.sun":
+                assert resolved_at is None
+
+
+# ---------------------------------------------------------------------------
+# Pre-filter: benign entities bypass LLM in the poll loop
+# ---------------------------------------------------------------------------
+
+
+class TestPrefilterBenign:
+    def test_sub_platform_entity_prefiltered_not_investigated(self, tmp_path):
+        """has_state=True entity matching sub-platform rule → benign record, no investigation."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sensor.high_tide", "state": "2.3"}],
+            config_entries=[{"domain": "noaa_tides", "state": "loaded"}],
+            ha_components=["noaa_tides.sensor"],
+        )
+        notifier = FakeNotifier()
+        investigation_calls: list = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        # Investigation must NOT be triggered for the pre-filtered entity.
+        for call in investigation_calls:
+            assert not any(e["entity_id"] == "sensor.high_tide" for e in call)
+
+        # Benign record must be written to the DB.
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_type, resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'lovelace_benign:sensor.high_tide'"
+            ).fetchone()
+        assert row is not None, "benign record must be written by pre-filter"
+        assert row[1] is None, "record must be active (not resolved)"
+
+    def test_direct_legacy_entity_prefiltered(self, tmp_path):
+        """sun.sun (entity domain == loaded integration domain) → pre-filtered as benign."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "weather", "entity": "sun.sun"}],
+                }
+            ]
+        }
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[{"entity_id": "sun.sun", "state": "above_horizon"}],
+            config_entries=[{"domain": "sun", "state": "loaded"}],
+            ha_components=["sun.binary_sensor", "sun.sensor"],
+        )
+        notifier = FakeNotifier()
+        investigation_calls: list = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        for call in investigation_calls:
+            assert not any(e["entity_id"] == "sun.sun" for e in call)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression"
+                " WHERE card_key = 'lovelace_benign:sun.sun'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None
+
+    def test_has_state_false_entity_not_prefiltered(self, tmp_path):
+        """has_state=False entities always go to investigation regardless of components."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.hitl.notify import FakeNotifier
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "entity", "entity": "sensor.gone"}],
+                }
+            ]
+        }
+        # No state for sensor.gone — absent from both registry and states
+        ws = FakeHAWebSocketClient(
+            entity_registry=[],
+            lovelace_configs={None: lovelace},
+            states=[],
+            config_entries=[{"domain": "sensor", "state": "loaded"}],
+            ha_components=[
+                "sensor.gone"
+            ],  # matches, but has_state=False → no pre-filter
+        )
+        notifier = FakeNotifier()
+        investigation_calls: list = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=ws,
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        # sensor.gone must be passed to investigation (has_state=False never pre-filtered)
+        assert any(
+            any(e["entity_id"] == "sensor.gone" for e in call)
+            for call in investigation_calls
+        )
+
+    def test_get_ha_components_failure_falls_through_to_llm(self, tmp_path):
+        """If get_ha_components raises, entity falls through to LLM (graceful degradation)."""
+        from agents.ha_lovelace_monitor import poll_for_dashboard_entity_issues
+        from utils.hitl.notify import FakeNotifier
+        from unittest import mock
+
+        db_path = _make_hitl_db(tmp_path)
+        lovelace = {
+            "views": [
+                {
+                    "title": "Home",
+                    "cards": [{"type": "sensor", "entity": "sensor.high_tide"}],
+                }
+            ]
+        }
+
+        class _FailingComponents:
+            calls: list = []
+
+            async def get_lovelace_dashboards(self):
+                return []
+
+            async def get_lovelace_config(self, url_path=None):
+                return lovelace
+
+            async def get_entity_registry(self):
+                return []
+
+            async def get_states(self):
+                return [{"entity_id": "sensor.high_tide", "state": "2.3"}]
+
+            async def get_ha_components(self):
+                raise RuntimeError("components unavailable")
+
+            async def get_all_config_entries(self):
+                return [{"domain": "noaa_tides", "state": "loaded"}]
+
+        notifier = FakeNotifier()
+        investigation_calls: list = []
+
+        async def _fake_investigation(suspicious, **kw):
+            investigation_calls.append(list(suspicious))
+
+        with mock.patch(
+            "agents.ha_lovelace_monitor._run_lovelace_investigation",
+            side_effect=_fake_investigation,
+        ):
+
+            async def _run():
+                task = asyncio.create_task(
+                    poll_for_dashboard_entity_issues(
+                        ws_client=_FailingComponents(),  # type: ignore[arg-type]
+                        notifier=notifier,
+                        db_path=db_path,
+                        interval_minutes=0,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.run(_run())
+
+        # get_ha_components failed → pre-filter cannot classify → falls through to investigation
+        assert any(
+            any(e["entity_id"] == "sensor.high_tide" for e in call)
+            for call in investigation_calls
+        )
