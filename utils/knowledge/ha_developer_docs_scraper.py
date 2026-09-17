@@ -26,22 +26,24 @@ _HEADING = re.compile(r"\n#+\s+")
 
 _HA_DEV_DOCS_RAW_BASE = (
     "https://raw.githubusercontent.com/home-assistant"
-    "/developers.home-assistant.io/master/docs"
+    "/developers.home-assistant/master/docs"
 )
 
 # Curated developer doc pages: (doc_id, path_under_docs, category)
 # path_under_docs is appended to _HA_DEV_DOCS_RAW_BASE with .md extension.
+# Repo was renamed from developers.home-assistant.io → developers.home-assistant;
+# several paths were also reorganised (flat root files, api/ subdir, etc.).
 _DEVELOPER_DOCS: list[tuple[str, str, str]] = [
-    ("architecture_index", "architecture/index", "architecture"),
-    ("architecture_components", "architecture/components", "architecture"),
+    ("architecture_index", "architecture_index", "architecture"),
+    ("architecture_components", "architecture_components", "architecture"),
     ("core_entity", "core/entity", "entity"),
-    ("core_entity_component", "core/entity_component", "entity"),
+    ("core_entity_component", "core/integration/config_flow", "entity"),
     ("config_entries_index", "config_entries_index", "config_flow"),
-    ("config_entries_options_flow", "config_entries_options_flow", "config_flow"),
-    ("supervisor_index", "supervisor/index", "supervisor"),
-    ("supervisor_developing", "supervisor/developing", "supervisor"),
-    ("api_websocket", "websocket_api", "api"),
-    ("api_rest", "rest_api", "api"),
+    ("config_entries_options_flow", "core/integration/options_flow", "config_flow"),
+    ("supervisor_index", "supervisor", "supervisor"),
+    ("supervisor_developing", "supervisor/development", "supervisor"),
+    ("api_websocket", "api/websocket", "api"),
+    ("api_rest", "api/rest", "api"),
 ]
 
 
