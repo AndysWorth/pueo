@@ -614,6 +614,20 @@ class AgentLoop:
             if decision.summary_if_giving_up and episode_stub is None:
                 episode_stub = {"summary": decision.summary_if_giving_up}
             outcome = "stuck"
+        except Exception as exc:
+            # Unexpected crash (e.g. HTTP 500 from Ollama, XML parse error).
+            # Capture as "failed" so the episode writer still runs and callers
+            # can handle it through the normal non-success path instead of
+            # propagating an unhandled exception to the work queue.
+            elapsed = time.monotonic() - start_time
+            log.error(
+                "agent_loop_crash",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                steps=len(steps),
+                elapsed=round(elapsed, 2),
+            )
+            outcome = "failed"
 
         log.info(
             "agent_loop_complete",

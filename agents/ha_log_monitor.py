@@ -550,6 +550,14 @@ async def _run_repair_issue_investigation(
         db_path=db_path,
         pending_repair_issue=issue,
     )
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+
+        _prof = await asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
 
     registry = build_ha_tool_registry()
     system_prompt = load_prompt("agent_loop_repair_issue").format(

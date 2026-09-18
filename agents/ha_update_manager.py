@@ -121,6 +121,14 @@ async def fetch_release_notes_cached(
         except Exception:  # nosec B112
             return f"Release notes unavailable (fetched from {release_url})."
 
+    if not _is_ha_core and not release_url:
+        return (
+            "Release notes unavailable — this supervisor add-on does not provide a release "
+            "URL. To get the changelog, try: "
+            "fetch_url('https://raw.githubusercontent.com/home-assistant/addons/master/"
+            "<slug>/CHANGELOG.md') — replace <slug> with the add-on name."
+        )
+
     fetcher = _fetcher or _fetch_github_release_notes
     notes = await fetcher(version)
     if len(notes.strip()) < 500:

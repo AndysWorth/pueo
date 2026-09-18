@@ -3975,22 +3975,24 @@ class TestFetchReleaseNotesCached:
         )
         assert result == "HA Core notes for 2026.9.2"
 
-    def test_non_ha_core_no_release_url_falls_through_to_fetcher(self, tmp_path):
-        """Non-HA-Core version with no release_url falls through to the core fetcher."""
-
-        async def fake_fetcher(version: str) -> str:
-            return "notes from core fetcher"
+    def test_non_ha_core_no_release_url_returns_helpful_message(self, tmp_path):
+        """Non-HA-Core version with no release_url returns a helpful message (not 404)."""
+        from unittest import mock
 
         from agents.ha_update_manager import fetch_release_notes_cached
 
-        result = asyncio.run(
-            fetch_release_notes_cached(
-                "3.2.0",
-                str(tmp_path),
-                _fetcher=fake_fetcher,
+        with mock.patch(
+            "agents.ha_update_manager._fetch_github_release_notes"
+        ) as mock_fetcher:
+            result = asyncio.run(
+                fetch_release_notes_cached(
+                    "3.2.0",
+                    str(tmp_path),
+                )
             )
-        )
-        assert result == "notes from core fetcher"
+
+        mock_fetcher.assert_not_called()
+        assert "unavailable" in result.lower()
 
     def test_stub_sentinel_written_to_cache(self, tmp_path):
         """fetch_ha_release_notes writes STUB: prefix when body is a short stub."""
@@ -7638,8 +7640,31 @@ class TestRunNotificationInvestigation:
         assert payload["ha_notification_id"] == "http-login"
         assert payload["category"] == "security"
 
-    def test_no_hitl_card_when_requires_hitl_false(self, db_path):
+    def test_no_hitl_card_when_requires_hitl_false_non_security(self, db_path):
+        """Non-security notifications can be handled without a card when LLM says so."""
         from agents.ha_notification_manager import _run_notification_investigation
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        notifier = FakeNotifier()
+        llm = FakeToolCallingLLMClient(self._finish_call(requires_hitl=False))
+        asyncio.run(
+            _run_notification_investigation(
+                notification_id="persistent_notification.general_info",
+                title="General info",
+                message="msg",
+                ha_created_at=None,
+                db_path=db_path,
+                notifier=notifier,
+                llm_client=llm,
+            )
+        )
+        assert len(notifier.sent) == 0
+
+    def test_security_notification_always_sends_card_even_if_llm_says_no(self, db_path):
+        """Security-category notifications always produce a HITL card regardless of LLM."""
+        from agents.ha_notification_manager import _run_notification_investigation
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
         from utils.hitl.notify import FakeNotifier
         from utils.llm.ollama_client import FakeToolCallingLLMClient
 
@@ -7649,14 +7674,16 @@ class TestRunNotificationInvestigation:
             _run_notification_investigation(
                 notification_id="http-login",
                 title="Login attempt",
-                message="msg",
+                message="Bad actor",
                 ha_created_at=None,
                 db_path=db_path,
                 notifier=notifier,
                 llm_client=llm,
+                ws_client=FakeHAWebSocketClient(),
             )
         )
-        assert len(notifier.sent) == 0
+        # Security category overrides requires_hitl=False — card must be sent
+        assert len(notifier.sent) == 1
 
     def test_severity_override_propagates_to_card(self, db_path):
         from agents.ha_notification_manager import _run_notification_investigation
@@ -14546,3 +14573,206 @@ class TestAgentLoopDiscardResult:
         result = asyncio.run(loop.run("test trigger"))
         # Should not raise; loop completes normally
         assert result.outcome in ("success", "no_fix_needed", "complete")
+
+
+# ── AgentLoop crash → episode still written (Fix 3) ─────────────────────────
+
+
+class TestAgentLoopCrashOutcome:
+    """Unexpected exceptions in _loop_body are caught; outcome is 'failed'."""
+
+    def _make_crash_loop(self):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+
+        class _CrashingLLM:
+            async def chat_with_tools(self, *a, **k):
+                raise ValueError("XML syntax error on line 13: boom")
+
+            async def chat(self, *a, **k):
+                return {"message": {"content": "{}"}}
+
+        return AgentLoop(
+            llm_client=_CrashingLLM(),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+        )
+
+    def test_crash_returns_failed_not_exception(self):
+        loop = self._make_crash_loop()
+        result = asyncio.run(loop.run("diagnose"))
+        assert result.outcome == "failed"
+
+    def test_crash_does_not_propagate_exception(self):
+        loop = self._make_crash_loop()
+        # Must not raise — callers (work queue) see outcome, not exception.
+        try:
+            asyncio.run(loop.run("diagnose"))
+        except Exception as exc:
+            pytest.fail(f"AgentLoop.run() should not raise on crash: {exc}")
+
+
+# ── Security notification enforcement (Fix 1) ────────────────────────────────
+
+
+class TestSecurityNotificationEnforcement:
+    """Security-category notifications always produce a HITL card."""
+
+    def _run_finish_notification(
+        self,
+        db_path: str,
+        category: str,
+        requires_hitl: bool,
+        dismiss_now: bool,
+        ws_client=None,
+    ):
+        import asyncio
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        pending_notif = {
+            "ha_nid": "http-login",
+            "title": "Failed login",
+            "message": "Bad actor",
+            "category": category,
+            "severity": "HIGH",
+            "ha_created_at": None,
+            "db_path": db_path,
+        }
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True),  # type: ignore[arg-type]
+            notifier=notifier,
+            ha_ws_client=ws_client,
+            db_path=db_path,
+            pending_notification=pending_notif,
+        )
+
+        asyncio.run(
+            executor._finish_notification_investigation(
+                human_explanation="Suspicious login from external IP.",
+                recommended_action="Block IP.",
+                requires_hitl=requires_hitl,
+                severity_override=None,
+                dismiss_now=dismiss_now,
+            )
+        )
+        return notifier
+
+    def test_security_forces_hitl_card(self, tmp_path, pueo_dirs):
+        import sqlite3
+
+        db_path = str(tmp_path / "s.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS notification_history "
+                "(notification_id TEXT PRIMARY KEY, category TEXT, severity TEXT,"
+                " title TEXT, message TEXT, first_seen_at REAL, last_seen_at REAL,"
+                " ha_created_at REAL, hitl_sent_at REAL, dismissed_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression "
+                "(card_key TEXT PRIMARY KEY, card_type TEXT DEFAULT '',"
+                " description TEXT DEFAULT '', first_sent_at REAL DEFAULT 0,"
+                " last_sent_at REAL DEFAULT 0, send_count INTEGER DEFAULT 1,"
+                " known_issue INTEGER DEFAULT 0, known_issue_note TEXT DEFAULT '',"
+                " last_action TEXT, last_action_at REAL, rejection_count INTEGER DEFAULT 0,"
+                " next_allowed_at REAL, resolved_at REAL)"
+            )
+
+        notifier = self._run_finish_notification(
+            db_path=db_path,
+            category="security",
+            requires_hitl=False,  # LLM says no card needed
+            dismiss_now=True,  # LLM says auto-dismiss
+        )
+
+        # Card must have been sent despite LLM's requires_hitl=False
+        assert (
+            len(notifier.sent) == 1
+        ), "security notification must always produce a card"
+
+    def test_security_does_not_auto_dismiss(self, tmp_path, pueo_dirs):
+        """dismiss_now=True is ignored for security category."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+
+        db_path = str(tmp_path / "s2.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS notification_history "
+                "(notification_id TEXT PRIMARY KEY, category TEXT, severity TEXT,"
+                " title TEXT, message TEXT, first_seen_at REAL, last_seen_at REAL,"
+                " ha_created_at REAL, hitl_sent_at REAL, dismissed_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression "
+                "(card_key TEXT PRIMARY KEY, card_type TEXT DEFAULT '',"
+                " description TEXT DEFAULT '', first_sent_at REAL DEFAULT 0,"
+                " last_sent_at REAL DEFAULT 0, send_count INTEGER DEFAULT 1,"
+                " known_issue INTEGER DEFAULT 0, known_issue_note TEXT DEFAULT '',"
+                " last_action TEXT, last_action_at REAL, rejection_count INTEGER DEFAULT 0,"
+                " next_allowed_at REAL, resolved_at REAL)"
+            )
+
+        ws_client = MagicMock()
+        ws_client.dismiss_notification = AsyncMock()
+
+        self._run_finish_notification(
+            db_path=db_path,
+            category="security",
+            requires_hitl=False,
+            dismiss_now=True,
+            ws_client=ws_client,
+        )
+
+        ws_client.dismiss_notification.assert_not_called()
+
+    def test_non_security_auto_dismiss_still_works(self, tmp_path, pueo_dirs):
+        """Non-security notifications can still be auto-dismissed."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+
+        db_path = str(tmp_path / "s3.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS notification_history "
+                "(notification_id TEXT PRIMARY KEY, category TEXT, severity TEXT,"
+                " title TEXT, message TEXT, first_seen_at REAL, last_seen_at REAL,"
+                " ha_created_at REAL, hitl_sent_at REAL, dismissed_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression "
+                "(card_key TEXT PRIMARY KEY, card_type TEXT DEFAULT '',"
+                " description TEXT DEFAULT '', first_sent_at REAL DEFAULT 0,"
+                " last_sent_at REAL DEFAULT 0, send_count INTEGER DEFAULT 1,"
+                " known_issue INTEGER DEFAULT 0, known_issue_note TEXT DEFAULT '',"
+                " last_action TEXT, last_action_at REAL, rejection_count INTEGER DEFAULT 0,"
+                " next_allowed_at REAL, resolved_at REAL)"
+            )
+
+        ws_client = MagicMock()
+        ws_client.dismiss_notification = AsyncMock()
+
+        self._run_finish_notification(
+            db_path=db_path,
+            category="general",
+            requires_hitl=False,
+            dismiss_now=True,
+            ws_client=ws_client,
+        )
+
+        ws_client.dismiss_notification.assert_called_once_with("http-login")
