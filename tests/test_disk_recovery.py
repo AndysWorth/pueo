@@ -761,3 +761,111 @@ class TestRunSafeDiskRecoveryLLMGuided:
         assert summary.investigation_report is None
         assert summary.used_investigation is False
         assert len(summary.actions) == 3
+
+
+# ---------------------------------------------------------------------------
+# WARN disk recovery routes through work queue (ADR 026, Issue 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestWarnDiskRecoveryQueue:
+    """WARN-level disk recovery must route through the work queue, not run directly."""
+
+    def _make_status(self, disk_free_gb: float):
+        from utils.disk.resource import ResourceStatus
+
+        # disk_warn=True, disk_critical=False: WARN-level breach
+        return ResourceStatus(
+            disk_free_gb=disk_free_gb,
+            disk_total_gb=100.0,
+            disk_used_gb=100.0 - disk_free_gb,
+            disk_warn=True,
+            disk_critical=False,
+            mem_available_mb=4096.0,
+            mem_total_mb=8192.0,
+            mem_warn=False,
+        )
+
+    def test_warn_breach_submits_work_item_not_direct_call(self, tmp_path, monkeypatch):
+        """WARN disk breach submits a WorkItem instead of calling run_safe_disk_recovery directly."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+
+        db = str(tmp_path / "resource_test.db")
+        with sqlite3.connect(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS hitl_suppression (
+                    card_key TEXT PRIMARY KEY,
+                    card_type TEXT DEFAULT '',
+                    description TEXT DEFAULT '',
+                    first_sent_at REAL DEFAULT 0,
+                    last_sent_at REAL DEFAULT 0,
+                    send_count INTEGER DEFAULT 1,
+                    known_issue INTEGER DEFAULT 0,
+                    known_issue_note TEXT DEFAULT '',
+                    last_action TEXT,
+                    last_action_at REAL,
+                    rejection_count INTEGER DEFAULT 0,
+                    next_allowed_at REAL,
+                    resolved_at REAL
+                )
+                """
+            )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "DB_PATH", db)
+        monkeypatch.setattr(_cfg, "DISK_RECOVERY_AUTO_ENABLED", True)
+
+        submitted_items = []
+
+        class _FakeQueue:
+            async def submit(self, item):
+                submitted_items.append(item)
+                return True
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(command_results={}),
+            notifier=notifier,
+            interval_seconds=60,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=200.0,
+            db_path=db,
+        )
+
+        status = self._make_status(
+            disk_free_gb=4.0
+        )  # below 5.0 warn, above 3.0 critical
+
+        with (
+            patch(
+                "utils.agent.work_queue.get_work_queue_or_none",
+                return_value=_FakeQueue(),
+            ),
+            patch(
+                "utils.disk.resource.poll_host_resources",
+                new=AsyncMock(return_value=status),
+            ),
+            patch(
+                "utils.disk.resource.update_resource_status",
+            ),
+            patch(
+                "utils.core.timeline.write_timeline_event",
+            ),
+        ):
+            asyncio.run(poller._check_and_alert(status))
+
+        # A WorkItem with dedup_key "disk_recovery_warn" must have been submitted
+        warn_items = [i for i in submitted_items if i.dedup_key == "disk_recovery_warn"]
+        assert (
+            warn_items
+        ), "WARN disk breach must submit a WorkItem with dedup_key='disk_recovery_warn'"
+        assert warn_items[0].activity_type == "disk_recovery"

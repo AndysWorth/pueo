@@ -582,6 +582,16 @@ async def pueo_status() -> JSONResponse:
         return JSONResponse(
             {"activity": "refreshing", "detail": "Refreshing knowledge base"}
         )
+    from utils.knowledge.knowledge_store import get_kb_needs_refresh
+
+    if get_kb_needs_refresh():
+        return JSONResponse(
+            {
+                "activity": "monitoring",
+                "detail": "All loops healthy",
+                "kb_needs_refresh": True,
+            }
+        )
     return JSONResponse({"activity": "monitoring", "detail": "All loops healthy"})
 
 

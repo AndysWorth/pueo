@@ -8,6 +8,15 @@ from typing import Any, Optional
 
 _log = logging.getLogger("knowledge_store")
 
+# Set when a ChromaDB query fails due to an empty collection (hnsw index not yet built).
+# Cleared after a successful query. Surfaced by the dashboard health endpoint.
+_kb_needs_refresh: bool = False
+
+
+def get_kb_needs_refresh() -> bool:
+    """Return True if any ChromaDB collection appears empty/uninitialized."""
+    return _kb_needs_refresh
+
 
 def _matches_where(meta: dict, where: Optional[dict]) -> bool:
     """Return True if meta satisfies the ChromaDB-style where clause."""
@@ -259,7 +268,24 @@ class ChromaKnowledgeStore:  # pragma: no cover
             kwargs: dict[str, Any] = {"query_texts": [query_text], "n_results": top_k}
             if where:
                 kwargs["where"] = where
-            res = self._cols[col].query(**kwargs)
+            try:
+                res = self._cols[col].query(**kwargs)
+            except Exception as _qe:
+                _qe_str = str(_qe).lower()
+                if (
+                    "hnsw" in _qe_str
+                    or "nothing found" in _qe_str
+                    or "no documents" in _qe_str
+                ):
+                    global _kb_needs_refresh
+                    _kb_needs_refresh = True
+                    _log.warning(
+                        "knowledge_store_collection_empty collection=%s error=%s",
+                        col,
+                        str(_qe),
+                    )
+                    continue
+                raise
             docs = (res.get("documents") or [[]])[0]
             metas = (res.get("metadatas") or [[]])[0]
             dists = (res.get("distances") or [[]])[0]
