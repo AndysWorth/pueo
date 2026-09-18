@@ -10835,6 +10835,19 @@ class TestRunRagRefresh:
             "complete" in m for m in rag_msgs
         ), "expected a 'complete' timeline event"
 
+    def test_on_step_callback_called(self, tmp_path, monkeypatch):
+        """run_rag_refresh() calls on_step for at least the first and last major step."""
+        import main as main_module
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        self._patch_network(monkeypatch, tmp_path)
+        store = FakeKnowledgeStore()
+        labels: list[str] = []
+        main_module.run_rag_refresh(store, on_step=labels.append)
+        assert len(labels) >= 2, "expected on_step called for multiple steps"
+        # First label should be about release notes; last about repair episodes or runbooks
+        assert any("release" in lbl.lower() or "Release" in lbl for lbl in labels)
+
 
 class TestKnowledgeStoreAlwaysInit:
     """ChromaKnowledgeStore is constructed even when CHROMADB_PATH does not exist yet.

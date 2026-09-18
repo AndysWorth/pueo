@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import paths as _paths
 
@@ -84,7 +84,11 @@ def _reembed_orphaned_runbooks(
     return n
 
 
-def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
+def run_rag_refresh(
+    store: "KnowledgeStoreClientProtocol",
+    *,
+    on_step: Optional[Callable[[str], None]] = None,
+) -> None:
     import config
     from utils.ha.ha_environment import load_environment_profile
     from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes
@@ -108,6 +112,13 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
 
     _log = get_logger("rag_refresh")
 
+    def _cb(label: str) -> None:
+        if on_step:
+            try:
+                on_step(label)
+            except Exception:  # nosec B110 — progress callback is best-effort
+                pass
+
     ha_url = f"http://{config.HA_HOST}:{config.HA_API_PORT}"
     ha_token = config.HA_API_TOKEN
 
@@ -120,6 +131,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     )
 
     # ── 1. HA release notes ──────────────────────────────────────────────────
+    _cb("Fetching HA release notes")
     _log.info(
         "rag_refresh_step",
         step="fetch_release_notes",
@@ -132,10 +144,12 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         "rag_refresh_step_done", step="fetch_release_notes", fetched=n_fetched_notes
     )
 
+    _cb("Fetching blog entries")
     _log.info("rag_refresh_step", step="fetch_blog_stubs")
     n_blog = fetch_blog_release_notes(config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR)
     _log.info("rag_refresh_step_done", step="fetch_blog_stubs", replaced=n_blog)
 
+    _cb("Embedding release notes")
     _log.info("rag_refresh_step", step="embed_release_notes")
     ha_ids: set[str] = set()
     n_ha = scrape_cached_release_notes(
@@ -146,6 +160,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         store.prune("ha_release_notes", ha_ids)
 
     # ── 2. HACS changelogs ───────────────────────────────────────────────────
+    _cb("Discovering HACS components")
     _log.info("rag_refresh_step", step="discover_hacs")
     if ha_token:
         hacs_pairs = discover_hacs_integrations(ha_url, ha_token)
@@ -163,6 +178,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
             "rag_refresh_step_skipped", step="discover_hacs", reason="no_ha_token"
         )
 
+    _cb("Embedding HACS changelogs")
     _log.info("rag_refresh_step", step="embed_hacs")
     hacs_ids: set[str] = set()
     n_hacs = embed_cached_changelogs(
@@ -173,6 +189,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         store.prune("hacs_changelogs", hacs_ids)
 
     # ── 3. HA integration docs ───────────────────────────────────────────────
+    _cb("Discovering HA integrations")
     _log.info("rag_refresh_step", step="discover_integrations")
     n_fetched_docs = n_cached_docs = n_missing_docs = 0
     if ha_token:
@@ -201,6 +218,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
             reason="no_ha_token",
         )
 
+    _cb("Embedding integration docs")
     _log.info("rag_refresh_step", step="embed_integration_docs")
     docs_ids: set[str] = set()
     n_docs = embed_cached_integration_docs(
@@ -216,12 +234,14 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         fetch_concept_docs,
     )
 
+    _cb("Fetching HA concept docs")
     _log.info("rag_refresh_step", step="fetch_concept_docs")
     n_fetched_concepts = fetch_concept_docs(config.HA_CONCEPTS_CACHE_DIR)
     _log.info(
         "rag_refresh_step_done", step="fetch_concept_docs", fetched=n_fetched_concepts
     )
 
+    _cb("Embedding HA concept docs")
     _log.info("rag_refresh_step", step="embed_concept_docs")
     concepts_ids: set[str] = set()
     n_concepts = embed_cached_concept_docs(
@@ -237,12 +257,14 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
         fetch_developer_docs,
     )
 
+    _cb("Fetching HA developer docs")
     _log.info("rag_refresh_step", step="fetch_developer_docs")
     n_fetched_dev = fetch_developer_docs(config.HA_DEVELOPER_DOCS_CACHE_DIR)
     _log.info(
         "rag_refresh_step_done", step="fetch_developer_docs", fetched=n_fetched_dev
     )
 
+    _cb("Embedding developer docs")
     _log.info("rag_refresh_step", step="embed_developer_docs")
     dev_ids: set[str] = set()
     n_developer_docs = embed_cached_developer_docs(
@@ -257,16 +279,19 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     # ── 5. Strategy seeding ──────────────────────────────────────────────────
     from utils.knowledge.strategy_seeder import seed_home_profile, seed_strategies
 
+    _cb("Seeding strategy runbooks")
     _log.info("rag_refresh_step", step="seed_strategies")
     n_strategies = seed_strategies(store, db_path=config.DB_PATH)
     _log.info("rag_refresh_step_done", step="seed_strategies", seeded=n_strategies)
 
     # ── 5.5. Home profile seed ────────────────────────────────────────────────
+    _cb("Seeding home profile")
     _log.info("rag_refresh_step", step="seed_home_profile")
     n_home_profile = seed_home_profile(store, _env_profile, db_path=config.DB_PATH)
     _log.info("rag_refresh_step_done", step="seed_home_profile", seeded=n_home_profile)
 
     # ── 6. Re-embed orphaned SQLite runbooks ─────────────────────────────────
+    _cb("Re-embedding orphaned runbooks")
     _log.info("rag_refresh_step", step="reembed_orphaned_runbooks")
     n_reembedded = _reembed_orphaned_runbooks(store, config.DB_PATH, _log)
     _log.info(
@@ -276,6 +301,7 @@ def run_rag_refresh(store: "KnowledgeStoreClientProtocol") -> None:
     # ── 7. Repair episode embedding ──────────────────────────────────────────
     from utils.knowledge.repair_episode_embedder import embed_repair_episodes
 
+    _cb("Embedding repair episodes")
     _log.info("rag_refresh_step", step="embed_repair_episodes")
     n_episodes = embed_repair_episodes(store, config.DB_PATH)
     _log.info(
@@ -401,7 +427,23 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
                     pass
         try:
             set_rag_refreshing(True)
-            await asyncio.to_thread(run_rag_refresh, knowledge_store)
+            from utils.agent.supervisor import publish_event as _publish_event_bs
+
+            _ev_loop_bs = asyncio.get_running_loop()
+
+            def _step_cb_bs(label: str) -> None:
+                _ev_loop_bs.call_soon_threadsafe(
+                    _publish_event_bs,
+                    {
+                        "event_type": "agent_step",
+                        "activity": "rag_refresh",
+                        "status": label,
+                    },
+                )
+
+            await asyncio.to_thread(
+                run_rag_refresh, knowledge_store, on_step=_step_cb_bs
+            )
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
             _sv = get_supervisor_instance()
@@ -422,9 +464,10 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             if _sv_pre is not None:
                 for _lname in _AGENT_LOOPS:
                     try:
-                        _sv_pre.resume(_lname)
+                        _sv_pre.run_now(_lname)
                     except Exception:  # nosec B110
                         pass
+                    await asyncio.sleep(5)
 
     _log.info("rag_refresh_loop_started", next_run_hours=interval_hours)
     write_timeline_event(
@@ -446,7 +489,23 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
         )
         try:
             set_rag_refreshing(True)
-            await asyncio.to_thread(run_rag_refresh, knowledge_store)
+            from utils.agent.supervisor import publish_event as _publish_event_sched
+
+            _ev_loop_sched = asyncio.get_running_loop()
+
+            def _step_cb_sched(label: str) -> None:
+                _ev_loop_sched.call_soon_threadsafe(
+                    _publish_event_sched,
+                    {
+                        "event_type": "agent_step",
+                        "activity": "rag_refresh",
+                        "status": label,
+                    },
+                )
+
+            await asyncio.to_thread(
+                run_rag_refresh, knowledge_store, on_step=_step_cb_sched
+            )
             _log.info("rag_refresh_done")
             write_timeline_event("INFO", "rag_refresh", "RAG refresh complete")
             _sv = get_supervisor_instance()

@@ -911,6 +911,7 @@
     'netalertx_installer': 'NetAlertX Installer',
     'triage': 'Log Triage',
     'chat': 'Chat',
+    'rag_refresh': 'Refreshing Knowledge Base',
   };
 
   function _activityShortLabel(actType) {
@@ -1003,11 +1004,15 @@
     li.textContent = statusLine;
     list.insertBefore(li, list.firstChild);
     while (list.children.length > 20) list.removeChild(list.lastChild);
-    // Ensure widget is visible when step lines arrive (edge case: triage bypasses queue).
+    // Ensure widget is visible when step lines arrive (edge case: triage/rag_refresh bypass queue).
     var widget = document.getElementById('active-activity-widget');
     if (widget && widget.style.display === 'none') {
       widget.style.display = '';
       if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
+      if (!_runningItem && activityType) {
+        var hEl = document.getElementById('active-activity-heading');
+        if (hEl) hEl.textContent = _activityShortLabel(activityType);
+      }
     }
   }
 

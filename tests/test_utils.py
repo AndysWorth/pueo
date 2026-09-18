@@ -3104,6 +3104,40 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_pause_does_not_kill_unstarted_task(self):
+        """pause() on a 'starting' task must not cancel it.
+        The task should enter the paused loop naturally, and resume() must let
+        it execute the coro body."""
+
+        async def _run():
+            called: list[int] = []
+
+            async def coro():
+                called.append(1)
+
+            from utils.agent.supervisor import LoopSupervisor
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus, backoff_start=0.01, backoff_cap=0.01)
+            sup.start("t", coro)
+            # Task is in 'starting' state — it has not received CPU time yet.
+            assert sup._handles["t"].status == "starting"
+            sup.pause("t")
+            # Give the event loop a tick so the task can start and enter the paused branch.
+            await asyncio.sleep(0.05)
+            status = sup._handles["t"]
+            assert status.paused is True
+            assert status.status == "paused"
+            assert len(called) == 0  # coro not executed while paused
+            # run_now() clears paused and cancels the sleep, waking immediately.
+            sup.run_now("t")
+            await asyncio.sleep(0.05)
+            assert len(called) >= 1, "coro must execute after run_now"
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
     def test_resume_restarts_paused_loop(self):
         """resume() clears the paused flag; the loop runs the coro again."""
 
