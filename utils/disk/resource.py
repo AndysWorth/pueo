@@ -266,7 +266,7 @@ class ResourcePoller:
                                     activity_type="disk_recovery",
                                     description="Disk space critical — recovery",
                                     dedup_key="disk_recovery",
-                                    suppress_while_running=frozenset({"ha_update"}),
+                                    suppress_while_running=frozenset(),
                                     coro_factory=_disk_recovery_coro,
                                 )
                             )
@@ -631,34 +631,67 @@ class ResourcePoller:
                             threshold_gb=self._disk_warn_gb,
                         )
 
-                        # Proactive cleanup at WARN level — run safe recovery steps before
-                        # disk slides further to CRITICAL.
+                        # Proactive cleanup at WARN level — route through work queue so
+                        # SSH/REST writes don't overlap with active repair sessions (ADR 026).
                         warn_summary = None
-                        try:
-                            from utils.disk.disk_recovery import run_safe_disk_recovery
+                        if _cfg.DISK_RECOVERY_AUTO_ENABLED:
+                            _self = self
+                            _rdr_days_w = _cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS
+                            _jnl_mb_w = _cfg.DISK_RECOVERY_JOURNAL_MAX_MB
 
-                            if _cfg.DISK_RECOVERY_AUTO_ENABLED:
-                                warn_summary = await run_safe_disk_recovery(
-                                    ssh_client=self._ssh,
-                                    rest_client=self._rest_client,
-                                    recorder_keep_days=_cfg.DISK_RECOVERY_RECORDER_KEEP_DAYS,
-                                    journal_max_mb=_cfg.DISK_RECOVERY_JOURNAL_MAX_MB,
+                            async def _warn_recovery_coro() -> None:
+                                nonlocal warn_summary
+                                from utils.disk.disk_recovery import (
+                                    run_safe_disk_recovery as _rsd,
                                 )
+
+                                try:
+                                    _result = await _rsd(
+                                        ssh_client=_self._ssh,
+                                        rest_client=_self._rest_client,
+                                        recorder_keep_days=_rdr_days_w,
+                                        journal_max_mb=_jnl_mb_w,
+                                    )
+                                    warn_summary = _result
+                                except Exception as _we:  # nosec B110
+                                    log.warning(
+                                        "disk_recovery_warn_failed", error=str(_we)
+                                    )
                                 try:
                                     from agents import ha_agent_advanced as _adv
 
                                     await _adv.offload_pending_backups(
-                                        ssh_client=self._ssh
+                                        ssh_client=_self._ssh
                                     )
                                     await _adv.enforce_ha_retention(
-                                        ssh_client=self._ssh,
+                                        ssh_client=_self._ssh,
                                         force_critical=False,
                                     )
                                 except Exception:  # nosec B110
                                     pass
+                                _self._last_recovery_at = time.monotonic()
+
+                            from utils.agent.work_queue import (
+                                PRIORITY_LOW,
+                                WorkItem,
+                                get_work_queue_or_none,
+                            )
+
+                            _wq_warn = get_work_queue_or_none()
+                            if _wq_warn is not None:
+                                await _wq_warn.submit(
+                                    WorkItem(
+                                        priority=PRIORITY_LOW,
+                                        activity_type="disk_recovery",
+                                        description="Disk space warn — proactive recovery",
+                                        dedup_key="disk_recovery_warn",
+                                        suppress_while_running=frozenset(),
+                                        coro_factory=_warn_recovery_coro,
+                                    )
+                                )
+                            else:
+                                await _warn_recovery_coro()
                                 self._last_recovery_at = time.monotonic()
-                        except Exception as _e:  # nosec B110
-                            log.warning("disk_recovery_warn_failed", error=str(_e))
 
                         warn_body = (
                             f"Disk free: {status.disk_free_gb:.1f} GB — below warning threshold "

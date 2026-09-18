@@ -28,7 +28,7 @@ When calling `finish_update_analysis`:
 - `recommendation`: one-sentence plain-English recommendation for the user
 - `instance_impact`: "none" / "low" / "high" — how much this update affects this specific install
 - `proposed_config_fixes`: any config YAML fixes the user should apply before updating
-- `create_hitl_card`: true if an approval card should be shown to the user (usually true for core/os updates)
+- `create_hitl_card`: must be true for core/os/supervisor updates. For add-on and HACS updates, set true if the user should review this before it is applied, false if the update is routine and low-risk.
 
 If the release notes are unavailable or too short to analyse, set `safe_to_update=true`, empty lists, and a recommendation explaining that notes were not available.
 

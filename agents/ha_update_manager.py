@@ -473,7 +473,6 @@ async def _run_update_analysis(
 ) -> None:
     """Run a single AgentLoop to analyse an update and create the HITL card via the terminal tool."""
     from utils.agent.agent_loop import AgentLoop
-    from utils.agent.autonomy import FakeAutonomyGate
     from utils.agent.supervisor import (
         decrement_active_agent,
         increment_active_agent,
@@ -495,8 +494,9 @@ async def _run_update_analysis(
 
     async def _coro() -> None:
         from utils.ha.ssh_client import AsyncSSHClient
+        from utils.agent.autonomy import AutonomyGate
 
-        gate = FakeAutonomyGate(auto_execute_result=True)
+        gate = AutonomyGate(AUTONOMY_LEVEL)
         _ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
         executor = ToolExecutor(
             ha_ssh_client=_ssh,  # type: ignore[arg-type]
@@ -552,6 +552,64 @@ async def _run_update_analysis(
                     outcome=_result.outcome,
                     component=update.component,
                 )
+            elif executor._pending_auto_apply:
+                # Gate permitted auto-apply (autonomy_level ≥ AUTONOMOUS and update
+                # is safe). Core/OS updates are always blocked from auto-apply —
+                # they require explicit human approval regardless of autonomy level.
+                _BLOCKED_COMPONENTS = {"homeassistant", "core", "os", "supervisor"}
+                if update.component.lower() in _BLOCKED_COMPONENTS:
+                    log.warning(
+                        "update_auto_apply_blocked_critical",
+                        component=update.component,
+                    )
+                    # Create a HITL card even though the LLM said no card needed.
+                    await _notifier.send(
+                        subject=(
+                            f"Update available: {update.component} "
+                            f"{update.installed_version} → {update.latest_version}"
+                        ),
+                        body=(
+                            f"Auto-apply blocked for {update.component} — "
+                            "core/OS updates always require manual approval."
+                        ),
+                        payload={
+                            "card_type": "update",
+                            "component": update.component,
+                            "entity_id": update.entity_id,
+                            "installed_version": update.installed_version,
+                            "latest_version": update.latest_version,
+                        },
+                    )
+                else:
+                    log.info(
+                        "update_auto_apply_start",
+                        component=update.component,
+                        version=update.latest_version,
+                    )
+                    try:
+                        await execute_update(update, _ssh, _notifier, gate)
+                        import sqlite3 as _sqlite3
+                        from agents.ha_log_monitor import _update_mark_card_sent
+                        from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+                        suppression_key = f"update:{update.entity_id}"
+                        await asyncio.to_thread(
+                            _update_mark_card_sent,
+                            suppression_key,
+                            CARD_TYPE_UPDATE,
+                            f"Auto-applied: {update.component} {update.latest_version}",
+                        )
+                    except Exception as _exc:
+                        log.error(
+                            "update_auto_apply_failed",
+                            component=update.component,
+                            error=str(_exc),
+                        )
+                        await _notifier.send(
+                            subject=f"Auto-update failed: {update.component} {update.latest_version}",
+                            body=f"Error: {_exc}",
+                            payload={},
+                        )
         finally:
             decrement_active_agent()
             try:

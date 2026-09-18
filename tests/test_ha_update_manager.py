@@ -349,3 +349,235 @@ class TestFetchReleaseNotesCached:
         )
 
         assert "2026.9.2" in result
+
+
+# ---------------------------------------------------------------------------
+# Autonomy gate enforcement in _finish_update_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisGate:
+    """Gate override in _finish_update_analysis (Issues 1 & 2)."""
+
+    def _make_executor(self, gate):
+        """Build a minimal ToolExecutor with the given gate."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        return executor, notifier
+
+    def _make_update(self, component="noaa_it_all"):
+        """Build a minimal UpdateStatus-like object."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}",
+            component=component,
+            installed_version="0.7.0",
+            latest_version="0.7.1",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_guided_gate_overrides_llm_no_card_to_card(self, pueo_dirs):
+        """At GUIDED level, gate overrides create_hitl_card=False to True."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
+
+        # autonomy_level=3 (GUIDED) → only LOW risk auto-executes;
+        # updates are MEDIUM so gate blocks auto-execute → card required
+        gate = AutonomyGate(level=3)
+        executor, notifier = self._make_executor(gate)
+        update = self._make_update("noaa_it_all")
+        executor.set_update_status(update)
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="No breaking changes found.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,  # LLM says no card
+                )
+            )
+
+        # Gate must have overridden → notifier.send called (card created)
+        assert notifier.send.called, "Gate override must cause a HITL card to be sent"
+        assert result.success
+
+    def test_autonomous_gate_sets_pending_auto_apply(self, pueo_dirs):
+        """At AUTONOMOUS level, gate allows auto-apply → _pending_auto_apply=True."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        # autonomy_level=4 (AUTONOMOUS) → MEDIUM risk auto-executes
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        update = self._make_update("noaa_it_all")
+        executor.set_update_status(update)
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe patch update.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,
+            )
+        )
+
+        assert result.success
+        assert (
+            executor._pending_auto_apply
+        ), "_pending_auto_apply must be set for gate-approved auto-apply"
+        # No card should be sent
+        assert not notifier.send.called
+
+    def test_autonomous_gate_no_auto_apply_when_not_safe(self, pueo_dirs, tmp_path):
+        """When safe_to_update=False, auto-apply is not set even at AUTONOMOUS level."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        update = self._make_update("noaa_it_all")
+        executor.set_update_status(update)
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=False,  # not safe
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Config changes required first.",
+                    instance_impact="high",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                )
+            )
+
+        assert result.success
+        assert (
+            not executor._pending_auto_apply
+        ), "unsafe update must not trigger auto-apply"
+
+
+# ---------------------------------------------------------------------------
+# Auto-apply block for core/OS components
+# ---------------------------------------------------------------------------
+
+
+class TestAutoApplyBlock:
+    """Auto-apply is always blocked for core/os/supervisor components."""
+
+    def test_core_update_auto_apply_blocked(self, tmp_path, pueo_dirs):
+        """When _pending_auto_apply=True for 'core', a notification is sent instead."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_db(tmp_path)
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "core"
+            installed_version = "2026.9.0"
+            latest_version = "2026.9.1"
+            release_url = None
+            release_summary = None
+
+        notifier_calls = []
+
+        class _CapturingNotifier:
+            async def send(self, subject="", body="", payload=None, **kw):
+                notifier_calls.append({"subject": subject, "body": body})
+
+        # Simulate loop returning success + executor has _pending_auto_apply=True
+        def _make_mock_loop(executor_ref):
+            async def _fake_run(initial_context):
+                executor_ref._pending_auto_apply = True
+                return AgentLoopResult(outcome="success")
+
+            m = MagicMock()
+            m.run = _fake_run
+            return m
+
+        captured_executor = []
+
+        original_ToolExecutor = None
+
+        import utils.agent.tool_executor as _te_mod
+
+        original_ToolExecutor = _te_mod.ToolExecutor
+
+        class _SpyToolExecutor(original_ToolExecutor):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                captured_executor.append(self)
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch("utils.agent.tool_executor.ToolExecutor", _SpyToolExecutor),
+        ):
+
+            def _make_loop_side_effect(*a, **kw):
+                if captured_executor:
+                    return _make_mock_loop(captured_executor[-1])
+                return MagicMock()
+
+            MockLoop.side_effect = _make_loop_side_effect
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=_CapturingNotifier(),
+                )
+            )
+
+        # A warning notification must have been sent instead of auto-apply
+        block_msgs = [
+            c for c in notifier_calls if "blocked" in c.get("body", "").lower()
+        ]
+        assert block_msgs, "Core update auto-apply must be blocked with a notification"

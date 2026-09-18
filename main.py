@@ -383,6 +383,22 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             "RAG refresh started (bootstrap collections empty)",
             {"reason": "collections_empty", "empty": empty_bootstrap},
         )
+        # Pause agent-spawning loops while KB is empty so they don't run with
+        # an empty knowledge base. ha_log_monitor is NOT paused — we must not
+        # miss critical errors during startup.
+        _AGENT_LOOPS = (
+            "update_check",
+            "repair_poll",
+            "notification_poll",
+            "lovelace_poll",
+        )
+        _sv_pre = get_supervisor_instance()
+        if _sv_pre is not None:
+            for _lname in _AGENT_LOOPS:
+                try:
+                    _sv_pre.pause(_lname)
+                except Exception:  # nosec B110 — loop may not be registered yet
+                    pass
         try:
             set_rag_refreshing(True)
             await asyncio.to_thread(run_rag_refresh, knowledge_store)
@@ -403,6 +419,12 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             )  # pragma: no cover
         finally:
             set_rag_refreshing(False)
+            if _sv_pre is not None:
+                for _lname in _AGENT_LOOPS:
+                    try:
+                        _sv_pre.resume(_lname)
+                    except Exception:  # nosec B110
+                        pass
 
     _log.info("rag_refresh_loop_started", next_run_hours=interval_hours)
     write_timeline_event(
@@ -826,8 +848,40 @@ async def supervisor_main(config_path: Path) -> None:
                 await ha_agent_advanced.reconcile_backup_inventory(ssh_client=ssh)
             except Exception as e:  # pragma: no cover  # nosec B110
                 _log.warning("backup_reconcile_loop_failed", error=str(e))
+            # Offload + retention enforcement issues SSH writes (ha backups remove).
+            # Route through the work queue so it doesn't overlap with repair sessions
+            # that call ha backup new (ADR 026).
             try:
-                await ha_agent_advanced.offload_pending_backups(ssh_client=ssh)
+                from utils.agent.work_queue import (
+                    PRIORITY_LOW,
+                    WorkItem,
+                    get_work_queue_or_none,
+                )
+
+                _ssh_ref = ssh
+
+                async def _backup_enforcement_coro() -> None:
+                    try:
+                        await ha_agent_advanced.offload_pending_backups(
+                            ssh_client=_ssh_ref
+                        )
+                    except Exception as _be:  # nosec B110
+                        _log.warning("backup_offload_loop_failed", error=str(_be))
+
+                _wq_bs = get_work_queue_or_none()
+                if _wq_bs is not None:
+                    await _wq_bs.submit(
+                        WorkItem(
+                            priority=PRIORITY_LOW,
+                            activity_type="backup_sync",
+                            description="Periodic backup offload and retention enforcement",
+                            dedup_key="backup_sync",
+                            suppress_while_running=frozenset(),
+                            coro_factory=_backup_enforcement_coro,
+                        )
+                    )
+                else:
+                    await ha_agent_advanced.offload_pending_backups(ssh_client=ssh)
             except Exception as e:  # pragma: no cover  # nosec B110
                 _log.warning("backup_offload_loop_failed", error=str(e))
             try:

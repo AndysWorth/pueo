@@ -252,3 +252,104 @@ class TestHybridWeightBehavior:
         # No BM25 → pure cosine: 1 - 0.2 = 0.8, with hybrid_weight blending:
         # blended = 0.8 * 0.7 + 0.0 * 0.3 = 0.56
         assert results[0].score == pytest.approx(0.56, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Graceful empty-collection handling (hnsw error → [] not exception)
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulEmptyCollection:
+    """ChromaKnowledgeStore.query returns [] on hnsw error (Issue 3)."""
+
+    def _make_chroma_store(self, failing_col: str):
+        """Build a minimal ChromaKnowledgeStore with one collection that raises hnsw."""
+        from unittest.mock import MagicMock
+
+        import chromadb
+
+        from utils.knowledge.knowledge_store import COLLECTIONS, ChromaKnowledgeStore
+
+        # Build an in-memory chroma client with real collections
+        client = chromadb.Client()
+
+        class _HnswRaisingCollection:
+            """Fake collection that raises an hnsw error on query()."""
+
+            def query(self, **kwargs):
+                raise RuntimeError("hnsw index not found (nothing found)")
+
+            def get(self, **kwargs):
+                return {"ids": [], "documents": [], "metadatas": []}
+
+            def upsert(self, **kwargs):
+                pass
+
+            @property
+            def metadata(self):
+                return {"hnsw:space": "cosine"}
+
+        embed_fn = MagicMock(return_value=[[0.0]])
+        store = ChromaKnowledgeStore.__new__(ChromaKnowledgeStore)
+        store._hybrid_weight = 0.0
+        store._bm25_index = {}
+        store._bm25_ids = {}
+        store._cols = {name: _HnswRaisingCollection() for name in COLLECTIONS}
+        return store
+
+    def test_hnsw_error_returns_empty_list(self):
+        """query() must return [] (not raise) when a collection throws an hnsw error."""
+        import utils.knowledge.knowledge_store as ks_mod
+
+        # Reset the flag before the test
+        ks_mod._kb_needs_refresh = False
+
+        store = self._make_chroma_store("ha_release_notes")
+        results = store.query("test query", top_k=5)
+
+        assert results == [], "hnsw error must return empty list, not propagate"
+        assert (
+            ks_mod._kb_needs_refresh
+        ), "_kb_needs_refresh flag must be set after hnsw error"
+
+    def test_non_hnsw_error_propagates(self):
+        """Non-hnsw errors must still propagate (no silent swallowing of real errors)."""
+        from unittest.mock import MagicMock
+
+        from utils.knowledge.knowledge_store import COLLECTIONS, ChromaKnowledgeStore
+
+        class _OtherErrorCollection:
+            def query(self, **kwargs):
+                raise ValueError("unexpected schema mismatch")
+
+            def get(self, **kwargs):
+                return {"ids": [], "documents": [], "metadatas": []}
+
+            def upsert(self, **kwargs):
+                pass
+
+            @property
+            def metadata(self):
+                return {"hnsw:space": "cosine"}
+
+        store = ChromaKnowledgeStore.__new__(ChromaKnowledgeStore)
+        store._hybrid_weight = 0.0
+        store._bm25_index = {}
+        store._bm25_ids = {}
+        store._cols = {name: _OtherErrorCollection() for name in COLLECTIONS}
+
+        with pytest.raises(ValueError, match="unexpected schema"):
+            store.query("test query", top_k=5)
+
+    def test_get_kb_needs_refresh_reflects_flag(self):
+        """get_kb_needs_refresh() returns the current flag value."""
+        import utils.knowledge.knowledge_store as ks_mod
+        from utils.knowledge.knowledge_store import get_kb_needs_refresh
+
+        ks_mod._kb_needs_refresh = False
+        assert not get_kb_needs_refresh()
+
+        ks_mod._kb_needs_refresh = True
+        assert get_kb_needs_refresh()
+
+        ks_mod._kb_needs_refresh = False  # clean up

@@ -200,6 +200,7 @@ class ToolExecutor:
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
         self._pending_update_status: Optional[Any] = None
+        self._pending_auto_apply: bool = False
         self._lovelace_suspicious: list[str] = []
 
     def reset(self) -> None:
@@ -2996,7 +2997,40 @@ class ToolExecutor:
         create_hitl_card: bool,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
+        # Gate override: the user's autonomy level may require approval even if the LLM
+        # decided create_hitl_card=False. Updates are always at least MEDIUM risk.
+        if not create_hitl_card and self._gate is not None:
+            from utils.agent.autonomy import RiskLevel
+
+            gate_allows = await asyncio.to_thread(
+                self._gate.should_auto_execute, RiskLevel.MEDIUM
+            )
+            if not gate_allows:
+                create_hitl_card = True
+
         if not create_hitl_card:
+            # Core/OS/Supervisor updates are never auto-applied — they always require
+            # human review. Write suppression so the analysis is not repeated this cycle.
+            _BLOCKED_COMPONENTS = {"homeassistant", "core", "os", "supervisor"}
+            _is_blocked = (
+                self._pending_update_status is not None
+                and self._pending_update_status.component.lower() in _BLOCKED_COMPONENTS
+            )
+            # Only signal auto-apply when a real gate is present, execution is approved,
+            # and the component is not in the hard-blocked set.
+            if (
+                safe_to_update
+                and self._gate is not None
+                and self._pending_update_status is not None
+                and not _is_blocked
+            ):
+                self._pending_auto_apply = True
+                return ToolResult(
+                    tool_name="finish_update_analysis",
+                    success=True,
+                    output="Update analysis complete. Auto-apply authorized by autonomy gate.",
+                )
+            # Not safe to update, or no gate: suppress re-analysis.
             if self._pending_update_status is not None:
                 from agents.ha_log_monitor import _update_mark_card_sent
                 from utils.hitl.card_types import CARD_TYPE_UPDATE
