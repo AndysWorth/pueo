@@ -586,6 +586,52 @@ class TestDashboardRoutes:
         resp3 = client.get("/api/pueo-status")
         assert resp3.json()["activity"] == "chat"
 
+    def test_kb_health_api_returns_status(self, tmp_path, monkeypatch):
+        """/api/kb-health returns status/doc_count dict."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup
+
+        class _FakeSupervisor:
+            _tool_executor = None
+
+        monkeypatch.setattr(sup, "get_supervisor_instance", lambda: _FakeSupervisor())
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+
+        # No knowledge store attached → offline
+        resp = client.get("/api/kb-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] in ("offline", "empty", "ok")
+        assert "doc_count" in data
+
+    def test_kb_health_api_ok_status(self, tmp_path, monkeypatch):
+        """/api/kb-health returns ok when strategy collection is non-empty."""
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies", ids=["s1"], documents=["runbook text"], metadatas=[{}]
+        )
+
+        class _FakeExecutor:
+            _knowledge_store = store
+
+        class _FakeSupervisor:
+            _tool_executor = _FakeExecutor()
+
+        monkeypatch.setattr(sup, "get_supervisor_instance", lambda: _FakeSupervisor())
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+
+        resp = client.get("/api/kb-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["doc_count"] == 1
+
 
 # ── netalertx/installer_diagnostics.py ───────────────────────────────────────
 

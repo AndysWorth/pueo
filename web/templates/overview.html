@@ -102,13 +102,14 @@
     </div>
     <div class="stat-row">
       <span class="stat-label">Knowledge base</span>
-      {% if kb_health and kb_health.status == "ok" %}
-      <span class="stat-value">{{ kb_health.doc_count }} runbook{% if kb_health.doc_count != 1 %}s{% endif %}</span>
-      {% elif kb_health and kb_health.status == "empty" %}
-      <span class="stat-value" style="color:var(--warn-color,#b45309);">empty — run rag-refresh</span>
-      {% else %}
-      <span class="stat-value" style="color:var(--err-color,#dc3545);">offline — run rag-refresh</span>
-      {% endif %}
+      <span id="kb-health-value" class="stat-value"
+        {% if kb_health and kb_health.status == "ok" %}
+        >{{ kb_health.doc_count }} runbook{% if kb_health.doc_count != 1 %}s{% endif %}</span>
+        {% elif kb_health and kb_health.status == "empty" %}
+        style="color:var(--warn-color,#b45309);">empty — run rag-refresh</span>
+        {% else %}
+        style="color:var(--err-color,#dc3545);">offline — run rag-refresh</span>
+        {% endif %}
     </div>
   </div>
 
@@ -929,15 +930,22 @@
       html += '<li><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#28a745;margin-right:5px;"></span>'
         + '<strong>Running:</strong> ' + _activityShortLabel(_runningItem.activity_type) + desc + '</li>';
     }
-    for (var i = 0; i < _queuedItems.length; i++) {
-      var item = _queuedItems[i];
-      var itemDesc = item.description
-        ? ' — <span style="color:var(--muted);font-style:italic;">' + item.description + '</span>'
-        : '';
-      html += '<li><span style="margin-right:5px;font-size:0.9em;">⏳</span><strong>Queued:</strong> '
-        + _activityShortLabel(item.activity_type) + itemDesc + '</li>';
-    }
     ul.innerHTML = html;
+    // Queued items appear after the step trace, in queue-pending-list
+    var pendingList = document.getElementById('queue-pending-list');
+    if (pendingList) {
+      var pendingHtml = '';
+      for (var i = 0; i < _queuedItems.length; i++) {
+        var item = _queuedItems[i];
+        var itemDesc = item.description
+          ? ' — <span style="color:var(--muted);font-style:italic;">' + item.description + '</span>'
+          : '';
+        pendingHtml += '<li><span style="margin-right:5px;font-size:0.9em;">⏳</span><strong>Queued:</strong> '
+          + _activityShortLabel(item.activity_type) + itemDesc + '</li>';
+      }
+      pendingList.innerHTML = pendingHtml;
+      pendingList.hidden = (_queuedItems.length === 0);
+    }
   }
 
   // Update widget from work-queue state (running + pending). Called on queue_update SSE
@@ -972,8 +980,6 @@
       if (n > 0) { badge.textContent = n + ' queued'; badge.hidden = false; }
       else { badge.hidden = true; }
     }
-    var pendingList = document.getElementById('queue-pending-list');
-    if (pendingList) pendingList.hidden = true;
 
     var widget = document.getElementById('active-activity-widget');
     if (_runningItem || _queuedItems.length > 0) {
@@ -1058,6 +1064,24 @@
     updateFromQueueStatus(d);
   }).catch(function() {});
 
+  var _prevRunningType = null;
+  function _refreshKbHealth() {
+    fetch('/api/kb-health').then(function(r) { return r.json(); }).then(function(d) {
+      var el = document.getElementById('kb-health-value');
+      if (!el) return;
+      if (d.status === 'ok') {
+        el.style.color = '';
+        el.textContent = d.doc_count + ' runbook' + (d.doc_count !== 1 ? 's' : '');
+      } else if (d.status === 'empty') {
+        el.style.color = 'var(--warn-color,#b45309)';
+        el.textContent = 'empty — run rag-refresh';
+      } else {
+        el.style.color = 'var(--err-color,#dc3545)';
+        el.textContent = 'offline — run rag-refresh';
+      }
+    }).catch(function() {});
+  }
+
   var _overviewMsg = function (e) {
     try {
       var evt = JSON.parse(e.data);
@@ -1068,7 +1092,15 @@
       else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget();
       else if (evt.event_type === 'triage_start') showActivityStep('Triage in progress…', 'triage');
       else if (evt.event_type === 'triage_done') scheduleHideActivityWidget();
-      else if (evt.event_type === 'queue_update') updateFromQueueStatus(evt);
+      else if (evt.event_type === 'queue_update') {
+        var newRunningType = evt.running ? evt.running.activity_type : null;
+        // Refresh KB health when rag_refresh transitions from running → done
+        if (_prevRunningType === 'rag_refresh' && newRunningType !== 'rag_refresh') {
+          _refreshKbHealth();
+        }
+        _prevRunningType = newRunningType;
+        updateFromQueueStatus(evt);
+      }
     } catch (_) {}
   };
   es.addEventListener('message', _overviewMsg);

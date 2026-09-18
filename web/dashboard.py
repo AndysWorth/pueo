@@ -452,6 +452,16 @@ def _get_kb_health(sv: Any) -> dict:
         return {"status": "offline", "doc_count": -1, "store_available": False}
 
 
+@app.get("/api/kb-health")
+async def kb_health_api() -> JSONResponse:
+    """Return knowledge base health for dynamic UI updates."""
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    health = await asyncio.to_thread(_get_kb_health, sv)
+    return JSONResponse(health)
+
+
 def _hitl_write(fn: Any, *args: Any) -> None:
     """Run a hitl_tracker write function with a fresh SQLite connection (sync; use to_thread)."""
     with sqlite3.connect(DB_PATH) as conn:
