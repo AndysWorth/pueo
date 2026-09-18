@@ -896,7 +896,9 @@
   }
 
   var _activityHideTimer = null;
-  var _activeLoops = {};
+  var _runningStaleTimer = null;
+  var _runningItem = null;   // {activity_type, description} | null — source of truth from queue_update
+  var _queuedItems = [];     // [{activity_type, description}] — source of truth from queue_update
   var ACTIVITY_HEADINGS = {
     'ha_repair': 'HA Repair',
     'code_proposal': 'Code Proposal',
@@ -918,83 +920,109 @@
   function _rebuildRunningList() {
     var ul = document.getElementById('active-running-list');
     if (!ul) return;
-    var keys = Object.keys(_activeLoops);
-    ul.innerHTML = keys.map(function(k) {
-      var trig = _activeLoops[k] ? ' — <span style="color:var(--muted);font-style:italic;">' + _activeLoops[k] + '</span>' : '';
-      return '<li><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#28a745;margin-right:5px;"></span>'
-        + '<strong>Running:</strong> ' + _activityShortLabel(k) + trig + '</li>';
-    }).join('');
+    var html = '';
+    if (_runningItem) {
+      var desc = _runningItem.description
+        ? ' — <span style="color:var(--muted);font-style:italic;">' + _runningItem.description + '</span>'
+        : '';
+      html += '<li><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#28a745;margin-right:5px;"></span>'
+        + '<strong>Running:</strong> ' + _activityShortLabel(_runningItem.activity_type) + desc + '</li>';
+    }
+    for (var i = 0; i < _queuedItems.length; i++) {
+      var item = _queuedItems[i];
+      var itemDesc = item.description
+        ? ' — <span style="color:var(--muted);font-style:italic;">' + item.description + '</span>'
+        : '';
+      html += '<li><span style="margin-right:5px;font-size:0.9em;">⏳</span><strong>Queued:</strong> '
+        + _activityShortLabel(item.activity_type) + itemDesc + '</li>';
+    }
+    ul.innerHTML = html;
   }
 
-  function showActivityWidget(statusLine, activityType, trigger) {
-    if (activityType) _activeLoops[activityType] = trigger || '';
+  // Update widget from work-queue state (running + pending). Called on queue_update SSE
+  // events and on page load from /api/pueo-queue.  This is the single source of truth
+  // for what is shown as Running/Queued — no more _activeLoops accumulation.
+  function updateFromQueueStatus(data) {
+    var prevType = _runningItem ? _runningItem.activity_type : null;
+    _runningItem = data.running || null;
+    _queuedItems = data.pending || [];
 
-    var n = Object.keys(_activeLoops).length;
     var headingEl = document.getElementById('active-activity-heading');
-    var countEl = document.getElementById('active-activity-count');
-    var triggerEl = document.getElementById('active-activity-trigger');
-
     if (headingEl) {
-      headingEl.textContent = n > 1
-        ? 'Current Activity'
-        : (_activityShortLabel(activityType) || 'Current Activity');
+      headingEl.textContent = _runningItem
+        ? _activityShortLabel(_runningItem.activity_type)
+        : 'Current Activity';
     }
-    if (countEl) {
-      if (n > 1) { countEl.textContent = '(' + n + ' active)'; countEl.style.display = ''; }
-      else { countEl.style.display = 'none'; }
-    }
+    var countEl = document.getElementById('active-activity-count');
+    if (countEl) countEl.style.display = 'none';
 
-    var trig = trigger || (activityType ? _activeLoops[activityType] : '');
-    if (triggerEl && trig) triggerEl.textContent = trig;
-
-    if (statusLine) {
-      var list = document.getElementById('active-activity-steps');
-      if (list) {
-        var li = document.createElement('li');
-        li.style.cssText = 'color:var(--fg);padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border);';
-        var prefix = n > 1 ? '[' + _activityShortLabel(activityType) + '] ' : '';
-        li.textContent = prefix + statusLine;
-        list.insertBefore(li, list.firstChild);
-        while (list.children.length > 20) list.removeChild(list.lastChild);
-      }
+    // When the running item changes, clear the step trace so old steps don't linger.
+    var newType = _runningItem ? _runningItem.activity_type : null;
+    if (newType !== prevType) {
+      var stepList = document.getElementById('active-activity-steps');
+      if (stepList) stepList.innerHTML = '';
     }
 
     _rebuildRunningList();
+
+    var badge = document.getElementById('queue-pending-badge');
+    var n = _queuedItems.length;
+    if (badge) {
+      if (n > 0) { badge.textContent = n + ' queued'; badge.hidden = false; }
+      else { badge.hidden = true; }
+    }
+    var pendingList = document.getElementById('queue-pending-list');
+    if (pendingList) pendingList.hidden = true;
+
     var widget = document.getElementById('active-activity-widget');
-    if (widget) widget.style.display = '';
-    if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
+    if (_runningItem || _queuedItems.length > 0) {
+      if (widget) widget.style.display = '';
+      if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
+      // Fix 6: client-side stale expiry — if a running item never gets a done event,
+      // auto-clear it after 15 minutes so the widget doesn't stay stuck forever.
+      if (_runningStaleTimer) { clearTimeout(_runningStaleTimer); _runningStaleTimer = null; }
+      if (_runningItem) {
+        _runningStaleTimer = setTimeout(function() {
+          _runningItem = null;
+          _rebuildRunningList();
+          if (!_queuedItems.length) scheduleHideActivityWidget();
+        }, 15 * 60 * 1000);
+      }
+    } else {
+      scheduleHideActivityWidget();
+    }
   }
 
-  function scheduleHideActivityWidget(activityType) {
-    if (activityType) delete _activeLoops[activityType];
-
-    var n = Object.keys(_activeLoops).length;
-    if (n > 0) {
-      var headingEl = document.getElementById('active-activity-heading');
-      var countEl = document.getElementById('active-activity-count');
-      if (headingEl) {
-        headingEl.textContent = n > 1
-          ? 'Current Activity'
-          : _activityShortLabel(Object.keys(_activeLoops)[0]);
-      }
-      if (countEl) {
-        if (n > 1) { countEl.textContent = '(' + n + ' active)'; countEl.style.display = ''; }
-        else { countEl.style.display = 'none'; }
-      }
-      _rebuildRunningList();
-      return;
+  // Add a step line from an agent_step SSE event.
+  function showActivityStep(statusLine, activityType) {
+    if (!statusLine) return;
+    var list = document.getElementById('active-activity-steps');
+    if (!list) return;
+    var li = document.createElement('li');
+    li.style.cssText = 'color:var(--fg);padding:3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--border);';
+    li.textContent = statusLine;
+    list.insertBefore(li, list.firstChild);
+    while (list.children.length > 20) list.removeChild(list.lastChild);
+    // Ensure widget is visible when step lines arrive (edge case: triage bypasses queue).
+    var widget = document.getElementById('active-activity-widget');
+    if (widget && widget.style.display === 'none') {
+      widget.style.display = '';
+      if (_activityHideTimer) { clearTimeout(_activityHideTimer); _activityHideTimer = null; }
     }
+  }
+
+  function scheduleHideActivityWidget() {
+    if (_runningItem || _queuedItems.length > 0) return;
     if (_activityHideTimer) clearTimeout(_activityHideTimer);
-    _activityHideTimer = setTimeout(function () {
+    _activityHideTimer = setTimeout(function() {
       var widget = document.getElementById('active-activity-widget');
       if (widget) widget.style.display = 'none';
-      var list = document.getElementById('active-activity-steps');
-      if (list) list.innerHTML = '';
+      var stepList = document.getElementById('active-activity-steps');
+      if (stepList) stepList.innerHTML = '';
       var runList = document.getElementById('active-running-list');
       if (runList) runList.innerHTML = '';
-      var trigEl = document.getElementById('active-activity-trigger');
-      if (trigEl) trigEl.textContent = '';
-      _activeLoops = {};
+      _runningItem = null;
+      _queuedItems = [];
     }, 3000);
   }
 
@@ -1020,31 +1048,9 @@
 
   var es = window._pueoES || new EventSource('/events');
 
-  fetch('/api/pueo-status').then(function(r) { return r.json(); }).then(function(d) {
-    if (d.activity && d.activity !== 'monitoring' && d.activity !== 'starting')
-      showActivityWidget(d.detail || '', d.activity || '', '');
-  }).catch(function() {});
-
-  function updateQueueBadge(data) {
-    var badge = document.getElementById('queue-pending-badge');
-    var list = document.getElementById('queue-pending-list');
-    var n = data.pending_count || 0;
-    if (n > 0) {
-      badge.textContent = n + ' queued';
-      badge.hidden = false;
-      list.hidden = false;
-      list.innerHTML = (data.pending || []).slice(0, 5).map(function(item) {
-        return '<li>⏳ <strong>' + (item.priority || '') + '</strong> — ' + (item.description || item.activity_type || '') + '</li>';
-      }).join('');
-    } else {
-      badge.hidden = true;
-      list.hidden = true;
-      list.innerHTML = '';
-    }
-  }
-
+  // Initialize widget from queue state on page load.
   fetch('/api/pueo-queue').then(function(r) { return r.json(); }).then(function(d) {
-    updateQueueBadge(d);
+    updateFromQueueStatus(d);
   }).catch(function() {});
 
   var _overviewMsg = function (e) {
@@ -1053,11 +1059,11 @@
       if (evt.event_type === 'loop_status') updateLoopRow(evt);
       else if (evt.event_type === 'resource') updateGauges(evt);
       else if (evt.event_type === 'timeline') prependTimelineRow(evt);
-      else if (evt.event_type === 'agent_step') showActivityWidget(evt.status || '', evt.activity || '', evt.trigger || '');
-      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget(evt.activity || '');
-      else if (evt.event_type === 'triage_start') showActivityWidget('Triage in progress…', 'triage', 'HA log event');
-      else if (evt.event_type === 'triage_done') scheduleHideActivityWidget('triage');
-      else if (evt.event_type === 'queue_update') updateQueueBadge(evt);
+      else if (evt.event_type === 'agent_step') showActivityStep(evt.status || '', evt.activity || '');
+      else if (evt.event_type === 'repair_done' || evt.event_type === 'repair_failed') scheduleHideActivityWidget();
+      else if (evt.event_type === 'triage_start') showActivityStep('Triage in progress…', 'triage');
+      else if (evt.event_type === 'triage_done') scheduleHideActivityWidget();
+      else if (evt.event_type === 'queue_update') updateFromQueueStatus(evt);
     } catch (_) {}
   };
   es.addEventListener('message', _overviewMsg);

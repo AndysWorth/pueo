@@ -536,10 +536,11 @@ async def _run_update_analysis(
             ),
             capture_llm=True,
         )
+        _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:
-            result = await loop.run(initial_context)
-            if result.outcome != "success":
+            _result = await loop.run(initial_context)
+            if _result.outcome != "success":
                 import sqlite3 as _sqlite3
                 from utils.hitl.hitl_tracker import mark_investigation_backoff
 
@@ -548,11 +549,20 @@ async def _run_update_analysis(
                     mark_investigation_backoff(_conn, _backoff_key)
                 log.warning(
                     "update_analysis_stuck_backoff",
-                    outcome=result.outcome,
+                    outcome=_result.outcome,
                     component=update.component,
                 )
         finally:
             decrement_active_agent()
+            try:
+                from utils.agent.supervisor import publish_activity_done
+
+                publish_activity_done(
+                    "update_analysis",
+                    _result.outcome if _result is not None else "failed",
+                )
+            except Exception:  # nosec B110 — best-effort SSE
+                pass
 
     _wq = get_work_queue_or_none()
     if _wq is not None:

@@ -1306,10 +1306,34 @@ async def _execute_cloud_escalation(
             data["error"] = f"Billing cap exceeded: {exc}"
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
+            try:
+                from utils.agent.supervisor import publish_event as _pe
+
+                _pe(
+                    {
+                        "event_type": "repair_failed",
+                        "outcome": "failed",
+                        "activity": "ha_repair",
+                    }
+                )
+            except Exception:  # nosec B110 — best-effort SSE
+                pass
         except Exception as exc:
             data["error"] = str(exc)
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.rejected").touch()
+            try:
+                from utils.agent.supervisor import publish_event as _pe
+
+                _pe(
+                    {
+                        "event_type": "repair_failed",
+                        "outcome": "failed",
+                        "activity": "ha_repair",
+                    }
+                )
+            except Exception:  # nosec B110 — best-effort SSE
+                pass
     finally:
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 

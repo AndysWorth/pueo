@@ -2956,6 +2956,77 @@ class TestApproveWorkQueueRouting:
         assert not (tmp_path / f"{nid}.in_progress").exists()
         assert (tmp_path / f"{nid}.rejected").exists()
 
+    def test_execute_cloud_escalation_billing_cap_publishes_repair_failed(
+        self, tmp_path, monkeypatch
+    ):
+        """BillingCapError path must publish repair_failed SSE event."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.repair.billing import BillingCapError
+
+        nid = "cloud-billing-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"payload": {"initial_context": "billing cap test"}}
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        published = []
+
+        async def _fake_escalation(*args, **kwargs):
+            raise BillingCapError("daily cap hit")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            "utils.repair.cloud_escalation.run_cloud_escalation", _fake_escalation
+        )
+        monkeypatch.setattr(
+            "utils.agent.supervisor.publish_event",
+            lambda evt: published.append(evt),
+        )
+
+        asyncio.run(dashboard._execute_cloud_escalation(nid, data, json_path, tmp_path))
+
+        failed_events = [e for e in published if e.get("event_type") == "repair_failed"]
+        assert failed_events, "BillingCapError path must publish repair_failed"
+        assert failed_events[0].get("activity") == "ha_repair"
+
+    def test_execute_cloud_escalation_exception_publishes_repair_failed(
+        self, tmp_path, monkeypatch
+    ):
+        """Generic exception path must publish repair_failed SSE event."""
+        import json as _json
+        import web.dashboard as dashboard
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        nid = "cloud-exc-1"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"payload": {"initial_context": "exception test"}}
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        published = []
+
+        async def _fail_escalation(*args, **kwargs):
+            raise RuntimeError("unexpected error")
+
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+        monkeypatch.setattr(
+            "utils.repair.cloud_escalation.run_cloud_escalation", _fail_escalation
+        )
+        monkeypatch.setattr(
+            "utils.agent.supervisor.publish_event",
+            lambda evt: published.append(evt),
+        )
+
+        asyncio.run(dashboard._execute_cloud_escalation(nid, data, json_path, tmp_path))
+
+        failed_events = [e for e in published if e.get("event_type") == "repair_failed"]
+        assert failed_events, "Exception path must publish repair_failed"
+        assert failed_events[0].get("activity") == "ha_repair"
+
     def test_execute_code_proposal_finally_cleans_in_progress(self, tmp_path):
         """_execute_code_proposal removes .in_progress even on early return for empty payload."""
         import json as _json

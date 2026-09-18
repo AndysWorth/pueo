@@ -158,6 +158,118 @@ class TestUpdateAnalysisStuckBackoff:
             ).fetchone()
         assert row is None, "success outcome must not write a backoff row"
 
+    def test_publishes_done_on_success(self, tmp_path, pueo_dirs):
+        """_run_update_analysis publishes repair_done SSE event when outcome='success'."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success")
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "Home Assistant Core"
+            installed_version = "2026.9.0"
+            latest_version = "2026.9.1"
+            release_url = None
+            release_summary = None
+
+        published = []
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch(
+                "utils.agent.supervisor.publish_event",
+                side_effect=lambda evt: published.append(evt),
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(update=_FakeUpdate(), notifier=FakeNotifier())
+            )
+
+        done_events = [e for e in published if e.get("event_type") == "repair_done"]
+        assert done_events, "success outcome must publish repair_done"
+        assert done_events[0].get("activity") == "update_analysis"
+
+    def test_publishes_failed_on_stuck(self, tmp_path, pueo_dirs):
+        """_run_update_analysis publishes repair_failed SSE event when outcome='stuck'."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="stuck")
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "Home Assistant Core"
+            installed_version = "2026.9.0"
+            latest_version = "2026.9.1"
+            release_url = None
+            release_summary = None
+
+        published = []
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch(
+                "utils.agent.supervisor.publish_event",
+                side_effect=lambda evt: published.append(evt),
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(update=_FakeUpdate(), notifier=FakeNotifier())
+            )
+
+        failed_events = [e for e in published if e.get("event_type") == "repair_failed"]
+        assert failed_events, "stuck outcome must publish repair_failed"
+        assert failed_events[0].get("activity") == "update_analysis"
+
 
 # ---------------------------------------------------------------------------
 # fetch_release_notes_cached — non-core add-ons without release_url (Fix 4)

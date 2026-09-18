@@ -960,8 +960,20 @@ async def main(
                 )
             except BillingCapError as exc:
                 log.error("cloud_escalation_billing_cap", error=str(exc))
+                try:
+                    from utils.agent.supervisor import publish_activity_done
+
+                    publish_activity_done("ha_repair", "failed")
+                except Exception:  # nosec B110 — best-effort SSE
+                    pass
                 return
         else:
+            try:
+                from utils.agent.supervisor import publish_activity_done
+
+                publish_activity_done("ha_repair", result.outcome)
+            except Exception:  # nosec B110 — best-effort SSE
+                pass
             return
 
     action = {
