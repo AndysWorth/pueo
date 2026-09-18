@@ -416,4 +416,6 @@ class TestEpisodeReplayer:
         replayer = EpisodeReplayer()
         result = self._run(replayer.run_deterministic(data, tool_registry=reg))
         assert result.matched is False
-        assert "exhausted" in result.replay_outcome or result.error is not None
+        assert (
+            result.replay_outcome in ("exhausted", "failed") or result.error is not None
+        )

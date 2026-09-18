@@ -2738,6 +2738,11 @@ class ToolExecutor:
         ha_created_at = notif.get("ha_created_at")
         db_path: str = notif.get("db_path", self._db_path)
 
+        # Security notifications must always produce a card — never auto-dismissed.
+        if category.lower() == "security":
+            requires_hitl = True
+            dismiss_now = False
+
         if dismiss_now and self._ws_client is not None:
             try:
                 await self._ws_client.dismiss_notification(ha_nid)

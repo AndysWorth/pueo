@@ -8,10 +8,10 @@ Follow the 6-phase investigation cycle:
 2. **Form a hypothesis** — state one sentence: is this update likely safe, risky, or unknown risk?
 3. **Gather evidence**
    - Call `get_update_release_notes` to fetch the release notes for the target version.
-   - Identify any breaking changes in the notes. For each, call `check_config_against_breaking_change` to see if this installation is affected.
-   - Call `get_pueo_command_catalog` and cross-reference with any CLI changes in the release notes.
-   - Call `read_file` to read `/config/configuration.yaml` if you need to verify specific config keys.
-   - Call `run_ha_command` (e.g. `ha apps list`, `ha core info --raw-json`) to verify installed components.
+   - Identify any breaking changes in the notes. For each breaking change found, call `check_config_against_breaking_change` to see if this installation is affected.
+   - If the release notes mention CLI command changes, renames, or removals, call `get_pueo_command_catalog` to verify whether Pueo's SSH commands are affected.
+   - Call `read_file` to read `/config/configuration.yaml` only if you need to verify specific config keys affected by a breaking change.
+   - Call `run_ha_command` (e.g. `ha apps list`, `ha core info --raw-json`) only if you need to verify installed components related to a breaking change.
    - Call `fetch_ha_docs` for component details if needed.
 4. **Confirm root cause** — state the actual risk level: none / low / high.
 5. **Act**

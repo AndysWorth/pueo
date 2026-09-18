@@ -157,3 +157,83 @@ class TestUpdateAnalysisStuckBackoff:
                 "'update_analysis_backoff:update.home_assistant_core_update'",
             ).fetchone()
         assert row is None, "success outcome must not write a backoff row"
+
+
+# ---------------------------------------------------------------------------
+# fetch_release_notes_cached — non-core add-ons without release_url (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchReleaseNotesCached:
+    """fetch_release_notes_cached returns a helpful message for add-ons without release_url."""
+
+    def test_addon_no_release_url_returns_message_not_404(self, tmp_path):
+        """Non-HA-core version with no release_url must NOT hit GitHub API."""
+        import asyncio
+        from unittest import mock
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            result = await fetch_release_notes_cached(
+                "10.5.0",  # non-YYYY version → not HA core
+                cache_dir=str(tmp_path / "cache"),
+                release_url=None,
+            )
+            return result
+
+        # Patch the GitHub fetcher to ensure it is never called
+        with mock.patch(
+            "agents.ha_update_manager._fetch_github_release_notes"
+        ) as mock_fetcher:
+            result = asyncio.run(_run())
+
+        mock_fetcher.assert_not_called()
+        assert "unavailable" in result.lower()
+        assert "release URL" in result or "release_url" in result.lower()
+
+    def test_addon_with_release_url_still_fetches(self, tmp_path):
+        """Non-HA-core version WITH release_url must use it (no regression)."""
+        import asyncio
+        from unittest import mock
+
+        async def _fake_fetch_url(url):
+            return "CHANGELOG v10.5.0: Fixed things."
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "10.5.0",
+                cache_dir=str(tmp_path / "cache2"),
+                release_url="https://github.com/example/addon/releases/tag/10.5.0",
+                _fetcher=None,
+            )
+
+        with mock.patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url",
+            side_effect=_fake_fetch_url,
+        ):
+            result = asyncio.run(_run())
+
+        assert "CHANGELOG" in result
+
+    def test_ha_core_version_uses_github_fetcher(self, tmp_path):
+        """YYYY.M.P versions always use the GitHub tags fetcher (no change)."""
+        import asyncio
+
+        async def _fake_fetcher(version):
+            return f"Release notes for {version}"
+
+        result = asyncio.run(
+            __import__(
+                "agents.ha_update_manager", fromlist=["fetch_release_notes_cached"]
+            ).fetch_release_notes_cached(
+                "2026.9.2",
+                cache_dir=str(tmp_path / "cache3"),
+                release_url=None,
+                _fetcher=_fake_fetcher,
+            )
+        )
+
+        assert "2026.9.2" in result

@@ -281,6 +281,15 @@ async def _run_notification_investigation(
         db_path=db_path,
         pending_notification=pending_notif,
     )
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+        import asyncio as _asyncio
+
+        _prof = await _asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
 
     registry = build_notification_investigation_registry()
     system_prompt = load_prompt("agent_loop_notification").format(

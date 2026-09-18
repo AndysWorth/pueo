@@ -306,3 +306,79 @@ class TestRepairIssueStuckBackoff:
                 " WHERE card_key = 'repair_issue_backoff:success-uuid'",
             ).fetchone()
         assert row is None, "success outcome must not write a backoff row"
+
+
+# ---------------------------------------------------------------------------
+# ha_profile injection into repair executor (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestRepairIssueExecutorHaProfile:
+    """_run_repair_issue_investigation injects ha_profile from DB into executor."""
+
+    def test_ha_profile_injected_from_db(self, tmp_path, pueo_dirs):
+        """When load_environment_profile returns a profile, executor._ha_profile is set."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_repair_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success", episode_stub={"summary": "ok"})
+
+        class _FakeIssue:
+            issue_key = "profile-test-uuid"
+            issue_id = "profile-test-uuid"
+            domain = "homeassistant"
+            severity = "warning"
+            translation_key = "reboot_required"
+            breaks_in_ha_version = None
+            data: dict = {}
+
+        # Build a minimal fake HAEnvironmentProfile
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        fake_profile = HAEnvironmentProfile()
+        fake_profile.ha_version = "2026.9.2"
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch(
+                "utils.ha.ha_environment.load_environment_profile",
+                return_value=fake_profile,
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_log_monitor import _run_repair_issue_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_repair_issue_investigation(
+                    issue=_FakeIssue(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # AgentLoop was called with tool_executor= as a kwarg
+        assert MockLoop.called, "AgentLoop must have been constructed"
+        executor = MockLoop.call_args.kwargs.get("tool_executor")
+        assert executor is not None, "tool_executor must be passed to AgentLoop"
+        assert (
+            executor._ha_profile is not None
+        ), "executor._ha_profile must be set after _run_repair_issue_investigation"
+        assert executor._ha_profile.ha_version == "2026.9.2"
