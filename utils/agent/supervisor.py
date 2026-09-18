@@ -399,17 +399,24 @@ class LoopSupervisor:
         publish_event(event)
 
     def pause(self, name: str) -> None:
-        """Pause a loop by name. The running coro is cancelled; the restart loop re-enters
-        the paused-sleep branch instead of restarting the coro."""
+        """Pause a loop by name. If the loop has already started running, its task is
+        cancelled so it enters the paused-sleep branch on the next restart. Tasks that
+        have not yet run ('starting' status) are NOT cancelled — they will see
+        status.paused=True when they first execute and enter the paused branch naturally.
+        Cancelling an unstarted task leaves a pending CancelledError that fires in the
+        first asyncio.sleep(1) of the paused branch; since paused is still True at that
+        point the handler re-raises, killing the task permanently."""
         status = self._handles[name]  # raises KeyError if unknown
         if status.paused:
             return
+        _was_starting = status.status == "starting"
         status.paused = True
         status.status = "paused"
         self._emit(name)
-        task = self._tasks.get(name)
-        if task and not task.done():
-            task.cancel()
+        if not _was_starting:
+            task = self._tasks.get(name)
+            if task and not task.done():
+                task.cancel()
 
     def resume(self, name: str) -> None:
         """Resume a paused loop. The next paused-sleep tick will detect paused=False
