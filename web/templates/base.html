@@ -257,6 +257,7 @@
         'netalertx_installer':    'installing',
         'code_proposal':          'proposing',
         'chat':                   'chatting',
+        'rag_refresh':            'refreshing',
       };
       var _AGENT_STATES = ['repairing','investigating','analyzing','healing','installing','proposing'];
       var state = 'monitoring';
@@ -311,6 +312,16 @@
         } else if (et === 'triage_done') {
           clearTimeout(triageTimer);
           if (state === 'triaging') setState('monitoring');
+        } else if (et === 'queue_update') {
+          var runType = d.running ? d.running.activity_type : null;
+          var pillState = runType ? (ACTIVITY_PILL_STATES[runType] || null) : null;
+          if (pillState && pillState !== 'repairing' && _AGENT_STATES.indexOf(state) === -1) {
+            // Non-agent queue activity (e.g. rag_refresh) — show its pill state
+            setState(pillState);
+          } else if (!runType && state === 'refreshing') {
+            // rag_refresh finished — back to monitoring
+            setState('monitoring');
+          }
         }
       });
 

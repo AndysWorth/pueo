@@ -39,34 +39,33 @@ _CONCEPT_DOCS: list[tuple[str, str]] = [
     ("lovelace_markdown_card", "lovelace/markdown"),
     ("lovelace_gauge_card", "lovelace/gauge"),
     ("lovelace_history_graph_card", "lovelace/history-graph"),
-    # ── Registries ───────────────────────────────────────────────────────────
-    ("entity_registry", "_docs/entity_registry"),
-    ("area_registry", "_docs/area_registry"),
-    ("device_registry", "_docs/device_registry"),
+    # ── Organizing (replaces removed registry pages) ─────────────────────────
+    ("ha_areas", "_docs/organizing/areas"),
+    ("ha_categories", "_docs/organizing/categories"),
+    ("ha_labels", "_docs/organizing/labels"),
+    ("ha_floors", "_docs/organizing/floors"),
     # ── Automation & Scripts ─────────────────────────────────────────────────
-    ("automation_basics", "_docs/automation/index"),
+    ("automation_basics", "_docs/automation/basics"),
     ("automation_trigger", "_docs/automation/trigger"),
     ("automation_condition", "_docs/automation/condition"),
     ("automation_action", "_docs/automation/action"),
     ("automation_yaml", "_docs/automation/yaml"),
     ("automation_templating", "_docs/automation/templating"),
-    ("automation_debugging", "_docs/automation/debugging"),
-    ("scripts", "_docs/script"),
+    ("scripts", "_docs/scripts"),
     # ── Blueprints ───────────────────────────────────────────────────────────
-    ("blueprint_overview", "_docs/blueprint/index"),
+    ("blueprint_overview", "_docs/blueprint"),
     # ── Templates ────────────────────────────────────────────────────────────
-    ("templating", "_docs/configuration/templating"),
+    ("templating", "_docs/templating"),
     # ── Configuration ────────────────────────────────────────────────────────
     ("configuration_yaml", "_docs/configuration"),
-    ("integrations_overview", "_docs/configuration/integrations"),
     ("configuration_packages", "_docs/configuration/packages"),
     ("splitting_configuration", "_docs/configuration/splitting_configuration"),
     # ── Helpers ──────────────────────────────────────────────────────────────
-    ("input_boolean", "_docs/input_boolean"),
-    ("input_number", "_docs/input_number"),
-    ("input_select", "_docs/input_select"),
+    ("input_boolean", "_integrations/input_boolean"),
+    ("input_number", "_integrations/input_number"),
+    ("input_select", "_integrations/input_select"),
     # ── Zones & Scenes ───────────────────────────────────────────────────────
-    ("zones", "_docs/zone"),
+    ("zones", "_integrations/zone"),
     ("scenes", "_docs/scene"),
 ]
 
