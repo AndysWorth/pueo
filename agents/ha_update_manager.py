@@ -44,6 +44,97 @@ if TYPE_CHECKING:
 
 log = get_logger("ha_update_manager")
 
+# ── Auto-reboot flag ──────────────────────────────────────────────────────────
+# Set to True after an OS or Supervisor update succeeds so the next
+# `reboot_required` repair issue auto-executes the reboot without a second
+# approval card (the pre-update backup already covers recovery).
+_reboot_pending_after_update: bool = False
+
+
+def set_reboot_pending_after_update(val: bool) -> None:
+    global _reboot_pending_after_update
+    _reboot_pending_after_update = val
+
+
+def is_reboot_pending_after_update() -> bool:
+    return _reboot_pending_after_update
+
+
+async def _post_update_repair_scan(settle_seconds: int = 5) -> None:
+    """Trigger repair_poll shortly after an OS/Supervisor update so the
+    reboot_required repair issue surfaces quickly."""
+    await asyncio.sleep(settle_seconds)
+    try:
+        from utils.agent.supervisor import get_supervisor_instance
+
+        sv = get_supervisor_instance()
+        if sv is not None:
+            sv.run_now("repair_poll")
+            log.info("post_update_repair_scan_triggered")
+    except Exception as exc:  # nosec B110 — best-effort; scheduled poll is fallback
+        log.warning("post_update_repair_scan_failed", error=str(exc))
+
+
+# ── Loop pause/resume during reboot ──────────────────────────────────────────
+_REBOOT_PAUSE_LOOPS = [
+    "ha_log_monitor",
+    "ha_log_monitor_supervisor",
+    "resource_poll",
+    "disk_usage_poll",
+    "notification_poll",
+    "repair_poll",
+    "lovelace_poll",
+]
+
+
+def _pause_loops_for_reboot() -> None:
+    """Pause monitoring loops that would produce noisy errors during a reboot."""
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        return
+    for name in _REBOOT_PAUSE_LOOPS:
+        try:
+            sv.pause(name)
+        except Exception:  # nosec B110 — loop may not exist in all deployments
+            pass
+    log.info("reboot_loops_paused", loops=_REBOOT_PAUSE_LOOPS)
+
+
+def _resume_loops_after_reboot() -> None:
+    """Resume monitoring loops after HA comes back online."""
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        return
+    for name in _REBOOT_PAUSE_LOOPS:
+        try:
+            sv.resume(name)
+        except Exception:  # nosec B110 — loop may not exist in all deployments
+            pass
+    log.info("reboot_loops_resumed", loops=_REBOOT_PAUSE_LOOPS)
+
+
+# ── Activity widget step emission ─────────────────────────────────────────────
+def _emit_step(status: str, activity: str = "update_execution") -> None:
+    """Publish an agent_step SSE event so the activity widget shows progress."""
+    try:
+        from utils.agent.supervisor import publish_event
+
+        publish_event(
+            {
+                "event_type": "agent_step",
+                "tool": "update",
+                "status": status,
+                "activity": activity,
+            }
+        )
+    except Exception:  # nosec B110 — best-effort; never block update execution
+        pass
+
+
 # SSH commands Pueo uses — checked against release notes for rename/removal risk.
 PUEO_SSH_COMMANDS = [
     "ha core check",
@@ -1014,17 +1105,20 @@ async def execute_core_update(
     )
 
     log.info("core_update_start", version=update.latest_version)
+    _emit_step("Creating pre-update backup…")
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
     await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("core_update_backup_complete", slug=backup_slug)
 
+    _emit_step("Backup ready — sending Core update command…")
     _, _, update_stderr = await ssh_client.run(
         "ha core update --no-progress", check=False
     )
     if update_stderr:
         log.warning("core_update_stderr", stderr=update_stderr[:200])
 
+    _emit_step("Waiting for Core update to apply…")
     poll_fn = _poll or _poll_core_version
     success = await poll_fn(
         update.latest_version, ssh_client, timeout_seconds=_CORE_UPDATE_TIMEOUT
@@ -1034,12 +1128,14 @@ async def execute_core_update(
     log_triage_summary = ""
     self_check: Optional[PueoSelfCheckResult] = None
     if success:
+        _emit_step("Running post-update config check…")
         try:
             _, cc_out, cc_err = await ssh_client.run("ha core check", check=False)
             config_check_output = (cc_out or cc_err or "").strip()
         except Exception as exc:
             log.warning("post_update_config_check_failed", error=str(exc))
 
+        _emit_step("Running post-update health checks…")
         try:
             _, log_out, _ = await ssh_client.run(
                 "ha core logs --lines 100", check=False
@@ -1067,6 +1163,10 @@ async def execute_core_update(
         except Exception as exc:
             log.warning("post_update_self_check_failed", error=str(exc))
 
+        _emit_step("Core update complete")
+    else:
+        _emit_step("Core update timed out — check HA UI")
+
     await _send_post_update_card(
         update,
         notifier,
@@ -1093,8 +1193,9 @@ async def execute_os_update(
     ha_host: Optional[str] = None,
     ha_port: Optional[int] = None,
     _poll: Optional[Callable] = None,
+    _api_poll: Optional[Callable] = None,
 ) -> bool:
-    """Execute OS update: backup → ha os update → TCP poll → result card."""
+    """Execute OS update: backup → ha os update → TCP poll → API readiness → result card."""
     from .ha_agent_advanced import (
         execute_remote_backup,
         offload_backup_to_local,
@@ -1102,21 +1203,49 @@ async def execute_os_update(
     )
 
     log.info("os_update_start", version=update.latest_version)
+    _emit_step("Creating pre-update backup…")
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
     await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("os_update_backup_complete", slug=backup_slug)
 
+    _emit_step("Backup ready — sending OS update command…")
     await ssh_client.run("ha os update --no-progress", check=False)
 
     host = ha_host or HA_HOST
     port = ha_port or HA_API_PORT
-    poll_fn = _poll or _poll_os_online
-    success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
 
-    await _send_post_update_card(update, notifier, success, "", "")
+    _pause_loops_for_reboot()
+    success = False
+    try:
+        _emit_step("OS update in progress — waiting for HA…")
+        poll_fn = _poll or _poll_os_online
+        success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
 
-    if not success:
+        if success:
+            api_fn = _api_poll or _poll_ha_api_ready
+            success = await api_fn(host, port, HA_API_TOKEN, timeout_seconds=120)
+            if not success:
+                log.warning(
+                    "os_update_api_not_ready",
+                    detail="TCP up but HTTP API timed out",
+                )
+    finally:
+        _resume_loops_after_reboot()
+
+    if success:
+        _emit_step("HA is back online")
+        set_reboot_pending_after_update(True)
+        asyncio.create_task(_post_update_repair_scan())
+        _os_reboot_note = (
+            "HA requires a reboot to complete this update. "
+            "Pueo will reboot automatically once the repair notification appears "
+            "— no further approval needed."
+        )
+        await _send_post_update_card(update, notifier, True, "", _os_reboot_note)
+    else:
+        _emit_step("OS update timed out — check HA UI")
+        await _send_post_update_card(update, notifier, False, "", "")
         log.warning(
             "os_update_timed_out",
             version=update.latest_version,
@@ -1249,42 +1378,64 @@ async def execute_ha_reboot(
     _poll: Optional[Callable] = None,
     _api_poll: Optional[Callable] = None,
     _down_poll: Optional[Callable] = None,
+    skip_backup: bool = False,
 ) -> bool:
-    """Reboot HA host: backup → reboot → wait for down → TCP poll → API ready → card."""
-    from .ha_agent_advanced import (
-        execute_remote_backup,
-        offload_backup_to_local,
-        record_backup_slug,
-    )
+    """Reboot HA host: (backup) → reboot → wait for down → TCP poll → API ready → card.
 
-    log.info("ha_reboot_start")
-    backup_slug = await execute_remote_backup(ssh_client=ssh_client)
-    record_backup_slug(backup_slug)
-    await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
-    log.info("ha_reboot_backup_complete", slug=backup_slug)
+    When skip_backup=True the pre-reboot backup is skipped because a backup was
+    already taken immediately before the triggering OS/Supervisor update.
+    """
+    if skip_backup:
+        log.info("ha_reboot_start_skip_backup")
+        _emit_step(
+            "Using existing update backup — skipping redundant backup",
+            activity="reboot_execution",
+        )
+    else:
+        from .ha_agent_advanced import (
+            execute_remote_backup,
+            offload_backup_to_local,
+            record_backup_slug,
+        )
 
+        log.info("ha_reboot_start")
+        _emit_step("Creating pre-reboot backup…", activity="reboot_execution")
+        backup_slug = await execute_remote_backup(ssh_client=ssh_client)
+        record_backup_slug(backup_slug)
+        await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
+        log.info("ha_reboot_backup_complete", slug=backup_slug)
+
+    _emit_step("Sending reboot command to HA…", activity="reboot_execution")
     await ssh_client.run("ha host reboot", check=False)
 
     host = ha_host or HA_HOST
     port = ha_port or HA_API_PORT
 
-    # Wait 10 s for ha-supervisor to begin shutdown, then confirm TCP drops.
-    await asyncio.sleep(10)
-    down_fn = _down_poll or _wait_for_ha_down
-    await down_fn(host, port, timeout_seconds=60)
+    _pause_loops_for_reboot()
+    success = False
+    try:
+        # Wait 10 s for ha-supervisor to begin shutdown, then confirm TCP drops.
+        _emit_step("Waiting for HA to shut down…", activity="reboot_execution")
+        await asyncio.sleep(10)
+        down_fn = _down_poll or _wait_for_ha_down
+        await down_fn(host, port, timeout_seconds=60)
 
-    # Wait for TCP to accept connections again.
-    poll_fn = _poll or _poll_os_online
-    success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
+        # Wait for TCP to accept connections again.
+        _emit_step("HA is down — waiting for restart…", activity="reboot_execution")
+        poll_fn = _poll or _poll_os_online
+        success = await poll_fn(host, port, timeout_seconds=_OS_UPDATE_TIMEOUT)
 
-    # Confirm the HTTP API layer is actually ready (TCP open ≠ API ready).
-    if success:
-        api_fn = _api_poll or _poll_ha_api_ready
-        success = await api_fn(host, port, HA_API_TOKEN, timeout_seconds=120)
-        if not success:
-            log.warning(
-                "ha_reboot_api_not_ready", detail="TCP up but HTTP API timed out"
-            )
+        # Confirm the HTTP API layer is actually ready (TCP open ≠ API ready).
+        if success:
+            _emit_step("Waiting for HA API to be ready…", activity="reboot_execution")
+            api_fn = _api_poll or _poll_ha_api_ready
+            success = await api_fn(host, port, HA_API_TOKEN, timeout_seconds=120)
+            if not success:
+                log.warning(
+                    "ha_reboot_api_not_ready", detail="TCP up but HTTP API timed out"
+                )
+    finally:
+        _resume_loops_after_reboot()
 
     reboot_update = UpdateStatus(
         component="reboot",
@@ -1296,6 +1447,13 @@ async def execute_ha_reboot(
         release_summary=None,
         in_progress=False,
     )
+    if success:
+        _emit_step("HA is online", activity="reboot_execution")
+    else:
+        _emit_step(
+            "HA did not come back online — check manually",
+            activity="reboot_execution",
+        )
     await _send_post_update_card(reboot_update, notifier, success, "", "")
 
     if not success:

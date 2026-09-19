@@ -2878,7 +2878,7 @@ class TestApproveWorkQueueRouting:
 
         assert len(submitted) == 1
         item = submitted[0]
-        assert item.activity_type == "card_execution"
+        assert item.activity_type == "update_execution"
         assert item.priority == PRIORITY_HIGH
         assert item.dedup_key == "card_u-wq1"
 
