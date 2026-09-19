@@ -1804,12 +1804,26 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
             (watch_dir / f"{nid}.in_progress").touch()
+            # Use descriptive activity types for update and reboot cards so the
+            # activity widget shows meaningful headings during execution.
+            if card_type == CARD_TYPE_UPDATE:
+                _activity_type = "update_execution"
+                _description = (
+                    f"Update: {payload.get('component', '')} "
+                    f"→ {payload.get('latest_version', '')}"
+                )
+            elif card_type == CARD_TYPE_HA_REPAIR and payload.get("action") == "reboot":
+                _activity_type = "reboot_execution"
+                _description = f"Card {nid}: reboot"
+            else:
+                _activity_type = "card_execution"
+                _description = f"Card {nid}: {card_type}"
             if _wq is not None:
                 await _wq.submit(
                     WorkItem(
                         priority=PRIORITY_HIGH,
-                        activity_type="card_execution",
-                        description=f"Card {nid}: {card_type}",
+                        activity_type=_activity_type,
+                        description=_description,
                         dedup_key=f"card_{nid}",
                         suppress_while_running=frozenset(),
                         coro_factory=lambda: handler(nid, data, json_path, watch_dir),

@@ -4683,6 +4683,152 @@ class TestExecuteHaReboot:
         assert result is False
         assert api_calls[0] == 0
 
+    def test_skip_backup_skips_backup_calls(self, tmp_path, monkeypatch):
+        """execute_ha_reboot(skip_backup=True) must not call execute_remote_backup."""
+        from agents.ha_update_manager import execute_ha_reboot
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
+
+        ssh = FakeSSHClient()
+        notifier = FakeNotifier()
+        backup_calls = [0]
+
+        async def fake_backup(ssh_client=None):
+            backup_calls[0] += 1
+            return "slug"
+
+        async def fake_poll(host, port, timeout_seconds):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds):
+            return True
+
+        async def fake_down(host, port, timeout_seconds):
+            return True
+
+        import agents.ha_agent_advanced as adv
+
+        orig = adv.execute_remote_backup
+        adv.execute_remote_backup = fake_backup
+        try:
+            result = asyncio.run(
+                execute_ha_reboot(
+                    ssh,
+                    notifier,
+                    ha_host="ha.local",
+                    ha_port=8123,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                    _down_poll=fake_down,
+                    skip_backup=True,
+                )
+            )
+        finally:
+            adv.execute_remote_backup = orig
+
+        assert result is True
+        assert backup_calls[0] == 0
+
+    def test_loops_paused_and_resumed(self, tmp_path, monkeypatch):
+        """_pause_loops_for_reboot and _resume_loops_after_reboot are both called."""
+        from agents.ha_update_manager import execute_ha_reboot
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        import agents.ha_update_manager as _um
+
+        monkeypatch.setenv("PUEO_CONFIG", str(tmp_path / "config.yaml"))
+
+        paused = [False]
+        resumed = [False]
+        orig_pause = _um._pause_loops_for_reboot
+        orig_resume = _um._resume_loops_after_reboot
+
+        def fake_pause():
+            paused[0] = True
+
+        def fake_resume():
+            resumed[0] = True
+
+        _um._pause_loops_for_reboot = fake_pause
+        _um._resume_loops_after_reboot = fake_resume
+
+        ssh = FakeSSHClient()
+        notifier = FakeNotifier()
+
+        async def fake_poll(host, port, timeout_seconds):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds):
+            return True
+
+        async def fake_down(host, port, timeout_seconds):
+            return True
+
+        try:
+            with (
+                __import__("unittest.mock", fromlist=["patch"]).patch(
+                    "agents.ha_agent_advanced.execute_remote_backup",
+                    return_value="slugX",
+                ),
+                __import__("unittest.mock", fromlist=["patch"]).patch(
+                    "agents.ha_agent_advanced.record_backup_slug"
+                ),
+                __import__("unittest.mock", fromlist=["patch"]).patch(
+                    "agents.ha_agent_advanced.offload_backup_to_local"
+                ),
+                __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"),
+            ):
+                asyncio.run(
+                    execute_ha_reboot(
+                        ssh,
+                        notifier,
+                        ha_host="ha.local",
+                        ha_port=8123,
+                        _poll=fake_poll,
+                        _api_poll=fake_api,
+                        _down_poll=fake_down,
+                    )
+                )
+        finally:
+            _um._pause_loops_for_reboot = orig_pause
+            _um._resume_loops_after_reboot = orig_resume
+
+        assert paused[0] is True
+        assert resumed[0] is True
+
+    def test_pause_loops_tolerates_unknown_loop_names(self):
+        """_pause_loops_for_reboot must not raise when supervisor returns errors."""
+        import agents.ha_update_manager as _um
+
+        class _BrokenSv:
+            def pause(self, name):
+                raise KeyError(name)
+
+            def resume(self, name):
+                raise KeyError(name)
+
+        orig = (
+            _um.get_supervisor_instance
+            if hasattr(_um, "get_supervisor_instance")
+            else None
+        )
+
+        import utils.agent.supervisor as _sup
+
+        orig_sv = _sup.get_supervisor_instance
+
+        def fake_sv():
+            return _BrokenSv()
+
+        _sup.get_supervisor_instance = fake_sv
+        try:
+            _um._pause_loops_for_reboot()
+            _um._resume_loops_after_reboot()
+        finally:
+            _sup.get_supervisor_instance = orig_sv
+
 
 # ── _poll_addon_version ────────────────────────────────────────────────────────
 class TestPollAddonVersion:
@@ -5222,10 +5368,18 @@ class TestExecuteOsUpdate:
         async def fake_poll(host, port, timeout_seconds=480):
             return True
 
+        async def fake_api(host, port, token, timeout_seconds=120):
+            return True
+
         with self._patch_backup():
             result = asyncio.run(
                 execute_os_update(
-                    self._make_update(), ssh, notifier, gate, _poll=fake_poll
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
                 )
             )
 
@@ -5246,15 +5400,104 @@ class TestExecuteOsUpdate:
         async def fake_poll_fail(host, port, timeout_seconds=480):
             return False
 
+        async def fake_api(host, port, token, timeout_seconds=120):
+            return True
+
         with self._patch_backup():
             result = asyncio.run(
                 execute_os_update(
-                    self._make_update(), ssh, notifier, gate, _poll=fake_poll_fail
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll_fail,
+                    _api_poll=fake_api,
                 )
             )
 
         assert result is False
         assert notifier.sent[0]["payload"]["success"] is False
+
+    def test_sets_reboot_pending_flag_and_triggers_repair_scan_on_success(
+        self, monkeypatch
+    ):
+        from agents.ha_update_manager import (
+            execute_os_update,
+            is_reboot_pending_after_update,
+            set_reboot_pending_after_update,
+        )
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        set_reboot_pending_after_update(False)
+        scan_calls = [0]
+
+        async def fake_repair_scan(settle_seconds=5):
+            scan_calls[0] += 1
+
+        monkeypatch.setattr(
+            "agents.ha_update_manager._post_update_repair_scan", fake_repair_scan
+        )
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(host, port, timeout_seconds=480):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds=120):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                )
+            )
+
+        assert result is True
+        assert is_reboot_pending_after_update() is True
+        set_reboot_pending_after_update(False)  # cleanup
+
+    def test_api_poll_called_after_tcp_poll_succeeds(self):
+        from agents.ha_update_manager import execute_os_update
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+        api_calls = [0]
+
+        async def fake_poll(host, port, timeout_seconds=480):
+            return True
+
+        async def fake_api(host, port, token, timeout_seconds=120):
+            api_calls[0] += 1
+            return False  # API times out → overall failure
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_os_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    _api_poll=fake_api,
+                )
+            )
+
+        assert result is False
+        assert api_calls[0] == 1
 
 
 # ── execute_addon_update ────────────────────────────────────────────────────────
@@ -12247,6 +12490,132 @@ class TestRunRepairIssueInvestigation:
         )
         assert len(notifier.sent) == 1
         assert notifier.sent[0]["payload"]["action"] == "reboot"
+
+
+# ── _finish_repair_issue auto-reboot ─────────────────────────────────────────────
+
+
+class TestFinishRepairIssueAutoReboot:
+    """_finish_repair_issue must auto-execute reboot when _reboot_pending_after_update is True."""
+
+    def _make_issue(self, translation_key="issue_system_reboot_required"):
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="system",
+            issue_id="reboot-001",
+            severity="warning",
+            issue_key="system/reboot-001",
+            breaks_in_ha_version=None,
+            translation_key=translation_key,
+        )
+
+    def _make_executor(self, notifier=None, ssh=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=ssh or FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=notifier or FakeNotifier(),
+        )
+
+    def test_auto_reboot_when_flag_set_no_hitl_card(self, monkeypatch):
+        """When flag is True and action='reboot', reboot is auto-executed, no HITL card sent."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_reboot_pending_after_update(True)
+
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        executor._pending_repair_issue = self._make_issue()
+
+        async def fake_reboot(ssh, notif, **kwargs):
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_reboot", fake_reboot)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Reboot required",
+                recommended_action="Reboot",
+                requires_hitl=True,
+                action="reboot",
+            )
+        )
+
+        assert result.success is True
+        assert "auto-reboot" in result.output.lower()
+        # No HITL card should have been sent (notifier sends come only from HITL cards)
+        assert len(notifier.sent) == 0
+        assert _um.is_reboot_pending_after_update() is False
+
+    def test_flag_cleared_even_when_reboot_fails(self, monkeypatch):
+        """Flag must be cleared even if the reboot itself fails."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_reboot_pending_after_update(True)
+
+        executor = self._make_executor(notifier=FakeNotifier())
+        executor._pending_repair_issue = self._make_issue()
+
+        async def fake_reboot(ssh, notif, **kwargs):
+            return False
+
+        monkeypatch.setattr(_um, "execute_ha_reboot", fake_reboot)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Reboot required",
+                recommended_action="Reboot",
+                requires_hitl=True,
+                action="reboot",
+            )
+        )
+
+        assert result.success is False
+        assert _um.is_reboot_pending_after_update() is False
+
+    def test_hitl_card_sent_when_flag_not_set(self, monkeypatch):
+        """When flag is False (normal manual reboot), the HITL card flow is preserved."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_reboot_pending_after_update(False)
+
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        executor._pending_repair_issue = self._make_issue()
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Reboot required",
+                recommended_action="Reboot",
+                requires_hitl=True,
+                action="reboot",
+            )
+        )
+
+        assert result.success is True
+        # HITL card must be sent
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "reboot"
+        # Flag must still be False
+        assert _um.is_reboot_pending_after_update() is False
 
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────

@@ -2649,7 +2649,7 @@ class ToolExecutor:
         requires_hitl: bool,
         action: str,
     ) -> ToolResult:
-        """Create a HITL card for the pending repair issue."""
+        """Create a HITL card for the pending repair issue, or auto-execute reboot."""
         if not requires_hitl:
             return ToolResult(
                 tool_name="finish_repair_issue",
@@ -2664,6 +2664,50 @@ class ToolExecutor:
                 output="",
                 error="No pending repair issue stored on executor",
             )
+
+        # Auto-reboot path: when an OS/Supervisor update just completed and the
+        # repair poller detects reboot_required, execute the reboot immediately
+        # without a second approval card (the pre-update backup already covers recovery).
+        if action == "reboot":
+            from agents.ha_update_manager import (
+                is_reboot_pending_after_update,
+                set_reboot_pending_after_update,
+            )
+
+            if is_reboot_pending_after_update():
+                log.info(
+                    "auto_reboot_triggered",
+                    issue_key=issue.issue_key,
+                )
+                set_reboot_pending_after_update(False)
+                from agents.ha_update_manager import execute_ha_reboot
+                from agents.ha_agent_advanced import mark_repair_resolved
+
+                try:
+                    success = await execute_ha_reboot(
+                        self._ha_ssh,  # type: ignore[arg-type]
+                        self._notifier,
+                        skip_backup=True,
+                    )
+                    if success:
+                        mark_repair_resolved(issue.issue_key)
+                    return ToolResult(
+                        tool_name="finish_repair_issue",
+                        success=success,
+                        output=(
+                            "Auto-reboot executed (post-update). "
+                            f"Outcome: {'online' if success else 'timed out'}"
+                        ),
+                    )
+                except Exception as exc:
+                    log.error("auto_reboot_failed", error=str(exc))
+                    return ToolResult(
+                        tool_name="finish_repair_issue",
+                        success=False,
+                        output="",
+                        error=f"Auto-reboot failed: {exc}",
+                    )
+
         from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
         from utils.hitl.hitl_tracker import stable_nid
         from agents.ha_agent_advanced import mark_repair_hitl_sent
