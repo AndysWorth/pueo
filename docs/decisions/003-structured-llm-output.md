@@ -7,15 +7,15 @@ Accepted
 LLM outputs are strings by default. Parsing free-text responses for structured data (severity levels, boolean flags, YAML snippets) is brittle and non-deterministic. The agent needs to act on LLM decisions programmatically without string parsing.
 
 ## Decision
-All Ollama calls use `format=PydanticModel.model_json_schema()` to instruct the model to return valid JSON matching the schema, and `temperature=0.0` for deterministic output. The response is immediately validated with `PydanticModel.model_validate_json()`, which raises on schema violations.
+All significant Pueo reasoning flows through `AgentLoop` using Ollama's (or Anthropic's) **tool-calling API** (`chat_with_tools`). The model iterates over tool calls until it reaches a confident conclusion or exhausts its budget — this is the primary LLM interaction pattern (see ADR 019).
 
-Each agent layer defines its own response schema:
-- `DiagnosticsReport` — config analysis (valid/invalid, severity, fix YAML)
-- `LogEvaluation` — log triage (actionable, root cause, confidence score)
+For one-shot pre-filter calls that do not benefit from iteration (streaming log line triage, notification analysis, breaking-change text analysis), `format=PydanticModel.model_json_schema()` with `temperature=0.0` forces deterministic, parseable JSON validated by `PydanticModel.model_validate_json()`.
+
+Pydantic schemas are used throughout: as `format=` targets for one-shot calls, and as the structured inputs/outputs for tool definitions. The original two schemas (`DiagnosticsReport`, `LogEvaluation`) remain for the one-shot paths in `ha_agent_core.py` and `ha_log_monitor.py`; the full codebase now has dozens of schemas.
 
 ## Consequences
-- Ollama's structured output mode is required; this rules out models that don't support it.
-- `ollama.chat` is synchronous and must always be wrapped in `asyncio.to_thread()` to avoid blocking the event loop.
+- One-shot `format=` calls require a model with Ollama structured-output support; the tool-calling path does not depend on `format=`.
+- The `asyncio.to_thread()` wrapper applies to the synchronous `ollama.chat()` calls used in one-shot paths. `AgentLoop.run()` is async throughout — no wrapping needed for the tool-calling path.
 - If the model returns malformed JSON (rare but possible), `model_validate_json` raises and the pipeline logs the error rather than acting on garbage data.
 - Adding a new agent capability means defining a new Pydantic schema first — this is intentional as it forces explicit design of the data contract before the prompt.
 - All Pydantic schemas are defined once and imported where needed — never duplicated across agent modules. Divergent field descriptions produce different `model_json_schema()` output, causing inconsistent Ollama behavior.
