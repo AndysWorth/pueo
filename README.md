@@ -5,7 +5,7 @@
 
 A vigilant, self-healing agentic AI system designed to monitor, maintain, and repair Home Assistant instances. 
 
-`pueo` runs entirely on-device — all inference is local via Ollama, with zero cloud API calls during active monitoring or repair cycles.
+`pueo` runs primarily on-device. By default, all LLM inference is local via Ollama with zero cloud API calls. Cloud providers (Anthropic Claude) are supported as an opt-in mode (`LLM_PROVIDER=cloud` or `=both`) for escalation or as the primary backend.
 
 ---
 
@@ -151,7 +151,7 @@ Override any directory with environment variables: `PUEO_DATA_DIR`, `PUEO_STATE_
 Pass `--config /path/to/config.yaml` if your config file is not in the default location:
 ```bash
 pueo --mode diagnose --config /path/to/config.yaml
-pueo start --config /path/to/config.yaml   # supervisor with custom config, daemonized
+pueo --config /path/to/config.yaml   # supervisor with custom config
 ```
 
 ---
@@ -168,7 +168,7 @@ query during active sessions — no internet access needed during monitoring or 
 - **HA integration docs** — official documentation pages for your active integrations, scraped
   from the Home Assistant docs site
 - **Investigation strategies** — novel investigation approaches discovered during repair and chat
-  sessions are saved to a `strategies` collection (via the `save_strategy` tool) and recalled
+  sessions are saved to a `strategies` collection (via the `save_runbook` tool) and recalled
   automatically in future sessions, so Pueo improves as it encounters more failure patterns
 
 **How the agent uses it:**

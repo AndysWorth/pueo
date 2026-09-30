@@ -1,25 +1,21 @@
 # Contributing to Pueo
 
-Thank you for contributing to Pueo. This document covers everything you need to get your change merged safely.
+Pueo is a multi-person project. This guide covers project-specific conventions; the full development procedure (branching, CI gate, PR, merge) is in the **Development Procedure** section of `CLAUDE.md`.
 
 ---
 
 ## Before you start
 
-Read the architecture decision records in `docs/decisions/` and the backlog in `docs/implementation-plan.md`. Most new work maps to an existing phase item — link to it in your PR.
+Every change needs a GitHub issue — no issue, no branch. Read the architecture decision records in `docs/decisions/` for the area you are touching. Work is tracked in [GitHub Issues](https://github.com/AndysWorth/pueo/issues).
 
 ---
 
 ## Branch strategy
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Stable, tagged releases only. Direct pushes are blocked. |
-| `develop` | Integration branch. All feature PRs target here. |
-| `feature/<short-name>` | One feature or implementation-plan item per branch. |
-| `fix/<short-name>` | Bug fixes. |
-
-CI runs on every push to `main` and `develop`, and on every PR targeting `main`.
+- All work branches off `main` and is named `feat/<issue-number>-<slug>`.
+- There is no separate integration branch — feature branches merge directly to `main` via PR. Direct pushes to `main` are blocked.
+- Keep branches short-lived; rebase onto `main` daily for any branch open more than one day.
+- Hotfix branches for production bugs branch off the relevant release tag.
 
 ---
 
@@ -97,7 +93,7 @@ If your change touches any part of the repair pipeline, re-read `docs/decisions/
 Run the full suite before pushing:
 
 ```bash
-pytest --cov=./ --cov-report=term-missing --cov-fail-under=90
+pytest --cov --cov-fail-under=90 --ignore=tests/integration
 ```
 
 ---
@@ -108,18 +104,31 @@ pytest --cov=./ --cov-report=term-missing --cov-fail-under=90
 - Linting: `flake8` (errors and undefined names only — `E9,F63,F7,F82`)
 - Types: `mypy --ignore-missing-imports` (no new `Any` suppressions without justification)
 - Security: `bandit -r . -x ./tests`
-- No bare `print()` in agent code — use structured logging (Phase 2 item)
+- No bare `print()` in agent code — use structured logging
 - No comments explaining *what* code does — only *why* it does something non-obvious
 
 ---
 
 ## Pull request process
 
-1. Open a PR against `develop` (not `main`)
-2. Fill out every section of the PR template
-3. All CI checks must be green before review
-4. One approving review required for merge to `develop`
-5. Merges to `main` are tagged releases — coordinate with maintainers
+1. Open a PR against `main` and fill out every section of the PR template.
+2. The description explains *why*, not *what*, and references the issue (`Closes #N`).
+3. CI must pass before review:
+   ```bash
+   black --check .
+   flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+   mypy --ignore-missing-imports .
+   bandit -r . -x ./tests,./.venv
+   pytest --cov --cov-fail-under=90 --ignore=tests/integration
+   ```
+4. At least one approving review is required. The PR author may not merge their own PR.
+5. Squash merge to keep `main` history clean and bisectable.
+
+**Migrations and production config writes:** flag them explicitly and include a rollback plan (revert commit + migration version) in the PR description. Test migrations against a real local copy of `ha_agent_state.db`.
+
+**Breaking changes:** for public interface changes, add a deprecation warning for at least one version, bump the semver major version, and include a migration guide in the changelog.
+
+**Dependency changes:** changes to `requirements*.txt` warrant a second reviewer; call out transitive dependency risk in the PR description.
 
 ---
 
@@ -135,6 +144,6 @@ The `audits/` directory (gitignored) is for operational state snapshots and diag
 
 Use the GitHub issue templates:
 - **Bug report** — for broken or unexpected behavior
-- **Feature request** — for new capabilities (check the implementation plan first)
+- **Feature request** — for new capabilities (check existing issues first)
 
 Security vulnerabilities: see `SECURITY.md`.
