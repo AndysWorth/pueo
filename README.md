@@ -28,8 +28,8 @@ Pueo is built around four design principles:
 *   **Active Dashboard:** Review and approve pending repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
 *   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, read Pueo's own logs, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
 *   **Personalized Update Analysis:** When HA Core, OS, or Apps updates are available, Pueo reads your actual `configuration.yaml` and integration list to identify which breaking changes affect *your* installation — not just what changed in general.
-*   **Local RAG Knowledge Base:** HA breaking-change release notes, HACS changelogs, integration docs, and a growing `strategies` collection are embedded locally via ChromaDB and `nomic-embed-text`. Every agent session begins by querying this knowledge base before forming a hypothesis — no internet access required.
-*   **Privacy-First:** All inference runs on a local Ollama instance — zero cloud API calls during active monitoring or repair cycles.
+*   **Local RAG Knowledge Base:** HA release notes, HACS changelogs, integration docs, developer docs, concept pages, runbooks (`strategies`), and past repair episodes (`repair_history`) are embedded locally in seven ChromaDB collections via `nomic-embed-text`. Every agent session begins by querying this knowledge base before forming a hypothesis — no internet access required.
+*   **Privacy-First:** By default all inference runs on a local Ollama instance — zero cloud API calls during monitoring or repair cycles. Cloud (Anthropic Claude) is strictly opt-in via `LLM_PROVIDER`.
 
 ---
 
@@ -113,6 +113,10 @@ pueo --mode audit               # self-diagnostics gap report (saved to audits/)
 
 # Setup and maintenance
 pueo --mode netalertx-setup     # install and configure NetAlertX on HA
+pueo --mode netalertx-uninstall # remove NetAlertX from HA
+pueo --mode netalertx-docker-setup      # install NetAlertX in Docker instead of HA
+pueo --mode netalertx-docker-uninstall  # remove the Docker NetAlertX install
+pueo --mode netalertx-switch    # switch NetAlertX between HA and Docker
 pueo --mode netalertx           # monitor NetAlertX logs continuously (daemon)
 pueo --mode rag-refresh         # refresh the local RAG knowledge base (see below)
 pueo --mode install-service     # install as macOS launchd service
@@ -167,13 +171,21 @@ query during active sessions — no internet access needed during monitoring or 
 - **HACS component changelogs** — fetched for each HACS integration installed on your HA instance
 - **HA integration docs** — official documentation pages for your active integrations, scraped
   from the Home Assistant docs site
-- **Investigation strategies** — novel investigation approaches discovered during repair and chat
-  sessions are saved to a `strategies` collection (via the `save_runbook` tool) and recalled
-  automatically in future sessions, so Pueo improves as it encounters more failure patterns
+- **HA developer docs and concepts** — architecture, entity model, config flows, Supervisor,
+  WebSocket and REST API pages from `developers.home-assistant.io` and the HA docs site
+- **Runbooks** — human-curated seed runbooks plus candidate and gap runbooks saved by the agent
+  (via the `save_runbook` tool) to a `strategies` collection, recalled automatically in future
+  sessions so Pueo improves as it encounters more failure patterns
+- **Past repairs** — completed repair episodes are embedded into a `repair_history` collection
+  at each refresh, so similar earlier incidents appear as context before the first LLM call
+
+Collections: `ha_release_notes`, `hacs_changelogs`, `ha_integration_docs`, `ha_concepts`,
+`ha_developer_docs`, `strategies`, `repair_history`. Results are ranked by hybrid BM25 + cosine
+retrieval weighted by source authority.
 
 **How the agent uses it:**
 `query_knowledge` is the first tool called in every repair, diagnostic, and chat session —
-surfacing relevant breaking changes, integration notes, and past strategies before the model
+surfacing relevant breaking changes, integration notes, runbooks, and past repairs before the model
 forms its first hypothesis. Context is retrieved on-demand rather than prepended wholesale,
 so the token budget is spent on useful evidence rather than noise.
 
