@@ -62,9 +62,13 @@ Tactical delivery batches in execution order. See `docs/implementation-plan.md` 
 
 ---
 
-## Remaining Work
+## Historical Implementation Specs
 
-**Execution order:** 4.6 → 4.7 → 6 → 2 → 5 → **6.5** → **6.6** → 7 → 8 → 9 → 10*(stretch)*. The milestone numbers reflect original sequencing; the phases deliver them in this order. See `docs/implementation-plan.md` for item-level detail.
+> **Archive note (2026-09-16):** All milestones listed below are complete. These specs
+> record design intent as it was written during development (2026-07-09 to 2026-09-16).
+> New work is tracked in [GitHub Issues](https://github.com/AndysWorth/pueo/issues).
+
+**Execution order (historical):** 4.6 → 4.7 → 6 → 2 → 5 → **6.5** → **6.6** → 7 → 8 → 9 → 10*(stretch)*. All delivered.
 
 ---
 
@@ -90,6 +94,8 @@ Full spec: [plan/supervisor.md](plan/supervisor.md)
 ---
 
 ### Milestone 6.6 — Conversational Agent
+
+**Delivered:** 2026-07-31
 
 **Objective:** Add a Chat tab to the dashboard so the user can talk directly to Pueo — querying live HA state, storing persistent notes across sessions, and proposing new tools through a sandboxed code flow. The same `AgentLoop` that drives reactive repair sessions drives the conversational agent; only the system prompt, tool registry, and termination signal differ.
 
@@ -120,6 +126,8 @@ Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 
 ### Milestone 4.6 — HA Update Manager
 
+**Delivered:** 2026-07-27
+
 **Objective:** Detect available Home Assistant Core, OS, and add-on updates during normal monitoring; evaluate whether each update is safe for this specific installation using LLM analysis of release notes; execute updates with the backup invariant intact; verify Pueo's own integration still works after a Core update.
 
 **Why here:** HA ships breaking changes regularly — CLI command renames, config YAML deprecations, REST API shifts. Without this capability, Pueo has no way to know an update is available or whether it will break something it depends on. Pueo has already been broken once by a CLI rename (`ha addons` → `ha apps`). The self-check closes that loop.
@@ -148,6 +156,8 @@ Full spec: [plan/ha-update-manager.md](plan/ha-update-manager.md)
 
 ### Milestone 4.7 — HA Notification Intelligence
 
+**Delivered:** 2026-07-27
+
 **Objective:** Surface HA persistent notifications (failed logins, config errors, integration failures) as approval-ready cards with plain-English explanations, enriched context, and clear recommended actions — rather than leaving them as raw technical strings in the HA UI.
 
 **Why here:** HA notifications are Pueo's early warning system. A failed login from an unknown IP, a broken integration, or a config error all appear as notifications before they become active incidents. Pueo can add value here without any repair capability — just explanation and triage.
@@ -175,6 +185,8 @@ Full spec: [plan/ha-notifications.md](plan/ha-notifications.md)
 
 ### Milestone 6 — Tool-Calling Agent Loop
 
+**Delivered:** 2026-07-28
+
 **Objective:** Replace the linear `gather→analyze→act` pipeline with an iterative agent loop using Ollama's `tools` API. The model decides which tools to call at each step, iterates until it reaches a confident fix or exhausts its budget, and can investigate unknown failure modes rather than only pre-scripted ones.
 
 **Tasks:**
@@ -195,7 +207,7 @@ Full spec: [plan/tool-loop.md](plan/tool-loop.md)
 
 **Objective:** Keep the agent knowledgeable about HA breaking changes and integration updates without live web searches, satisfying the 0 WAN packets constraint.
 
-**Delivered in Phase 15 (after the tool loop).** Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
+**Delivered:** 2026-07-28 — in Phase 15 (after the tool loop). Originally planned as `[KNOWLEDGE]` block injection into a fixed prompt. Redesigned as a `query_knowledge` tool registered in the Phase 14 tool loop — the agent queries for context only when it judges it useful, avoiding token waste on irrelevant chunks.
 
 **Tasks:**
 - Stand up ChromaDB locally on macOS; embed with `nomic-embed-text` via Ollama (zero WAN)
@@ -214,7 +226,7 @@ Full spec: [plan/rag-tool.md](plan/rag-tool.md)
 
 **Objective:** Make regressions visible. Without evals, there is no way to know if a prompt change, model upgrade, or new feature makes the agent better or worse at its actual job. Unit tests verify code correctness; evals verify agent intelligence.
 
-**Delivered in Phase 16 (after the tool loop and RAG layer are in place).** Having both makes the eval scenarios more meaningful — the loop exercises real tool-calling behaviour and RAG provides the knowledge context the agent will have in production.
+**Delivered:** 2026-07-28 — in Phase 16 (after the tool loop and RAG layer are in place). Having both makes the eval scenarios more meaningful — the loop exercises real tool-calling behaviour and RAG provides the knowledge context the agent will have in production.
 
 **Tasks:**
 - `evals/scenarios/` — directory of `.yaml` files, each defining: `name`, `input_config` or `input_log_line`, `expected_is_valid`, `expected_severity`, `expected_issue_keywords: list[str]`, `fix_must_parse: bool`
@@ -231,6 +243,8 @@ Full spec: [plan/evals.md](plan/evals.md)
 ---
 
 ### Milestone 7 — Configurable LLM Provider + Cloud Escalation
+
+**Delivered:** 2026-08-07
 
 **Objective:** Make the LLM inference engine a first-class switchable setting so Pueo can run with local Ollama, an Anthropic cloud API, or both. The "0 WAN during autonomous fix cycles" design constraint is explicitly overridden here — cloud mode routes inference traffic to Anthropic. approved escalation (the original M7 goal) becomes the natural behavior of `both` mode: local Ollama handles autonomous repair cycles; when the local loop exhausts its budget the user can approve a Claude escalation from the dashboard.
 
@@ -259,6 +273,8 @@ Full spec: [plan/cloud-escalation.md](plan/cloud-escalation.md)
 
 ### Milestone 8 — Repair Episode Recording
 
+**Delivered:** 2026-08-10
+
 **Objective:** After every successful repair cycle, serialize a structured `RepairEpisode` to SQLite: symptoms, tool sequence, hypothesis chain, fix applied, outcome, model used. Exportable as anonymized YAML to feed the Federated Case Library.
 
 **Tasks:**
@@ -274,6 +290,8 @@ Full spec: [plan/repair-episodes.md](plan/repair-episodes.md)
 
 ### Milestone 9 — Federated Case Library
 
+**Status:** Superseded (2026-09-05) — case/episode pipeline removed; runbooks are the single KB signal.
+
 **Objective:** Pool anonymized repair episodes in a public `pueo-cases` GitHub repo. Pueo instances contribute (submit PR from dashboard) and consume (weekly pull → vectorize → ChromaDB). Each merged community case also generates an eval scenario, closing the M5 loop.
 
 **Tasks:**
@@ -288,6 +306,8 @@ Full spec: [plan/federated-cases.md](plan/federated-cases.md)
 ---
 
 ### Milestone 10 — Self-Improving Code Proposals  *(stretch goal)*
+
+**Delivered:** 2026-08-11
 
 **Objective:** When Pueo identifies a capability gap during a repair loop, it proposes a Python diff, validates it against CI in a sandboxed temp directory, and surfaces a approval card to open a PR. Approved changes become reusable tools for every future incident.
 
@@ -306,6 +326,8 @@ Full spec: [plan/code-proposals.md](plan/code-proposals.md)
 ---
 
 ### Milestone 11 — Transparent Operation
+
+**Delivered:** 2026-08-18
 
 **Objective:** Make Pueo's reasoning visible in real time. Users can see what Pueo has done (event timeline, repair episodes) and what it is currently thinking (live tool-call trace in the Chat tab). Transparency becomes a first-class design goal alongside safety, privacy, and autonomy.
 
@@ -334,6 +356,8 @@ Full spec: [plan/transparency.md](plan/transparency.md)
 ---
 
 ### Milestone 12 — Agent Self-Knowledge + HA Live Lookup
+
+**Delivered:** 2026-08-18
 
 **Objective:** Give every Pueo agent mode two complementary knowledge capabilities: (1) self-awareness of Pueo's own codebase so the LLM can reason about available tools and pipelines before choosing an action; (2) on-demand access to Home Assistant component source code and documentation so the LLM can look up current HA internals when the pre-indexed RAG returns insufficient context.
 
