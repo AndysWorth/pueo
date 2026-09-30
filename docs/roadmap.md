@@ -316,7 +316,7 @@ Full spec: [plan/federated-cases.md](plan/federated-cases.md)
 **Remaining tasks (Phase 21, items 83–86):**
 - `open_pr` tool: `gh pr create` integration; formal PR opens on approval instead of in-process registration
 - Autonomous gap detection: `finish_repair` with `capability_gap=True` automatically triggers `propose_patch → sandbox_code → code_proposal` approval card
-- Security review: sandbox escape vectors, safety-critical file block list (`utils/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain), `read_source` path traversal
+- Security review: sandbox escape vectors, safety-critical file block list (`utils/agent/autonomy.py`, `interfaces.py`, `config.py`, backup invariant chain), `read_source` path traversal
 - ADR 007: agent-generated code proposals with sandboxed CI gate
 
 **Validation gate:** Agent proposes a new tool for a synthetic gap scenario; sandbox CI runs; approval opens a real PR; safety-critical block list tested; security review complete.

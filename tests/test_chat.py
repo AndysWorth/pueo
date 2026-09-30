@@ -1438,7 +1438,7 @@ class TestProposePatchSafety:
         )
 
     def test_blocks_utils_autonomy_py(self):
-        result = self._patch("utils/autonomy.py", "y = 2\n")
+        result = self._patch("utils/agent/autonomy.py", "y = 2\n")
         assert not result.success
         assert "safety-critical" in (result.error or "").lower()
 

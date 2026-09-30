@@ -20,7 +20,7 @@ Register `read_source` in all agent registries:
 Update `_AGENT_LOOP_SYSTEM_PROMPT` in `utils/agent_loop.py` to include a brief note that the agent can call `read_source` to inspect its own tool registry or pipeline code when uncertain about available capabilities.
 
 The safety constraints on `read_source` remain unchanged:
-- Safety-critical paths (`utils/autonomy.py`, `interfaces.py`, `config.py`) are readable but write-blocked by the existing `_SAFETY_CRITICAL_PATHS` list in `propose_patch`
+- Safety-critical paths (`utils/agent/autonomy.py`, `interfaces.py`, `config.py`) are readable but write-blocked by the existing `_SAFETY_CRITICAL_PATHS` list in `propose_patch`
 - `read_source` is read-only — it cannot modify files
 - The 8,000-char cap and allowed-extension allowlist remain
 

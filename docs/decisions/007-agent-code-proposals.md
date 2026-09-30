@@ -47,7 +47,7 @@ body that includes the full diff, CI output, and a reference to this ADR.
 ## Safety constraints
 
 **Block list enforced at the tool layer.** `propose_patch` rejects patches targeting
-`utils/autonomy.py`, `interfaces.py`, and `config.py` unconditionally. These files govern the
+`utils/agent/autonomy.py`, `interfaces.py`, and `config.py` unconditionally. These files govern the
 autonomy gate, protocol interfaces, and the single configuration source. A bad change to any
 of them can disable safety controls silently and is not recoverable by reverting a feature PR.
 

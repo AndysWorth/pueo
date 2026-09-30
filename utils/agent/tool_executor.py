@@ -96,7 +96,7 @@ _PRIVATE_IP_BLOCKS: tuple[str, ...] = (
 # Files the agent may never patch autonomously — manual edit + security review required.
 _SAFETY_CRITICAL_PATHS: frozenset[str] = frozenset(
     {
-        "utils/autonomy.py",
+        "utils/agent/autonomy.py",
         "interfaces.py",
         "config.py",
     }
