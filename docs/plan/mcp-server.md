@@ -1,3 +1,5 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 # Pueo MCP Server — Setup Guide
 
 Pueo can expose its diagnostic tools to Home Assistant's built-in AI assistants (Claude,

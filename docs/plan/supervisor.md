@@ -1,8 +1,10 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 # Plan: Pueo Supervisor — Unified Process + Active Dashboard
 
 ## Milestone 6.5
 
-**Status:** TODO — Phase 17 (next to implement)
+**Status:** Complete (2026-07-30) — Phase 17, items 55–64
 
 ---
 

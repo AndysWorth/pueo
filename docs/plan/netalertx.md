@@ -1,3 +1,5 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 # NetAlertX Integration — Items 10–19
 
 Part of the [Implementation Plan](../implementation-plan.md) · Phase 4 · 11–14 sessions.

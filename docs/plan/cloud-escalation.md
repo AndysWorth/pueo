@@ -1,3 +1,5 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 # LLM Provider Abstraction + Cloud Escalation
 
 Part of the [Roadmap](../roadmap.md) · Milestone 7 · Phase 18 (items 73–76).
