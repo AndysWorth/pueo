@@ -8,20 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Source code lives in `pueo/`.
 
-## Project Type: Solo
+## Project Type: Team/Library
 
-This is a solo project. The following procedure variations from `~/.claude/CLAUDE.md` are active:
+This is a multi-person project. The following procedure variations from `~/.claude/CLAUDE.md` are active:
 
-- **Code review:** Self-merge after CI passes; no required approvals.
-- **Branch lifespan:** Keep branches short; avoid branches older than 2–3 days.
-- **Branch strategy:** All work branches off `main`; no release branches or hotfix branches.
+- **Code review:** At least one approval required before merging; the author cannot merge their own PR.
+- **Dependency changes:** Changes to `requirements*.txt` warrant a second reviewer; call out transitive dependency risk in the PR description.
+- **Breaking changes:** Add a deprecation warning for at least one version, bump the semver major version, and include a migration guide in the changelog.
+- **Branch lifespan:** Rebase onto `main` daily for branches open more than one day.
+- **Branch strategy:** Feature branches off `main` (no `develop` branch); hotfix branches off the relevant release tag for production bugs.
 - **Merge strategy:** Squash merge to keep `main` history clean.
-- **Migrations:** Test against a real local copy of the SQLite database before merging; no staging environment.
-- **Rollback:** Rollback = revert the commit; document this in the PR description for any migration or config change.
-- **Breaking changes:** Note in PR description; no deprecation cycle required.
-- **Dependency changes:** Flag changes to `requirements*.txt` in the related-files report; no additional sign-off needed.
-
-To convert this project to Team/Library: change this section header to `## Project Type: Team/Library`, remove the solo variations above, and ask Claude to apply the team/library variations from `~/.claude/CLAUDE.md`.
+- **Migrations:** Test against a real local copy of `ha_agent_state.db` and flag migrations explicitly in the PR; no staging environment exists.
+- **Rollback:** Document the rollback plan (revert commit + migration version) in the PR description for migrations and production config writes.
 
 ## Commands
 
@@ -33,6 +31,7 @@ pip install -r requirements-dev.txt  # includes runtime deps + dev/test tooling
 # Primary entry point (macOS)
 pueo                          # start supervisor (all loops + dashboard)
 python main.py                # same, without the background/PID wrapper
+pueo-py                       # pyproject entry point (main:main), no wrapper
 
 # Docker equivalents
 docker compose up -d           # start supervisor in Docker
@@ -56,27 +55,39 @@ mypy --ignore-missing-imports .
 bandit -r . -x ./tests,./.venv
 ```
 
+`setup.sh` installs `pueo` as a bash script in `$PATH` (venv activation, PID wrapper). The `pyproject.toml` entry point is `pueo-py` (runs `main:main` directly, no wrapper). Use `pueo` for normal operation; use `python main.py` or `pueo-py` for direct debugging.
+
 ## Architecture
 
-Four layered scripts, each building on the previous:
+### Primary runtime architecture
 
-### Layer 1 — Sensing: `agents/ha_agent_core.py`
-Read-only. Fetches `/config/configuration.yaml` from HA over SSH/SFTP, runs it through local Ollama (model selected by `OLLAMA_MODEL` / `recommend_model()`; qwen3 family preferred for tool-call compliance) with structured JSON output enforced by the `DiagnosticsReport` Pydantic schema, then optionally cross-verifies by running `ha core check` on the remote host.
+- **`main.py`** — single entry point with 24 `--mode` values. Default: `supervisor`. All agent module imports are deferred inside mode branches (not top-level) so `PUEO_CONFIG` is set before any module imports `config.py`.
+- **`LoopSupervisor`** (`utils/agent/supervisor.py`) — manages all background tasks with exception catching and exponential-backoff restart (2s → 5-min cap). The dashboard ASGI app runs alongside all supervisor tasks.
+- **`AgentLoop`** (`utils/agent/agent_loop.py`) — the universal reasoning engine. Used by all 7 agent pipelines and by the Chat endpoint. All significant Pueo decisions go through an `AgentLoop` session.
 
-### Layer 2 — Memory: `agents/ha_agent_advanced.py`
-Extends core with a local SQLite database (`ha_agent_state.db`) persisting `state_history` and `backup_registry` tables. Before any remediation action, a native HA backup snapshot is triggered via `ha backup new` over SSH and its slug is recorded — hard safety gate, aborts on failure.
+### Agent files (`agents/`)
 
-### Layer 3 — Reasoning + Acting: `agents/ha_agent_sandbox_engine.py`
-Full repair pipeline. When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
+| Agent | Responsibility | Supervisor task(s) | `--mode` |
+|---|---|---|---|
+| `ha_agent_core.py` | Config fetch + LLM diagnosis (read-only) | — | `diagnose` |
+| `ha_agent_advanced.py` | Diagnosis + SQLite memory (`ha_agent_state.db`) + backup triggering | — | `advanced` |
+| `ha_agent_sandbox_engine.py` | Full repair: sandbox-test-then-atomic-swap | repair pipeline (triggered by log monitor) | `repair` |
+| `ha_log_monitor.py` | Live SSH log tail with AI triage; also houses `poll_for_updates`, `poll_for_notifications`, `poll_for_repairs` | `ha_log_monitor`, `ha_log_monitor_supervisor`, `repair_poll`, `notification_poll`, `update_check` | `monitor` |
+| `ha_lovelace_monitor.py` | Dashboard entity health + benign suppression | `lovelace_poll` | — |
+| `ha_notification_manager.py` | Persistent notification triage and IP enrichment | `notification_poll` (for processing) | `notifications` |
+| `ha_update_manager.py` | Update detection, breaking-change analysis, orchestration | `update_check` | `update-check` |
+
+Agent scripts in `agents/` are runnable directly for debugging; under `supervisor` mode, all 7 run as coordinated background tasks managed by `LoopSupervisor`.
+
+**Log monitor detail:** runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger the repair pipeline. Reconnects automatically on stream failure.
+
+**Repair pipeline (`ha_agent_sandbox_engine.py`):** When Ollama returns `is_valid=False` with a `recommended_fix_yaml`:
 1. Run `validate_proposed_fix()` — abort if the proposed YAML removes critical keys or is suspiciously large
 2. `AutonomyGate.require_approval()` — if CRITICAL severity or current autonomy level requires human approval, notify and wait
 3. Trigger HA backup (mandatory)
 4. Write proposed fix to `/config/.agent_sandbox/configuration.yaml` over SFTP
 5. Temporarily swap it into `/config/configuration.yaml`, run `ha core check`, immediately revert (always, via `finally`)
 6. Only if the sandbox check passes: atomically write to production and call `ha core restart`
-
-### Layer 4 — Continuous Monitoring: `agents/ha_log_monitor.py`
-Runs `ha core logs --follow` over SSH to stream live HA logs from the supervisor journal (modern HA does not reliably write to `/config/home-assistant.log`). Two-layer triage: fast regex pre-filter (`CRITICAL_LOG_PATTERN`) then Ollama `LogEvaluation` with `confidence_score > 0.7` threshold. High-confidence actionable errors trigger `ha_agent_sandbox_engine.main()`. Reconnects automatically on stream failure.
 
 ## Key Patterns
 
@@ -158,7 +169,7 @@ All agent sessions follow the **6-phase investigation cycle** (encoded in `promp
 
 `setup.sh --clean` removes all state (DB, caches, launchd plists, CLI symlink, config.yaml). `setup.sh --reset` does the same but preserves `config.yaml` for a clean reinstall without re-answering questions.
 
-`Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container uses five volumes: `/config` (bind-mount of `./config/`, read-only — place `config.yaml` here), `/data` (`pueo-data` named volume — backups, ChromaDB), `/state` (`pueo-state` named volume — SQLite DB, HITL cards, tools), `/cache` (`pueo-cache` named volume — scraped knowledge), `/logs` (`pueo-logs` named volume — log files). The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically so no code path references `/app`. `main.py` is the unified entry point; default mode is `monitor` (the live log daemon).
+`Dockerfile` + `docker-compose.yml` use `network_mode: host` for ARP/raw socket access. The container uses five volumes: `/config` (bind-mount of `./config/`, read-only — place `config.yaml` here), `/data` (`pueo-data` named volume — backups, ChromaDB), `/state` (`pueo-state` named volume — SQLite DB, HITL cards, tools), `/cache` (`pueo-cache` named volume — scraped knowledge), `/logs` (`pueo-logs` named volume — log files). The `Dockerfile` sets `PUEO_CONFIG_DIR=/config` and equivalent `PUEO_*` env vars; `paths.py` picks these up automatically so no code path references `/app`. `main.py` is the unified entry point; default mode is `supervisor` (same as running `python main.py` directly).
 
 ## Testing
 
@@ -271,6 +282,12 @@ Rationale for key architectural choices is in `docs/decisions/`:
 
 @docs/decisions/006-llm-provider-abstraction.md
 
+@docs/decisions/007-agent-code-proposals.md
+
+@docs/decisions/008-external-resolution-detection.md
+
+@docs/decisions/009-transparency-principle.md
+
 @docs/decisions/010-agent-self-awareness.md
 
 @docs/decisions/011-ha-live-lookup.md
@@ -283,9 +300,33 @@ Rationale for key architectural choices is in `docs/decisions/`:
 
 @docs/decisions/015-llm-guided-disk-recovery.md
 
+@docs/decisions/016-diagnostic-wan-fetch.md
+
 @docs/decisions/017-chat-tool-parity.md
 
+@docs/decisions/018-unified-agent-methodology.md
+
+@docs/decisions/019-tool-calling-loop.md
+
+@docs/decisions/020-outcome-primacy.md
+
+@docs/decisions/021-dashboard-entity-monitor.md
+
+@docs/decisions/022-adaptive-llm-timeout.md
+
 @docs/decisions/023-external-api-resilience.md
+
+@docs/decisions/024-debug-level-system.md
+
+@docs/decisions/025-serialized-work-queue.md
+
+@docs/decisions/026-no-concurrent-llm-ha.md
+
+@docs/decisions/027-model-capability-configuration.md
+
+@docs/decisions/028-pueo-mcp-server.md
+
+@docs/decisions/029-hybrid-retrieval.md
 
 @docs/decisions/030-authority-ranked-knowledge.md
 
