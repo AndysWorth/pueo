@@ -244,7 +244,7 @@ Every code change follows this procedure in order. Never commit directly to `mai
 
 ## Roadmap
 
-@docs/roadmap.md
+@docs/roadmap-summary.md
 
 ## MCP Servers
 
@@ -272,64 +272,4 @@ The initial build-out phases (items 1–STOR-6) are archived in `docs/implementa
 
 Rationale for key architectural choices is in `docs/decisions/`:
 
-@docs/decisions/001-config-centralization.md
-
-@docs/decisions/002-safety-invariant.md
-
-@docs/decisions/003-structured-llm-output.md
-
-@docs/decisions/004-ssh-known-hosts-none.md
-
-@docs/decisions/005-asyncio-over-agentic-framework.md
-
-@docs/decisions/006-llm-provider-abstraction.md
-
-@docs/decisions/007-agent-code-proposals.md
-
-@docs/decisions/008-external-resolution-detection.md
-
-@docs/decisions/009-transparency-principle.md
-
-@docs/decisions/010-agent-self-awareness.md
-
-@docs/decisions/011-ha-live-lookup.md
-
-@docs/decisions/012-hypothesis-driven-repair.md
-
-@docs/decisions/013-prompt-externalization.md
-
-@docs/decisions/014-episodic-context-injection.md
-
-@docs/decisions/015-llm-guided-disk-recovery.md
-
-@docs/decisions/016-diagnostic-wan-fetch.md
-
-@docs/decisions/017-chat-tool-parity.md
-
-@docs/decisions/018-unified-agent-methodology.md
-
-@docs/decisions/019-tool-calling-loop.md
-
-@docs/decisions/020-outcome-primacy.md
-
-@docs/decisions/021-dashboard-entity-monitor.md
-
-@docs/decisions/022-adaptive-llm-timeout.md
-
-@docs/decisions/023-external-api-resilience.md
-
-@docs/decisions/024-debug-level-system.md
-
-@docs/decisions/025-serialized-work-queue.md
-
-@docs/decisions/026-no-concurrent-llm-ha.md
-
-@docs/decisions/027-model-capability-configuration.md
-
-@docs/decisions/028-pueo-mcp-server.md
-
-@docs/decisions/029-hybrid-retrieval.md
-
-@docs/decisions/030-authority-ranked-knowledge.md
-
-@docs/decisions/031-repair-episode-embedding.md
+@docs/decisions/000-index.md
