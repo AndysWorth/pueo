@@ -1,3 +1,5 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 # Item 27 — NetAlertX One-Shot Diagnosis (`--mode netalertx-diagnose`)
 
 Part of the [Implementation Plan](../implementation-plan.md) · 1 session.

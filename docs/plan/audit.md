@@ -1,3 +1,5 @@
+<!-- ARCHIVE: historical design spec written during development (2026-07 to 2026-09). Implementation is complete; this may not reflect current code. See CLAUDE.md and docs/decisions/ for current state; new work is tracked in GitHub Issues. -->
+
 Audit the Pueo project at the current working directory for organizational consistency, documentation accuracy, and code hygiene. Read only — do not modify any files.
 
 ## What Pueo is
