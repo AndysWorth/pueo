@@ -65,6 +65,8 @@ bandit -r . -x ./tests,./.venv
 - **`LoopSupervisor`** (`utils/agent/supervisor.py`) — manages all background tasks with exception catching and exponential-backoff restart (2s → 5-min cap). The dashboard ASGI app runs alongside all supervisor tasks.
 - **`AgentLoop`** (`utils/agent/agent_loop.py`) — the universal reasoning engine. Used by all 7 agent pipelines and by the Chat endpoint. All significant Pueo decisions go through an `AgentLoop` session.
 
+For a compact orientation map (file responsibilities, utils directory, interfaces, quick commands), see `docs/for-agents.md`.
+
 ### Agent files (`agents/`)
 
 | Agent | Responsibility | Supervisor task(s) | `--mode` |
