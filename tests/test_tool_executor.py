@@ -3384,3 +3384,296 @@ class TestFakeHAWebSocketClientAreaRegistry:
         assert asyncio.run(fake.get_area_registry()) == []
         assert asyncio.run(fake.get_floor_registry()) == []
         assert asyncio.run(fake.get_label_registry()) == []
+
+
+class TestGetAutomationTracesExecutor:
+    """Tests for the get_automation_traces tool."""
+
+    def _make_executor(self, ws_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "automation.test"},
+                )
+            )
+        )
+        assert not result.success
+        assert "WS client" in result.error
+
+    def test_invalid_domain_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "light.bedroom"},
+                )
+            )
+        )
+        assert not result.success
+        assert "automation.*" in result.error
+
+    def test_missing_entity_id_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_automation_traces", arguments={}))
+        )
+        assert not result.success
+
+    def test_list_empty_traces(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "automation.turn_on_lights"},
+                )
+            )
+        )
+        assert result.success
+        assert "No trace runs" in result.output
+
+    def test_list_runs_shows_summary(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        traces = [
+            {
+                "run_id": "abc123",
+                "state": "stopped",
+                "script_execution": "finished",
+                "timestamp": {"start": "2026-10-02T10:00:00.000"},
+                "error": None,
+            },
+            {
+                "run_id": "def456",
+                "state": "stopped",
+                "script_execution": "aborted",
+                "timestamp": {"start": "2026-10-02T09:00:00.000"},
+                "error": "condition not met",
+            },
+        ]
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient(traces=traces))
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "automation.turn_on_lights"},
+                )
+            )
+        )
+        assert result.success
+        assert "abc123" in result.output
+        assert "def456" in result.output
+        assert "aborted" in result.output
+        assert "condition not met" in result.output
+
+    def test_list_sorted_most_recent_first(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        traces = [
+            {
+                "run_id": "old",
+                "state": "stopped",
+                "script_execution": "finished",
+                "timestamp": {"start": "2026-10-01T08:00:00.000"},
+            },
+            {
+                "run_id": "new",
+                "state": "stopped",
+                "script_execution": "finished",
+                "timestamp": {"start": "2026-10-02T10:00:00.000"},
+            },
+        ]
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient(traces=traces))
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "automation.test"},
+                )
+            )
+        )
+        assert result.success
+        assert result.output.index("new") < result.output.index("old")
+
+    def test_get_run_detail_no_trace_returns_message(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={
+                        "entity_id": "automation.test",
+                        "run_id": "abc123",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert "No trace found" in result.output
+
+    def test_get_run_detail_shows_steps(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        trace_detail = {
+            "run_id": "abc123",
+            "state": "stopped",
+            "script_execution": "finished",
+            "error": None,
+            "trace": {
+                "trigger/0": {
+                    "result": {"platform": "state", "entity_id": "binary_sensor.motion"}
+                },
+                "condition/0": {"result": {"result": True}},
+                "action/0": {"result": {"domain": "light", "service": "turn_on"}},
+            },
+        }
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(trace_detail=trace_detail)
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={
+                        "entity_id": "automation.test",
+                        "run_id": "abc123",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert "trigger/0" in result.output
+        assert "condition/0" in result.output
+        assert "action/0" in result.output
+        assert "abc123" in result.output
+
+    def test_variables_stripped_from_output(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        trace_detail = {
+            "run_id": "abc123",
+            "state": "stopped",
+            "trace": {
+                "action/0": {
+                    "result": {
+                        "domain": "light",
+                        "variables": {"x": "should_not_appear"},
+                        "context": {"id": "ctx123"},
+                    }
+                },
+            },
+        }
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(trace_detail=trace_detail)
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={
+                        "entity_id": "automation.test",
+                        "run_id": "abc123",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert "should_not_appear" not in result.output
+        assert "ctx123" not in result.output
+
+    def test_script_domain_accepted(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        traces = [
+            {
+                "run_id": "s1",
+                "state": "stopped",
+                "script_execution": "finished",
+                "timestamp": {"start": "2026-10-02T10:00:00.000"},
+            }
+        ]
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient(traces=traces))
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_automation_traces",
+                    arguments={"entity_id": "script.morning_routine"},
+                )
+            )
+        )
+        assert result.success
+        assert "s1" in result.output
+
+    def test_list_traces_fake_records_call(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient(traces=[{"run_id": "r1", "state": "stopped"}])
+        result = asyncio.run(fake.list_traces("automation", "automation.test"))
+        assert result == [{"run_id": "r1", "state": "stopped"}]
+        assert "list_traces:automation:automation.test" in fake.calls
+
+    def test_get_trace_fake_records_call(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        detail = {"run_id": "r1", "state": "stopped", "trace": {}}
+        fake = FakeHAWebSocketClient(trace_detail=detail)
+        result = asyncio.run(fake.get_trace("automation", "automation.test", "r1"))
+        assert result == detail
+        assert "get_trace:automation:automation.test:r1" in fake.calls
+
+    def test_fake_defaults_empty(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        assert asyncio.run(fake.list_traces("automation")) == []
+        assert asyncio.run(fake.get_trace("automation", "automation.test", "r")) == {}

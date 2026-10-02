@@ -578,6 +578,40 @@ GET_AREA_LAYOUT = ToolDefinition(
     },
 )
 
+GET_AUTOMATION_TRACES = ToolDefinition(
+    name="get_automation_traces",
+    description=(
+        "Retrieve execution trace history for an automation or script. "
+        "Pass only 'entity_id' to list the last 10 runs with start time, outcome state, "
+        "script_execution result, and any error. "
+        "Pass 'entity_id' and 'run_id' to see a condensed step-by-step trace: "
+        "trigger, each condition with its result, each action step, and the error if any. "
+        "Use as the FIRST tool when diagnosing 'automation didn't fire' or 'script failed' problems. "
+        "Works for both automations (automation.*) and scripts (script.*). "
+        "Requires a HA WebSocket connection."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": (
+                    "The full entity_id of the automation or script, "
+                    "e.g. 'automation.turn_on_lights' or 'script.morning_routine'."
+                ),
+            },
+            "run_id": {
+                "type": "string",
+                "description": (
+                    "Specific run_id from a prior list call. "
+                    "Omit to list recent runs."
+                ),
+            },
+        },
+        "required": ["entity_id"],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1818,6 +1852,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         RENDER_HA_TEMPLATE,
         GET_SYSTEM_ERROR_LOG,
         GET_AREA_LAYOUT,
+        GET_AUTOMATION_TRACES,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -1921,6 +1956,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         RENDER_HA_TEMPLATE,
         GET_SYSTEM_ERROR_LOG,
         GET_AREA_LAYOUT,
+        GET_AUTOMATION_TRACES,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,

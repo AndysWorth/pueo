@@ -188,6 +188,21 @@ class HAWebSocketClient:  # pragma: no cover
         result = await self._call("config/label_registry/list")
         return result if isinstance(result, list) else []
 
+    async def list_traces(self, domain: str, item_id: str | None = None) -> list[dict]:
+        """List automation/script trace runs via trace/list WS command."""
+        payload: dict = {"domain": domain}
+        if item_id is not None:
+            payload["item_id"] = item_id
+        result = await self._call("trace/list", **payload)
+        return result if isinstance(result, list) else []
+
+    async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict:
+        """Fetch a single automation/script trace run via trace/get WS command."""
+        result = await self._call(
+            "trace/get", domain=domain, item_id=item_id, run_id=run_id
+        )
+        return result if isinstance(result, dict) else {}
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -243,6 +258,8 @@ class FakeHAWebSocketClient:
         area_registry: list[dict] | None = None,
         floor_registry: list[dict] | None = None,
         label_registry: list[dict] | None = None,
+        traces: list[dict] | None = None,
+        trace_detail: dict | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -261,6 +278,10 @@ class FakeHAWebSocketClient:
         self._area_registry: list[dict] = area_registry or []
         self._floor_registry: list[dict] = floor_registry or []
         self._label_registry: list[dict] = label_registry or []
+        # traces: list of run summaries returned by list_traces
+        self._traces: list[dict] = traces or []
+        # trace_detail: full trace dict returned by get_trace (same for all run_ids)
+        self._trace_detail: dict = trace_detail or {}
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -331,3 +352,11 @@ class FakeHAWebSocketClient:
     async def get_label_registry(self) -> list[dict]:
         self.calls.append("get_label_registry")
         return list(self._label_registry)
+
+    async def list_traces(self, domain: str, item_id: str | None = None) -> list[dict]:
+        self.calls.append(f"list_traces:{domain}:{item_id}")
+        return list(self._traces)
+
+    async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict:
+        self.calls.append(f"get_trace:{domain}:{item_id}:{run_id}")
+        return dict(self._trace_detail)

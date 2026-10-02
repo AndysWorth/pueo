@@ -341,6 +341,11 @@ class ToolExecutor:
                 )
             if name == "get_area_layout":
                 return await self._get_area_layout(args.get("area") or None)
+            if name == "get_automation_traces":
+                return await self._get_automation_traces(
+                    entity_id=args.get("entity_id", ""),
+                    run_id=args.get("run_id") or None,
+                )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -1252,6 +1257,118 @@ class ToolExecutor:
             )
         return ToolResult(
             tool_name="get_area_layout", success=True, output="\n".join(rows)
+        )
+
+    async def _get_automation_traces(
+        self, entity_id: str, run_id: str | None
+    ) -> ToolResult:
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        if not entity_id:
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=False,
+                output="",
+                error="entity_id is required",
+            )
+
+        # Parse domain and item_id from entity_id
+        parts = entity_id.split(".", 1)
+        if len(parts) != 2 or parts[0] not in ("automation", "script"):
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=False,
+                output="",
+                error=(
+                    f"entity_id must be automation.* or script.*, got: {entity_id!r}"
+                ),
+            )
+        domain, item_id = parts[0], entity_id
+
+        try:
+            if run_id is None:
+                return await self._list_automation_runs(domain, item_id)
+            return await self._get_automation_run_detail(domain, item_id, run_id)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=False,
+                output="",
+                error=f"trace fetch failed: {exc}",
+            )
+
+    async def _list_automation_runs(self, domain: str, item_id: str) -> ToolResult:
+        assert self._ws_client is not None
+        runs = await self._ws_client.list_traces(domain, item_id)
+        if not runs:
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=True,
+                output=f"No trace runs found for {item_id}.",
+            )
+        # Sort most recent first; cap at 10.
+        runs = sorted(
+            runs, key=lambda r: r.get("timestamp", {}).get("start", ""), reverse=True
+        )[:10]
+        rows = [f"Traces for {item_id} (most recent first):"]
+        for r in runs:
+            ts_start = r.get("timestamp", {}).get("start", "unknown")
+            state = r.get("state", "?")
+            script_exec = r.get("script_execution", "?")
+            rid = r.get("run_id", "?")
+            error = r.get("error") or ""
+            err_str = f"  error: {error}" if error else ""
+            rows.append(
+                f"  run_id={rid}  start={ts_start}  state={state}"
+                f"  script_execution={script_exec}{err_str}"
+            )
+        return ToolResult(
+            tool_name="get_automation_traces", success=True, output="\n".join(rows)
+        )
+
+    async def _get_automation_run_detail(
+        self, domain: str, item_id: str, run_id: str
+    ) -> ToolResult:
+        assert self._ws_client is not None
+        trace_data = await self._ws_client.get_trace(domain, item_id, run_id)
+        if not trace_data:
+            return ToolResult(
+                tool_name="get_automation_traces",
+                success=True,
+                output=f"No trace found for run_id={run_id}.",
+            )
+        rows = [f"Trace for {item_id} run_id={run_id}:"]
+        state = trace_data.get("state", "?")
+        error = trace_data.get("error") or ""
+        rows.append(f"  state: {state}")
+        if error:
+            rows.append(f"  error: {error}")
+
+        trace_steps: dict = trace_data.get("trace", {})
+        # Emit steps in key order: trigger/*, condition/*, action/*
+        for key in sorted(trace_steps.keys()):
+            step = trace_steps[key]
+            if not isinstance(step, dict):
+                continue
+            # Strip variables and context blobs to stay within token budget
+            result = step.get("result", {})
+            changed_vars: dict = {}
+            if isinstance(result, dict):
+                changed_vars = {
+                    k: v
+                    for k, v in result.items()
+                    if k not in ("variables", "context", "params")
+                }
+            changed_vars_str = f"  {changed_vars}" if changed_vars else ""
+            rows.append(f"  {key}:{changed_vars_str}")
+
+        return ToolResult(
+            tool_name="get_automation_traces", success=True, output="\n".join(rows)
         )
 
     async def _get_disk_usage(self) -> ToolResult:
