@@ -3132,3 +3132,255 @@ class TestFakeHAWebSocketClientSystemLog:
         fake = FakeHAWebSocketClient()
         result = asyncio.run(fake.get_system_log())
         assert result == []
+
+
+class TestGetAreaLayout:
+    """Tests for the get_area_layout tool."""
+
+    def _make_executor(self, ws_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_area_layout", arguments={}))
+        )
+        assert not result.success
+        assert "WS client" in result.error
+
+    def test_overview_groups_by_floor(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[
+                {"area_id": "kitchen", "name": "Kitchen", "floor_id": "ground"},
+                {"area_id": "lounge", "name": "Lounge", "floor_id": "ground"},
+                {"area_id": "bedroom", "name": "Bedroom", "floor_id": "upper"},
+            ],
+            floor_registry=[
+                {"floor_id": "ground", "name": "Ground Floor", "level": 0},
+                {"floor_id": "upper", "name": "Upper Floor", "level": 1},
+            ],
+            label_registry=[],
+            devices=[
+                {"id": "d1", "name": "Light", "area_id": "kitchen"},
+                {"id": "d2", "name": "Sensor", "area_id": "kitchen"},
+            ],
+            entity_registry=[
+                {"entity_id": "light.kitchen_main", "area_id": "kitchen"},
+            ],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_area_layout", arguments={}))
+        )
+        assert result.success
+        assert "Ground Floor" in result.output
+        assert "Kitchen" in result.output
+        assert "devices=2" in result.output
+        assert "entities=1" in result.output
+        assert "Upper Floor" in result.output
+        assert "Bedroom" in result.output
+
+    def test_area_filter_returns_members(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[
+                {
+                    "area_id": "kitchen",
+                    "name": "Kitchen",
+                    "floor_id": "ground",
+                    "labels": ["cooking"],
+                }
+            ],
+            floor_registry=[{"floor_id": "ground", "name": "Ground Floor"}],
+            label_registry=[{"label_id": "cooking", "name": "Cooking"}],
+            devices=[
+                {"id": "d1", "name": "Oven", "area_id": "kitchen"},
+                {"id": "d2", "name": "Fridge", "area_id": "kitchen"},
+                {"id": "d3", "name": "Sofa", "area_id": "lounge"},
+            ],
+            entity_registry=[
+                {
+                    "entity_id": "sensor.kitchen_temp",
+                    "area_id": "kitchen",
+                    "labels": ["cooking"],
+                },
+                {"entity_id": "light.lounge", "area_id": "lounge", "labels": []},
+            ],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_area_layout", arguments={"area": "Kitchen"})
+            )
+        )
+        assert result.success
+        assert "Kitchen" in result.output
+        assert "Ground Floor" in result.output
+        assert "Cooking" in result.output  # area label resolved
+        assert "Oven" in result.output
+        assert "Fridge" in result.output
+        assert "Sofa" not in result.output  # different area
+        assert "sensor.kitchen_temp" in result.output
+        assert "light.lounge" not in result.output
+
+    def test_area_filter_case_insensitive(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[{"area_id": "kitchen", "name": "Kitchen", "labels": []}],
+            floor_registry=[],
+            label_registry=[],
+            devices=[],
+            entity_registry=[],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_area_layout", arguments={"area": "kitchen"})
+            )
+        )
+        assert result.success
+        assert "Kitchen" in result.output
+
+    def test_unknown_area_returns_not_found(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[{"area_id": "kitchen", "name": "Kitchen", "labels": []}],
+            floor_registry=[],
+            label_registry=[],
+            devices=[],
+            entity_registry=[],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_area_layout", arguments={"area": "Garage"})
+            )
+        )
+        assert result.success
+        assert "Garage" in result.output
+        assert "No area named" in result.output
+
+    def test_empty_registry_returns_no_areas_message(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[],
+            floor_registry=[],
+            label_registry=[],
+            devices=[],
+            entity_registry=[],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_area_layout", arguments={}))
+        )
+        assert result.success
+        assert "No areas" in result.output
+
+    def test_unassigned_areas_shown_without_floor(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(
+            area_registry=[{"area_id": "garage", "name": "Garage", "labels": []}],
+            floor_registry=[],
+            label_registry=[],
+            devices=[],
+            entity_registry=[],
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_area_layout", arguments={}))
+        )
+        assert result.success
+        assert "Garage" in result.output
+
+    def test_client_error_returns_failure(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class _BrokenWS(FakeHAWebSocketClient):
+            async def get_area_registry(self) -> list[dict]:
+                raise RuntimeError("connection refused")
+
+        executor = self._make_executor(ws_client=_BrokenWS())
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_area_layout", arguments={}))
+        )
+        assert not result.success
+        assert "registry fetch failed" in result.error
+
+
+class TestFakeHAWebSocketClientAreaRegistry:
+    """FakeHAWebSocketClient handles area/floor/label_registry params."""
+
+    def test_area_registry_returns_entries(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        areas = [{"area_id": "kitchen", "name": "Kitchen"}]
+        fake = FakeHAWebSocketClient(area_registry=areas)
+        result = asyncio.run(fake.get_area_registry())
+        assert result == areas
+        assert "get_area_registry" in fake.calls
+
+    def test_floor_registry_returns_entries(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        floors = [{"floor_id": "ground", "name": "Ground Floor"}]
+        fake = FakeHAWebSocketClient(floor_registry=floors)
+        result = asyncio.run(fake.get_floor_registry())
+        assert result == floors
+        assert "get_floor_registry" in fake.calls
+
+    def test_label_registry_returns_entries(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        labels = [{"label_id": "cooking", "name": "Cooking"}]
+        fake = FakeHAWebSocketClient(label_registry=labels)
+        result = asyncio.run(fake.get_label_registry())
+        assert result == labels
+        assert "get_label_registry" in fake.calls
+
+    def test_defaults_are_empty(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        assert asyncio.run(fake.get_area_registry()) == []
+        assert asyncio.run(fake.get_floor_registry()) == []
+        assert asyncio.run(fake.get_label_registry()) == []

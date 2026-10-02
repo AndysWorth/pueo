@@ -339,6 +339,8 @@ class ToolExecutor:
                     limit=int(args.get("limit", 20)),
                     logger_filter=args.get("logger_filter") or None,
                 )
+            if name == "get_area_layout":
+                return await self._get_area_layout(args.get("area") or None)
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -1124,6 +1126,132 @@ class ToolExecutor:
             tool_name="get_system_error_log",
             success=True,
             output=output,
+        )
+
+    async def _get_area_layout(self, area: str | None) -> ToolResult:
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_area_layout",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        try:
+            areas = await self._ws_client.get_area_registry()
+            floors = await self._ws_client.get_floor_registry()
+            labels = await self._ws_client.get_label_registry()
+            devices = await self._ws_client.get_device_registry()
+            entities = await self._ws_client.get_entity_registry()
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_area_layout",
+                success=False,
+                output="",
+                error=f"registry fetch failed: {exc}",
+            )
+
+        label_by_id: dict[str, str] = {
+            lbl.get("label_id", ""): lbl.get("name", lbl.get("label_id", ""))
+            for lbl in labels
+        }
+        floor_by_id: dict[str, str] = {
+            fl.get("floor_id", ""): fl.get("name", fl.get("floor_id", ""))
+            for fl in floors
+        }
+
+        if area:
+            target = area.lower()
+            matched = next(
+                (a for a in areas if a.get("name", "").lower() == target), None
+            )
+            if not matched:
+                return ToolResult(
+                    tool_name="get_area_layout",
+                    success=True,
+                    output=f"No area named '{area}' found in the registry.",
+                )
+            aid = matched.get("area_id", "")
+            area_devices = [d for d in devices if d.get("area_id") == aid]
+            area_entities = [e for e in entities if e.get("area_id") == aid]
+            rows: list[str] = [f"Area: {matched.get('name', aid)}"]
+            if floor_id := matched.get("floor_id"):
+                rows.append(f"Floor: {floor_by_id.get(floor_id, floor_id)}")
+            area_label_ids = matched.get("labels", []) or []
+            if area_label_ids:
+                area_label_names = [label_by_id.get(lid, lid) for lid in area_label_ids]
+                rows.append(f"Labels: {', '.join(area_label_names)}")
+            rows.append(f"\nDevices ({len(area_devices)}):")
+            for d in area_devices[:30]:
+                rows.append(f"  {d.get('name') or d.get('id', '?')}")
+            if len(area_devices) > 30:
+                rows.append(f"  … {len(area_devices) - 30} more")
+            rows.append(f"\nEntities ({len(area_entities)}):")
+            for e in area_entities[:50]:
+                eid = e.get("entity_id", "?")
+                elabels = e.get("labels", []) or []
+                label_str = (
+                    f"  [{', '.join(label_by_id.get(l, l) for l in elabels)}]"
+                    if elabels
+                    else ""
+                )
+                rows.append(f"  {eid}{label_str}")
+            if len(area_entities) > 50:
+                rows.append(f"  … {len(area_entities) - 50} more")
+            return ToolResult(
+                tool_name="get_area_layout", success=True, output="\n".join(rows)
+            )
+
+        # Overview: floors → areas → counts
+        area_by_id: dict[str, dict] = {a.get("area_id", ""): a for a in areas}
+        dev_count: dict[str, int] = {}
+        ent_count: dict[str, int] = {}
+        for d in devices:
+            if aid := d.get("area_id"):
+                dev_count[aid] = dev_count.get(aid, 0) + 1
+        for e in entities:
+            if aid := e.get("area_id"):
+                ent_count[aid] = ent_count.get(aid, 0) + 1
+
+        rows = []
+        # Group areas by floor
+        floored: dict[str | None, list[dict]] = {}
+        for a in areas:
+            fid: str | None = a.get("floor_id") or None
+            floored.setdefault(fid, []).append(a)
+
+        for fl in floors:
+            fid = fl.get("floor_id", "")
+            fname = fl.get("name", fid)
+            level = fl.get("level")
+            level_str = f" (level {level})" if level is not None else ""
+            rows.append(f"Floor: {fname}{level_str}")
+            for a in floored.get(fid, []):
+                aid = a.get("area_id", "")
+                aname = a.get("name", aid)
+                dc = dev_count.get(aid, 0)
+                ec = ent_count.get(aid, 0)
+                rows.append(f"  Area: {aname}  devices={dc}  entities={ec}")
+            floored.pop(fid, None)
+
+        # Areas not assigned to a floor
+        unassigned = floored.get(None, [])
+        if unassigned:
+            rows.append("(no floor)")
+            for a in unassigned:
+                aid = a.get("area_id", "")
+                aname = a.get("name", aid)
+                dc = dev_count.get(aid, 0)
+                ec = ent_count.get(aid, 0)
+                rows.append(f"  Area: {aname}  devices={dc}  entities={ec}")
+
+        if not rows:
+            return ToolResult(
+                tool_name="get_area_layout",
+                success=True,
+                output="No areas defined in HA.",
+            )
+        return ToolResult(
+            tool_name="get_area_layout", success=True, output="\n".join(rows)
         )
 
     async def _get_disk_usage(self) -> ToolResult:

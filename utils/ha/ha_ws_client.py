@@ -173,6 +173,21 @@ class HAWebSocketClient:  # pragma: no cover
         result = await self._call("system_log/list")
         return result if isinstance(result, list) else []
 
+    async def get_area_registry(self) -> list[dict]:
+        """Fetch HA area registry via config/area_registry/list."""
+        result = await self._call("config/area_registry/list")
+        return result if isinstance(result, list) else []
+
+    async def get_floor_registry(self) -> list[dict]:
+        """Fetch HA floor registry via config/floor_registry/list."""
+        result = await self._call("config/floor_registry/list")
+        return result if isinstance(result, list) else []
+
+    async def get_label_registry(self) -> list[dict]:
+        """Fetch HA label registry via config/label_registry/list."""
+        result = await self._call("config/label_registry/list")
+        return result if isinstance(result, list) else []
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -225,6 +240,9 @@ class FakeHAWebSocketClient:
         ha_components: list[str] | None = None,
         spook_entity_issues: list[dict] | None = None,
         system_log: list[dict] | None = None,
+        area_registry: list[dict] | None = None,
+        floor_registry: list[dict] | None = None,
+        label_registry: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -240,6 +258,9 @@ class FakeHAWebSocketClient:
         self._ha_components: list[str] = ha_components or []
         self._spook_entity_issues: list[dict] = spook_entity_issues or []
         self._system_log: list[dict] = system_log or []
+        self._area_registry: list[dict] = area_registry or []
+        self._floor_registry: list[dict] = floor_registry or []
+        self._label_registry: list[dict] = label_registry or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -298,3 +319,15 @@ class FakeHAWebSocketClient:
     async def get_system_log(self) -> list[dict]:
         self.calls.append("get_system_log")
         return list(self._system_log)
+
+    async def get_area_registry(self) -> list[dict]:
+        self.calls.append("get_area_registry")
+        return list(self._area_registry)
+
+    async def get_floor_registry(self) -> list[dict]:
+        self.calls.append("get_floor_registry")
+        return list(self._floor_registry)
+
+    async def get_label_registry(self) -> list[dict]:
+        self.calls.append("get_label_registry")
+        return list(self._label_registry)
