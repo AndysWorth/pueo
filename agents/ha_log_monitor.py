@@ -514,6 +514,7 @@ async def _run_repair_issue_investigation(
     db_path: str,
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> None:
     """Run an AgentLoop to investigate an HA repair issue and create a HITL card."""
     from utils.agent.agent_loop import AgentLoop
@@ -546,6 +547,7 @@ async def _run_repair_issue_investigation(
         ha_ssh_client=_NullSSH(),  # type: ignore[arg-type]
         gate=gate,  # type: ignore[arg-type]
         notifier=notifier,
+        ha_rest_client=ha_rest_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
         pending_repair_issue=issue,
@@ -1046,6 +1048,7 @@ async def poll_for_notifications(
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     db_path: str = DB_PATH,
     knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires approval alerts."""
     from .ha_notification_manager import (
@@ -1060,6 +1063,9 @@ async def poll_for_notifications(
     _ws: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )  # pragma: no cover
+    _rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
     _llm: LLMClientProtocol = llm_client or make_llm_client()  # pragma: no cover
     _nax: NetAlertXClientProtocol = (
@@ -1127,6 +1133,7 @@ async def poll_for_notifications(
                 _notifier_ref = _notifier
                 _nax_ref = _nax
                 _ws_ref = _ws
+                _rest_ref = _rest
                 _llm_ref = _llm
                 _db = db_path
 
@@ -1147,6 +1154,7 @@ async def poll_for_notifications(
                         netalertx_client=_nax_ref,
                         ws_client=_ws_ref,
                         knowledge_store=knowledge_store,
+                        ha_rest_client=_rest_ref,
                     )
 
                 from utils.agent.work_queue import (
@@ -1192,6 +1200,7 @@ async def poll_for_repairs(
     db_path: str = DB_PATH,
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from .ha_agent_advanced import (
@@ -1203,6 +1212,9 @@ async def poll_for_repairs(
 
     interval = HA_REPAIR_POLL_INTERVAL_MINUTES * 60
     _client: HAWebSocketClientProtocol = ha_ws_client or HAWebSocketClient(
+        HA_HOST, HA_API_PORT, HA_API_TOKEN
+    )
+    _rest: HARestClientProtocol = ha_rest_client or HARestClient(  # pragma: no cover
         HA_HOST, HA_API_PORT, HA_API_TOKEN
     )
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
@@ -1267,12 +1279,14 @@ async def poll_for_repairs(
                 _notifier_snap = _notifier
                 _llm_snap = llm_client
                 _db_snap = db_path
+                _rest_snap = _rest
 
                 async def _run_investigation(
                     _issue: HARepairIssue = _issue_snap,
                     _notifier_ref: NotifierProtocol = _notifier_snap,
                     _llm_ref: Optional[LLMClientProtocol] = _llm_snap,
                     _db_ref: str = _db_snap,
+                    _rest_ref: HARestClientProtocol = _rest_snap,
                 ) -> None:
                     await _run_repair_issue_investigation(
                         issue=_issue,
@@ -1280,6 +1294,7 @@ async def poll_for_repairs(
                         db_path=_db_ref,
                         llm_client=_llm_ref,
                         knowledge_store=knowledge_store,
+                        ha_rest_client=_rest_ref,
                     )
 
                 from utils.agent.work_queue import (

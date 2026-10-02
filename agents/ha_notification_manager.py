@@ -232,6 +232,7 @@ async def _run_notification_investigation(
     netalertx_client: Optional[NetAlertXClientProtocol] = None,
     ws_client: Optional[HAWebSocketClientProtocol] = None,
     knowledge_store: Optional[object] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
 ) -> None:
     """Run an AgentLoop to investigate an HA persistent notification and create a HITL card."""
     from utils.agent.agent_loop import AgentLoop
@@ -277,6 +278,7 @@ async def _run_notification_investigation(
         notifier=notifier,
         netalertx_api_client=netalertx_client,  # type: ignore[arg-type]
         ha_ws_client=ws_client,
+        ha_rest_client=ha_rest_client,
         knowledge_store=knowledge_store,  # type: ignore[arg-type]
         db_path=db_path,
         pending_notification=pending_notif,

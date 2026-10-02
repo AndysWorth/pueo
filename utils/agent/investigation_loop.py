@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from interfaces import (
+    HARestClientProtocol,
     KnowledgeStoreClientProtocol,
     LLMClientProtocol,
     SSHClientProtocol,
@@ -223,6 +224,7 @@ async def run_investigation(
     gate: Any = None,  # AutonomyGate — Any avoids circular import; defaults to AUTONOMOUS
     notifier: Any = None,  # NotifierProtocol — Any avoids circular import
     knowledge_store: Optional[KnowledgeStoreClientProtocol] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
     max_tool_calls: int = 20,
     max_wall_seconds: float = 180.0,
 ) -> InvestigationReport:
@@ -251,6 +253,7 @@ async def run_investigation(
         gate=gate,
         notifier=notifier,
         knowledge_store=knowledge_store,
+        ha_rest_client=ha_rest_client,
     )
 
     from utils.agent.supervisor import (

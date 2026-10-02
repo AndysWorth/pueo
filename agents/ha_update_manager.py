@@ -596,6 +596,7 @@ async def _run_update_analysis(
             ha_ssh_client=_ssh,  # type: ignore[arg-type]
             gate=gate,  # type: ignore[arg-type]
             notifier=_notifier,
+            ha_rest_client=ha_rest_client,
             knowledge_store=knowledge_store,
             db_path=DB_PATH,
         )
