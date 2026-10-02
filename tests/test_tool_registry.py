@@ -477,3 +477,32 @@ class TestRegistryMembership:
         assert "domain" in required
         assert "service" in required
         assert "reason" in required
+
+    def test_get_recent_events_in_ha_and_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+
+        for label, reg in (
+            ("ha", build_ha_tool_registry()),
+            ("chat", build_chat_tool_registry()),
+        ):
+            assert (
+                "get_recent_events" in reg
+            ), f"get_recent_events missing from {label} registry"
+
+    def test_get_recent_events_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_recent_events" in _MCP_TOOL_NAMES
+
+    def test_get_recent_events_schema(self):
+        from utils.agent.tool_registry import GET_RECENT_EVENTS
+
+        props = GET_RECENT_EVENTS.parameters.get("properties", {})
+        assert "event_type" in props
+        assert "entity_id" in props
+        assert "limit" in props
+        required = GET_RECENT_EVENTS.parameters.get("required", [])
+        assert required == []  # all params optional

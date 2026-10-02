@@ -900,6 +900,8 @@ agent:
   notification_poll_interval_minutes: 5
   ha_repair_poll_interval_minutes: 5
   lovelace_check_interval_minutes: 30
+  # ha_event_subscribe: true
+  # ha_event_buffer_size: 500
   # update_notify_on_available: true
 
 mcp:

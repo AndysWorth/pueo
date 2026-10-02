@@ -1125,6 +1125,19 @@ async def supervisor_main(config_path: Path) -> None:
             interval_seconds=cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES * 60,
         )
 
+    # HA event subscriber — long-lived WS ring buffer (gated by token + config)
+    if cfg.HA_EVENT_SUBSCRIBE and cfg.HA_API_TOKEN:
+        from utils.ha.ha_event_subscriber import HAEventSubscriber as _HAEventSubscriber
+
+        _event_sub = _HAEventSubscriber(
+            cfg.HA_HOST,
+            cfg.HA_API_PORT,
+            cfg.HA_API_TOKEN,
+            buffer_size=cfg.HA_EVENT_BUFFER_SIZE,
+        )
+        _shared_executor.set_event_subscriber(_event_sub)
+        supervisor.start("ha_event_subscriber", _event_sub.run_forever)
+
     # Known Issues reminder loop — checks hourly for suppressed issues older than
     # KNOWN_ISSUE_REMINDER_DAYS and sends a one-shot reminder card for each.
     supervisor.start(

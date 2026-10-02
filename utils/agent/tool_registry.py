@@ -716,6 +716,46 @@ CALL_SERVICE = ToolDefinition(
     },
 )
 
+GET_RECENT_EVENTS = ToolDefinition(
+    name="get_recent_events",
+    description=(
+        "Query the live HA event stream ring buffer for recent events. "
+        "Useful for checking whether automations triggered, entities went unavailable, "
+        "updates became available, or repairs were registered. "
+        "Events are filtered to: state_changed (update.* entities and unavailable/unknown "
+        "states only), repairs_issue_registry_updated, automation_triggered, and "
+        "persistent_notification_event. "
+        "Returns the most recent events, newest first. "
+        "Returns an error if the event subscriber is not enabled (HA_EVENT_SUBSCRIBE=false "
+        "or HA_API_TOKEN not set)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "event_type": {
+                "type": "string",
+                "description": (
+                    "Filter to a specific event type: 'state_changed', "
+                    "'repairs_issue_registry_updated', 'automation_triggered', "
+                    "or 'persistent_notification_event'. Omit to return all types."
+                ),
+            },
+            "entity_id": {
+                "type": "string",
+                "description": (
+                    "Filter to events for a specific entity_id or notification_id. "
+                    "Omit to return events for all entities."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of events to return (default 20, max 100).",
+            },
+        },
+        "required": [],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1960,6 +2000,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_INTEGRATION_DIAGNOSTICS,
         RELOAD_INTEGRATION,
         CALL_SERVICE,
+        GET_RECENT_EVENTS,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -2067,6 +2108,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_INTEGRATION_DIAGNOSTICS,
         RELOAD_INTEGRATION,
         CALL_SERVICE,
+        GET_RECENT_EVENTS,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,

@@ -86,6 +86,17 @@ class HAWebSocketClientProtocol(Protocol):
     async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict: ...
 
 
+class HAEventSubscriberProtocol(Protocol):
+    def get_events(
+        self,
+        event_type: str | None,
+        entity_id: str | None,
+        limit: int,
+    ) -> list[dict]: ...
+
+    def is_connected(self) -> bool: ...
+
+
 class NetAlertXClientProtocol(Protocol):
     async def get_devices(self) -> list[dict]: ...
 

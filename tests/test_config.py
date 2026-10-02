@@ -1516,3 +1516,29 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.OLLAMA_IDLE_UNLOAD_MINUTES == 0
+
+    def test_ha_event_subscribe_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_SUBSCRIBE is True
+
+    def test_ha_event_subscribe_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"ha_event_subscribe": False}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_SUBSCRIBE is False
+
+    def test_ha_event_buffer_size_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_BUFFER_SIZE == 500
+
+    def test_ha_event_buffer_size_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"ha_event_buffer_size": 200}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_BUFFER_SIZE == 200
