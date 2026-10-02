@@ -253,3 +253,92 @@ class TestGetConfigEntriesCommandFallback:
         assert result == entries
         cmds = [json.loads(s) for s in ws._sent]
         assert cmds[1]["type"] == "config/config_entries/all"
+
+
+# ---------------------------------------------------------------------------
+# _call helper
+# ---------------------------------------------------------------------------
+
+
+class TestCallHelper:
+    def test_success_returns_result(self, monkeypatch):
+        """_call returns result on success."""
+        ws = _MockWs(
+            [{"id": 1, "type": "result", "success": True, "result": [{"a": 1}]}]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client._call("config/device_registry/list"))
+        assert result == [{"a": 1}]
+        assert ws.closed
+
+    def test_failure_raises(self, monkeypatch):
+        """_call raises RuntimeError when success=False."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "unauthorized"},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        with pytest.raises(RuntimeError, match="request failed"):
+            asyncio.run(client._call("config/device_registry/list"))
+        assert ws.closed
+
+    def test_payload_forwarded(self, monkeypatch):
+        """Extra kwargs are serialised into the outgoing message."""
+        ws = _MockWs([{"id": 1, "type": "result", "success": True, "result": []}])
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        asyncio.run(client._call("call_service", domain="light", service="turn_on"))
+        sent = json.loads(ws._sent[0])
+        assert sent["domain"] == "light"
+        assert sent["service"] == "turn_on"
+
+
+# ---------------------------------------------------------------------------
+# get_system_log
+# ---------------------------------------------------------------------------
+
+
+class TestGetSystemLog:
+    def test_returns_list_on_success(self, monkeypatch):
+        """get_system_log returns the result list from system_log/list."""
+        entries = [
+            {
+                "logger": "homeassistant.loader",
+                "level": "ERROR",
+                "message": ["Error loading component"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 2,
+            }
+        ]
+        ws = _MockWs([{"id": 1, "type": "result", "success": True, "result": entries}])
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.get_system_log())
+        assert result == entries
+        assert ws.closed
+
+    def test_empty_list_on_non_list_result(self, monkeypatch):
+        """get_system_log returns [] when HA returns a non-list result."""
+        ws = _MockWs([{"id": 1, "type": "result", "success": True, "result": None}])
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.get_system_log())
+        assert result == []
+
+    def test_sends_correct_command(self, monkeypatch):
+        """get_system_log sends type=system_log/list."""
+        ws = _MockWs([{"id": 1, "type": "result", "success": True, "result": []}])
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        asyncio.run(client.get_system_log())
+        sent = json.loads(ws._sent[0])
+        assert sent["type"] == "system_log/list"

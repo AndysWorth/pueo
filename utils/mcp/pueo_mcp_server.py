@@ -35,6 +35,7 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_entity_history",
         "get_logbook",
         "render_ha_template",
+        "get_system_error_log",
     }
 )
 
@@ -101,6 +102,7 @@ class PueoMCPServer:
             GET_ENTITY_HISTORY,
             GET_HA_PROFILE,
             GET_LOGBOOK,
+            GET_SYSTEM_ERROR_LOG,
             QUERY_KNOWLEDGE,
             READ_CONFIG,
             READ_LOGS,
@@ -129,6 +131,7 @@ class PueoMCPServer:
             GET_ENTITY_HISTORY,
             GET_LOGBOOK,
             RENDER_HA_TEMPLATE,
+            GET_SYSTEM_ERROR_LOG,
         ]
         tool_defs = [td for td in _all_tool_defs if td.name in _MCP_TOOL_NAMES]
         token = _cfg.MCP_TOKEN

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 _log = logging.getLogger("ha_ws_client")
 
@@ -43,69 +44,45 @@ class HAWebSocketClient:  # pragma: no cover
             raise RuntimeError(f"Unexpected auth response: {msg.get('type')}")
         return ws
 
-    async def get_device_registry(self) -> list[dict]:
-        """Authenticate and fetch config/device_registry/list via HA WebSocket API."""
+    async def _call(self, type_: str, **payload: Any) -> Any:
+        """Connect, auth, send one command, check success, close. Returns result."""
         ws = await self._connect_and_auth()
         try:
-            await ws.send(json.dumps({"id": 1, "type": "config/device_registry/list"}))
+            await ws.send(json.dumps({"id": 1, "type": type_, **payload}))
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
-                raise RuntimeError(f"Device registry request failed: {msg}")
+                raise RuntimeError(f"{type_} request failed: {msg}")
             return msg.get("result", [])
         finally:
             await ws.close()
+
+    async def get_device_registry(self) -> list[dict]:
+        """Authenticate and fetch config/device_registry/list via HA WebSocket API."""
+        return await self._call("config/device_registry/list")
 
     async def get_persistent_notifications(self) -> list[dict]:
         """Fetch current persistent notifications via HA WebSocket API."""
-        ws = await self._connect_and_auth()
-        try:
-            await ws.send(json.dumps({"id": 1, "type": "persistent_notification/get"}))
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                raise RuntimeError(f"Persistent notification request failed: {msg}")
-            return msg.get("result", [])
-        finally:
-            await ws.close()
+        return await self._call("persistent_notification/get")
 
     async def dismiss_notification(self, notification_id: str) -> None:
         """Dismiss a persistent notification via HA WebSocket call_service."""
-        ws = await self._connect_and_auth()
-        try:
-            await ws.send(
-                json.dumps(
-                    {
-                        "id": 1,
-                        "type": "call_service",
-                        "domain": "persistent_notification",
-                        "service": "dismiss",
-                        "service_data": {"notification_id": notification_id},
-                    }
-                )
-            )
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                raise RuntimeError(f"Dismiss notification failed: {msg}")
-        finally:
-            await ws.close()
+        await self._call(
+            "call_service",
+            domain="persistent_notification",
+            service="dismiss",
+            service_data={"notification_id": notification_id},
+        )
 
     async def get_repair_issues(self) -> list[dict]:
         """Fetch current repair issues via HA WebSocket API."""
-        ws = await self._connect_and_auth()
-        try:
-            await ws.send(json.dumps({"id": 1, "type": "repairs/list_issues"}))
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                raise RuntimeError(f"Repairs list_issues request failed: {msg}")
-            result = msg.get("result", {})
-            if not isinstance(result, dict):
-                _log.error(
-                    "required_field_missing field=result source=ha_ws_repairs actual_type=%s",
-                    type(result).__name__,
-                )
-                return []
-            return result.get("issues", [])
-        finally:
-            await ws.close()
+        result = await self._call("repairs/list_issues")
+        if not isinstance(result, dict):
+            _log.error(
+                "required_field_missing field=result source=ha_ws_repairs actual_type=%s",
+                type(result).__name__,
+            )
+            return []
+        return result.get("issues", [])
 
     async def get_config_entries(self) -> list[dict]:
         """Fetch loaded config entries via HA WebSocket API.
@@ -185,27 +162,16 @@ class HAWebSocketClient:  # pragma: no cover
 
     async def get_entity_registry(self) -> list[dict]:
         """Fetch all entities via HA WebSocket config/entity_registry/list."""
-        ws = await self._connect_and_auth()
-        try:
-            await ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                raise RuntimeError(f"Entity registry request failed: {msg}")
-            return msg.get("result", [])
-        finally:
-            await ws.close()
+        return await self._call("config/entity_registry/list")
 
     async def get_states(self) -> list[dict]:
         """Return all current HA entity states via get_states WS command."""
-        ws = await self._connect_and_auth()
-        try:
-            await ws.send(json.dumps({"id": 1, "type": "get_states"}))
-            msg = json.loads(await ws.recv())
-            if not msg.get("success"):
-                raise RuntimeError(f"get_states request failed: {msg}")
-            return msg.get("result", [])
-        finally:
-            await ws.close()
+        return await self._call("get_states")
+
+    async def get_system_log(self) -> list[dict]:
+        """Fetch HA system log entries via system_log/list WS command."""
+        result = await self._call("system_log/list")
+        return result if isinstance(result, list) else []
 
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
@@ -258,6 +224,7 @@ class FakeHAWebSocketClient:
         states: list[dict] | None = None,
         ha_components: list[str] | None = None,
         spook_entity_issues: list[dict] | None = None,
+        system_log: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -272,6 +239,7 @@ class FakeHAWebSocketClient:
         self._states: list[dict] = states or []
         self._ha_components: list[str] = ha_components or []
         self._spook_entity_issues: list[dict] = spook_entity_issues or []
+        self._system_log: list[dict] = system_log or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -326,3 +294,7 @@ class FakeHAWebSocketClient:
         if url_path not in self._lovelace_configs:
             raise RuntimeError(f"No lovelace config for url_path={url_path!r}")
         return dict(self._lovelace_configs[url_path])
+
+    async def get_system_log(self) -> list[dict]:
+        self.calls.append("get_system_log")
+        return list(self._system_log)

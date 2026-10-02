@@ -333,6 +333,12 @@ class ToolExecutor:
                 )
             if name == "render_ha_template":
                 return await self._render_ha_template(args.get("template", ""))
+            if name == "get_system_error_log":
+                return await self._get_system_error_log(
+                    level=str(args.get("level", "ERROR")),
+                    limit=int(args.get("limit", 20)),
+                    logger_filter=args.get("logger_filter") or None,
+                )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -1034,6 +1040,90 @@ class ToolExecutor:
             tool_name="render_ha_template",
             success=True,
             output=result[:4000],
+        )
+
+    async def _get_system_error_log(
+        self,
+        level: str,
+        limit: int,
+        logger_filter: str | None,
+    ) -> ToolResult:
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_system_error_log",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        level = level.upper()
+        if level not in _VALID_LEVELS:
+            level = "ERROR"
+        limit = min(max(limit, 1), 100)
+        try:
+            entries = await self._ws_client.get_system_log()
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_system_error_log",
+                success=False,
+                output="",
+                error=f"system_log fetch failed: {exc}",
+            )
+        _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+        min_level = _LEVEL_ORDER.get(level, 3)
+        filtered = [
+            e
+            for e in entries
+            if _LEVEL_ORDER.get((e.get("level") or "").upper(), 0) >= min_level
+        ]
+        if logger_filter:
+            lf = logger_filter.lower()
+            filtered = [e for e in filtered if lf in (e.get("logger") or "").lower()]
+        if not filtered:
+            return ToolResult(
+                tool_name="get_system_error_log",
+                success=True,
+                output=f"No {level}+ entries in the HA system log.",
+            )
+        import collections
+        import datetime
+
+        def _ts(ts: float) -> str:
+            try:
+                return datetime.datetime.fromtimestamp(
+                    ts, tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return str(ts)
+
+        groups: dict[str, list[dict]] = collections.defaultdict(list)
+        for entry in filtered:
+            groups[entry.get("logger", "unknown")].append(entry)
+
+        rows: list[str] = []
+        for logger, group_entries in sorted(
+            groups.items(),
+            key=lambda kv: -sum(e.get("count", 1) for e in kv[1]),
+        ):
+            total_count = sum(e.get("count", 1) for e in group_entries)
+            first = min(
+                e.get("first_occurred", e.get("timestamp", 0.0)) for e in group_entries
+            )
+            last = max(e.get("timestamp", 0.0) for e in group_entries)
+            latest = max(group_entries, key=lambda e: e.get("timestamp", 0.0))
+            msgs = latest.get("message", [])
+            msg = msgs[0] if isinstance(msgs, list) and msgs else str(msgs)
+            if len(msg) > 200:
+                msg = msg[:200] + "…"
+            rows.append(
+                f"{logger}  (count={total_count}  "
+                f"first={_ts(first)}  last={_ts(last)})\n  {msg}"
+            )
+        output = "\n".join(rows[:limit])
+        return ToolResult(
+            tool_name="get_system_error_log",
+            success=True,
+            output=output,
         )
 
     async def _get_disk_usage(self) -> ToolResult:
