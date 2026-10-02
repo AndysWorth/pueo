@@ -124,6 +124,10 @@ HA_LOVELACE_CHECK_INTERVAL_MINUTES: int = int(
     _agent.get("lovelace_check_interval_minutes", 30)
 )
 
+# HA event subscriber (long-lived WS ring buffer)
+HA_EVENT_SUBSCRIBE: bool = bool(_agent.get("ha_event_subscribe", True))
+HA_EVENT_BUFFER_SIZE: int = int(_agent.get("ha_event_buffer_size", 500))
+
 # Log triage deduplication — suppress repeat approval cards for the same recurring error
 LOG_TRIAGE_COOLDOWN_HOURS: int = int(_agent.get("log_triage_cooldown_hours", 4))
 

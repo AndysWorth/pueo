@@ -4136,3 +4136,143 @@ class TestCallService:
         assert not result.success
         assert result.awaiting_approval
         assert fake_rest.service_calls == []
+
+
+class TestGetRecentEvents:
+    """get_recent_events tool routes to _event_subscriber and filters correctly."""
+
+    def _make_executor(self, subscriber=None):
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if subscriber is not None:
+            ex.set_event_subscriber(subscriber)
+        return ex
+
+    def _events(self, *types):
+        import time
+
+        return [
+            {"event_type": t, "time": time.time(), "data": {}, "entity_id": f"e.{i}"}
+            for i, t in enumerate(types)
+        ]
+
+    def test_no_subscriber_returns_error(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        ex = self._make_executor()
+        result = asyncio.run(
+            ex.execute(ToolCall(name="get_recent_events", arguments={}))
+        )
+        assert not result.success
+        assert "not available" in result.output.lower()
+
+    def test_empty_buffer_returns_success_message(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        ex = self._make_executor(subscriber=FakeHAEventSubscriber(events=[]))
+        result = asyncio.run(
+            ex.execute(ToolCall(name="get_recent_events", arguments={}))
+        )
+        assert result.success
+        assert "no events" in result.output.lower()
+
+    def test_returns_formatted_events(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        events = self._events("automation_triggered", "repairs_issue_registry_updated")
+        ex = self._make_executor(subscriber=FakeHAEventSubscriber(events=events))
+        result = asyncio.run(
+            ex.execute(ToolCall(name="get_recent_events", arguments={}))
+        )
+        assert result.success
+        assert "automation_triggered" in result.output
+        assert "repairs_issue_registry_updated" in result.output
+
+    def test_filter_by_event_type(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        events = self._events("state_changed", "automation_triggered")
+        ex = self._make_executor(subscriber=FakeHAEventSubscriber(events=events))
+        result = asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="get_recent_events",
+                    arguments={"event_type": "state_changed"},
+                )
+            )
+        )
+        assert result.success
+        assert "state_changed" in result.output
+        assert "automation_triggered" not in result.output
+
+    def test_limit_clamped_to_100(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        ex = self._make_executor(
+            subscriber=FakeHAEventSubscriber(events=self._events("state_changed"))
+        )
+        result = asyncio.run(
+            ex.execute(
+                ToolCall(
+                    name="get_recent_events",
+                    arguments={"limit": 9999},
+                )
+            )
+        )
+        assert result.success
+
+    def test_disconnected_subscriber_shows_warning(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        events = self._events("automation_triggered")
+        ex = self._make_executor(
+            subscriber=FakeHAEventSubscriber(events=events, connected=False)
+        )
+        result = asyncio.run(
+            ex.execute(ToolCall(name="get_recent_events", arguments={}))
+        )
+        assert result.success
+        assert "disconnected" in result.output.lower()
+
+    def test_set_event_subscriber_stores_reference(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        fake_sub = FakeHAEventSubscriber()
+        ex.set_event_subscriber(fake_sub)
+        assert ex._event_subscriber is fake_sub

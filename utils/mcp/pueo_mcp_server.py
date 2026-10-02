@@ -39,6 +39,7 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_area_layout",
         "get_automation_traces",
         "get_integration_diagnostics",
+        "get_recent_events",
     }
 )
 

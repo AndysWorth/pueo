@@ -205,6 +205,7 @@ class ToolExecutor:
         self._pending_update_status: Optional[Any] = None
         self._pending_auto_apply: bool = False
         self._lovelace_suspicious: list[str] = []
+        self._event_subscriber: Optional[Any] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -239,6 +240,10 @@ class ToolExecutor:
         client exists. Mirrors set_ws_client.
         """
         self._rest_client = client
+
+    def set_event_subscriber(self, subscriber: Any) -> None:
+        """Inject the HA event subscriber after construction."""
+        self._event_subscriber = subscriber
 
     def set_update_status(self, update_status: Any) -> None:
         """Store the pending UpdateStatus so finish_update_analysis can create the card."""
@@ -362,6 +367,12 @@ class ToolExecutor:
                     data=args.get("data") or {},
                     target=args.get("target") or {},
                     reason=args.get("reason", ""),
+                )
+            if name == "get_recent_events":
+                return await self._get_recent_events(
+                    event_type=args.get("event_type") or None,
+                    entity_id=args.get("entity_id") or None,
+                    limit=int(args.get("limit", 20)),
                 )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
@@ -1645,6 +1656,64 @@ class ToolExecutor:
             tool_name="call_service",
             success=True,
             output=f"{domain}.{service} called successfully.",
+        )
+
+    async def _get_recent_events(
+        self,
+        event_type: Optional[str],
+        entity_id: Optional[str],
+        limit: int,
+    ) -> ToolResult:
+        """Query the HA event subscriber ring buffer for recent filtered events."""
+        if self._event_subscriber is None:
+            return ToolResult(
+                tool_name="get_recent_events",
+                success=False,
+                output=(
+                    "Event subscriber not available — "
+                    "HA_EVENT_SUBSCRIBE is disabled or HA_API_TOKEN is not set."
+                ),
+            )
+        limit = min(max(1, limit), 100)
+        events = self._event_subscriber.get_events(
+            event_type=event_type,
+            entity_id=entity_id,
+            limit=limit,
+        )
+        if not events:
+            parts = ["No events in buffer"]
+            if event_type:
+                parts.append(f"for type '{event_type}'")
+            if entity_id:
+                parts.append(f"for entity '{entity_id}'")
+            return ToolResult(
+                tool_name="get_recent_events",
+                success=True,
+                output=" ".join(parts) + ".",
+            )
+
+        import datetime
+
+        lines = []
+        if not self._event_subscriber.is_connected():
+            lines.append(
+                "[WARNING: event subscriber is disconnected — buffer may be stale]"
+            )
+        for ev in events:
+            ts = ev.get("time", 0.0)
+            dt = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+            etype = ev.get("event_type", "unknown")
+            eid = ev.get("entity_id", "")
+            data_preview = str(ev.get("data", {}))[:200]
+            line = f"[{dt}] {etype}"
+            if eid:
+                line += f" {eid}"
+            line += f": {data_preview}"
+            lines.append(line)
+        return ToolResult(
+            tool_name="get_recent_events",
+            success=True,
+            output="\n".join(lines),
         )
 
     async def _get_disk_usage(self) -> ToolResult:
