@@ -551,6 +551,7 @@ async def run_update_check(
             ssh_client=ssh_client,
             notifier=_notifier,
             knowledge_store=knowledge_store,
+            ha_rest_client=rest,
         )
 
     return updates
@@ -561,6 +562,8 @@ async def _run_update_analysis(
     ssh_client: Optional[SSHClientProtocol] = None,
     notifier: Optional["NotifierProtocol"] = None,
     knowledge_store: Optional[Any] = None,
+    ha_profile: Optional["HAEnvironmentProfile"] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> None:
     """Run a single AgentLoop to analyse an update and create the HITL card via the terminal tool."""
     from utils.agent.agent_loop import AgentLoop
@@ -601,6 +604,9 @@ async def _run_update_analysis(
         system_prompt = load_prompt("agent_loop_update_analysis").replace(
             "{terminal_tool}", terminal_tool
         )
+        from utils.ha.context_sanitizer import sanitize_update_context
+        from utils.ha.device_summarizer import device_context_summary
+
         initial_context = (
             f"Available update: {update.component} "
             f"{update.installed_version} → {update.latest_version}"
@@ -609,6 +615,28 @@ async def _run_update_analysis(
             initial_context += f"\nRelease URL: {update.release_url}"
         if update.release_summary:
             initial_context += f"\nSummary: {update.release_summary}"
+
+        env_summary = device_context_summary(ha_profile)
+        if env_summary:
+            initial_context += f"\n\n{env_summary}"
+
+        # Best-effort: read upgrade_advisor sensor state if installed
+        _rest = ha_rest_client
+        if _rest is not None:
+            try:
+                states = await _rest.get_states(prefix="sensor.upgrade_advisor")
+                for s in states:
+                    rec = (s.get("attributes") or {}).get("recommendation", "")
+                    if rec:
+                        initial_context = (
+                            f"Upgrade advisor recommendation: {rec}\n\n"
+                            + initial_context
+                        )
+                        break
+            except Exception:  # nosec B110
+                pass
+
+        initial_context = sanitize_update_context(initial_context)
 
         llm_client = make_llm_client()  # pragma: no cover
         loop = AgentLoop(

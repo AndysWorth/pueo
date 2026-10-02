@@ -581,3 +581,174 @@ class TestAutoApplyBlock:
             c for c in notifier_calls if "blocked" in c.get("body", "").lower()
         ]
         assert block_msgs, "Core update auto-apply must be blocked with a notification"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: sanitize + device_context_summary + upgrade_advisor wiring
+# ---------------------------------------------------------------------------
+
+
+def _base_patches(db_path):
+    """Common mock.patch context managers for _run_update_analysis tests."""
+    from unittest import mock
+
+    return [
+        mock.patch("utils.agent.agent_loop.AgentLoop"),
+        mock.patch("utils.agent.supervisor.increment_active_agent"),
+        mock.patch("utils.agent.supervisor.decrement_active_agent"),
+        mock.patch(
+            "utils.agent.supervisor.make_activity_timeline_callback",
+            return_value=None,
+        ),
+        mock.patch("utils.llm.llm_factory.make_llm_client"),
+        mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+        mock.patch("utils.agent.work_queue.get_work_queue_or_none", return_value=None),
+    ]
+
+
+class _FakeUpdateBasic:
+    entity_id = "update.home_assistant_core_update"
+    component = "Home Assistant Core"
+    installed_version = "2026.9.0"
+    latest_version = "2026.9.1"
+    release_url = None
+    release_summary = None
+
+
+class TestUpdateAnalysisContextBuilding:
+    """Verify sanitize, device_context_summary, and upgrade_advisor wiring."""
+
+    def _run(self, tmp_path, **kwargs):
+        """Run _run_update_analysis and return the context string passed to loop.run()."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+
+        db_path = _make_db(tmp_path)
+        captured_context = []
+
+        with ExitStack() as stack:
+            patches = _base_patches(db_path)
+            mocks = [stack.enter_context(p) for p in patches]
+            MockLoop = mocks[0]
+
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()  # make_llm_client
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdateBasic(),
+                    notifier=FakeNotifier(),
+                    **kwargs,
+                )
+            )
+
+        return captured_context[0] if captured_context else ""
+
+    def test_sanitize_strips_bearer_token(self, tmp_path, pueo_dirs):
+        from unittest import mock
+
+        with mock.patch.object(
+            _FakeUpdateBasic,
+            "release_summary",
+            new="Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.longtoken",
+        ):
+            update = _FakeUpdateBasic()
+            update.release_summary = (
+                "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.longtoken"
+            )
+
+        import asyncio
+        from contextlib import ExitStack
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.hitl.notify import FakeNotifier
+
+        db_path = _make_db(tmp_path)
+        captured_context = []
+
+        class _SensitiveUpdate(_FakeUpdateBasic):
+            release_summary = (
+                "update summary Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.longtoken"
+            )
+
+        with ExitStack() as stack:
+            patches = _base_patches(db_path)
+            mocks = [stack.enter_context(p) for p in patches]
+            MockLoop = mocks[0]
+            mock_instance = MagicMock()
+
+            async def _capture_run(ctx):
+                captured_context.append(ctx)
+                return AgentLoopResult(outcome="success")
+
+            mock_instance.run = _capture_run
+            MockLoop.return_value = mock_instance
+            mocks[4].return_value = MagicMock()
+
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_SensitiveUpdate(),
+                    notifier=FakeNotifier(),
+                )
+            )
+
+        ctx = captured_context[0]
+        assert "Bearer <REDACTED>" in ctx
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in ctx
+
+    def test_profile_summary_appended(self, tmp_path, pueo_dirs):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.9.0",
+            installed_integrations=["mqtt", "zha"],
+        )
+        ctx = self._run(tmp_path, ha_profile=profile)
+        assert "Environment summary" in ctx
+        assert "2026.9.0" in ctx
+
+    def test_no_profile_no_summary(self, tmp_path, pueo_dirs):
+        ctx = self._run(tmp_path)
+        assert "Environment summary" not in ctx
+
+    def test_upgrade_advisor_sensor_prepended(self, tmp_path, pueo_dirs):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        states = [
+            {
+                "entity_id": "sensor.upgrade_advisor_recommendation",
+                "state": "ok",
+                "attributes": {"recommendation": "Safe to update."},
+            }
+        ]
+        rest = FakeHARestClient(states=states)
+        ctx = self._run(tmp_path, ha_rest_client=rest)
+        assert "Upgrade advisor recommendation" in ctx
+        assert "Safe to update." in ctx
+        # Must appear before the update line
+        assert ctx.index("Upgrade advisor") < ctx.index("Available update")
+
+    def test_upgrade_advisor_not_installed_no_error(self, tmp_path, pueo_dirs):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        rest = FakeHARestClient(states=[])
+        ctx = self._run(tmp_path, ha_rest_client=rest)
+        assert "Available update" in ctx  # still runs fine
