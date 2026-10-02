@@ -3,7 +3,7 @@
 import asyncio
 import time
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from utils.core.logging import get_logger
@@ -234,15 +234,28 @@ async def supervised_sleep(name: str, seconds: float) -> None:
 
     Sets status="idle" and next_run before sleeping; restores "running" after.
     Preserves "paused" or "error" if set externally during the sleep.
+
+    Wakes early if wake() is called on the named loop.  A wake that arrives while
+    the loop is running (not sleeping) stays latched and fires on the next call here.
     """
     sv = get_supervisor_instance()
+    wake_event: asyncio.Event | None = None
     if sv is not None and name in sv._handles:
         st = sv._handles[name]
         st.status = "idle"
         st.next_run = time.time() + seconds
         sv._emit(name)
+        wake_event = st.wake_event
     try:
-        await asyncio.sleep(seconds)
+        if wake_event is not None:
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=seconds)
+            except asyncio.TimeoutError:
+                pass  # normal path: full sleep elapsed
+            finally:
+                wake_event.clear()
+        else:
+            await asyncio.sleep(seconds)
     finally:
         sv = get_supervisor_instance()
         if sv is not None and name in sv._handles:
@@ -266,6 +279,7 @@ class LoopStatus:
     paused: bool = False
     run_now_pending: bool = False
     interval_seconds: int | float | None = None
+    wake_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class LoopSupervisor:
@@ -426,6 +440,16 @@ class LoopSupervisor:
             return
         status.paused = False
         self._emit(name)
+
+    def wake(self, name: str) -> None:
+        """Interrupt supervised_sleep for the named loop without cancelling its task.
+
+        Unlike run_now(), a running iteration is never cancelled — the wake is latched
+        in the loop's wake_event and fires on the next supervised_sleep call.
+        """
+        status = self._handles.get(name)
+        if status is not None:
+            status.wake_event.set()
 
     def run_now(self, name: str) -> None:
         """Run a loop's next iteration immediately, interrupting any sleep or pause.

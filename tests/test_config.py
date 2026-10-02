@@ -1542,3 +1542,18 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.HA_EVENT_BUFFER_SIZE == 200
+
+    def test_ha_event_fallback_poll_minutes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_FALLBACK_POLL_MINUTES == 60.0
+
+    def test_ha_event_fallback_poll_minutes_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"ha_event_fallback_poll_minutes": 30}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HA_EVENT_FALLBACK_POLL_MINUTES == 30.0

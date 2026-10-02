@@ -49,6 +49,7 @@ from config import (
     SSH_RETRY_BASE_DELAY,
 )
 from interfaces import (
+    HAEventSubscriberProtocol,
     HARestClientProtocol,
     HAWebSocketClientProtocol,
     LLMClientProtocol,
@@ -69,6 +70,29 @@ from utils.core.retry import async_retry
 from utils.ha.ssh_client import AsyncSSHClient
 
 log = get_logger("ha_log_monitor")
+
+
+def _poll_sleep_seconds(
+    base_interval: float,
+    event_subscriber: Optional[HAEventSubscriberProtocol],
+    backoff: float = 0,
+) -> float:
+    """Return effective sleep duration for a subscriber-aware poll loop.
+
+    Uses ``HA_EVENT_FALLBACK_POLL_MINUTES`` when the subscriber is connected and
+    there is no active backoff.  Falls back to *backoff* (if set) or *base_interval*.
+    """
+    import config as _cfg
+
+    if (
+        backoff == 0
+        and event_subscriber is not None
+        and event_subscriber.is_connected()
+        and _cfg.HA_EVENT_FALLBACK_POLL_MINUTES > 0
+    ):
+        return _cfg.HA_EVENT_FALLBACK_POLL_MINUTES * 60
+    return backoff if backoff else base_interval
+
 
 _debouncer = Debouncer(DEBOUNCE_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(MAX_REPAIRS_PER_HOUR, 3600)
@@ -911,6 +935,7 @@ async def poll_for_updates(
     notifier: Optional[NotifierProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
     knowledge_store: Optional[Any] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
 ) -> None:
     """Periodically checks for available HA updates and fires update approval cards."""
     interval = HA_UPDATE_CHECK_INTERVAL_HOURS * 3600
@@ -1038,7 +1063,9 @@ async def poll_for_updates(
             pass
         from utils.agent.supervisor import supervised_sleep as _sup_sleep
 
-        await _sup_sleep("update_check", interval)
+        await _sup_sleep(
+            "update_check", _poll_sleep_seconds(interval, event_subscriber)
+        )
 
 
 async def poll_for_notifications(
@@ -1049,6 +1076,7 @@ async def poll_for_notifications(
     db_path: str = DB_PATH,
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
 ) -> None:
     """Periodically checks for new HA persistent notifications and fires approval alerts."""
     from .ha_notification_manager import (
@@ -1079,7 +1107,10 @@ async def poll_for_notifications(
     while True:
         from utils.agent.supervisor import supervised_sleep as _sup_sleep_n
 
-        await _sup_sleep_n("notification_poll", backoff if backoff else interval)
+        await _sup_sleep_n(
+            "notification_poll",
+            _poll_sleep_seconds(interval, event_subscriber, backoff),
+        )
         try:
             notifications = await _ws.get_persistent_notifications()
             backoff = 0  # reset on success
@@ -1201,6 +1232,7 @@ async def poll_for_repairs(
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    event_subscriber: Optional[HAEventSubscriberProtocol] = None,
 ) -> None:
     """Periodically polls HA repairs via WebSocket and fires approval cards for new issues."""
     from .ha_agent_advanced import (
@@ -1224,7 +1256,8 @@ async def poll_for_repairs(
         from utils.agent.supervisor import supervised_sleep as _sup_sleep_r
 
         await _sup_sleep_r(
-            "repair_poll", repair_backoff if repair_backoff else interval
+            "repair_poll",
+            _poll_sleep_seconds(interval, event_subscriber, repair_backoff),
         )
         try:
             issues = await get_ha_repair_issues(_client)

@@ -36,4 +36,4 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [030](030-authority-ranked-knowledge.md) | Authority-ranked knowledge | Accepted | `authority_score` tiers (1.0→0.30); version-aware boosting; `query_type` routing |
 | [031](031-repair-episode-embedding.md) | Repair episode embedding | Accepted | `repair_history` ChromaDB collection; `embed_repair_episodes()` at rag-refresh step 7 |
 | [032](032-ha-mcp-consumption.md) | HA capability gaps: native REST/WS | Accepted | MCP adapter rejected; all 8 gaps closed via native REST/WS extension + `HAEventSubscriber` |
-| [033](033-ha-event-triggers.md) | Event-driven HA triggers | Proposed | `HAEventSubscriber` wakes poll loops; polling kept as fallback; healthy-subscriber definition |
+| [033](033-ha-event-triggers.md) | Event-driven HA triggers | Accepted | `supervisor.wake()`; non-cancelling sleep interrupt; subscriber→wake map; fallback interval |
