@@ -3694,6 +3694,233 @@ class TestLoopSupervisor:
 
         asyncio.run(_run())
 
+    def test_wake_sets_wake_event(self):
+        """wake() sets the wake_event on the named loop without raising."""
+        from utils.agent.supervisor import LoopSupervisor
+
+        async def _run():
+            async def daemon():
+                await asyncio.sleep(999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus)
+            sup.start("d", daemon)
+            await asyncio.sleep(0.05)  # daemon running
+
+            assert not sup._handles["d"].wake_event.is_set()
+            sup.wake("d")
+            assert sup._handles["d"].wake_event.is_set()
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_wake_unknown_loop_is_noop(self):
+        """wake() with an unknown loop name does not raise."""
+        from utils.agent.supervisor import LoopSupervisor
+
+        sup = LoopSupervisor()
+        sup.wake("nonexistent")  # must not raise
+
+    def test_wake_interrupts_supervised_sleep(self):
+        """wake() causes supervised_sleep to return before its full timeout."""
+        import time
+
+        async def _run():
+            from utils.agent.supervisor import (
+                LoopSupervisor,
+                LoopStatus,
+                set_supervisor_instance,
+                supervised_sleep,
+            )
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus)
+            sup._handles["t"] = LoopStatus(name="t", status="running")
+            set_supervisor_instance(sup)
+            try:
+
+                async def _waker():
+                    await asyncio.sleep(0.05)
+                    sup.wake("t")
+
+                t0 = time.monotonic()
+                await asyncio.gather(_waker(), supervised_sleep("t", 10.0))
+                elapsed = time.monotonic() - t0
+                # Should wake well before the 10 s timeout
+                assert elapsed < 1.0, f"expected early wake, took {elapsed:.2f}s"
+            finally:
+                set_supervisor_instance(None)  # type: ignore[arg-type]
+
+        asyncio.run(_run())
+
+    def test_wake_mid_iteration_latches_and_fires_next_sleep(self):
+        """Wake set while not sleeping stays latched; fires on the next supervised_sleep."""
+        import time
+
+        async def _run():
+            from utils.agent.supervisor import (
+                LoopSupervisor,
+                LoopStatus,
+                set_supervisor_instance,
+                supervised_sleep,
+            )
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus)
+            sup._handles["t"] = LoopStatus(name="t", status="running")
+            set_supervisor_instance(sup)
+            try:
+                # Set the wake event now (simulating mid-iteration wake)
+                sup.wake("t")
+                assert sup._handles["t"].wake_event.is_set()
+
+                # Next supervised_sleep should return immediately (event already set)
+                t0 = time.monotonic()
+                await supervised_sleep("t", 10.0)
+                elapsed = time.monotonic() - t0
+                assert elapsed < 1.0, f"expected immediate return, took {elapsed:.2f}s"
+
+                # Event should be cleared after the sleep
+                assert not sup._handles["t"].wake_event.is_set()
+            finally:
+                set_supervisor_instance(None)  # type: ignore[arg-type]
+
+        asyncio.run(_run())
+
+    def test_wake_does_not_cancel_running_iteration(self):
+        """wake() does not cancel the running loop task — only interrupts supervised_sleep."""
+        import time
+
+        async def _run():
+            from utils.agent.supervisor import LoopSupervisor, supervised_sleep
+
+            iterations: list[str] = []
+            reached_sleep = asyncio.Event()
+
+            async def daemon():
+                iterations.append("start")
+                reached_sleep.set()
+                # The iteration keeps running after wake is called
+                await asyncio.sleep(0.3)
+                iterations.append("end")
+                await supervised_sleep("d", 999)
+
+            bus: asyncio.Queue = asyncio.Queue()
+            sup = LoopSupervisor(bus=bus)
+            sup.start("d", daemon)
+            await reached_sleep.wait()
+
+            # Call wake while daemon is running (between reached_sleep.set() and asyncio.sleep)
+            sup.wake("d")
+            task = sup._tasks["d"]
+            # Task must still be running (wake does not cancel)
+            await asyncio.sleep(0.1)
+            assert not task.done(), "task should still be running after wake()"
+            assert "start" in iterations  # iteration started
+
+            # Wait for iteration to finish the inner sleep, then reach supervised_sleep
+            await asyncio.sleep(0.5)
+            assert "end" in iterations, "iteration should have completed"
+
+            sup.cancel_all()
+            await asyncio.gather(*sup._tasks.values(), return_exceptions=True)
+
+        asyncio.run(_run())
+
+
+# ── Poll-loop interval helper ─────────────────────────────────────────────────────
+
+
+class TestPollSleepSeconds:
+    """Unit tests for ha_log_monitor._poll_sleep_seconds."""
+
+    def _make_sub(self, connected: bool):
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        return FakeHAEventSubscriber(connected=connected)
+
+    def test_subscriber_connected_uses_fallback(self, isolated_config):
+        """Returns fallback interval when subscriber is connected and no backoff."""
+        import importlib
+
+        import config as cfg
+        import agents.ha_log_monitor as lm
+
+        # Set fallback interval to 60 min via config
+        with open(isolated_config, "w") as f:
+            f.write("agent:\n  ha_event_fallback_poll_minutes: 60\n")
+        importlib.reload(cfg)
+        importlib.reload(lm)
+
+        sub = self._make_sub(connected=True)
+        result = lm._poll_sleep_seconds(300.0, sub, backoff=0)
+        assert result == 60 * 60
+
+    def test_subscriber_disconnected_uses_base(self, isolated_config):
+        """Returns base interval when subscriber is disconnected."""
+        import importlib
+
+        import config as cfg
+        import agents.ha_log_monitor as lm
+
+        with open(isolated_config, "w") as f:
+            f.write("agent:\n  ha_event_fallback_poll_minutes: 60\n")
+        importlib.reload(cfg)
+        importlib.reload(lm)
+
+        sub = self._make_sub(connected=False)
+        result = lm._poll_sleep_seconds(300.0, sub, backoff=0)
+        assert result == 300.0
+
+    def test_no_subscriber_uses_base(self, isolated_config):
+        """Returns base interval when event_subscriber is None."""
+        import importlib
+
+        import config as cfg
+        import agents.ha_log_monitor as lm
+
+        with open(isolated_config, "w") as f:
+            f.write("agent:\n  ha_event_fallback_poll_minutes: 60\n")
+        importlib.reload(cfg)
+        importlib.reload(lm)
+
+        result = lm._poll_sleep_seconds(300.0, None, backoff=0)
+        assert result == 300.0
+
+    def test_backoff_takes_precedence_over_fallback(self, isolated_config):
+        """Returns backoff value when subscriber is connected but backoff > 0."""
+        import importlib
+
+        import config as cfg
+        import agents.ha_log_monitor as lm
+
+        with open(isolated_config, "w") as f:
+            f.write("agent:\n  ha_event_fallback_poll_minutes: 60\n")
+        importlib.reload(cfg)
+        importlib.reload(lm)
+
+        sub = self._make_sub(connected=True)
+        result = lm._poll_sleep_seconds(300.0, sub, backoff=30)
+        assert result == 30
+
+    def test_fallback_zero_uses_base(self, isolated_config):
+        """Returns base interval when fallback_poll_minutes is 0 (disabled)."""
+        import importlib
+
+        import config as cfg
+        import agents.ha_log_monitor as lm
+
+        with open(isolated_config, "w") as f:
+            f.write("agent:\n  ha_event_fallback_poll_minutes: 0\n")
+        importlib.reload(cfg)
+        importlib.reload(lm)
+
+        sub = self._make_sub(connected=True)
+        result = lm._poll_sleep_seconds(300.0, sub, backoff=0)
+        assert result == 300.0
+
 
 # ── Timeline utility ──────────────────────────────────────────────────────────────
 
