@@ -3677,3 +3677,313 @@ class TestGetAutomationTracesExecutor:
         fake = FakeHAWebSocketClient()
         assert asyncio.run(fake.list_traces("automation")) == []
         assert asyncio.run(fake.get_trace("automation", "automation.test", "r")) == {}
+
+
+# ---------------------------------------------------------------------------
+# TestGetIntegrationDiagnostics
+# ---------------------------------------------------------------------------
+
+
+class TestGetIntegrationDiagnostics:
+    """Tests for the get_integration_diagnostics tool."""
+
+    def _make_executor(self, rest_client=None, ws_client=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if rest_client is not None:
+            ex.set_rest_client(rest_client)
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_no_rest_client_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": "hue"},
+                )
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_missing_argument_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_integration_diagnostics", arguments={}))
+        )
+        assert not result.success
+        assert "required" in result.error
+
+    def test_entry_not_found_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(
+            rest_client=FakeHARestClient(),
+            ws_client=FakeHAWebSocketClient(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": "unknown_domain"},
+                )
+            )
+        )
+        assert not result.success
+        assert "No config entry" in result.error
+
+    def test_returns_diagnostics_on_success(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        diag_data = {"host": "192.168.1.100", "version": "1.2.3"}
+        fake_rest = FakeHARestClient(diagnostics_responses={entry_id: diag_data})
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "hue", "entry_id": entry_id, "state": "loaded"}]
+        )
+        executor = self._make_executor(rest_client=fake_rest, ws_client=fake_ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": "hue"},
+                )
+            )
+        )
+        assert result.success
+        assert "192.168.1.100" in result.output
+
+    def test_sensitive_keys_are_redacted(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        diag_data = {
+            "api_key": "super_secret",
+            "token": "bearer_xyz",
+            "password": "hunter2",
+            "host": "192.168.1.100",
+            "nested": {"api_key": "also_secret", "name": "visible"},
+        }
+        fake_rest = FakeHARestClient(diagnostics_responses={entry_id: diag_data})
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "hue", "entry_id": entry_id, "state": "loaded"}]
+        )
+        executor = self._make_executor(rest_client=fake_rest, ws_client=fake_ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": "hue"},
+                )
+            )
+        )
+        assert result.success
+        assert "super_secret" not in result.output
+        assert "bearer_xyz" not in result.output
+        assert "hunter2" not in result.output
+        assert "also_secret" not in result.output
+        assert "[REDACTED]" in result.output
+        assert "192.168.1.100" in result.output
+        assert "visible" in result.output
+
+    def test_direct_entry_id_lookup(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        entry_id = "abcdef1234567890abcdef1234567890"
+        diag_data = {"status": "ok"}
+        fake_rest = FakeHARestClient(diagnostics_responses={entry_id: diag_data})
+        executor = self._make_executor(rest_client=fake_rest)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": entry_id},
+                )
+            )
+        )
+        assert result.success
+        assert "ok" in result.output
+
+    def test_rest_error_returns_failure(self):
+        import httpx
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class ErrorRestClient(FakeHARestClient):
+            async def get_config_entry_diagnostics(self, entry_id: str) -> dict:
+                raise httpx.HTTPStatusError(
+                    "500",
+                    request=httpx.Request("GET", "http://fake"),
+                    response=httpx.Response(500),
+                )
+
+        entry_id = "abc123"
+        executor = self._make_executor(
+            rest_client=ErrorRestClient(),
+            ws_client=FakeHAWebSocketClient(
+                config_entries=[
+                    {"domain": "hue", "entry_id": entry_id, "state": "loaded"}
+                ]
+            ),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_integration_diagnostics",
+                    arguments={"domain_or_entry_id": "hue"},
+                )
+            )
+        )
+        assert not result.success
+        assert "Diagnostics fetch failed" in result.error
+
+
+# ---------------------------------------------------------------------------
+# TestReloadIntegration
+# ---------------------------------------------------------------------------
+
+
+class TestReloadIntegration:
+    """Tests for the reload_integration tool (gated write)."""
+
+    def _make_executor(self, rest_client=None, ws_client=None, auto_execute=True):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=auto_execute),
+            notifier=FakeNotifier(),
+        )
+        if rest_client is not None:
+            ex.set_rest_client(rest_client)
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_no_rest_client_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "hue", "reason": "stuck"},
+                )
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_missing_argument_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="reload_integration", arguments={"reason": "stuck"})
+            )
+        )
+        assert not result.success
+        assert "required" in result.error
+
+    def test_entry_not_found_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(
+            rest_client=FakeHARestClient(),
+            ws_client=FakeHAWebSocketClient(),
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={
+                        "domain_or_entry_id": "unknown_domain",
+                        "reason": "stuck",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "No config entry" in result.error
+
+    def test_queues_for_approval_when_gate_denies(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        fake_rest = FakeHARestClient()
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "hue", "entry_id": entry_id, "state": "loaded"}]
+        )
+        # auto_execute=False → gate returns not-approved
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=False
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "hue", "reason": "stuck"},
+                )
+            )
+        )
+        assert not result.success
+        assert result.awaiting_approval
+        assert fake_rest.reloaded == []
+
+    def test_reloads_when_gate_approves(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entry_id = "abc123"
+        fake_rest = FakeHARestClient()
+        fake_ws = FakeHAWebSocketClient(
+            config_entries=[{"domain": "hue", "entry_id": entry_id, "state": "loaded"}]
+        )
+        executor = self._make_executor(
+            rest_client=fake_rest, ws_client=fake_ws, auto_execute=True
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="reload_integration",
+                    arguments={"domain_or_entry_id": "hue", "reason": "stuck"},
+                )
+            )
+        )
+        assert result.success
+        assert entry_id in fake_rest.reloaded

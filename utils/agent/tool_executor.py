@@ -346,6 +346,15 @@ class ToolExecutor:
                     entity_id=args.get("entity_id", ""),
                     run_id=args.get("run_id") or None,
                 )
+            if name == "get_integration_diagnostics":
+                return await self._get_integration_diagnostics(
+                    args.get("domain_or_entry_id", "")
+                )
+            if name == "reload_integration":
+                return await self._reload_integration(
+                    domain_or_entry_id=args.get("domain_or_entry_id", ""),
+                    reason=args.get("reason", ""),
+                )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -1370,6 +1379,170 @@ class ToolExecutor:
 
         return ToolResult(
             tool_name="get_automation_traces", success=True, output="\n".join(rows)
+        )
+
+    # Regex to match sensitive key names (case-insensitive).
+    _SENSITIVE_KEY_RE = __import__("re").compile(
+        r"token|password|api_key|secret", __import__("re").IGNORECASE
+    )
+
+    @classmethod
+    def _redact_sensitive(cls, data: object, depth: int = 0) -> object:
+        """Recursively redact values whose keys match _SENSITIVE_KEY_RE."""
+        if depth > 10:
+            return data
+        if isinstance(data, dict):
+            return {
+                k: (
+                    "[REDACTED]"
+                    if isinstance(v, str) and cls._SENSITIVE_KEY_RE.search(k)
+                    else cls._redact_sensitive(v, depth + 1)
+                )
+                for k, v in data.items()
+            }
+        if isinstance(data, list):
+            return [cls._redact_sensitive(item, depth + 1) for item in data]
+        return data
+
+    async def _resolve_entry_id(self, domain_or_entry_id: str) -> str | None:
+        """Return a config entry_id. If domain_or_entry_id looks like a UUID, return it
+        directly. Otherwise treat it as a domain and pick the first active entry."""
+        import re
+
+        if re.fullmatch(r"[0-9a-f]{32}", domain_or_entry_id.replace("-", "")):
+            return domain_or_entry_id
+        if not self._ws_client:
+            return None
+        try:
+            entries = await self._ws_client.get_all_config_entries()
+        except Exception:
+            return None
+        for entry in entries:
+            if entry.get("domain") == domain_or_entry_id and entry.get(
+                "state", ""
+            ) not in ("not_loaded", "setup_error", "migration_error"):
+                return entry.get("entry_id")
+        # Fall back to any entry for the domain
+        for entry in entries:
+            if entry.get("domain") == domain_or_entry_id:
+                return entry.get("entry_id")
+        return None
+
+    async def _get_integration_diagnostics(self, domain_or_entry_id: str) -> ToolResult:
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="get_integration_diagnostics",
+                success=False,
+                output="",
+                error="REST client not available",
+            )
+        if not domain_or_entry_id:
+            return ToolResult(
+                tool_name="get_integration_diagnostics",
+                success=False,
+                output="",
+                error="domain_or_entry_id is required",
+            )
+        entry_id = await self._resolve_entry_id(domain_or_entry_id)
+        if not entry_id:
+            return ToolResult(
+                tool_name="get_integration_diagnostics",
+                success=False,
+                output="",
+                error=(
+                    f"No config entry found for {domain_or_entry_id!r}. "
+                    "Use search_integrations to list installed integrations."
+                ),
+            )
+        try:
+            raw = await self._rest_client.get_config_entry_diagnostics(entry_id)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_integration_diagnostics",
+                success=False,
+                output="",
+                error=f"Diagnostics fetch failed: {exc}",
+            )
+        clean = self._redact_sensitive(raw)
+        import json
+
+        text = json.dumps(clean, indent=2)
+        # Cap to 4000 chars to stay within token budget
+        if len(text) > 4000:
+            text = text[:4000] + "\n... [truncated]"
+        return ToolResult(
+            tool_name="get_integration_diagnostics", success=True, output=text
+        )
+
+    async def _reload_integration(
+        self, domain_or_entry_id: str, reason: str
+    ) -> ToolResult:
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="reload_integration",
+                success=False,
+                output="",
+                error="REST client not available",
+            )
+        if not domain_or_entry_id:
+            return ToolResult(
+                tool_name="reload_integration",
+                success=False,
+                output="",
+                error="domain_or_entry_id is required",
+            )
+        entry_id = await self._resolve_entry_id(domain_or_entry_id)
+        if not entry_id:
+            return ToolResult(
+                tool_name="reload_integration",
+                success=False,
+                output="",
+                error=f"No config entry found for {domain_or_entry_id!r}",
+            )
+
+        from utils.agent.autonomy import RiskLevel
+        from utils.hitl.card_types import CARD_TYPE_CONFIG_ENTRY_RELOAD
+
+        nid = get_correlation_id() or str(uuid.uuid4())
+        approved = await self._gate.queue_for_approval(
+            subject=f"Pueo: reload_integration — {domain_or_entry_id}",
+            body=(
+                f"Reload config entry {entry_id} ({domain_or_entry_id}).\n"
+                f"Reason: {reason}"
+            ),
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_CONFIG_ENTRY_RELOAD,
+                "entry_id": entry_id,
+                "domain_or_entry_id": domain_or_entry_id,
+                "reason": reason,
+            },
+            notifier=self._notifier,
+            risk=RiskLevel.MEDIUM,
+        )
+        if not approved:
+            log.info("reload_integration_queued_for_hitl", nid=nid)
+            return ToolResult(
+                tool_name="reload_integration",
+                success=False,
+                output=f"Reload queued for approval (id={nid}); agent loop exiting",
+                awaiting_approval=True,
+            )
+
+        try:
+            await self._rest_client.reload_config_entry(entry_id)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="reload_integration",
+                success=False,
+                output="",
+                error=f"Reload failed: {exc}",
+            )
+        log.info("reload_integration_executed", entry_id=entry_id)
+        return ToolResult(
+            tool_name="reload_integration",
+            success=True,
+            output=f"Config entry {entry_id} ({domain_or_entry_id}) reloaded successfully.",
         )
 
     async def _get_disk_usage(self) -> ToolResult:

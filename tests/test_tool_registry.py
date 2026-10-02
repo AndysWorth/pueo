@@ -392,3 +392,59 @@ class TestRegistryMembership:
         from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
 
         assert "get_automation_traces" in _MCP_TOOL_NAMES
+
+    def test_get_integration_diagnostics_in_ha_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+
+        for label, reg in (
+            ("ha", build_ha_tool_registry()),
+            ("chat", build_chat_tool_registry()),
+        ):
+            assert (
+                "get_integration_diagnostics" in reg
+            ), f"get_integration_diagnostics missing from {label} registry"
+
+    def test_get_integration_diagnostics_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_integration_diagnostics" in _MCP_TOOL_NAMES
+
+    def test_get_integration_diagnostics_schema(self):
+        from utils.agent.tool_registry import GET_INTEGRATION_DIAGNOSTICS
+
+        props = GET_INTEGRATION_DIAGNOSTICS.parameters.get("properties", {})
+        assert "domain_or_entry_id" in props
+        required = GET_INTEGRATION_DIAGNOSTICS.parameters.get("required", [])
+        assert "domain_or_entry_id" in required
+
+    def test_reload_integration_in_ha_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+
+        for label, reg in (
+            ("ha", build_ha_tool_registry()),
+            ("chat", build_chat_tool_registry()),
+        ):
+            assert (
+                "reload_integration" in reg
+            ), f"reload_integration missing from {label} registry"
+
+    def test_reload_integration_not_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "reload_integration" not in _MCP_TOOL_NAMES
+
+    def test_reload_integration_schema(self):
+        from utils.agent.tool_registry import RELOAD_INTEGRATION
+
+        props = RELOAD_INTEGRATION.parameters.get("properties", {})
+        assert "domain_or_entry_id" in props
+        assert "reason" in props
+        required = RELOAD_INTEGRATION.parameters.get("required", [])
+        assert "domain_or_entry_id" in required
+        assert "reason" in required

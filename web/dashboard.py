@@ -36,6 +36,7 @@ from utils.core.logging import get_logger, set_log_level
 from utils.hitl.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
+    CARD_TYPE_CONFIG_ENTRY_RELOAD,
     CARD_TYPE_DASHBOARD_ENTITY,
     CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_REPAIR,
@@ -1155,6 +1156,50 @@ async def _execute_disk_recovery(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_config_entry_reload(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Reload a HA config entry via the REST API."""
+    import config as _config
+
+    payload = data.get("payload", {})
+    entry_id = payload.get("entry_id", "")
+    domain_or_entry_id = payload.get("domain_or_entry_id", entry_id)
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        if not _config.HA_API_TOKEN:
+            raise RuntimeError("HA_API_TOKEN not configured")
+        from utils.ha.ha_rest_client import HARestClient
+
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        await rest.reload_config_entry(entry_id)
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "config_entry_reload",
+                f"Config entry reloaded: {domain_or_entry_id} ({entry_id})",
+                {"entry_id": entry_id, "domain_or_entry_id": domain_or_entry_id},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 async def _execute_code_proposal(
     nid: str,
     data: dict,
@@ -1730,6 +1775,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_OPEN_PR: _execute_open_pr,
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
+    CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
 }
 
 
