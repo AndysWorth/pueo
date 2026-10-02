@@ -850,11 +850,14 @@ async def supervisor_main(config_path: Path) -> None:
             build_environment_profile,
             save_environment_profile,
         )
+        from utils.ha.ha_rest_client import HARestClient as _HARestClient
         from utils.ha.ha_ws_client import HAWebSocketClient
 
         _profile_ssh = AsyncSSHClient(cfg.HA_HOST, cfg.HA_USER, cfg.SSH_KEY_PATH)
         _profile_ws = HAWebSocketClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
+        _profile_rest = _HARestClient(cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN)
         _shared_executor.set_ws_client(_profile_ws)
+        _shared_executor.set_rest_client(_profile_rest)
 
         async def _profile_refresh_loop() -> None:
             while True:

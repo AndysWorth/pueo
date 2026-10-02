@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from agents.ha_agent_core import DiagnosticsReport
     from utils.hitl.llm_trace import LLMTrace
     from interfaces import (
+        HARestClientProtocol,
         KnowledgeStoreClientProtocol,
         LLMClientProtocol,
         SSHClientProtocol,
@@ -43,6 +44,7 @@ async def analyze_config_locally(
     ssh_client: Optional["SSHClientProtocol"] = None,
     llm_client: Optional["LLMClientProtocol"] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
 ) -> tuple["DiagnosticsReport", Optional["LLMTrace"]]:
     """Analyse HA config.yaml for issues.
 
@@ -54,7 +56,7 @@ async def analyze_config_locally(
     """
     if ssh_client is not None:
         return await _analyze_with_agent_loop(
-            yaml_content, ssh_client, llm_client, knowledge_store
+            yaml_content, ssh_client, llm_client, knowledge_store, ha_rest_client
         )
     return await _analyze_one_shot(yaml_content, llm_client)
 
@@ -64,6 +66,7 @@ async def _analyze_with_agent_loop(
     ssh_client: "SSHClientProtocol",
     llm_client: Optional["LLMClientProtocol"],
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
 ) -> tuple["DiagnosticsReport", Optional["LLMTrace"]]:
     from utils.llm.llm_factory import make_llm_client
     from utils.agent.agent_loop import AgentLoop
@@ -91,6 +94,7 @@ async def _analyze_with_agent_loop(
         gate=FakeAutonomyGate(),  # type: ignore[arg-type]
         notifier=FakeNotifier(),
         llm_client=client,
+        ha_rest_client=ha_rest_client,
     )
     from utils.agent.supervisor import (
         decrement_active_agent,

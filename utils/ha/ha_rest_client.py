@@ -111,6 +111,13 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def get_text(self, path: str) -> str:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(f"{base}{path}", headers=self._headers)
+            resp.raise_for_status()
+            return resp.text
+
     async def post(self, path: str, payload: dict) -> dict:
         base = self._base_url.removesuffix("/api")
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -185,9 +192,11 @@ class FakeHARestClient:
         self,
         states: list[dict] | None = None,
         raw_responses: dict[str, dict] | None = None,
+        text_responses: dict[str, str] | None = None,
     ) -> None:
         self._states: list[dict] = states or []
         self._raw: dict[str, dict] = raw_responses or {}
+        self._text: dict[str, str] = text_responses or {}
         self.service_calls: list[tuple[str, str, dict]] = []
         self.deleted: list[str] = []
         self.posted: list[tuple[str, dict]] = []
@@ -215,6 +224,9 @@ class FakeHARestClient:
 
     async def get_raw(self, path: str) -> dict:
         return self._raw.get(path, {})
+
+    async def get_text(self, path: str) -> str:
+        return self._text.get(path, "")
 
     async def post(self, path: str, payload: dict) -> dict:
         self.posted.append((path, payload))

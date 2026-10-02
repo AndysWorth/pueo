@@ -15,7 +15,7 @@ from utils.ha.lovelace_utils import EntityRef, _extract_entity_refs
 from utils.hitl.notify import NotifierProtocol
 
 if TYPE_CHECKING:
-    from interfaces import KnowledgeStoreClientProtocol
+    from interfaces import HARestClientProtocol, KnowledgeStoreClientProtocol
 
 log = get_logger("ha_lovelace_monitor")
 
@@ -56,6 +56,7 @@ async def _run_lovelace_investigation(
     notifier: NotifierProtocol,
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
 ) -> None:
     """Run an AgentLoop to investigate unregistered Lovelace entities.
 
@@ -97,6 +98,7 @@ async def _run_lovelace_investigation(
         gate=gate,  # type: ignore[arg-type]
         notifier=notifier,
         ha_ws_client=ws_client,
+        ha_rest_client=ha_rest_client,
         knowledge_store=knowledge_store,
         db_path=db_path,
     )
@@ -178,6 +180,7 @@ async def poll_for_dashboard_entity_issues(
     interval_minutes: Optional[int] = None,
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
 ) -> None:
     """Polling loop — checks all Lovelace dashboards for missing or unregistered entity references."""
     import config as _cfg
@@ -187,6 +190,7 @@ async def poll_for_dashboard_entity_issues(
         CARD_TYPE_LOVELACE_BENIGN,
         CARD_TYPE_UNREGISTERED_ENTITY,
     )
+    from utils.ha.ha_rest_client import HARestClient as _HARestClient
     from utils.ha.ha_ws_client import HAWebSocketClient
     from utils.hitl.hitl_tracker import mark_card_resolved
     from utils.hitl.notify import get_notifier
@@ -198,6 +202,9 @@ async def poll_for_dashboard_entity_issues(
         else _cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES
     )
     _ws: HAWebSocketClientProtocol = ws_client or HAWebSocketClient(  # pragma: no cover
+        _cfg.HA_HOST, _cfg.HA_API_PORT, _cfg.HA_API_TOKEN
+    )
+    _rest: "HARestClientProtocol" = ha_rest_client or _HARestClient(  # pragma: no cover
         _cfg.HA_HOST, _cfg.HA_API_PORT, _cfg.HA_API_TOKEN
     )
     _notifier: NotifierProtocol = notifier or get_notifier(  # pragma: no cover
@@ -361,6 +368,7 @@ async def poll_for_dashboard_entity_issues(
 
             _suspicious = suspicious_unregistered
             _ws_ref = _ws
+            _rest_ref = _rest
             _db_ref = _db_path
             _notifier_ref = _notifier
             _llm_ref = llm_client
@@ -380,6 +388,7 @@ async def poll_for_dashboard_entity_issues(
                             notifier=_notifier_ref,
                             llm_client=_llm_ref,
                             knowledge_store=knowledge_store,
+                            ha_rest_client=_rest_ref,
                         ),
                     )
                 )
@@ -391,6 +400,7 @@ async def poll_for_dashboard_entity_issues(
                     notifier=_notifier_ref,
                     llm_client=_llm_ref,
                     knowledge_store=knowledge_store,
+                    ha_rest_client=_rest_ref,
                 )
 
         # Reconcile missing-entity cards.

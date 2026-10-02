@@ -27,6 +27,7 @@ from utils.agent.tool_registry import ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from interfaces import (
+        HARestClientProtocol,
         HAWebSocketClientProtocol,
         KnowledgeStoreClientProtocol,
         LLMClientProtocol,
@@ -175,6 +176,7 @@ class ToolExecutor:
         netalertx_api_client: Optional["NetAlertXAPIClient"] = None,
         netalertx_container_name: str = "netalertx",
         ha_ws_client: Optional["HAWebSocketClientProtocol"] = None,
+        ha_rest_client: Optional["HARestClientProtocol"] = None,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
         db_path: str = DB_PATH,
         llm_client: Optional["LLMClientProtocol"] = None,
@@ -188,6 +190,7 @@ class ToolExecutor:
         self._api = netalertx_api_client
         self._container = netalertx_container_name
         self._ws_client = ha_ws_client
+        self._rest_client = ha_rest_client
         self._knowledge_store = knowledge_store
         self._db_path = db_path
         self._llm_client = llm_client
@@ -230,6 +233,12 @@ class ToolExecutor:
         available at executor creation time). Called from main.py once the client exists.
         """
         self._ws_client = client
+
+    def set_rest_client(self, client: "HARestClientProtocol") -> None:
+        """Inject the HA REST client after construction. Called from main.py once the
+        client exists. Mirrors set_ws_client.
+        """
+        self._rest_client = client
 
     def set_update_status(self, update_status: Any) -> None:
         """Store the pending UpdateStatus so finish_update_analysis can create the card."""

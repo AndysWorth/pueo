@@ -2432,3 +2432,59 @@ class TestVersionScoreBoosting:
         assert result.success is True
         # Newer chunk should appear before older one
         assert result.output.index("2026.9") < result.output.index("2025.8")
+
+
+class TestRestClientWiring:
+    """S1: ToolExecutor stores and exposes the REST client."""
+
+    def _make_executor(self, rest_client=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+        )
+
+    def test_rest_client_stored_at_init(self):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient()
+        executor = self._make_executor(rest_client=fake)
+        assert executor._rest_client is fake
+
+    def test_rest_client_none_by_default(self):
+        executor = self._make_executor()
+        assert executor._rest_client is None
+
+    def test_set_rest_client_updates_attribute(self):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor()
+        fake = FakeHARestClient()
+        executor.set_rest_client(fake)
+        assert executor._rest_client is fake
+
+
+class TestFakeHARestClientGetText:
+    """get_text returns text_responses value (or empty string on miss)."""
+
+    def test_get_text_hit(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(text_responses={"/api/error_log": "line1\nline2"})
+        result = asyncio.run(fake.get_text("/api/error_log"))
+        assert result == "line1\nline2"
+
+    def test_get_text_miss_returns_empty(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient()
+        result = asyncio.run(fake.get_text("/api/missing"))
+        assert result == ""

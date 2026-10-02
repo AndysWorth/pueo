@@ -3284,6 +3284,8 @@ async def _run_chat_loop(
     """Run one AgentLoop turn for a chat session and publish SSE progress events."""
     from config import (
         AUTONOMY_LEVEL,
+        HA_API_PORT,
+        HA_API_TOKEN,
         HA_HOST,
         HA_USER,
         NOTIFIER,
@@ -3328,7 +3330,14 @@ async def _run_chat_loop(
             ssh = FakeSSHClient()
         gate = AutonomyGate(AUTONOMY_LEVEL)
         notifier = get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
-        executor = ToolExecutor(ha_ssh_client=ssh, gate=gate, notifier=notifier)
+        _rest = None
+        if HA_API_TOKEN:
+            from utils.ha.ha_rest_client import HARestClient as _HARestClient
+
+            _rest = _HARestClient(HA_HOST, HA_API_PORT, HA_API_TOKEN)
+        executor = ToolExecutor(
+            ha_ssh_client=ssh, gate=gate, notifier=notifier, ha_rest_client=_rest
+        )
 
     async def on_pre_step(tool_call: ToolCall) -> None:
         publish_chat_event(
