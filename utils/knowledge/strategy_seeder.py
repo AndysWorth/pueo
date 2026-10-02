@@ -99,6 +99,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "HA Supervisor CLI reference",
         "run_ha_command, ha apps, ha core, ha os, ha backups, ha supervisor, ha network, restart HA, list backups, check config, CLI command",
     ),
+    (
+        "seed_automation_failure.md",
+        "Automation or script failure investigation",
+        "automation didn't fire, automation not triggering, script failed, automation stopped, condition blocked, trigger not matching",
+    ),
 ]
 
 

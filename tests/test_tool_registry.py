@@ -363,3 +363,32 @@ class TestRegistryMembership:
             f"HA registry schema is {ha_tokens} tokens (ceiling {HA_CEILING}). "
             "Either the registry grew unexpectedly or the ceiling needs bumping."
         )
+
+    def test_get_automation_traces_in_ha_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_ha_tool_registry,
+            build_chat_tool_registry,
+        )
+
+        for label, reg in (
+            ("ha", build_ha_tool_registry()),
+            ("chat", build_chat_tool_registry()),
+        ):
+            assert (
+                "get_automation_traces" in reg
+            ), f"get_automation_traces missing from {label} registry"
+
+    def test_get_automation_traces_schema(self):
+        from utils.agent.tool_registry import GET_AUTOMATION_TRACES
+
+        props = GET_AUTOMATION_TRACES.parameters.get("properties", {})
+        assert "entity_id" in props
+        assert "run_id" in props
+        required = GET_AUTOMATION_TRACES.parameters.get("required", [])
+        assert "entity_id" in required
+        assert "run_id" not in required
+
+    def test_get_automation_traces_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_automation_traces" in _MCP_TOOL_NAMES
