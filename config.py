@@ -150,6 +150,9 @@ HA_CONCEPTS_CACHE_DIR: str = _agent.get(
 HA_DEVELOPER_DOCS_CACHE_DIR: str = _agent.get(
     "ha_developer_docs_cache_dir", str(_dirs.cache_dir / "ha_developer_docs")
 )
+HA_SKILLS_CACHE_DIR: str = _agent.get(
+    "ha_skills_cache_dir", str(_dirs.cache_dir / "ha_skills")
+)
 RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 168))
 RAG_HYBRID_WEIGHT: float = float(_agent.get("rag_hybrid_weight", 0.3))
 

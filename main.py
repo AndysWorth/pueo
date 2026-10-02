@@ -308,6 +308,25 @@ def run_rag_refresh(
         "rag_refresh_step_done", step="embed_repair_episodes", embedded=n_episodes
     )
 
+    # ── 8. HA best-practices skills ─────────────────────────────────────────
+    from utils.knowledge.ha_skills_scraper import (
+        embed_cached_ha_skills,
+        fetch_ha_skills,
+    )
+
+    _cb("Fetching HA skills")
+    _log.info("rag_refresh_step", step="fetch_ha_skills")
+    skills_ids: set[str] = set()
+    n_fetched_skills = fetch_ha_skills(config.HA_SKILLS_CACHE_DIR)
+    _log.info("rag_refresh_step_done", step="fetch_ha_skills", fetched=n_fetched_skills)
+    _cb("Embedding HA skills")
+    _log.info("rag_refresh_step", step="embed_ha_skills")
+    n_skills = embed_cached_ha_skills(
+        config.HA_SKILLS_CACHE_DIR, store, collected_ids=skills_ids
+    )
+    store.prune("ha_best_practices", skills_ids)
+    _log.info("rag_refresh_step_done", step="embed_ha_skills", embedded=n_skills)
+
     total = (
         n_ha
         + n_hacs
@@ -318,6 +337,7 @@ def run_rag_refresh(
         + n_home_profile
         + n_reembedded
         + n_episodes
+        + n_skills
     )
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
@@ -325,7 +345,7 @@ def run_rag_refresh(
     _log.info(
         "rag_refresh_complete",
         total_embedded=total,
-        collections=7,
+        collections=8,
     )
 
 

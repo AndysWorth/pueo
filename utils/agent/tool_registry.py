@@ -312,13 +312,16 @@ QUERY_KNOWLEDGE = ToolDefinition(
     name="query_knowledge",
     description=(
         "Query the local RAG knowledge base for HA breaking changes, integration docs, "
-        "runbooks, repair history, and developer docs. "
+        "runbooks, repair history, developer docs, and HA best practices. "
         "Use query_type to route to the most relevant collections: "
-        "'diagnostic' for error/repair queries (repair history + release notes + integration docs); "
-        "'procedural' for how-to/implementation queries (developer docs + concepts + integration docs); "
-        "'generative' for automation/template authoring (concepts + integration docs + strategies); "
+        "'diagnostic' for error/repair queries (repair history + release notes + integration docs + best practices); "
+        "'procedural' for how-to/implementation queries (developer docs + concepts + integration docs + best practices); "
+        "'generative' for automation/template authoring (concepts + integration docs + strategies + best practices); "
         "'version_check' for breaking-change queries about a specific HA version (release notes only). "
         "Omit query_type to search all collections. "
+        "IMPORTANT: call query_knowledge with query_type='generative' before proposing any automation or "
+        "config YAML change — ha_best_practices contains deprecated-API warnings (e.g. removed triggers, "
+        "renamed keys) that prevent generating YAML using removed APIs. "
         "Pass ha_version (e.g. '2026.9.0') to boost results matching that HA version and penalise "
         "content older than 12 months; auto-detected from the running HA instance when omitted. "
         "Pass integration_filter to scope results to specific domains."
@@ -335,9 +338,9 @@ QUERY_KNOWLEDGE = ToolDefinition(
                 "enum": ["diagnostic", "procedural", "generative", "version_check"],
                 "description": (
                     "Route query to relevant collections: "
-                    "'diagnostic' = repair_history + ha_release_notes + ha_integration_docs; "
-                    "'procedural' = ha_developer_docs + ha_concepts + ha_integration_docs; "
-                    "'generative' = ha_concepts + ha_integration_docs + strategies; "
+                    "'diagnostic' = repair_history + ha_release_notes + ha_integration_docs + ha_best_practices; "
+                    "'procedural' = ha_developer_docs + ha_concepts + ha_integration_docs + ha_best_practices; "
+                    "'generative' = ha_concepts + ha_integration_docs + strategies + ha_best_practices; "
                     "'version_check' = ha_release_notes only"
                 ),
             },
