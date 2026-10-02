@@ -164,6 +164,25 @@ class HAWebSocketClient:  # pragma: no cover
             data: dict = resp.json()
         return data.get("components", [])
 
+    async def get_spook_entity_issues(self) -> list[dict]:
+        """Fetch Spook entity issues via the spook/entities/issues/list WS command.
+
+        Returns an empty list when Spook is not installed (unknown_command error).
+        Raises on other failures.
+        """
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "spook/entities/issues/list"}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                code = msg.get("error", {}).get("code", "")
+                if code == "unknown_command":
+                    return []
+                raise RuntimeError(f"spook/entities/issues/list request failed: {msg}")
+            return msg.get("result", [])
+        finally:
+            await ws.close()
+
     async def get_entity_registry(self) -> list[dict]:
         """Fetch all entities via HA WebSocket config/entity_registry/list."""
         ws = await self._connect_and_auth()
@@ -238,6 +257,7 @@ class FakeHAWebSocketClient:
         lovelace_config_not_found: set[str] | None = None,
         states: list[dict] | None = None,
         ha_components: list[str] | None = None,
+        spook_entity_issues: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -251,6 +271,7 @@ class FakeHAWebSocketClient:
         self._lovelace_config_not_found: set[str] = lovelace_config_not_found or set()
         self._states: list[dict] = states or []
         self._ha_components: list[str] = ha_components or []
+        self._spook_entity_issues: list[dict] = spook_entity_issues or []
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -276,6 +297,10 @@ class FakeHAWebSocketClient:
     async def get_ha_components(self) -> list[str]:
         self.calls.append("get_ha_components")
         return list(self._ha_components)
+
+    async def get_spook_entity_issues(self) -> list[dict]:
+        self.calls.append("get_spook_entity_issues")
+        return list(self._spook_entity_issues)
 
     async def get_entity_registry(self) -> list[dict]:
         self.calls.append("get_entity_registry")

@@ -778,6 +778,22 @@ if $WRITE_CONFIG; then
         ok "MQTT anonymous access configured"
     fi
 
+    # ── Spook optional install prompt ────────────────────────────────────────────
+    echo
+    echo "  ── Optional: frenck/spook ─────────────────────────────────────────"
+    echo "  Spook is a HACS custom integration that adds richer entity registry"
+    echo "  analysis and dead-entity detection to HA's built-in repairs page."
+    echo "  Pueo will use Spook automatically if it detects it is installed."
+    echo "  Docs: https://spook.boo"
+    echo
+    read -rp "  Open browser to install Spook via HACS now? [y/N]: " spook_ans
+    if [[ "${spook_ans:-N}" =~ ^[Yy] ]]; then
+        open "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration" 2>/dev/null || true
+        ok "Browser opened to HACS install page for Spook"
+    else
+        info "Skipping — Pueo will use Spook automatically if you install it later."
+    fi
+
     # ── Write config ─────────────────────────────────────────────────────────────
     _write_config() {
         local dest="$1"
