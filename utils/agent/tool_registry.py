@@ -612,6 +612,62 @@ GET_AUTOMATION_TRACES = ToolDefinition(
     },
 )
 
+GET_INTEGRATION_DIAGNOSTICS = ToolDefinition(
+    name="get_integration_diagnostics",
+    description=(
+        "Fetch the HA diagnostics payload for a config entry (integration instance). "
+        "Pass the domain name (e.g. 'hue') or a specific entry_id. "
+        "Resolves the entry via the WS config-entry registry when only a domain is given, "
+        "choosing the first active entry for that domain. "
+        "Sensitive keys (token, password, api_key, secret) are automatically redacted. "
+        "Use to inspect misconfigured integrations, debug auth failures, or understand "
+        "what data an integration is currently reporting. "
+        "Requires both REST and WS clients."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain_or_entry_id": {
+                "type": "string",
+                "description": (
+                    "Integration domain name (e.g. 'hue', 'zwave_js') or a full "
+                    "config entry ID (a UUID string). If a domain is given, the first "
+                    "active config entry for that domain is used."
+                ),
+            },
+        },
+        "required": ["domain_or_entry_id"],
+    },
+)
+
+RELOAD_INTEGRATION = ToolDefinition(
+    name="reload_integration",
+    description=(
+        "Reload a HA config entry (integration instance), restarting it without a "
+        "full HA Core restart. Queues an approval card (risk MEDIUM) before acting. "
+        "Pass the domain name or entry_id and a brief reason. "
+        "Use when an integration is stuck, showing unavailable entities, or after a "
+        "config change that requires a reload. "
+        "Requires both REST and WS clients."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain_or_entry_id": {
+                "type": "string",
+                "description": (
+                    "Integration domain name (e.g. 'hue') or a full config entry ID."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief explanation of why this reload is needed.",
+            },
+        },
+        "required": ["domain_or_entry_id", "reason"],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1853,6 +1909,8 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_SYSTEM_ERROR_LOG,
         GET_AREA_LAYOUT,
         GET_AUTOMATION_TRACES,
+        GET_INTEGRATION_DIAGNOSTICS,
+        RELOAD_INTEGRATION,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -1957,6 +2015,8 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_SYSTEM_ERROR_LOG,
         GET_AREA_LAYOUT,
         GET_AUTOMATION_TRACES,
+        GET_INTEGRATION_DIAGNOSTICS,
+        RELOAD_INTEGRATION,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,

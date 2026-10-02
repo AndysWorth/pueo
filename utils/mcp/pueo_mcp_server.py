@@ -38,6 +38,7 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_system_error_log",
         "get_area_layout",
         "get_automation_traces",
+        "get_integration_diagnostics",
     }
 )
 
@@ -99,10 +100,13 @@ class PueoMCPServer:
         from utils.agent.tool_registry import (
             CHECK_ENTITY_STATUS,
             FETCH_HA_DOCS,
+            GET_AREA_LAYOUT,
+            GET_AUTOMATION_TRACES,
             GET_DASHBOARD_ENTITY_HEALTH,
             GET_DISK_USAGE,
             GET_ENTITY_HISTORY,
             GET_HA_PROFILE,
+            GET_INTEGRATION_DIAGNOSTICS,
             GET_LOGBOOK,
             GET_SYSTEM_ERROR_LOG,
             QUERY_KNOWLEDGE,
@@ -134,6 +138,9 @@ class PueoMCPServer:
             GET_LOGBOOK,
             RENDER_HA_TEMPLATE,
             GET_SYSTEM_ERROR_LOG,
+            GET_AREA_LAYOUT,
+            GET_AUTOMATION_TRACES,
+            GET_INTEGRATION_DIAGNOSTICS,
         ]
         tool_defs = [td for td in _all_tool_defs if td.name in _MCP_TOOL_NAMES]
         token = _cfg.MCP_TOKEN

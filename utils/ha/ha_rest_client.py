@@ -192,6 +192,25 @@ class HARestClient:  # pragma: no cover
             resp.raise_for_status()
             return resp.json()  # type: ignore[no-any-return]
 
+    async def get_config_entry_diagnostics(self, entry_id: str) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{base}/api/diagnostics/config_entry/{entry_id}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def reload_config_entry(self, entry_id: str) -> None:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/config_entries/entry/{entry_id}/reload",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+
 
 @dataclass
 class HARepairIssue:
@@ -256,6 +275,7 @@ class FakeHARestClient:
         logbook_responses: dict[str, list[dict]] | None = None,
         template_responses: dict[str, str] | None = None,
         services: list[dict] | None = None,
+        diagnostics_responses: dict[str, dict] | None = None,
     ) -> None:
         self._states: list[dict] = states or []
         self._raw: dict[str, dict] = raw_responses or {}
@@ -264,9 +284,11 @@ class FakeHARestClient:
         self._logbook: dict[str, list[dict]] = logbook_responses or {}
         self._templates: dict[str, str] = template_responses or {}
         self._services: list[dict] = services or []
+        self._diagnostics: dict[str, dict] = diagnostics_responses or {}
         self.service_calls: list[tuple[str, str, dict]] = []
         self.deleted: list[str] = []
         self.posted: list[tuple[str, dict]] = []
+        self.reloaded: list[str] = []
 
     async def get_states(self, prefix: str | None = None) -> list[dict]:
         if prefix:
@@ -313,3 +335,9 @@ class FakeHARestClient:
 
     async def get_services(self) -> list[dict]:
         return list(self._services)
+
+    async def get_config_entry_diagnostics(self, entry_id: str) -> dict:
+        return dict(self._diagnostics.get(entry_id, {}))
+
+    async def reload_config_entry(self, entry_id: str) -> None:
+        self.reloaded.append(entry_id)
