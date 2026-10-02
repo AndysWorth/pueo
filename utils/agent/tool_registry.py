@@ -452,6 +452,75 @@ SEARCH_INTEGRATIONS = ToolDefinition(
     },
 )
 
+GET_ENTITY_HISTORY = ToolDefinition(
+    name="get_entity_history",
+    description=(
+        "Return the state history for one entity over the last N hours as compacted "
+        "transitions (timestamp → state). Useful for spotting intermittent failures, "
+        "unavailability windows, or unexpected state changes. "
+        "Requires a HA REST API token."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": "Entity ID (e.g. 'sensor.temperature')",
+            },
+            "hours": {
+                "type": "number",
+                "description": "How many hours of history to fetch (default 6, max 48)",
+            },
+        },
+        "required": ["entity_id"],
+    },
+)
+
+GET_LOGBOOK = ToolDefinition(
+    name="get_logbook",
+    description=(
+        "Return HA logbook entries for one entity over the last N hours. "
+        "Logbook entries describe what happened (automation triggered, service called, etc.) "
+        "and are more human-readable than raw state history. "
+        "Requires a HA REST API token."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": "Entity ID to filter entries for",
+            },
+            "hours": {
+                "type": "number",
+                "description": "How many hours of logbook to fetch (default 6, max 48)",
+            },
+        },
+        "required": ["entity_id"],
+    },
+)
+
+RENDER_HA_TEMPLATE = ToolDefinition(
+    name="render_ha_template",
+    description=(
+        "Render a Jinja2 template using the live HA template engine. "
+        "Use to inspect entity states, attributes, or evaluate template expressions. "
+        "Read-only — never use to call services or trigger actions. "
+        "Template must be ≤ 2 KB. "
+        "Requires a HA REST API token."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "string",
+                "description": "Jinja2 template string (e.g. '{{ states(\"sun.sun\") }}')",
+            }
+        },
+        "required": ["template"],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1687,6 +1756,9 @@ def build_ha_tool_registry() -> ToolRegistry:
         LIST_LOG_SOURCES,
         GET_HA_PROFILE,
         SEARCH_INTEGRATIONS,
+        GET_ENTITY_HISTORY,
+        GET_LOGBOOK,
+        RENDER_HA_TEMPLATE,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -1785,6 +1857,9 @@ def build_chat_tool_registry() -> ToolRegistry:
         REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
         SEARCH_INTEGRATIONS,
+        GET_ENTITY_HISTORY,
+        GET_LOGBOOK,
+        RENDER_HA_TEMPLATE,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,
@@ -1899,6 +1974,8 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         CHECK_ENTITY_STATUS,
         GET_CONFIG_ENTRIES_ALL,
         GET_HA_COMPONENTS,
+        GET_ENTITY_HISTORY,
+        GET_LOGBOOK,
         SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,

@@ -1,7 +1,9 @@
 """HA REST API client, update entity polling, and FakeHARestClient test double."""
 
+import datetime
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -133,6 +135,63 @@ class HARestClient:  # pragma: no cover
             resp = await client.delete(f"{base}{path}", headers=self._headers)
             resp.raise_for_status()
 
+    async def get_history(self, entity_id: str, hours: float) -> list[dict]:
+        start = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=hours)
+        ).isoformat()
+        params = urlencode(
+            {
+                "filter_entity_id": entity_id,
+                "minimal_response": "true",
+                "no_attributes": "true",
+            }
+        )
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}/history/period/{start}?{params}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            data: list[list[dict]] = resp.json()
+        # Flatten: the API returns a list-of-lists (one per entity)
+        if not data:
+            return []
+        return data[0] if data else []
+
+    async def get_logbook(self, entity_id: str, hours: float) -> list[dict]:
+        start = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=hours)
+        ).isoformat()
+        params = urlencode({"entity": entity_id, "duration": str(int(hours * 3600))})
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}/logbook/{start}?{params}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def render_template(self, template: str) -> str:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._base_url}/template",
+                headers=self._headers,
+                json={"template": template},
+            )
+            resp.raise_for_status()
+            return resp.text
+
+    async def get_services(self) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}/services",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
 
 @dataclass
 class HARepairIssue:
@@ -193,10 +252,18 @@ class FakeHARestClient:
         states: list[dict] | None = None,
         raw_responses: dict[str, dict] | None = None,
         text_responses: dict[str, str] | None = None,
+        history_responses: dict[str, list[dict]] | None = None,
+        logbook_responses: dict[str, list[dict]] | None = None,
+        template_responses: dict[str, str] | None = None,
+        services: list[dict] | None = None,
     ) -> None:
         self._states: list[dict] = states or []
         self._raw: dict[str, dict] = raw_responses or {}
         self._text: dict[str, str] = text_responses or {}
+        self._history: dict[str, list[dict]] = history_responses or {}
+        self._logbook: dict[str, list[dict]] = logbook_responses or {}
+        self._templates: dict[str, str] = template_responses or {}
+        self._services: list[dict] = services or []
         self.service_calls: list[tuple[str, str, dict]] = []
         self.deleted: list[str] = []
         self.posted: list[tuple[str, dict]] = []
@@ -234,3 +301,15 @@ class FakeHARestClient:
 
     async def delete(self, path: str) -> None:
         self.deleted.append(path)
+
+    async def get_history(self, entity_id: str, hours: float) -> list[dict]:
+        return list(self._history.get(entity_id, []))
+
+    async def get_logbook(self, entity_id: str, hours: float) -> list[dict]:
+        return list(self._logbook.get(entity_id, []))
+
+    async def render_template(self, template: str) -> str:
+        return self._templates.get(template, "")
+
+    async def get_services(self) -> list[dict]:
+        return list(self._services)

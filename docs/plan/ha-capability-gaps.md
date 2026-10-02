@@ -12,7 +12,7 @@ Each step is one GitHub issue → one branch → one PR.  Stack branches while a
 |------|-------|-------|--------|
 | S0 | [#731](https://github.com/AndysWorth/pueo/issues/731) | Amend ADR 032, save plan, file S1–S10 issues | Done (2026-10-02) PR #742 |
 | S1 | [#732](https://github.com/AndysWorth/pueo/issues/732) | Wire REST client into ToolExecutor, add `get_text` | Done (2026-10-02) PR #743 |
-| S2 | [#733](https://github.com/AndysWorth/pueo/issues/733) | History, logbook, template, services tools + token budget test | TODO |
+| S2 | [#733](https://github.com/AndysWorth/pueo/issues/733) | History, logbook, template, services tools + token budget test | Done (2026-10-02) PR #744 |
 | S3 | [#734](https://github.com/AndysWorth/pueo/issues/734) | WS `_call` helper + `get_system_error_log` | TODO |
 | S4 | [#735](https://github.com/AndysWorth/pueo/issues/735) | Area/floor/label registry → `get_area_layout` | TODO |
 | S5 | [#736](https://github.com/AndysWorth/pueo/issues/736) | Automation traces → `get_automation_traces` + seed runbook | TODO |

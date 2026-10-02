@@ -212,3 +212,92 @@ class TestRegistryMembership:
         assert props["query"].get("type") == "string"
         required = SEARCH_HA_DOCS.parameters.get("required", [])
         assert "query" in required
+
+    def test_history_logbook_template_in_ha_and_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+
+        for registry_fn, label in (
+            (build_ha_tool_registry, "ha"),
+            (build_chat_tool_registry, "chat"),
+        ):
+            reg = registry_fn()
+            for tool_name in (
+                "get_entity_history",
+                "get_logbook",
+                "render_ha_template",
+            ):
+                assert tool_name in reg, f"{tool_name!r} missing from {label} registry"
+
+    def test_history_logbook_in_lovelace_registry(self):
+        from utils.agent.tool_registry import build_lovelace_investigation_registry
+
+        reg = build_lovelace_investigation_registry()
+        assert "get_entity_history" in reg
+        assert "get_logbook" in reg
+
+    def test_render_ha_template_not_in_lovelace_registry(self):
+        from utils.agent.tool_registry import build_lovelace_investigation_registry
+
+        reg = build_lovelace_investigation_registry()
+        assert "render_ha_template" not in reg
+
+    def test_get_entity_history_schema(self):
+        from utils.agent.tool_registry import GET_ENTITY_HISTORY
+
+        props = GET_ENTITY_HISTORY.parameters.get("properties", {})
+        assert "entity_id" in props
+        assert "hours" in props
+        required = GET_ENTITY_HISTORY.parameters.get("required", [])
+        assert "entity_id" in required
+        assert "hours" not in required  # optional
+
+    def test_render_ha_template_schema(self):
+        from utils.agent.tool_registry import RENDER_HA_TEMPLATE
+
+        props = RENDER_HA_TEMPLATE.parameters.get("properties", {})
+        assert "template" in props
+        required = RENDER_HA_TEMPLATE.parameters.get("required", [])
+        assert "template" in required
+
+    def test_new_tools_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        for tool_name in ("get_entity_history", "get_logbook", "render_ha_template"):
+            assert (
+                tool_name in _MCP_TOOL_NAMES
+            ), f"{tool_name!r} missing from _MCP_TOOL_NAMES"
+
+    def test_registry_schema_token_budget(self):
+        """Token cost of chat + ha registry schemas must stay within a safe ceiling."""
+        import json
+
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+        from utils.core.context import estimate_tokens
+
+        chat_tokens = estimate_tokens(
+            json.dumps(build_chat_tool_registry().get_ollama_tools())
+        )
+        ha_tokens = estimate_tokens(
+            json.dumps(build_ha_tool_registry().get_ollama_tools())
+        )
+
+        # Ceiling = observed value at test-write time + 25% headroom.
+        # chat registry: ~7000 tokens; ha registry: ~5000 tokens.
+        # Bump these numbers (with the same +25% formula) when you intentionally
+        # add new tools, not as a shortcut past a surprise regression.
+        CHAT_CEILING = 10_000
+        HA_CEILING = 8_000
+        assert chat_tokens <= CHAT_CEILING, (
+            f"Chat registry schema is {chat_tokens} tokens (ceiling {CHAT_CEILING}). "
+            "Either the registry grew unexpectedly or the ceiling needs bumping."
+        )
+        assert ha_tokens <= HA_CEILING, (
+            f"HA registry schema is {ha_tokens} tokens (ceiling {HA_CEILING}). "
+            "Either the registry grew unexpectedly or the ceiling needs bumping."
+        )
