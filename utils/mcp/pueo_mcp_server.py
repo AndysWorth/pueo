@@ -36,6 +36,7 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_logbook",
         "render_ha_template",
         "get_system_error_log",
+        "get_area_layout",
     }
 )
 

@@ -302,6 +302,36 @@ class TestRegistryMembership:
 
         assert "get_system_error_log" in _MCP_TOOL_NAMES
 
+    def test_get_area_layout_in_ha_chat_lovelace_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+            build_lovelace_investigation_registry,
+        )
+
+        for registry_fn, label in (
+            (build_ha_tool_registry, "ha"),
+            (build_chat_tool_registry, "chat"),
+            (build_lovelace_investigation_registry, "lovelace_investigation"),
+        ):
+            reg = registry_fn()
+            assert (
+                "get_area_layout" in reg
+            ), f"get_area_layout missing from {label} registry"
+
+    def test_get_area_layout_schema(self):
+        from utils.agent.tool_registry import GET_AREA_LAYOUT
+
+        props = GET_AREA_LAYOUT.parameters.get("properties", {})
+        assert "area" in props
+        required = GET_AREA_LAYOUT.parameters.get("required", [])
+        assert required == []  # area is optional
+
+    def test_get_area_layout_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_area_layout" in _MCP_TOOL_NAMES
+
     def test_registry_schema_token_budget(self):
         """Token cost of chat + ha registry schemas must stay within a safe ceiling."""
         import json

@@ -552,6 +552,32 @@ GET_SYSTEM_ERROR_LOG = ToolDefinition(
     },
 )
 
+GET_AREA_LAYOUT = ToolDefinition(
+    name="get_area_layout",
+    description=(
+        "Return the HA area/floor/label layout. "
+        "Without 'area': lists all floors with their areas and per-area device/entity counts. "
+        "With 'area': returns the devices and entities assigned to that named area, "
+        "with their labels resolved. "
+        "Use when diagnosing entity placement, finding what's in a room, or "
+        "understanding the physical layout of the home. "
+        "Requires a HA WebSocket connection."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "area": {
+                "type": "string",
+                "description": (
+                    "Area name (e.g. 'Kitchen'). Case-insensitive. "
+                    "Omit to get the full layout overview."
+                ),
+            }
+        },
+        "required": [],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1791,6 +1817,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_LOGBOOK,
         RENDER_HA_TEMPLATE,
         GET_SYSTEM_ERROR_LOG,
+        GET_AREA_LAYOUT,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -1893,6 +1920,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_LOGBOOK,
         RENDER_HA_TEMPLATE,
         GET_SYSTEM_ERROR_LOG,
+        GET_AREA_LAYOUT,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,
@@ -2009,6 +2037,7 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         GET_HA_COMPONENTS,
         GET_ENTITY_HISTORY,
         GET_LOGBOOK,
+        GET_AREA_LAYOUT,
         SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,
