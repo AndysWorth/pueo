@@ -1290,10 +1290,11 @@ class ToolExecutor:
             )
         domain, item_id = parts[0], entity_id
 
+        ws = self._ws_client
         try:
             if run_id is None:
-                return await self._list_automation_runs(domain, item_id)
-            return await self._get_automation_run_detail(domain, item_id, run_id)
+                return await self._list_automation_runs(ws, domain, item_id)
+            return await self._get_automation_run_detail(ws, domain, item_id, run_id)
         except Exception as exc:
             return ToolResult(
                 tool_name="get_automation_traces",
@@ -1302,9 +1303,10 @@ class ToolExecutor:
                 error=f"trace fetch failed: {exc}",
             )
 
-    async def _list_automation_runs(self, domain: str, item_id: str) -> ToolResult:
-        assert self._ws_client is not None
-        runs = await self._ws_client.list_traces(domain, item_id)
+    async def _list_automation_runs(
+        self, ws: "Any", domain: str, item_id: str
+    ) -> ToolResult:
+        runs = await ws.list_traces(domain, item_id)
         if not runs:
             return ToolResult(
                 tool_name="get_automation_traces",
@@ -1332,10 +1334,9 @@ class ToolExecutor:
         )
 
     async def _get_automation_run_detail(
-        self, domain: str, item_id: str, run_id: str
+        self, ws: "Any", domain: str, item_id: str, run_id: str
     ) -> ToolResult:
-        assert self._ws_client is not None
-        trace_data = await self._ws_client.get_trace(domain, item_id, run_id)
+        trace_data = await ws.get_trace(domain, item_id, run_id)
         if not trace_data:
             return ToolResult(
                 tool_name="get_automation_traces",
