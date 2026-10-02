@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "service_call") or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -432,6 +432,9 @@
         {% elif ct == "config_entry_reload" %}
           {% set hint_approve = "Reload the integration config entry via HA REST API; no HA Core restart required" %}
           {% set hint_reject = "Skip; integration stays in its current state" %}
+        {% elif ct == "service_call" %}
+          {% set hint_approve = "Send the service call to HA via REST API (" + r.payload.get("domain", "") + "." + r.payload.get("service", "") + ")" %}
+          {% set hint_reject = "Skip; no service call sent" %}
         {% else %}
           {% set hint_approve = "Execute this action" %}
           {% set hint_reject = "Discard; no changes made" %}

@@ -42,6 +42,7 @@ class TestMCPToolInventory:
             "open_pr",
             "execute_local_python",
             "reload_integration",
+            "call_service",
         }
         assert dangerous.isdisjoint(
             _MCP_TOOL_NAMES

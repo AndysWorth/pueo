@@ -47,6 +47,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_REPAIR,
     CARD_TYPE_RESOURCE_ACTION,
     CARD_TYPE_UNREGISTERED_ENTITY,
+    CARD_TYPE_SERVICE_CALL,
     CARD_TYPE_UPDATE,
 )
 
@@ -1200,6 +1201,65 @@ async def _execute_config_entry_reload(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_service_call(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Call a HA service via the REST API."""
+    import config as _config
+
+    payload = data.get("payload", {})
+    domain = payload.get("domain", "")
+    service = payload.get("service", "")
+    svc_data: dict = payload.get("data") or {}
+    target: dict = payload.get("target") or {}
+    reason = payload.get("reason", "")
+
+    call_payload: dict = dict(svc_data)
+    if target:
+        call_payload["target"] = target
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        # Re-validate blocklist at execution time (defense-in-depth: the card
+        # payload is written to disk and could be tampered with before approval).
+        from utils.ha.service_policy import classify_service_risk
+
+        if classify_service_risk(domain, service) is None:
+            raise RuntimeError(
+                f"{domain}.{service} is blocked by service policy and cannot be executed"
+            )
+        if not _config.HA_API_TOKEN:
+            raise RuntimeError("HA_API_TOKEN not configured")
+        from utils.ha.ha_rest_client import HARestClient
+
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        await rest.call_service(domain, service, call_payload)
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "service_call",
+                f"Service called: {domain}.{service} — {reason}",
+                {"domain": domain, "service": service, "reason": reason},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 async def _execute_code_proposal(
     nid: str,
     data: dict,
@@ -1776,6 +1836,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
     CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
+    CARD_TYPE_SERVICE_CALL: _execute_service_call,
 }
 
 
