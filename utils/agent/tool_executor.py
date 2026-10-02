@@ -425,6 +425,8 @@ class ToolExecutor:
                 return await self._get_config_entries_all()
             if name == "get_ha_components":
                 return await self._get_ha_components()
+            if name == "get_spook_issues":
+                return await self._get_spook_issues()
             if name == "finish_lovelace_investigation":
                 return await self._finish_lovelace_investigation(
                     args.get("findings", [])
@@ -2585,6 +2587,62 @@ class ToolExecutor:
                 output="",
                 error=str(exc),
             )
+
+    async def _get_spook_issues(self) -> ToolResult:
+        """Return Spook repair issues and dead-entity analysis."""
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_spook_issues",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        if self._ha_profile and not self._ha_profile.spook_installed:
+            return ToolResult(
+                tool_name="get_spook_issues",
+                success=True,
+                output=(
+                    "Spook is not installed on this HA instance. "
+                    "Install it via HACS to get richer entity registry analysis: "
+                    "https://spook.boo"
+                ),
+            )
+        try:
+            repair_issues = await self._ws_client.get_repair_issues()
+            spook_repairs = [i for i in repair_issues if i.get("domain") == "spook"]
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_spook_issues",
+                success=False,
+                output="",
+                error=f"Failed to fetch repair issues: {exc}",
+            )
+        entity_issues: list[dict] = []
+        try:
+            entity_issues = await self._ws_client.get_spook_entity_issues()
+        except Exception as exc:
+            log.warning("spook_entity_issues_failed", error=str(exc))
+
+        parts = []
+        if spook_repairs:
+            parts.append(
+                f"Spook repair issues ({len(spook_repairs)}):\n"
+                + json.dumps(spook_repairs, indent=2)
+            )
+        else:
+            parts.append("No Spook repair issues found.")
+        if entity_issues:
+            parts.append(
+                f"\nSpook entity issues ({len(entity_issues)}):\n"
+                + json.dumps(entity_issues, indent=2)
+            )
+        else:
+            parts.append("\nNo Spook dead-entity issues found.")
+        return ToolResult(
+            tool_name="get_spook_issues",
+            success=True,
+            output="\n".join(parts),
+        )
 
     async def _finish_lovelace_investigation(self, findings: list[dict]) -> ToolResult:
         """Create HITL cards for each finding; suppress duplicates."""

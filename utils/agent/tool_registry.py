@@ -1279,6 +1279,18 @@ GET_HA_COMPONENTS = ToolDefinition(
     parameters={"type": "object", "properties": {}, "required": []},
 )
 
+GET_SPOOK_ISSUES = ToolDefinition(
+    name="get_spook_issues",
+    description=(
+        "Return repair issues and dead-entity analysis from the Spook custom integration "
+        "(https://spook.boo). Spook surfaces richer HA health issues than the built-in repairs "
+        "page: dead entity detection, entity registry problems, and automation health checks. "
+        "Returns an informational message if Spook is not installed. "
+        "Use this during any entity-registry or dead-entity investigation."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
 FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
     name="finish_lovelace_investigation",
     description=(
@@ -1676,6 +1688,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_HA_PROFILE,
         SEARCH_INTEGRATIONS,
         GET_OLLAMA_STATUS,
+        GET_SPOOK_ISSUES,
         DISCARD_RESULT,
     ):
         reg.register(tool)
@@ -1777,6 +1790,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         EXECUTE_LOCAL_PYTHON,
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
+        GET_SPOOK_ISSUES,
         RESOLVE_HITL_CARD,
         DISCARD_RESULT,
     ):

@@ -31,6 +31,7 @@ class HAEnvironmentProfile:
     config_entries: list[dict] = field(default_factory=list)
     last_updated: float = 0.0
     fetch_errors: dict = field(default_factory=dict)
+    spook_installed: bool = False
 
 
 async def build_environment_profile(
@@ -105,6 +106,9 @@ async def build_environment_profile(
         log.warning("ha_profile_field_failed", field="hacs_integrations", exc=str(e))
         profile.fetch_errors["hacs_integrations"] = str(e)
 
+    # 4b. spook_installed — derived from installed_integrations (no extra network call)
+    profile.spook_installed = "spook" in profile.installed_integrations
+
     # 5. config_yaml_top_keys from remote configuration.yaml
     # Use regex instead of yaml.safe_load: HA config files use !include tags that
     # yaml.safe_load does not support, and we only need top-level key names.
@@ -147,6 +151,8 @@ def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
         f"  Config entries: {len(profile.config_entries)}",
         '  (use get_ha_profile field="installed_integrations"|"hacs_integrations"|"config_entries" for full lists)',
     ]
+    if profile.spook_installed:
+        lines.append("  Spook: installed")
     return "\n".join(lines)
 
 

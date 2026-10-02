@@ -406,3 +406,81 @@ class TestFormatProfileSummary:
         assert (
             format_profile_summary(None) == "HA environment profile not yet available."
         )
+
+    def test_spook_line_shown_when_installed(self):
+        profile = self._make_profile()
+        profile.spook_installed = True
+        assert "Spook: installed" in format_profile_summary(profile)
+
+    def test_no_spook_line_when_not_installed(self):
+        profile = self._make_profile()
+        profile.spook_installed = False
+        assert "Spook" not in format_profile_summary(profile)
+
+
+# ---------------------------------------------------------------------------
+# Spook detection
+# ---------------------------------------------------------------------------
+
+
+class TestSpookDetection:
+    def _run(self, integrations):
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: integrations,
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_spook_installed_when_in_integrations(self):
+        profile = self._run(["zha", "spook", "mqtt"])
+        assert profile.spook_installed is True
+
+    def test_spook_not_installed_when_absent(self):
+        profile = self._run(["zha", "mqtt"])
+        assert profile.spook_installed is False
+
+    def test_spook_false_when_integrations_empty(self):
+        """Empty installed_integrations (e.g. fetch failure) → spook_installed=False."""
+        profile = self._run([])
+        assert profile.spook_installed is False
+
+    def test_spook_detection_survives_integrations_failure(self):
+        """When _discover_integrations raises, spook_installed falls back to False."""
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        profile = asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: (_ for _ in ()).throw(
+                    RuntimeError("API unreachable")
+                ),
+                _discover_hacs=lambda *a: [],
+            )
+        )
+        assert profile.spook_installed is False

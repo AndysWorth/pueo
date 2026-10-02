@@ -11440,6 +11440,93 @@ class TestHARepairIssue:
         assert "/api/repairs/issues/homeassistant/reboot_required" in client.deleted
 
 
+class TestGetSpookIssues:
+    def _make_executor(self, ws_client=None, ha_profile=None):
+        import asyncio as _asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_ws_client=ws_client,
+        )
+        if ha_profile is not None:
+            ex.set_ha_profile(ha_profile)
+        return ex
+
+    def _run(self, ex):
+        import asyncio as _asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        return _asyncio.run(ex.execute(ToolCall(name="get_spook_issues", arguments={})))
+
+    def test_no_ws_client_returns_error(self):
+        ex = self._make_executor(ws_client=None)
+        result = self._run(ex)
+        assert result.success is False
+        assert "WS client not available" in (result.error or "")
+
+    def test_spook_not_installed_returns_info_message(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        profile = HAEnvironmentProfile(spook_installed=False)
+        ex = self._make_executor(ws_client=FakeHAWebSocketClient(), ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "not installed" in result.output
+        assert "https://spook.boo" in result.output
+
+    def test_filters_to_spook_domain_only(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        issues = [
+            {"domain": "spook", "issue_id": "dead_entity_1", "severity": "warning"},
+            {"domain": "hassio", "issue_id": "reboot_required", "severity": "warning"},
+            {"domain": "spook", "issue_id": "dead_entity_2", "severity": "warning"},
+        ]
+        profile = HAEnvironmentProfile(spook_installed=True)
+        ws = FakeHAWebSocketClient(repair_issues=issues)
+        ex = self._make_executor(ws_client=ws, ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "dead_entity_1" in result.output
+        assert "dead_entity_2" in result.output
+        assert "reboot_required" not in result.output
+
+    def test_includes_spook_entity_issues(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entity_issues = [{"entity_id": "sensor.old_sensor", "issue": "dead_entity"}]
+        profile = HAEnvironmentProfile(spook_installed=True)
+        ws = FakeHAWebSocketClient(spook_entity_issues=entity_issues)
+        ex = self._make_executor(ws_client=ws, ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "old_sensor" in result.output
+
+    def test_no_profile_shows_issues_without_not_installed_guard(self):
+        """When no profile is set, fetch regardless (optimistic)."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        issues = [
+            {"domain": "spook", "issue_id": "dead_e", "severity": "warning"},
+        ]
+        ws = FakeHAWebSocketClient(repair_issues=issues)
+        ex = self._make_executor(ws_client=ws, ha_profile=None)
+        result = self._run(ex)
+        assert result.success is True
+        assert "dead_e" in result.output
+
+
 class TestHARepairDB:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):
