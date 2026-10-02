@@ -17,7 +17,7 @@ Each step is one GitHub issue → one branch → one PR.  Stack branches while a
 | S4 | [#735](https://github.com/AndysWorth/pueo/issues/735) | Area/floor/label registry → `get_area_layout` | Done (2026-10-02) — PR #746 |
 | S5 | [#736](https://github.com/AndysWorth/pueo/issues/736) | Automation traces → `get_automation_traces` + seed runbook | Done (2026-10-02) PR #747 |
 | S6 | [#737](https://github.com/AndysWorth/pueo/issues/737) | Config-entry diagnostics + gated `reload_integration` | Done (2026-10-02) |
-| S7 | [#738](https://github.com/AndysWorth/pueo/issues/738) | Gated `call_service` + `service_policy.py` | TODO |
+| S7 | [#738](https://github.com/AndysWorth/pueo/issues/738) | Gated `call_service` + `service_policy.py` | Done (2026-10-02) PR #749 |
 | S8 | [#739](https://github.com/AndysWorth/pueo/issues/739) | `HAEventSubscriber`, ring buffer, `get_recent_events` | TODO |
 | S9 | [#740](https://github.com/AndysWorth/pueo/issues/740) | Event-driven triggers: `supervisor.wake()` + ADR 033 | TODO |
 | S10 | [#741](https://github.com/AndysWorth/pueo/issues/741) | Docs and prompt wrap-up | TODO |
