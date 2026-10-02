@@ -684,13 +684,30 @@ class ToolExecutor:
             return "[CANDIDATE RUNBOOK – unreviewed]"
         if collection == "repair_history":
             return "[PAST REPAIR]"
+        if collection == "ha_best_practices":
+            return "[BEST PRACTICE]"
         return "[COMMUNITY]"
 
     # Collections queried per query_type; None → all collections (default behaviour).
     _QUERY_TYPE_COLLECTIONS: dict[str, list[str]] = {
-        "diagnostic": ["repair_history", "ha_release_notes", "ha_integration_docs"],
-        "procedural": ["ha_developer_docs", "ha_concepts", "ha_integration_docs"],
-        "generative": ["ha_concepts", "ha_integration_docs", "strategies"],
+        "diagnostic": [
+            "repair_history",
+            "ha_release_notes",
+            "ha_integration_docs",
+            "ha_best_practices",
+        ],
+        "procedural": [
+            "ha_developer_docs",
+            "ha_concepts",
+            "ha_integration_docs",
+            "ha_best_practices",
+        ],
+        "generative": [
+            "ha_concepts",
+            "ha_integration_docs",
+            "strategies",
+            "ha_best_practices",
+        ],
         "version_check": ["ha_release_notes"],
     }
 

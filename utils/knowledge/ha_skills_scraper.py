@@ -1,0 +1,147 @@
+"""HA best-practices skills scraper and embedder.
+
+Fetches SKILL.md and 8 reference files from the homeassistant-ai/skills
+repository and embeds them into the ha_best_practices ChromaDB collection.
+
+Content includes a version-stamped table of deprecated HA APIs (e.g. removed
+color_temp, removed entered_home/left_home triggers) that prevents Pueo from
+proposing fixes using removed APIs.
+
+Network calls (fetch_ha_skills) only run during rag-refresh — zero WAN during
+fix cycles.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from interfaces import KnowledgeStoreClientProtocol
+
+_GITHUB_BASE = (
+    "https://raw.githubusercontent.com/homeassistant-ai/skills/main"
+    "/skills/home-assistant-best-practices"
+)
+
+# SKILL.md is the top-level doc; the rest are referenced spec files.
+_SKILL_FILES: list[tuple[str, str]] = [
+    ("SKILL", "SKILL.md"),
+    ("safe-refactoring", "references/safe-refactoring.md"),
+    ("triggers-and-conditions", "references/triggers-and-conditions.md"),
+    ("automation-actions", "references/automation-actions.md"),
+    ("helper-selection", "references/helper-selection.md"),
+    ("backups", "references/backups.md"),
+    ("blueprint-guide", "references/blueprint-guide.md"),
+    ("device-control", "references/device-control.md"),
+    ("scenes", "references/scenes.md"),
+]
+
+_HEADING = re.compile(r"\n## ")
+
+
+def _chunk_markdown(
+    text: str,
+    source: str,
+    doc_type: str,
+) -> tuple[list[str], list[str], list[dict]]:
+    """Split on H2 headings, cap chunks at 3000 chars.
+
+    Returns (ids, documents, metadatas).
+    """
+    parts = _HEADING.split(text)
+    ids: list[str] = []
+    docs: list[str] = []
+    metas: list[dict] = []
+    source_slug = source.replace("/", "-").replace(".", "-").lower()
+    for i, part in enumerate(parts):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if len(chunk) > 3000:
+            truncated = chunk[:3000]
+            space_idx = truncated.rfind(" ")
+            chunk = truncated[:space_idx] if space_idx > 0 else truncated
+        ids.append(f"ha-skills-{source_slug}-{i}")
+        docs.append(chunk)
+        metas.append({"source": source, "doc_type": doc_type})
+    return ids, docs, metas
+
+
+def fetch_ha_skills(cache_dir: str) -> int:  # pragma: no cover
+    """Fetch HA skills Markdown files from GitHub and cache locally.
+
+    Returns count of files newly fetched (cached files are skipped).
+    """
+    import urllib.request
+
+    from utils.core.logging import get_logger
+
+    log = get_logger("ha_skills_scraper")
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    fetched = 0
+    for slug, filename in _SKILL_FILES:
+        cache_path = Path(cache_dir) / f"{slug}.md"
+        if cache_path.exists():
+            log.debug("ha_skills_cached", slug=slug)
+            continue
+        url = f"{_GITHUB_BASE}/{filename}"
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "pueo-rag-refresh/1.0"}
+            )
+            with urllib.request.urlopen(  # nosec B310 — hardcoded GitHub raw URL
+                req, timeout=15
+            ) as resp:
+                if resp.status == 200:
+                    cache_path.write_bytes(resp.read())
+                    fetched += 1
+                    log.info("ha_skills_fetched", slug=slug)
+                else:
+                    log.warning(
+                        "ha_skills_fetch_failed",
+                        slug=slug,
+                        url=url,
+                        status=resp.status,
+                    )
+        except Exception as exc:  # nosec B110 — 404s and timeouts are expected
+            log.warning("ha_skills_fetch_error", slug=slug, url=url, error=str(exc))
+    log.info("ha_skills_fetch_complete", total=len(_SKILL_FILES), fetched=fetched)
+    return fetched
+
+
+def embed_cached_ha_skills(
+    cache_dir: str,
+    knowledge_store: "KnowledgeStoreClientProtocol",
+    collected_ids: set[str] | None = None,
+) -> int:
+    """Read cached ha-skills .md files and embed into ha_best_practices collection.
+
+    If collected_ids is provided, all upserted chunk IDs are added to it.
+    Returns count of files embedded.
+    """
+    path = Path(cache_dir)
+    if not path.exists():
+        return 0
+    processed = 0
+    for fp in sorted(path.glob("*.md")):
+        slug = fp.stem
+        try:
+            content = fp.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        doc_type = "best_practices" if slug == "SKILL" else "best_practices_ref"
+        ids, docs, metas = _chunk_markdown(content, f"ha_skills/{slug}", doc_type)
+        if not ids:
+            continue
+        if collected_ids is not None:
+            collected_ids.update(ids)
+        knowledge_store.upsert(
+            "ha_best_practices",
+            ids=ids,
+            documents=docs,
+            metadatas=metas,
+        )
+        processed += 1
+    return processed

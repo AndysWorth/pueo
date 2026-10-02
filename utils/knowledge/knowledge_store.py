@@ -70,6 +70,8 @@ def _authority_score(collection: str, metadata: dict) -> float:
         return 0.6  # candidate / agent_learned
     if collection == "repair_history":
         return 0.5
+    if collection == "ha_best_practices":
+        return 0.9
     # hacs_changelogs and any future community collections
     return 0.6
 
@@ -82,6 +84,7 @@ COLLECTIONS: tuple[str, ...] = (
     "ha_developer_docs",
     "strategies",
     "repair_history",
+    "ha_best_practices",
 )
 
 

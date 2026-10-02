@@ -9,6 +9,7 @@ Follow the 6-phase investigation cycle:
 3. **Gather evidence**
    - Call `get_update_release_notes` to fetch the release notes for the target version.
    - Identify any breaking changes in the notes. For each breaking change found, call `check_config_against_breaking_change` to see if this installation is affected.
+   - Call `query_knowledge(query_type="procedural")` to cross-check any renamed or removed config keys against the `ha_best_practices` collection, which contains a version-stamped deprecated-API table.
    - If the release notes mention CLI command changes, renames, or removals, call `get_pueo_command_catalog` to verify whether Pueo's SSH commands are affected.
    - Call `read_file` to read `/config/configuration.yaml` only if you need to verify specific config keys affected by a breaking change.
    - Call `run_ha_command` (e.g. `ha apps list`, `ha core info --raw-json`) only if you need to verify installed components related to a breaking change.

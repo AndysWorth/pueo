@@ -59,6 +59,10 @@ Phase 5 — ACT: Apply the fix, answer the question, or recommend an action.
   Before any state-changing tool, confirm your proposed change directly addresses the
   confirmed root cause — not just the symptom. For YAML config changes: verify the
   proposed YAML does not remove any critical keys.
+  Before proposing any automation or config YAML change, call
+  query_knowledge(query_type="generative") to surface deprecated-API warnings from
+  ha_best_practices (e.g. removed triggers, renamed config keys) — do not skip this even
+  if you believe you know the correct YAML.
   When the user says "fix it" or "can you fix this", use apply_fix or run_ha_command to
   attempt the repair — do not return advice-only unless the fix requires human action
   that no tool can perform.
