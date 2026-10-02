@@ -521,6 +521,37 @@ RENDER_HA_TEMPLATE = ToolDefinition(
     },
 )
 
+GET_SYSTEM_ERROR_LOG = ToolDefinition(
+    name="get_system_error_log",
+    description=(
+        "Return structured HA system log entries grouped by logger. "
+        "Shows count, first/last seen, and the latest message per logger. "
+        "Use when diagnosing integration errors, startup failures, or unexplained HA restarts. "
+        "Requires a HA WebSocket connection."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "level": {
+                "type": "string",
+                "description": (
+                    "Minimum log level to include: DEBUG, INFO, WARNING, ERROR, or CRITICAL "
+                    "(default ERROR)"
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max number of logger groups to return (default 20, max 100)",
+            },
+            "logger_filter": {
+                "type": "string",
+                "description": "Optional substring to filter logger names (e.g. 'zha', 'mqtt')",
+            },
+        },
+        "required": [],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1759,6 +1790,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_ENTITY_HISTORY,
         GET_LOGBOOK,
         RENDER_HA_TEMPLATE,
+        GET_SYSTEM_ERROR_LOG,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -1860,6 +1892,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_ENTITY_HISTORY,
         GET_LOGBOOK,
         RENDER_HA_TEMPLATE,
+        GET_SYSTEM_ERROR_LOG,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,
@@ -2001,6 +2034,7 @@ def build_notification_investigation_registry() -> ToolRegistry:
         SEARCH_LOG,
         FETCH_URL,
         GET_DEVICE_INFO,
+        GET_SYSTEM_ERROR_LOG,
         DISMISS_NOTIFICATION,
         SAVE_RUNBOOK,
         REQUEST_ESCALATION,

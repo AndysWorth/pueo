@@ -270,6 +270,38 @@ class TestRegistryMembership:
                 tool_name in _MCP_TOOL_NAMES
             ), f"{tool_name!r} missing from _MCP_TOOL_NAMES"
 
+    def test_get_system_error_log_in_ha_chat_notification_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+            build_notification_investigation_registry,
+        )
+
+        for registry_fn, label in (
+            (build_ha_tool_registry, "ha"),
+            (build_chat_tool_registry, "chat"),
+            (build_notification_investigation_registry, "notification_investigation"),
+        ):
+            reg = registry_fn()
+            assert (
+                "get_system_error_log" in reg
+            ), f"get_system_error_log missing from {label} registry"
+
+    def test_get_system_error_log_schema(self):
+        from utils.agent.tool_registry import GET_SYSTEM_ERROR_LOG
+
+        props = GET_SYSTEM_ERROR_LOG.parameters.get("properties", {})
+        assert "level" in props
+        assert "limit" in props
+        assert "logger_filter" in props
+        required = GET_SYSTEM_ERROR_LOG.parameters.get("required", [])
+        assert required == []  # all params optional
+
+    def test_get_system_error_log_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_system_error_log" in _MCP_TOOL_NAMES
+
     def test_registry_schema_token_budget(self):
         """Token cost of chat + ha registry schemas must stay within a safe ceiling."""
         import json

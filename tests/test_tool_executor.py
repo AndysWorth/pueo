@@ -2866,3 +2866,269 @@ class TestSearchIntegrationsWithServices:
         )
         assert result.success
         assert "Services" not in result.output
+
+
+class TestGetSystemErrorLogTool:
+    """Tests for the get_system_error_log tool."""
+
+    def _make_executor(self, ws_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_system_error_log", arguments={}))
+        )
+        assert not result.success
+        assert "WS client" in result.error
+
+    def test_empty_log_returns_message(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_system_error_log", arguments={}))
+        )
+        assert result.success
+        assert "No ERROR+" in result.output
+
+    def test_groups_by_logger_and_sums_count(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {
+                "logger": "homeassistant.components.zha",
+                "level": "ERROR",
+                "message": ["ZHA device timeout"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 3,
+            },
+            {
+                "logger": "homeassistant.components.zha",
+                "level": "ERROR",
+                "message": ["ZHA coordinator offline"],
+                "timestamp": 1010.0,
+                "first_occurred": 950.0,
+                "count": 1,
+            },
+            {
+                "logger": "homeassistant.components.mqtt",
+                "level": "ERROR",
+                "message": ["MQTT connection failed"],
+                "timestamp": 990.0,
+                "first_occurred": 980.0,
+                "count": 5,
+            },
+        ]
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(system_log=entries)
+        )
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_system_error_log", arguments={}))
+        )
+        assert result.success
+        # mqtt has count=5 so sorts first; zha total is 4
+        lines = result.output
+        assert "mqtt" in lines
+        assert "zha" in lines
+        mqtt_pos = lines.index("mqtt")
+        zha_pos = lines.index("zha")
+        assert mqtt_pos < zha_pos
+
+    def test_level_filter_excludes_lower(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {
+                "logger": "homeassistant.components.zha",
+                "level": "WARNING",
+                "message": ["ZHA warning"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 1,
+            },
+        ]
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(system_log=entries)
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_system_error_log",
+                    arguments={"level": "ERROR"},
+                )
+            )
+        )
+        assert result.success
+        assert "No ERROR+" in result.output
+
+    def test_warning_level_includes_warnings(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {
+                "logger": "homeassistant.components.zha",
+                "level": "WARNING",
+                "message": ["ZHA warning"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 1,
+            },
+        ]
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(system_log=entries)
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_system_error_log",
+                    arguments={"level": "WARNING"},
+                )
+            )
+        )
+        assert result.success
+        assert "zha" in result.output
+
+    def test_logger_filter(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {
+                "logger": "homeassistant.components.zha",
+                "level": "ERROR",
+                "message": ["ZHA error"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 1,
+            },
+            {
+                "logger": "homeassistant.components.mqtt",
+                "level": "ERROR",
+                "message": ["MQTT error"],
+                "timestamp": 1001.0,
+                "first_occurred": 999.0,
+                "count": 2,
+            },
+        ]
+        executor = self._make_executor(
+            ws_client=FakeHAWebSocketClient(system_log=entries)
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_system_error_log",
+                    arguments={"logger_filter": "zha"},
+                )
+            )
+        )
+        assert result.success
+        assert "zha" in result.output
+        assert "mqtt" not in result.output
+
+    def test_client_error_returns_failure(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        class _ErrorWs:
+            async def get_system_log(self):
+                raise RuntimeError("connection refused")
+
+            async def get_device_registry(self):
+                return []
+
+            async def get_persistent_notifications(self):
+                return []
+
+            async def get_repair_issues(self):
+                return []
+
+            async def get_config_entries(self):
+                return []
+
+            async def get_all_config_entries(self):
+                return []
+
+            async def get_ha_components(self):
+                return []
+
+            async def get_entity_registry(self):
+                return []
+
+            async def get_spook_entity_issues(self):
+                return []
+
+            async def get_lovelace_dashboards(self):
+                return []
+
+            async def get_lovelace_config(self, url_path=None):
+                return {}
+
+            async def get_states(self):
+                return []
+
+            async def dismiss_notification(self, nid):
+                pass
+
+        executor = self._make_executor(ws_client=_ErrorWs())
+        result = asyncio.run(
+            executor.execute(ToolCall(name="get_system_error_log", arguments={}))
+        )
+        assert not result.success
+        assert "system_log fetch failed" in result.error
+
+
+class TestFakeHAWebSocketClientSystemLog:
+    """FakeHAWebSocketClient correctly handles the system_log parameter."""
+
+    def test_get_system_log_returns_entries(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        entries = [
+            {
+                "logger": "homeassistant.loader",
+                "level": "ERROR",
+                "message": ["Module not found"],
+                "timestamp": 1000.0,
+                "first_occurred": 900.0,
+                "count": 1,
+            }
+        ]
+        fake = FakeHAWebSocketClient(system_log=entries)
+        result = asyncio.run(fake.get_system_log())
+        assert result == entries
+        assert "get_system_log" in fake.calls
+
+    def test_get_system_log_default_empty(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        result = asyncio.run(fake.get_system_log())
+        assert result == []
