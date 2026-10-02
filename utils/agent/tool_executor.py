@@ -321,6 +321,18 @@ class ToolExecutor:
                 return await self._get_ha_profile(field=args.get("field"))
             if name == "search_integrations":
                 return await self._search_integrations(args.get("query", ""))
+            if name == "get_entity_history":
+                return await self._get_entity_history(
+                    args.get("entity_id", ""),
+                    float(args.get("hours", 6)),
+                )
+            if name == "get_logbook":
+                return await self._get_logbook(
+                    args.get("entity_id", ""),
+                    float(args.get("hours", 6)),
+                )
+            if name == "render_ha_template":
+                return await self._render_ha_template(args.get("template", ""))
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -870,21 +882,158 @@ class ToolExecutor:
             for name in (self._ha_profile.hacs_integrations or [])
             if q in name.lower()
         ]
-        if not installed and not hacs:
-            return ToolResult(
-                tool_name="search_integrations",
-                success=True,
-                output=f"No matching integrations found for {query!r}.",
-            )
         lines = []
         if installed:
             lines.append(f"Installed ({len(installed)}): {', '.join(installed)}")
         if hacs:
             lines.append(f"HACS ({len(hacs)}): {', '.join(hacs)}")
+        # Augment with service names from the REST client when available
+        if self._rest_client and (installed or hacs):
+            try:
+                all_services = await self._rest_client.get_services()
+                service_names: list[str] = []
+                for svc_group in all_services:
+                    domain = svc_group.get("domain", "")
+                    if q in domain.lower():
+                        service_names.extend(
+                            f"{domain}.{s}" for s in svc_group.get("services", {})
+                        )
+                if service_names:
+                    lines.append(
+                        f"Services ({len(service_names)}): {', '.join(service_names[:20])}"
+                    )
+            except Exception:  # nosec B110 — service fetch is best-effort augmentation
+                pass
+        if not lines:
+            return ToolResult(
+                tool_name="search_integrations",
+                success=True,
+                output=f"No matching integrations found for {query!r}.",
+            )
         return ToolResult(
             tool_name="search_integrations",
             success=True,
             output="\n".join(lines),
+        )
+
+    _MAX_HISTORY_ROWS = 200
+    _MAX_LOGBOOK_ROWS = 100
+    _MAX_TEMPLATE_BYTES = 2048
+
+    async def _get_entity_history(self, entity_id: str, hours: float) -> ToolResult:
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="get_entity_history",
+                success=False,
+                output="",
+                error="REST client not available — set HA_API_TOKEN in config",
+            )
+        hours = min(max(hours, 0.1), 48.0)
+        try:
+            states = await self._rest_client.get_history(entity_id, hours)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_entity_history",
+                success=False,
+                output="",
+                error=f"history fetch failed: {exc}",
+            )
+        if not states:
+            return ToolResult(
+                tool_name="get_entity_history",
+                success=True,
+                output=f"No history for {entity_id} in the last {hours:.0f}h.",
+            )
+        # Compact: only emit a row when state changes
+        rows: list[str] = []
+        prev_state: str | None = None
+        for entry in states[: self._MAX_HISTORY_ROWS]:
+            state = entry.get("state", "")
+            ts = entry.get("last_changed") or entry.get("last_updated", "")
+            if ts and len(ts) > 19:
+                ts = ts[:19].replace("T", " ")
+            if state != prev_state:
+                rows.append(f"{ts}  {state}")
+                prev_state = state
+        truncated = len(states) > self._MAX_HISTORY_ROWS
+        output = "\n".join(rows)
+        if truncated:
+            output += f"\n… ({len(states) - self._MAX_HISTORY_ROWS} more rows omitted)"
+        return ToolResult(tool_name="get_entity_history", success=True, output=output)
+
+    async def _get_logbook(self, entity_id: str, hours: float) -> ToolResult:
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="get_logbook",
+                success=False,
+                output="",
+                error="REST client not available — set HA_API_TOKEN in config",
+            )
+        hours = min(max(hours, 0.1), 48.0)
+        try:
+            entries = await self._rest_client.get_logbook(entity_id, hours)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_logbook",
+                success=False,
+                output="",
+                error=f"logbook fetch failed: {exc}",
+            )
+        if not entries:
+            return ToolResult(
+                tool_name="get_logbook",
+                success=True,
+                output=f"No logbook entries for {entity_id} in the last {hours:.0f}h.",
+            )
+        rows: list[str] = []
+        for entry in entries[: self._MAX_LOGBOOK_ROWS]:
+            when = (entry.get("when") or "")[:19].replace("T", " ")
+            name = entry.get("name") or entry.get("domain", "")
+            message = entry.get("message", "")
+            rows.append(f"{when}  {name}: {message}")
+        truncated = len(entries) > self._MAX_LOGBOOK_ROWS
+        output = "\n".join(rows)
+        if truncated:
+            output += (
+                f"\n… ({len(entries) - self._MAX_LOGBOOK_ROWS} more entries omitted)"
+            )
+        return ToolResult(tool_name="get_logbook", success=True, output=output)
+
+    async def _render_ha_template(self, template: str) -> ToolResult:
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="render_ha_template",
+                success=False,
+                output="",
+                error="REST client not available — set HA_API_TOKEN in config",
+            )
+        if len(template.encode()) > self._MAX_TEMPLATE_BYTES:
+            return ToolResult(
+                tool_name="render_ha_template",
+                success=False,
+                output="",
+                error=f"Template too large (max {self._MAX_TEMPLATE_BYTES} bytes)",
+            )
+        if not template.strip():
+            return ToolResult(
+                tool_name="render_ha_template",
+                success=False,
+                output="",
+                error="Template must not be empty",
+            )
+        try:
+            result = await self._rest_client.render_template(template)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="render_ha_template",
+                success=False,
+                output="",
+                error=f"template render failed: {exc}",
+            )
+        return ToolResult(
+            tool_name="render_ha_template",
+            success=True,
+            output=result[:4000],
         )
 
     async def _get_disk_usage(self) -> ToolResult:

@@ -2488,3 +2488,381 @@ class TestFakeHARestClientGetText:
         fake = FakeHARestClient()
         result = asyncio.run(fake.get_text("/api/missing"))
         assert result == ""
+
+
+class TestGetEntityHistory:
+    """Tests for the get_entity_history tool."""
+
+    def _make_executor(self, rest_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+        )
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_entity_history", arguments={"entity_id": "sensor.temp"}
+                )
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_empty_history_returns_message(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient()
+        executor = self._make_executor(rest_client=fake)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_entity_history",
+                    arguments={"entity_id": "sensor.temp", "hours": 6},
+                )
+            )
+        )
+        assert result.success
+        assert "No history" in result.output
+
+    def test_history_compacts_unchanged_states(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        # Three entries: two with same state, one change
+        entries = [
+            {"state": "on", "last_changed": "2026-10-02T10:00:00+00:00"},
+            {"state": "on", "last_changed": "2026-10-02T10:05:00+00:00"},
+            {"state": "off", "last_changed": "2026-10-02T10:10:00+00:00"},
+        ]
+        fake = FakeHARestClient(history_responses={"sensor.temp": entries})
+        executor = self._make_executor(rest_client=fake)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_entity_history", arguments={"entity_id": "sensor.temp"}
+                )
+            )
+        )
+        assert result.success
+        lines = [ln for ln in result.output.splitlines() if ln.strip()]
+        assert len(lines) == 2  # on → off only
+
+    def test_client_error_returns_failure(self):
+        import asyncio
+
+        class _ErrorClient:
+            async def get_history(self, *a, **kw):
+                raise RuntimeError("timeout")
+
+            async def get_states(self, prefix=None):
+                return []
+
+            async def get_state(self, entity_id):
+                raise RuntimeError
+
+            async def call_service(self, *a, **kw):
+                return {}
+
+            async def get_raw(self, path):
+                return {}
+
+            async def get_text(self, path):
+                return ""
+
+            async def post(self, path, payload):
+                return {}
+
+            async def delete(self, path):
+                pass
+
+            async def get_logbook(self, *a, **kw):
+                raise RuntimeError("timeout")
+
+            async def render_template(self, template):
+                return ""
+
+            async def get_services(self):
+                return []
+
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor(rest_client=_ErrorClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_entity_history", arguments={"entity_id": "sensor.temp"}
+                )
+            )
+        )
+        assert not result.success
+        assert "history fetch failed" in result.error
+
+
+class TestGetLogbook:
+    """Tests for the get_logbook tool."""
+
+    def _make_executor(self, rest_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+        )
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_logbook", arguments={"entity_id": "sensor.temp"})
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_empty_logbook_returns_message(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_logbook", arguments={"entity_id": "sensor.temp"})
+            )
+        )
+        assert result.success
+        assert "No logbook entries" in result.output
+
+    def test_logbook_entry_formatted(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        entries = [
+            {
+                "when": "2026-10-02T10:00:00+00:00",
+                "name": "Temperature",
+                "message": "changed to 21°C",
+            },
+        ]
+        fake = FakeHARestClient(logbook_responses={"sensor.temp": entries})
+        executor = self._make_executor(rest_client=fake)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="get_logbook", arguments={"entity_id": "sensor.temp"})
+            )
+        )
+        assert result.success
+        assert "Temperature" in result.output
+        assert "21" in result.output
+
+
+class TestRenderHaTemplate:
+    """Tests for the render_ha_template tool."""
+
+    def _make_executor(self, rest_client=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+        )
+
+    def test_no_client_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="render_ha_template", arguments={"template": "{{ now() }}"}
+                )
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_empty_template_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="render_ha_template", arguments={"template": "   "})
+            )
+        )
+        assert not result.success
+        assert "empty" in result.error
+
+    def test_template_too_large_returns_error(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        big = "{{ now() }}" * 1000
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="render_ha_template", arguments={"template": big})
+            )
+        )
+        assert not result.success
+        assert "too large" in result.error
+
+    def test_success(self):
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        tmpl = "{{ states('sun.sun') }}"
+        fake = FakeHARestClient(template_responses={tmpl: "above_horizon"})
+        executor = self._make_executor(rest_client=fake)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="render_ha_template", arguments={"template": tmpl})
+            )
+        )
+        assert result.success
+        assert result.output == "above_horizon"
+
+
+class TestFakeHARestClientNewMethods:
+    """FakeHARestClient correctly handles the four new methods."""
+
+    def test_get_history_hit(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        entries = [{"state": "on", "last_changed": "2026-10-02T10:00:00+00:00"}]
+        fake = FakeHARestClient(history_responses={"sensor.x": entries})
+        result = asyncio.run(fake.get_history("sensor.x", 6))
+        assert result == entries
+
+    def test_get_history_miss(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient()
+        result = asyncio.run(fake.get_history("sensor.x", 6))
+        assert result == []
+
+    def test_get_logbook_hit(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        entries = [{"when": "2026-10-02T10:00:00+00:00", "name": "X", "message": "on"}]
+        fake = FakeHARestClient(logbook_responses={"sensor.x": entries})
+        result = asyncio.run(fake.get_logbook("sensor.x", 6))
+        assert result == entries
+
+    def test_render_template_hit(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake = FakeHARestClient(template_responses={"{{ now() }}": "2026-10-02 10:00"})
+        result = asyncio.run(fake.render_template("{{ now() }}"))
+        assert result == "2026-10-02 10:00"
+
+    def test_get_services(self):
+        import asyncio
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        svcs = [{"domain": "light", "services": {"turn_on": {}, "turn_off": {}}}]
+        fake = FakeHARestClient(services=svcs)
+        result = asyncio.run(fake.get_services())
+        assert result == svcs
+
+
+class TestSearchIntegrationsWithServices:
+    """search_integrations augments with service names when REST client is available."""
+
+    def _make_executor(self, rest_client=None, ha_profile=None):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.tool_executor import ToolExecutor
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+        )
+        if ha_profile is not None:
+            executor.set_ha_profile(ha_profile)
+        return executor
+
+    def test_includes_service_names_when_client_present(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        svcs = [{"domain": "light", "services": {"turn_on": {}, "turn_off": {}}}]
+        fake = FakeHARestClient(services=svcs)
+        executor = self._make_executor(rest_client=fake)
+
+        profile = MagicMock()
+        profile.installed_integrations = ["light"]
+        profile.hacs_integrations = []
+        executor.set_ha_profile(profile)
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="search_integrations", arguments={"query": "light"})
+            )
+        )
+        assert result.success
+        assert "turn_on" in result.output or "Services" in result.output
+
+    def test_no_service_augmentation_without_client(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+
+        profile = MagicMock()
+        profile.installed_integrations = ["light"]
+        profile.hacs_integrations = []
+        executor.set_ha_profile(profile)
+
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(name="search_integrations", arguments={"query": "light"})
+            )
+        )
+        assert result.success
+        assert "Services" not in result.output

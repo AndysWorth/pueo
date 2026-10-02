@@ -32,6 +32,9 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "recall",
         "search_integrations",
         "get_dashboard_entity_health",
+        "get_entity_history",
+        "get_logbook",
+        "render_ha_template",
     }
 )
 
@@ -95,13 +98,16 @@ class PueoMCPServer:
             FETCH_HA_DOCS,
             GET_DASHBOARD_ENTITY_HEALTH,
             GET_DISK_USAGE,
+            GET_ENTITY_HISTORY,
             GET_HA_PROFILE,
+            GET_LOGBOOK,
             QUERY_KNOWLEDGE,
             READ_CONFIG,
             READ_LOGS,
             READ_PUEO_LOG,
             RECALL,
             REMEMBER,
+            RENDER_HA_TEMPLATE,
             SEARCH_INTEGRATIONS,
             SEARCH_LOG,
         )
@@ -120,6 +126,9 @@ class PueoMCPServer:
             RECALL,
             SEARCH_INTEGRATIONS,
             GET_DASHBOARD_ENTITY_HEALTH,
+            GET_ENTITY_HISTORY,
+            GET_LOGBOOK,
+            RENDER_HA_TEMPLATE,
         ]
         tool_defs = [td for td in _all_tool_defs if td.name in _MCP_TOOL_NAMES]
         token = _cfg.MCP_TOKEN
