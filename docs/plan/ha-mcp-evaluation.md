@@ -4,6 +4,13 @@
 **Issue:** [#729](https://github.com/AndysWorth/pueo/issues/729)  
 **ADR:** [ADR 032](../decisions/032-ha-mcp-consumption.md)
 
+> **Outcome (amended 2026-10-02):** The MCP adapter recommendation was superseded before
+> implementation.  The `mcp` SDK v2.2.0 is async-only; calling it from `asyncio.to_thread()`
+> raises a `RuntimeError`, making the adapter impractical.  `mcp-homeassistant` is also
+> not installed.  ADR 032 was re-accepted as "native REST/WS extension": all 8 gaps are
+> closed using the existing `HARestClient` and `HAWebSocketClient` clients.  See
+> [docs/plan/ha-capability-gaps.md](ha-capability-gaps.md) for the delivery plan.
+
 ## Motivation
 
 Pueo reaches Home Assistant through three hand-written clients: SSH
