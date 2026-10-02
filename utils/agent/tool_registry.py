@@ -668,6 +668,54 @@ RELOAD_INTEGRATION = ToolDefinition(
     },
 )
 
+CALL_SERVICE = ToolDefinition(
+    name="call_service",
+    description=(
+        "Call a Home Assistant service.  The service risk is classified before execution: "
+        "LOW-risk services (lights, switches, fans, covers, notify) auto-execute at GUIDED+ "
+        "autonomy; MEDIUM-risk (automations, scripts, scenes, homeassistant.reload_*) "
+        "queue an approval card unless autonomy is AUTONOMOUS; HIGH-risk queues a card "
+        "at all levels below AUTONOMOUS.  Some services are permanently blocked "
+        "(homeassistant.restart/stop, hassio.*, backup.*, recorder.purge*, update.install, "
+        "shell_command.*, python_script.*, pyscript.*) — use dedicated tools for those. "
+        "Pass 'data' for service parameters and 'target' to restrict which entities "
+        "the service acts on. Always provide a brief reason."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "Service domain (e.g. 'light', 'switch', 'automation').",
+            },
+            "service": {
+                "type": "string",
+                "description": "Service name within the domain (e.g. 'turn_on', 'trigger').",
+            },
+            "data": {
+                "type": "object",
+                "description": (
+                    'Service-specific parameters (e.g. {"brightness_pct": 80}). '
+                    "Omit or pass {} if none required."
+                ),
+            },
+            "target": {
+                "type": "object",
+                "description": (
+                    "Target entities, devices, or areas "
+                    '(e.g. {"entity_id": "light.living_room"}). '
+                    "Omit if the service acts globally."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief explanation of why this service call is needed.",
+            },
+        },
+        "required": ["domain", "service", "reason"],
+    },
+)
+
 GET_DASHBOARD_ENTITY_HEALTH = ToolDefinition(
     name="get_dashboard_entity_health",
     description=(
@@ -1911,6 +1959,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_AUTOMATION_TRACES,
         GET_INTEGRATION_DIAGNOSTICS,
         RELOAD_INTEGRATION,
+        CALL_SERVICE,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
         DISCARD_RESULT,
@@ -2017,6 +2066,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_AUTOMATION_TRACES,
         GET_INTEGRATION_DIAGNOSTICS,
         RELOAD_INTEGRATION,
+        CALL_SERVICE,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,
         EXECUTE_LOCAL_PYTHON,

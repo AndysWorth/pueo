@@ -355,6 +355,14 @@ class ToolExecutor:
                     domain_or_entry_id=args.get("domain_or_entry_id", ""),
                     reason=args.get("reason", ""),
                 )
+            if name == "call_service":
+                return await self._call_service(
+                    domain=args.get("domain", ""),
+                    service=args.get("service", ""),
+                    data=args.get("data") or {},
+                    target=args.get("target") or {},
+                    reason=args.get("reason", ""),
+                )
             if name == "get_disk_usage":
                 return await self._get_disk_usage()
             if name == "get_ollama_status":
@@ -1543,6 +1551,100 @@ class ToolExecutor:
             tool_name="reload_integration",
             success=True,
             output=f"Config entry {entry_id} ({domain_or_entry_id}) reloaded successfully.",
+        )
+
+    async def _call_service(
+        self,
+        domain: str,
+        service: str,
+        data: dict,
+        target: dict,
+        reason: str,
+    ) -> ToolResult:
+        if not domain or not service:
+            return ToolResult(
+                tool_name="call_service",
+                success=False,
+                output="",
+                error="domain and service are required",
+            )
+        if self._rest_client is None:
+            return ToolResult(
+                tool_name="call_service",
+                success=False,
+                output="",
+                error="REST client not available",
+            )
+
+        from utils.ha.service_policy import classify_service_risk
+
+        risk = classify_service_risk(domain, service)
+        if risk is None:
+            return ToolResult(
+                tool_name="call_service",
+                success=False,
+                output="",
+                error=(
+                    f"{domain}.{service} is permanently blocked. "
+                    "Use a dedicated tool (e.g. run_ha_command) for this operation."
+                ),
+            )
+
+        from utils.agent.autonomy import RiskLevel
+        from utils.hitl.card_types import CARD_TYPE_SERVICE_CALL
+
+        nid = get_correlation_id() or str(uuid.uuid4())
+        payload_dict: dict = dict(data) if data else {}
+        if target:
+            payload_dict["target"] = target
+
+        approved = await self._gate.queue_for_approval(
+            subject=f"Pueo: call_service — {domain}.{service}",
+            body=(
+                f"Service: {domain}.{service}\n"
+                f"Risk: {risk.name}\n"
+                f"Reason: {reason}\n"
+                + (f"Data: {data}\n" if data else "")
+                + (f"Target: {target}" if target else "")
+            ),
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_SERVICE_CALL,
+                "domain": domain,
+                "service": service,
+                "data": data,
+                "target": target,
+                "reason": reason,
+                "risk": risk.name,
+            },
+            notifier=self._notifier,
+            risk=risk,
+        )
+        if not approved:
+            log.info(
+                "call_service_queued_for_hitl", nid=nid, domain=domain, service=service
+            )
+            return ToolResult(
+                tool_name="call_service",
+                success=False,
+                output=f"Service call queued for approval (id={nid}); agent loop exiting",
+                awaiting_approval=True,
+            )
+
+        try:
+            await self._rest_client.call_service(domain, service, payload_dict)
+        except Exception as exc:
+            return ToolResult(
+                tool_name="call_service",
+                success=False,
+                output="",
+                error=f"Service call failed: {exc}",
+            )
+        log.info("call_service_executed", domain=domain, service=service)
+        return ToolResult(
+            tool_name="call_service",
+            success=True,
+            output=f"{domain}.{service} called successfully.",
         )
 
     async def _get_disk_usage(self) -> ToolResult:

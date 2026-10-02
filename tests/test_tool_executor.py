@@ -3987,3 +3987,152 @@ class TestReloadIntegration:
         )
         assert result.success
         assert entry_id in fake_rest.reloaded
+
+
+# TestCallService
+# ---------------------------------------------------------------------------
+
+
+class TestCallService:
+    """Tests for the call_service tool (gated write)."""
+
+    def _make_executor(self, rest_client=None, auto_execute=True):
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=auto_execute),
+            notifier=FakeNotifier(),
+        )
+        if rest_client is not None:
+            ex.set_rest_client(rest_client)
+        return ex
+
+    def test_no_rest_client_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={
+                        "domain": "light",
+                        "service": "turn_on",
+                        "reason": "test",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "REST client" in result.error
+
+    def test_missing_domain_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={"domain": "", "service": "turn_on", "reason": "test"},
+                )
+            )
+        )
+        assert not result.success
+        assert "required" in result.error
+
+    def test_blocked_service_returns_error(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        executor = self._make_executor(rest_client=FakeHARestClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={
+                        "domain": "homeassistant",
+                        "service": "restart",
+                        "reason": "test",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "blocked" in result.error.lower()
+
+    def test_low_risk_auto_executes_when_gate_approves(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake_rest = FakeHARestClient()
+        executor = self._make_executor(rest_client=fake_rest, auto_execute=True)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={
+                        "domain": "light",
+                        "service": "turn_on",
+                        "data": {"brightness_pct": 80},
+                        "target": {"entity_id": "light.living_room"},
+                        "reason": "dim for movie",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert any(
+            d == "light" and s == "turn_on" for d, s, _ in fake_rest.service_calls
+        )
+
+    def test_queues_for_approval_when_gate_denies(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake_rest = FakeHARestClient()
+        executor = self._make_executor(rest_client=fake_rest, auto_execute=False)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={
+                        "domain": "light",
+                        "service": "turn_on",
+                        "reason": "test",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert result.awaiting_approval
+        assert fake_rest.service_calls == []
+
+    def test_high_risk_produces_card_when_gate_denies(self):
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        fake_rest = FakeHARestClient()
+        executor = self._make_executor(rest_client=fake_rest, auto_execute=False)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="call_service",
+                    arguments={
+                        "domain": "lock",
+                        "service": "unlock",
+                        "reason": "test",
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert result.awaiting_approval
+        assert fake_rest.service_calls == []
