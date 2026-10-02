@@ -35,3 +35,4 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [029](029-hybrid-retrieval.md) | Hybrid retrieval | Accepted | BM25+cosine hybrid; `RAG_HYBRID_WEIGHT=0.3` (70% cosine + 30% BM25) |
 | [030](030-authority-ranked-knowledge.md) | Authority-ranked knowledge | Accepted | `authority_score` tiers (1.0→0.30); version-aware boosting; `query_type` routing |
 | [031](031-repair-episode-embedding.md) | Repair episode embedding | Accepted | `repair_history` ChromaDB collection; `embed_repair_episodes()` at rag-refresh step 7 |
+| [032](032-ha-mcp-consumption.md) | HA MCP consumption | Proposed | Read-only MCP client adapter (6 tools) via `mcp-homeassistant`; writes stay native |
