@@ -110,7 +110,7 @@ class HAEventSubscriber:  # pragma: no cover
         import websockets
 
         uri = f"ws://{self._host}:{self._port}/api/websocket"
-        async with websockets.connect(uri) as ws:
+        async with websockets.connect(uri, open_timeout=10) as ws:
             await self._auth(ws)
 
             # Subscribe to regular event types (IDs 1, 2, 3)
@@ -198,6 +198,10 @@ class FakeHAEventSubscriber:
     ) -> None:
         self._events: list[dict] = events or []
         self._connected = connected
+
+    async def run_forever(self) -> None:
+        """Sleep indefinitely — cancelled quickly in tests."""
+        await asyncio.sleep(86400)
 
     def get_events(
         self,

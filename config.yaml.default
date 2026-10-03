@@ -126,6 +126,7 @@ agent:
   lovelace_check_interval_minutes: 30  # How often to check Lovelace dashboards for missing entities (0 = off; requires api_token)
   # ha_event_subscribe: true     # Enable long-lived WS event subscriber (requires api_token)
   # ha_event_buffer_size: 500    # Ring buffer size for the event subscriber
+  # ha_event_fallback_poll_minutes: 60  # Poll interval for notification/repair/update loops while subscriber is healthy
   log_triage_cooldown_hours: 4         # Min hours between approval cards for the same recurring log error (persistent dedup)
   rejection_cooldown_hours: 24         # Hours a card is suppressed after the user rejects it (doubles on repeat rejections)
   known_issue_reminder_days: 7         # Days before a Known Issue generates a reminder card

@@ -127,6 +127,10 @@ HA_LOVELACE_CHECK_INTERVAL_MINUTES: int = int(
 # HA event subscriber (long-lived WS ring buffer)
 HA_EVENT_SUBSCRIBE: bool = bool(_agent.get("ha_event_subscribe", True))
 HA_EVENT_BUFFER_SIZE: int = int(_agent.get("ha_event_buffer_size", 500))
+# Fallback poll interval while the event subscriber is connected and healthy
+HA_EVENT_FALLBACK_POLL_MINUTES: float = float(
+    _agent.get("ha_event_fallback_poll_minutes", 60)
+)
 
 # Log triage deduplication — suppress repeat approval cards for the same recurring error
 LOG_TRIAGE_COOLDOWN_HOURS: int = int(_agent.get("log_triage_cooldown_hours", 4))

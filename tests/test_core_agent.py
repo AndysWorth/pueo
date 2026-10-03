@@ -2058,8 +2058,14 @@ class TestSupervisorMain:
         import uvicorn
         import utils.disk.resource as rm
         import utils.ha.ssh_client as sc
+        import utils.ha.ha_ws_client as ha_ws_mod
+        import utils.ha.ha_rest_client as ha_rest_mod
+        import utils.ha.ha_event_subscriber as ha_es_mod
         import netalertx.log_monitor as nax
         from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
 
         monkeypatch.setenv("PUEO_CONFIG", str(config_path))
         importlib.reload(cfg_mod)
@@ -2068,6 +2074,13 @@ class TestSupervisorMain:
 
         async def _noop(**kw):
             pass
+
+        monkeypatch.setattr(
+            ha_agent_advanced, "reconcile_backup_inventory", lambda **kw: _noop()
+        )
+        monkeypatch.setattr(
+            ha_agent_advanced, "offload_pending_backups", lambda **kw: _noop()
+        )
 
         monkeypatch.setattr(
             ha_log_monitor, "tail_remote_log_stream", lambda **kw: _noop()
@@ -2087,6 +2100,42 @@ class TestSupervisorMain:
 
         monkeypatch.setattr(rm, "ResourcePoller", _FakePoller)
         monkeypatch.setattr(sc, "AsyncSSHClient", lambda *a, **kw: object())
+        # Prevent real WebSocket/REST connections during supervisor startup.
+        monkeypatch.setattr(
+            ha_ws_mod, "HAWebSocketClient", lambda *a, **kw: FakeHAWebSocketClient()
+        )
+        monkeypatch.setattr(
+            ha_rest_mod, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        # Prevent the event-subscriber supervisor task from opening a real WS connection.
+        monkeypatch.setattr(
+            ha_es_mod, "HAEventSubscriber", lambda *a, **kw: FakeHAEventSubscriber()
+        )
+        # build_environment_profile calls HA docs + HACS scrapers over the network.
+        import utils.ha.ha_environment as ha_env_mod
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        async def _fake_build_profile(**kw):
+            return HAEnvironmentProfile()
+
+        monkeypatch.setattr(
+            ha_env_mod, "build_environment_profile", _fake_build_profile
+        )
+        monkeypatch.setattr(
+            ha_env_mod, "save_environment_profile", lambda *a, **kw: None
+        )
+
+        # Prevent rag_refresh and kb_sync loops from calling scrapers over the network.
+        # The lambda inside supervisor_main looks these up from main's global namespace.
+        import main as _main_mod
+
+        async def _noop_rag(*a: object, **kw: object) -> None:
+            pass
+
+        monkeypatch.setattr(
+            _main_mod, "_rag_refresh_loop", lambda *a, **kw: _noop_rag()
+        )
+        monkeypatch.setattr(_main_mod, "_kb_sync_loop", lambda *a, **kw: _noop_rag())
 
         import utils.hitl.notify as notify_mod
 
@@ -4713,18 +4762,19 @@ class TestExecuteHaReboot:
         orig = adv.execute_remote_backup
         adv.execute_remote_backup = fake_backup
         try:
-            result = asyncio.run(
-                execute_ha_reboot(
-                    ssh,
-                    notifier,
-                    ha_host="ha.local",
-                    ha_port=8123,
-                    _poll=fake_poll,
-                    _api_poll=fake_api,
-                    _down_poll=fake_down,
-                    skip_backup=True,
+            with __import__("unittest.mock", fromlist=["patch"]).patch("asyncio.sleep"):
+                result = asyncio.run(
+                    execute_ha_reboot(
+                        ssh,
+                        notifier,
+                        ha_host="ha.local",
+                        ha_port=8123,
+                        _poll=fake_poll,
+                        _api_poll=fake_api,
+                        _down_poll=fake_down,
+                        skip_backup=True,
+                    )
                 )
-            )
         finally:
             adv.execute_remote_backup = orig
 
@@ -7615,6 +7665,35 @@ class TestExtractIpFromMessage:
 
 
 class TestEnrichHttpLogin:
+    @pytest.fixture(autouse=True)
+    def _no_network(self, monkeypatch):
+        """Prevent real network calls from enrich_http_login in every test.
+
+        gethostbyaddr runs in an asyncio.to_thread executor — the thread cannot be
+        cancelled, so asyncio.run() blocks until the OS resolver times out (30 s+
+        on CI).  ARP, gateway, and router-SSH lookups have similar problems.
+        """
+        import socket as _socket
+        import agents.ha_notification_manager as notif_mod
+
+        monkeypatch.setattr(
+            _socket, "gethostbyaddr", lambda ip: (_ for _ in ()).throw(_socket.herror())
+        )
+
+        # Subprocess-level patch so _get_arp_info / _get_default_gateway return fast.
+        # Individual ARP tests override this with their own monkeypatch, which takes
+        # precedence (applied after the autouse fixture).
+        class _EmptyProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"", b"")
+
+        async def _fast_exec(*args, **kwargs):
+            return _EmptyProc()
+
+        monkeypatch.setattr(notif_mod.asyncio, "create_subprocess_exec", _fast_exec)
+
     def test_netalertx_match_sets_known_device(self):
         from agents.ha_notification_manager import enrich_http_login
 
