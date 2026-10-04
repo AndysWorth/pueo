@@ -2167,6 +2167,13 @@ class TestSupervisorMain:
 
         monkeypatch.setattr(_wq_mod, "_work_queue", None)
 
+        # Reset the supervisor singleton so supervised_sleep() in subsequent
+        # tests falls back to asyncio.sleep() instead of blocking on a stale
+        # wake-event from this test's now-closed event loop.
+        import utils.agent.supervisor as _sup_mod
+
+        monkeypatch.setattr(_sup_mod, "_supervisor_instance", None)
+
         return started
 
     def test_core_loops_always_start(self, monkeypatch, tmp_path):
@@ -10998,9 +11005,11 @@ class TestRunRagRefresh:
 
     def _patch_network(self, monkeypatch, tmp_path):
         """Patch all network-dependent functions to no-ops."""
+        import utils.knowledge.ha_concepts_scraper as concepts_mod
         import utils.knowledge.ha_docs_scraper as docs_mod
         import utils.knowledge.ha_developer_docs_scraper as dev_docs_mod
         import utils.knowledge.ha_release_notes_scraper as ha_mod
+        import utils.knowledge.ha_skills_scraper as skills_mod
         import utils.knowledge.hacs_scraper as hacs_mod
 
         monkeypatch.setattr(ha_mod, "fetch_ha_release_notes", lambda *a, **kw: 0)
@@ -11011,6 +11020,8 @@ class TestRunRagRefresh:
         )
         monkeypatch.setattr(docs_mod, "fetch_integration_doc", lambda *a, **kw: -1)
         monkeypatch.setattr(dev_docs_mod, "fetch_developer_docs", lambda *a, **kw: 0)
+        monkeypatch.setattr(concepts_mod, "fetch_concept_docs", lambda *a, **kw: 0)
+        monkeypatch.setattr(skills_mod, "fetch_ha_skills", lambda *a, **kw: 0)
         monkeypatch.setattr("config.HA_API_TOKEN", "test-token")
         monkeypatch.setattr(
             "config.HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "ha_notes")
@@ -11020,6 +11031,8 @@ class TestRunRagRefresh:
         monkeypatch.setattr(
             "config.HA_DEVELOPER_DOCS_CACHE_DIR", str(tmp_path / "dev_docs")
         )
+        monkeypatch.setattr("config.HA_CONCEPTS_CACHE_DIR", str(tmp_path / "concepts"))
+        monkeypatch.setattr("config.HA_SKILLS_CACHE_DIR", str(tmp_path / "skills"))
 
     def test_produces_progress_output(self, tmp_path, monkeypatch, caplog):
         import logging
