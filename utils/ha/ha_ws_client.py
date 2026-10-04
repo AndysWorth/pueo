@@ -29,7 +29,7 @@ class HAWebSocketClient:  # pragma: no cover
         import websockets
 
         uri = f"ws://{self._host}:{self._port}/api/websocket"
-        ws = await websockets.connect(uri)
+        ws = await websockets.connect(uri, open_timeout=10)
         msg = json.loads(await ws.recv())
         if msg.get("type") != "auth_required":
             await ws.close()

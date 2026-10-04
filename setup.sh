@@ -902,6 +902,7 @@ agent:
   lovelace_check_interval_minutes: 30
   # ha_event_subscribe: true
   # ha_event_buffer_size: 500
+  # ha_event_fallback_poll_minutes: 60
   # update_notify_on_available: true
 
 mcp:

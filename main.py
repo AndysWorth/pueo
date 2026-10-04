@@ -1083,32 +1083,55 @@ async def supervisor_main(config_path: Path) -> None:
         interval_seconds=cfg.DISK_USAGE_POLL_INTERVAL_SECONDS,
     )
 
+    # HA event subscriber — created before poll loops so it can reduce their poll rate.
+    # The run_forever task is started after poll loops to preserve supervisor task order.
+    _event_sub = None
+    if cfg.HA_EVENT_SUBSCRIBE and cfg.HA_API_TOKEN:
+        from utils.ha.ha_event_subscriber import HAEventSubscriber as _HAEventSubscriber
+
+        _event_sub = _HAEventSubscriber(
+            cfg.HA_HOST,
+            cfg.HA_API_PORT,
+            cfg.HA_API_TOKEN,
+            buffer_size=cfg.HA_EVENT_BUFFER_SIZE,
+        )
+        _shared_executor.set_event_subscriber(_event_sub)
+
     # Update check loop (only if interval > 0 and token is configured)
     if cfg.HA_UPDATE_CHECK_INTERVAL_HOURS > 0 and cfg.HA_API_TOKEN:
+        _esub_uc = _event_sub
         supervisor.start(
             "update_check",
             lambda: poll_for_updates(
-                notifier=notifier, knowledge_store=knowledge_store
+                notifier=notifier,
+                knowledge_store=knowledge_store,
+                event_subscriber=_esub_uc,
             ),
             interval_seconds=int(cfg.HA_UPDATE_CHECK_INTERVAL_HOURS * 3600),
         )
 
     # Notification polling loop (only if interval > 0 and token is configured)
     if cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
+        _esub_np = _event_sub
         supervisor.start(
             "notification_poll",
             lambda: poll_for_notifications(
-                notifier=notifier, knowledge_store=knowledge_store
+                notifier=notifier,
+                knowledge_store=knowledge_store,
+                event_subscriber=_esub_np,
             ),
             interval_seconds=cfg.HA_NOTIFICATION_POLL_INTERVAL_MINUTES * 60,
         )
 
     # HA Repairs polling loop (only if interval > 0 and token is configured)
     if cfg.HA_REPAIR_POLL_INTERVAL_MINUTES > 0 and cfg.HA_API_TOKEN:
+        _esub_rp = _event_sub
         supervisor.start(
             "repair_poll",
             lambda: poll_for_repairs(
-                notifier=notifier, knowledge_store=knowledge_store
+                notifier=notifier,
+                knowledge_store=knowledge_store,
+                event_subscriber=_esub_rp,
             ),
             interval_seconds=cfg.HA_REPAIR_POLL_INTERVAL_MINUTES * 60,
         )
@@ -1125,18 +1148,51 @@ async def supervisor_main(config_path: Path) -> None:
             interval_seconds=cfg.HA_LOVELACE_CHECK_INTERVAL_MINUTES * 60,
         )
 
-    # HA event subscriber — long-lived WS ring buffer (gated by token + config)
-    if cfg.HA_EVENT_SUBSCRIBE and cfg.HA_API_TOKEN:
-        from utils.ha.ha_event_subscriber import HAEventSubscriber as _HAEventSubscriber
-
-        _event_sub = _HAEventSubscriber(
-            cfg.HA_HOST,
-            cfg.HA_API_PORT,
-            cfg.HA_API_TOKEN,
-            buffer_size=cfg.HA_EVENT_BUFFER_SIZE,
-        )
-        _shared_executor.set_event_subscriber(_event_sub)
+    # HA event subscriber tasks — run_forever + wake dispatcher
+    if _event_sub is not None:
         supervisor.start("ha_event_subscriber", _event_sub.run_forever)
+
+        _esub_wd = _event_sub
+        _sv_wd = supervisor
+
+        async def _ha_event_wake_dispatcher() -> None:
+            """Watch the event ring buffer and wake poll loops on relevant HA events."""
+            import time as _time
+
+            _DEBOUNCE = 5.0
+            _POLL = 1.0
+            _last_wake: dict[str, float] = {}
+            _last_checked = _time.time()
+            while True:
+                await asyncio.sleep(_POLL)
+                if not _esub_wd.is_connected():
+                    continue
+                now = _time.time()
+                all_events = _esub_wd.get_events(limit=100)
+                new_events = [
+                    e for e in all_events if e.get("time", 0) >= _last_checked
+                ]
+                _last_checked = now
+                for ev in new_events:
+                    etype = ev.get("event_type", "")
+                    target: str | None = None
+                    if etype == "persistent_notification_event":
+                        target = "notification_poll"
+                    elif etype == "repairs_issue_registry_updated":
+                        target = "repair_poll"
+                    elif etype == "state_changed":
+                        if ev.get("entity_id", "").startswith("update."):
+                            target = "update_check"
+                    if target is None:
+                        continue
+                    if now - _last_wake.get(target, 0.0) >= _DEBOUNCE:
+                        _last_wake[target] = now
+                        try:
+                            _sv_wd.wake(target)
+                        except Exception:  # nosec B110
+                            pass
+
+        supervisor.start("ha_event_wake_dispatch", _ha_event_wake_dispatcher)
 
     # Known Issues reminder loop — checks hourly for suppressed issues older than
     # KNOWN_ISSUE_REMINDER_DAYS and sends a one-shot reminder card for each.
