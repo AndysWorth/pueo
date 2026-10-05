@@ -732,19 +732,30 @@ class TestUpdateAnalysisContextBuilding:
     def test_upgrade_advisor_sensor_prepended(self, tmp_path, pueo_dirs):
         from utils.ha.ha_rest_client import FakeHARestClient
 
+        # The new advisor integration uses sensor.upgrade_advisor_status and _risk.
+        # available_version must match the update's latest_version ("2026.9.1").
         states = [
             {
-                "entity_id": "sensor.upgrade_advisor_recommendation",
-                "state": "ok",
-                "attributes": {"recommendation": "Safe to update."},
-            }
+                "entity_id": "sensor.upgrade_advisor_status",
+                "state": "report_ready",
+                "attributes": {
+                    "available_version": "2026.9.1",
+                    "breaking_change_count": 1,
+                    "report": "One breaking change found.",
+                },
+            },
+            {
+                "entity_id": "sensor.upgrade_advisor_risk",
+                "state": "medium",
+                "attributes": {},
+            },
         ]
         rest = FakeHARestClient(states=states)
         ctx = self._run(tmp_path, ha_rest_client=rest)
-        assert "Upgrade advisor recommendation" in ctx
-        assert "Safe to update." in ctx
+        assert "upgrade-advisor" in ctx.lower()
+        assert "medium" in ctx
         # Must appear before the update line
-        assert ctx.index("Upgrade advisor") < ctx.index("Available update")
+        assert ctx.lower().index("upgrade-advisor") < ctx.index("Available update")
 
     def test_upgrade_advisor_not_installed_no_error(self, tmp_path, pueo_dirs):
         from utils.ha.ha_rest_client import FakeHARestClient

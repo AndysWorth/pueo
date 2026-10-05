@@ -3427,7 +3427,9 @@ class ToolExecutor:
             )
 
     async def _get_spook_issues(self) -> ToolResult:
-        """Return Spook repair issues and dead-entity analysis."""
+        """Return Spook repair issues and orphaned-entity analysis."""
+        from utils.core.context import truncate_to_budget
+
         if not self._ws_client:
             return ToolResult(
                 tool_name="get_spook_issues",
@@ -3435,7 +3437,20 @@ class ToolExecutor:
                 output="",
                 error="WS client not available",
             )
-        if self._ha_profile and not self._ha_profile.spook_installed:
+
+        # Determine whether Spook is installed.  When the profile is absent,
+        # do a live component lookup rather than skipping the guard entirely.
+        spook_installed: Optional[bool] = None
+        if self._ha_profile is not None:
+            spook_installed = self._ha_profile.spook_installed
+        else:
+            try:
+                components = await self._ws_client.get_ha_components()
+                spook_installed = "spook" in components
+            except Exception as exc:  # nosec B110
+                log.warning("spook_component_check_failed", error=str(exc))
+
+        if spook_installed is False:
             return ToolResult(
                 tool_name="get_spook_issues",
                 success=True,
@@ -3445,6 +3460,7 @@ class ToolExecutor:
                     "https://spook.boo"
                 ),
             )
+
         try:
             repair_issues = await self._ws_client.get_repair_issues()
             spook_repairs = [i for i in repair_issues if i.get("domain") == "spook"]
@@ -3455,31 +3471,56 @@ class ToolExecutor:
                 output="",
                 error=f"Failed to fetch repair issues: {exc}",
             )
-        entity_issues: list[dict] = []
-        try:
-            entity_issues = await self._ws_client.get_spook_entity_issues()
-        except Exception as exc:
-            log.warning("spook_entity_issues_failed", error=str(exc))
 
-        parts = []
+        orphaned: dict = {}
+        try:
+            orphaned = await self._ws_client.list_orphaned_database_entities()
+        except Exception as exc:  # nosec B110
+            log.warning("spook_orphaned_entities_failed", error=str(exc))
+
+        parts: list[str] = []
+
         if spook_repairs:
-            parts.append(
-                f"Spook repair issues ({len(spook_repairs)}):\n"
-                + json.dumps(spook_repairs, indent=2)
-            )
+            # Group by issue_domain for a compact view
+            by_domain: dict = {}
+            for issue in spook_repairs:
+                domain = issue.get("issue_domain") or issue.get("domain") or "unknown"
+                by_domain.setdefault(domain, []).append(issue)
+            repair_lines: list[str] = [f"Spook repair issues ({len(spook_repairs)}):"]
+            for domain, issues in sorted(by_domain.items()):
+                repair_lines.append(f"  {domain} ({len(issues)}):")
+                for iss in issues[:5]:
+                    key = iss.get("translation_key") or iss.get("issue_id", "?")
+                    sev = iss.get("severity", "")
+                    issue_id = iss.get("issue_id", "")
+                    repair_lines.append(f"    - {key} [{sev}] id={issue_id}")
+                if len(issues) > 5:
+                    repair_lines.append(f"    ... and {len(issues) - 5} more")
+            parts.append("\n".join(repair_lines))
         else:
             parts.append("No Spook repair issues found.")
-        if entity_issues:
+
+        orphaned_count = orphaned.get("count", 0)
+        orphaned_entities: list = orphaned.get("entities", [])
+        if orphaned_count:
+            sample = orphaned_entities[:20]
+            suffix = (
+                f" (showing first 20 of {orphaned_count})"
+                if orphaned_count > 20
+                else ""
+            )
             parts.append(
-                f"\nSpook entity issues ({len(entity_issues)}):\n"
-                + json.dumps(entity_issues, indent=2)
+                f"\nOrphaned DB entities ({orphaned_count}){suffix}:\n"
+                + "\n".join(f"  {e}" for e in sample)
             )
         else:
-            parts.append("\nNo Spook dead-entity issues found.")
+            parts.append("\nNo orphaned database entities found.")
+
+        output = truncate_to_budget("\n".join(parts), max_tokens=1000, strategy="head")
         return ToolResult(
             tool_name="get_spook_issues",
             success=True,
-            output="\n".join(parts),
+            output=output,
         )
 
     async def _finish_lovelace_investigation(self, findings: list[dict]) -> ToolResult:
@@ -3952,6 +3993,11 @@ class ToolExecutor:
         instance_impact: str,
         proposed_config_fixes: list,
         create_hitl_card: bool,
+        prerequisites: Optional[list] = None,
+        deprecations: Optional[list] = None,
+        new_features: Optional[list] = None,
+        risk_score: Optional[str] = None,
+        **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
         # Gate override: the user's autonomy level may require approval even if the LLM
@@ -4087,6 +4133,10 @@ class ToolExecutor:
             "instance_impact_summary": recommendation,
             "proposed_config_fixes": proposed_config_fixes,
             "disk_headroom_warning": disk_headroom_warning,
+            "prerequisites": prerequisites or [],
+            "deprecations": deprecations or [],
+            "new_features": new_features or [],
+            "risk_score": risk_score or "",
         }
         await asyncio.to_thread(
             _update_mark_card_sent,

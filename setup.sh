@@ -778,20 +778,46 @@ if $WRITE_CONFIG; then
         ok "MQTT anonymous access configured"
     fi
 
-    # ── Spook optional install prompt ────────────────────────────────────────────
+    # ── Optional companion integrations ──────────────────────────────────────────
+    _open_url() {
+        # Open a URL in the default browser, macOS only.  On Linux/Docker just print it.
+        local url="$1"
+        if [[ "$(uname)" == "Darwin" ]]; then
+            if open "$url" 2>/dev/null; then
+                ok "Browser opened to: $url"
+            else
+                info "Could not open browser.  Visit: $url"
+            fi
+        else
+            info "Visit: $url"
+        fi
+    }
+
     echo
     echo "  ── Optional: frenck/spook ─────────────────────────────────────────"
     echo "  Spook is a HACS custom integration that adds richer entity registry"
     echo "  analysis and dead-entity detection to HA's built-in repairs page."
-    echo "  Pueo will use Spook automatically if it detects it is installed."
+    echo "  Pueo uses it automatically when detected; it is not required."
     echo "  Docs: https://spook.boo"
     echo
-    read -rp "  Open browser to install Spook via HACS now? [y/N]: " spook_ans
-    if [[ "${spook_ans:-N}" =~ ^[Yy] ]]; then
-        open "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration" 2>/dev/null || true
-        ok "Browser opened to HACS install page for Spook"
+    ask "  Open browser to install Spook via HACS now? [y/N]" "N" _spook_open
+    if [[ "${_spook_open:-N}" =~ ^[Yy] ]]; then
+        _open_url "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration"
     else
         info "Skipping — Pueo will use Spook automatically if you install it later."
+    fi
+
+    echo
+    echo "  ── Optional: brianegge/ha-upgrade-advisor ─────────────────────────"
+    echo "  ha-upgrade-advisor is a HACS integration that analyses HA updates"
+    echo "  for breaking changes before you apply them.  Pueo reads its report"
+    echo "  as a second opinion during update analysis; it is not required."
+    echo
+    ask "  Open browser to install ha-upgrade-advisor via HACS now? [y/N]" "N" _advisor_open
+    if [[ "${_advisor_open:-N}" =~ ^[Yy] ]]; then
+        _open_url "https://my.home-assistant.io/redirect/hacs_repository/?owner=brianegge&repository=ha-upgrade-advisor&category=integration"
+    else
+        info "Skipping — Pueo will use ha-upgrade-advisor automatically if you install it later."
     fi
 
     # ── Write config ─────────────────────────────────────────────────────────────

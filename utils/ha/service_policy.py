@@ -19,10 +19,19 @@ from utils.agent.autonomy import RiskLevel
 _BLOCKED: tuple[str, ...] = (
     "homeassistant.restart",
     "homeassistant.stop",
+    # Spook-added destructive / audit-hiding services that must never be auto-executed
+    "homeassistant.delete_all_orphaned_entities",
+    "homeassistant.disable_user",
+    "homeassistant.enable_user",
     "hassio.*",
     "backup.*",
     "recorder.purge",
     "recorder.purge_entities",
+    "recorder.import_statistics",
+    # Spook repairs helpers — mass-ignore hides real problems
+    "repairs.ignore_all",
+    "repairs.unignore_all",
+    "repairs.remove",
     "update.install",
     "shell_command.*",
     "python_script.*",

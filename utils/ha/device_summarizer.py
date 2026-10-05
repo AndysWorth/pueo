@@ -1,34 +1,11 @@
-"""Summarise device and integration context for update analysis prompts.
-
-Reduces token cost by collapsing repeated device entries and providing a
-compact paragraph describing the HA environment.
-"""
+"""Summarise integration context for update analysis prompts."""
 
 from __future__ import annotations
 
-from collections import Counter
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from utils.ha.ha_environment import HAEnvironmentProfile
-
-
-def compress_device_list(devices: list[dict]) -> str:
-    """Group devices by (manufacturer, model) and return collapsed one-liners.
-
-    Each line: "N× Manufacturer Model", sorted by count descending.
-    Returns empty string for an empty list.
-    """
-    if not devices:
-        return ""
-    counts: Counter = Counter()
-    for d in devices:
-        mfr = (d.get("manufacturer") or "").strip()
-        model = (d.get("model") or "").strip()
-        label = " ".join(filter(None, [mfr, model])) or "Unknown device"
-        counts[label] += 1
-    lines = [f"{count}× {label}" for label, count in counts.most_common()]
-    return "\n".join(lines)
 
 
 def device_context_summary(profile: Optional["HAEnvironmentProfile"]) -> str:

@@ -141,22 +141,35 @@ class HAWebSocketClient:  # pragma: no cover
             data: dict = resp.json()
         return data.get("components", [])
 
-    async def get_spook_entity_issues(self) -> list[dict]:
-        """Fetch Spook entity issues via the spook/entities/issues/list WS command.
+    async def list_orphaned_database_entities(self) -> dict:
+        """Call homeassistant.list_orphaned_database_entities via WebSocket call_service.
 
-        Returns an empty list when Spook is not installed (unknown_command error).
-        Raises on other failures.
+        Returns {"count": N, "entities": [...]} or {} when the service is unavailable
+        (e.g. older HA versions that don't support it).
         """
         ws = await self._connect_and_auth()
         try:
-            await ws.send(json.dumps({"id": 1, "type": "spook/entities/issues/list"}))
+            await ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "call_service",
+                        "domain": "homeassistant",
+                        "service": "list_orphaned_database_entities",
+                        "return_response": True,
+                    }
+                )
+            )
             msg = json.loads(await ws.recv())
             if not msg.get("success"):
                 code = msg.get("error", {}).get("code", "")
-                if code == "unknown_command":
-                    return []
-                raise RuntimeError(f"spook/entities/issues/list request failed: {msg}")
-            return msg.get("result", [])
+                if code in ("service_not_found", "unknown_error"):
+                    return {}
+                raise RuntimeError(f"list_orphaned_database_entities failed: {msg}")
+            result = msg.get("result") or {}
+            # WS call_service with return_response wraps the response:
+            # {"context": {...}, "response": <service_response>}
+            return result.get("response") or {}
         finally:
             await ws.close()
 
@@ -253,7 +266,7 @@ class FakeHAWebSocketClient:
         lovelace_config_not_found: set[str] | None = None,
         states: list[dict] | None = None,
         ha_components: list[str] | None = None,
-        spook_entity_issues: list[dict] | None = None,
+        orphaned_entities: dict | None = None,
         system_log: list[dict] | None = None,
         area_registry: list[dict] | None = None,
         floor_registry: list[dict] | None = None,
@@ -273,7 +286,7 @@ class FakeHAWebSocketClient:
         self._lovelace_config_not_found: set[str] = lovelace_config_not_found or set()
         self._states: list[dict] = states or []
         self._ha_components: list[str] = ha_components or []
-        self._spook_entity_issues: list[dict] = spook_entity_issues or []
+        self._orphaned_entities: dict = orphaned_entities or {}
         self._system_log: list[dict] = system_log or []
         self._area_registry: list[dict] = area_registry or []
         self._floor_registry: list[dict] = floor_registry or []
@@ -308,9 +321,9 @@ class FakeHAWebSocketClient:
         self.calls.append("get_ha_components")
         return list(self._ha_components)
 
-    async def get_spook_entity_issues(self) -> list[dict]:
-        self.calls.append("get_spook_entity_issues")
-        return list(self._spook_entity_issues)
+    async def list_orphaned_database_entities(self) -> dict:
+        self.calls.append("list_orphaned_database_entities")
+        return dict(self._orphaned_entities)
 
     async def get_entity_registry(self) -> list[dict]:
         self.calls.append("get_entity_registry")
