@@ -30,18 +30,21 @@ class HAWebSocketClient:  # pragma: no cover
 
         uri = f"ws://{self._host}:{self._port}/api/websocket"
         ws = await websockets.connect(uri, open_timeout=10)
-        msg = json.loads(await ws.recv())
-        if msg.get("type") != "auth_required":
+        # Close the socket on *any* failure during auth (timeout, cancel,
+        # ConnectionClosed) — otherwise the FD leaks (#769).
+        try:
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_required":
+                raise RuntimeError(f"Expected auth_required, got: {msg.get('type')}")
+            await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+            msg = json.loads(await ws.recv())
+            if msg.get("type") == "auth_invalid":
+                raise RuntimeError("HA WebSocket authentication failed")
+            if msg.get("type") != "auth_ok":
+                raise RuntimeError(f"Unexpected auth response: {msg.get('type')}")
+        except BaseException:
             await ws.close()
-            raise RuntimeError(f"Expected auth_required, got: {msg.get('type')}")
-        await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
-        msg = json.loads(await ws.recv())
-        if msg.get("type") == "auth_invalid":
-            await ws.close()
-            raise RuntimeError("HA WebSocket authentication failed")
-        if msg.get("type") != "auth_ok":
-            await ws.close()
-            raise RuntimeError(f"Unexpected auth response: {msg.get('type')}")
+            raise
         return ws
 
     async def _call(self, type_: str, **payload: Any) -> Any:

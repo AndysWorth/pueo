@@ -1100,7 +1100,17 @@ class TestBackupOffloading:
                 "sha256sum": (0, f"{remote_hash}  /backup/{slug}.tar\n", "")
             },
         )
+        threaded: list[object] = []
+        _real_to_thread = asyncio.to_thread
+
+        async def _spy_to_thread(fn, *a, **kw):
+            threaded.append(fn)
+            return await _real_to_thread(fn, *a, **kw)
+
+        monkeypatch.setattr(ha_agent_advanced.asyncio, "to_thread", _spy_to_thread)
         asyncio.run(ha_agent_advanced.offload_backup_to_local(slug, ssh_client=ssh))
+        # Hashing must run off the event loop (#769).
+        assert ha_agent_advanced._sha256_file in threaded
         import sqlite3
 
         with sqlite3.connect(db_path) as conn:
@@ -3192,6 +3202,32 @@ class TestLogMonitorTriage:
             tail_remote_log_stream(ssh_client=ssh, llm_client=llm_not_actionable)
         )
         assert len(llm_not_actionable.calls) == 1
+
+    def test_stream_without_llm_client_builds_one_client(
+        self, llm_not_actionable, monkeypatch
+    ):
+        """No llm_client → make_llm_client() once per stream, not per line (#769)."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from agents import ha_log_monitor
+
+        monkeypatch.setattr("agents.ha_log_monitor._debouncer.record", lambda: False)
+        factory_calls: list[int] = []
+
+        def _factory(*a, **kw):
+            factory_calls.append(1)
+            return llm_not_actionable
+
+        monkeypatch.setattr(ha_log_monitor, "make_llm_client", _factory)
+        ssh = FakeSSHClient(
+            stream_data=[
+                "ERROR Component error: light.hue broke",
+                "ERROR Component error: switch.x broke",
+                "ERROR Component error: fan.y broke",
+            ]
+        )
+        asyncio.run(ha_log_monitor.tail_remote_log_stream(ssh_client=ssh))
+        assert len(factory_calls) == 1
+        assert len(llm_not_actionable.calls) == 3
 
     def test_transient_errno_is_econnreset(self):
         """ECONNRESET (54) and EPIPE (32) are classified as transient."""

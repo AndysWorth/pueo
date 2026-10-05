@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 log = get_logger("pueo_mcp_server")
 
+# Cap concurrent connections so a misbehaving client cannot exhaust FDs (#769).
+MCP_LIMIT_CONCURRENCY = 32
+
 _MCP_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "query_knowledge",
@@ -224,6 +227,7 @@ class PueoMCPServer:
             host="0.0.0.0",  # nosec B104 — must be reachable from HA over LAN
             port=_cfg.MCP_PORT,
             log_level="warning",
+            limit_concurrency=MCP_LIMIT_CONCURRENCY,
         )
         self._uvicorn_server = uvicorn.Server(uvi_config)
         log.info("mcp_server_starting", port=_cfg.MCP_PORT, auth=bool(_cfg.MCP_TOKEN))

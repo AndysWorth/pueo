@@ -467,3 +467,58 @@ class TestFakeHAWebSocketClientOrphanedEntities:
         fake = FakeHAWebSocketClient()
         result = asyncio.run(fake.list_orphaned_database_entities())
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _connect_and_auth — socket is closed on any auth failure (#769 FD leak)
+# ---------------------------------------------------------------------------
+
+
+class _RaisingWs(_MockWs):
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__([])
+        self._exc = exc
+
+    async def recv(self) -> str:
+        raise self._exc
+
+
+def _patch_websockets_connect(monkeypatch, ws: _MockWs) -> None:
+    import websockets
+
+    async def _connect(uri, **kwargs):
+        return ws
+
+    monkeypatch.setattr(websockets, "connect", _connect)
+
+
+class TestConnectAndAuthClosesOnError:
+    def test_timeout_during_auth_closes_socket(self, monkeypatch):
+        ws = _RaisingWs(asyncio.TimeoutError())
+        _patch_websockets_connect(monkeypatch, ws)
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(_make_client()._connect_and_auth())
+        assert ws.closed is True
+
+    def test_connection_closed_during_auth_closes_socket(self, monkeypatch):
+        from websockets.exceptions import ConnectionClosedError
+
+        ws = _RaisingWs(ConnectionClosedError(None, None))
+        _patch_websockets_connect(monkeypatch, ws)
+        with pytest.raises(ConnectionClosedError):
+            asyncio.run(_make_client()._connect_and_auth())
+        assert ws.closed is True
+
+    def test_auth_invalid_closes_socket(self, monkeypatch):
+        ws = _MockWs([{"type": "auth_required"}, {"type": "auth_invalid"}])
+        _patch_websockets_connect(monkeypatch, ws)
+        with pytest.raises(RuntimeError, match="authentication failed"):
+            asyncio.run(_make_client()._connect_and_auth())
+        assert ws.closed is True
+
+    def test_auth_ok_leaves_socket_open(self, monkeypatch):
+        ws = _MockWs([{"type": "auth_required"}, {"type": "auth_ok"}])
+        _patch_websockets_connect(monkeypatch, ws)
+        result = asyncio.run(_make_client()._connect_and_auth())
+        assert result is ws
+        assert ws.closed is False

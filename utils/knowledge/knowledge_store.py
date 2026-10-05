@@ -348,14 +348,19 @@ class _OllamaEmbeddingFunction:  # pragma: no cover
     def __init__(self, model: str, endpoint: str) -> None:
         self._model = model
         self._endpoint = endpoint
+        self._client: Any = None
 
     def name(self) -> str:
         return f"ollama-{self._model}"
 
     def _embed(self, input: list[str]) -> list[list[float]]:
-        import ollama
+        # Create the client once: a new ollama.Client per call opens a fresh
+        # HTTP pool each time and leaks file descriptors (#769).
+        if self._client is None:
+            import ollama
 
-        client = ollama.Client(host=self._endpoint)
+            self._client = ollama.Client(host=self._endpoint)
+        client = self._client
         return [
             client.embeddings(model=self._model, prompt=text)["embedding"]
             for text in input
