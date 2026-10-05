@@ -35,7 +35,7 @@ NetAlertX code lives in `netalertx/`; the dashboard in `web/`.
 | `disk/` | Hardware detection, disk recovery and usage, archiver, resource monitoring, Pueo backup storage |
 | `ha/` | `HARestClient`, `HAWebSocketClient`, `HAEventSubscriber`, SSH client, HA environment profile, Lovelace utils, `service_policy.py` |
 | `hitl/` | Approval card types and tracker (`hitl_suppression`), notifier, LLM trace |
-| `knowledge/` | ChromaDB store (7 collections), scrapers, strategy seeder, repair-episode embedder, KB ingester/contributor |
+| `knowledge/` | ChromaDB store (8 collections), scrapers, strategy seeder, repair-episode embedder, KB ingester/contributor |
 | `llm/` | `OllamaClient`, `ClaudeAPIClient`, `make_llm_client()`, model options, latency stats, Ollama monitor |
 | `mcp/` | Pueo MCP server (read-only tool subset) |
 | `repair/` | Repair episode recording, anonymizer, cloud escalation, billing, YAML validator |
@@ -79,7 +79,7 @@ The full CI gate is in `CLAUDE.md` (Development Procedure, step 14).
 
 ## 7. Architectural rationale
 
-Decisions are in `docs/decisions/`; `docs/decisions/000-index.md` has a one-line summary of all 33 ADRs. Most relevant for common tasks:
+Decisions are in `docs/decisions/`; `docs/decisions/000-index.md` has a one-line summary of all 34 ADRs. Most relevant for common tasks:
 
 - **ADR 001** — config centralization (adding any setting)
 - **ADR 002** — safety invariant (anything that writes to HA)

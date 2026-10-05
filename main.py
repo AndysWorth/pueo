@@ -89,6 +89,20 @@ def run_rag_refresh(
     *,
     on_step: Optional[Callable[[str], None]] = None,
 ) -> None:
+    """Scrape and embed all RAG knowledge sources into ChromaDB.
+
+    Steps (in order):
+      1. Fetch + embed HA Core release notes (breaking changes for configured versions)
+      2. Fetch + embed HACS component changelogs (auto-discovered from HA instance)
+      3. Fetch + embed HA integration docs for installed integrations
+      4. Fetch + embed HA concept pages
+      5. Fetch + embed HA developer docs (architecture, entity model, config flows,
+         Supervisor/WebSocket/REST API pages from developers.home-assistant.io)
+      5.5 Seed strategies from prompt files + dynamic HA instance profile
+      6. Re-embed orphaned candidate/gap runbooks
+      7. Embed new repair episodes from SQLite into `repair_history`
+      8. Fetch + embed HA best-practice skills (homeassistant-ai/skills reference files)
+    """
     import config
     from utils.ha.ha_environment import load_environment_profile
     from utils.knowledge.ha_blog_scraper import fetch_blog_release_notes

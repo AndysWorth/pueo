@@ -37,3 +37,4 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [031](031-repair-episode-embedding.md) | Repair episode embedding | Accepted | `repair_history` ChromaDB collection; `embed_repair_episodes()` at rag-refresh step 7 |
 | [032](032-ha-mcp-consumption.md) | HA capability gaps: native REST/WS | Accepted | MCP adapter rejected; all 8 gaps closed via native REST/WS extension + `HAEventSubscriber` |
 | [033](033-ha-event-triggers.md) | Event-driven HA triggers | Accepted | `supervisor.wake()`; non-cancelling sleep interrupt; subscriber→wake map; fallback interval |
+| [034](034-opportunistic-hacs-companion-integrations.md) | Opportunistic HACS companion integrations | Accepted | Detect via profile; graceful absence; third-party output as unverified evidence; blocklist companion-added destructive services |
