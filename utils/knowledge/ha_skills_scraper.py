@@ -13,6 +13,7 @@ fix cycles.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from pathlib import Path
@@ -131,6 +132,71 @@ def fetch_ha_skills(  # pragma: no cover
             log.warning("ha_skills_fetch_error", slug=slug, url=url, error=str(exc))
     log.info("ha_skills_fetch_complete", total=len(_SKILL_FILES), fetched=fetched)
     return fetched
+
+
+_REMOVED_RE = re.compile(r"removed\s+in\s+(20\d\d\.\d+)", re.IGNORECASE)
+
+# Match bare YAML keys inside backticks: `color_temp`, `entered_home`, `battery.low`
+_KEY_RE = re.compile(r"`([a-zA-Z_][a-zA-Z0-9_./]*)`")
+
+
+def _extract_removed_version(why_text: str) -> str | None:
+    """Return e.g. '2026.3' from 'The color_temp parameter was removed in 2026.3'."""
+    m = _REMOVED_RE.search(why_text)
+    return m.group(1) if m else None
+
+
+def parse_deprecated_keys(cache_dir: str) -> list[dict]:
+    """Parse the Critical Anti-Patterns table in SKILL.md for removed YAML keys.
+
+    Returns a list of {key, reason, removed_version} dicts for entries whose
+    'Why' column contains 'removed in <version>'.  Writes the result to
+    <cache_dir>/deprecated_keys.json so validate_proposed_fix() can load it.
+    Returns the list (possibly empty if SKILL.md is absent or has no removals).
+    """
+    skill_path = Path(cache_dir) / "SKILL.md"
+    if not skill_path.exists():
+        return []
+
+    text = skill_path.read_text(encoding="utf-8")
+    # Find the anti-patterns table: rows starting with '| ' after the heading
+    results: list[dict] = []
+    in_table = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "## Critical Anti-Patterns" in stripped:
+            in_table = True
+            continue
+        if in_table and stripped.startswith("##"):
+            break
+        if not in_table or not stripped.startswith("|"):
+            continue
+        cols = [c.strip() for c in stripped.split("|")]
+        # cols[0] is empty (before first |), cols[1]=anti-pattern, cols[2]=use instead,
+        # cols[3]=why, cols[4]=reference
+        if len(cols) < 4:
+            continue
+        anti_pattern_cell = cols[1]
+        why_cell = cols[3] if len(cols) > 3 else ""
+        removed_version = _extract_removed_version(why_cell)
+        if not removed_version:
+            continue
+        keys = _KEY_RE.findall(anti_pattern_cell)
+        # Also capture `enabled: false` as the key `enabled`
+        for raw_key in keys:
+            key = raw_key.split(":")[0].strip()  # strip inline values
+            if key and key not in ("—",):
+                results.append(
+                    {
+                        "key": key,
+                        "reason": why_cell[:200],
+                        "removed_version": removed_version,
+                    }
+                )
+
+    out_path = Path(cache_dir) / "deprecated_keys.json"
+    out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    return results
 
 
 def embed_cached_ha_skills(

@@ -2379,7 +2379,10 @@ class ToolExecutor:
                 error="apply_fix may only be called once per loop run",
             )
 
-        from utils.repair.yaml_validator import validate_proposed_fix
+        from utils.repair.yaml_validator import (
+            load_deprecated_keys,
+            validate_proposed_fix,
+        )
 
         try:
             original = await self._ha_ssh.read_file(CONFIG_REMOTE_PATH)
@@ -2391,7 +2394,8 @@ class ToolExecutor:
                 error=f"Could not read original config: {exc}",
             )
 
-        validation = validate_proposed_fix(original, yaml_content)
+        deprecated_keys = load_deprecated_keys(_config_mod.HA_SKILLS_CACHE_DIR)
+        validation = validate_proposed_fix(original, yaml_content, deprecated_keys)
         if not validation.is_safe:
             log.error("apply_fix_validation_failed", reasons=validation.reasons)
             return ToolResult(
