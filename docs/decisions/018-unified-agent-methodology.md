@@ -117,7 +117,7 @@ The log reading tools fix the most obvious gap directly rather than requiring wo
 ## Consequences
 
 - `prompts/agent_loop.md` is the canonical statement of Pueo's investigation pattern; all prompt files that implement agent sessions must follow this structure
-- `COLLECTIONS` in `knowledge_store.py` now has 7 entries (`ha_release_notes`, `hacs_changelogs`, `ha_integration_docs`, `ha_concepts`, `strategies`, `repair_history`, `ha_developer_docs`); `ChromaKnowledgeStore` creates all 7 at startup
+- `COLLECTIONS` in `knowledge_store.py` now has 8 entries (`ha_release_notes`, `hacs_changelogs`, `ha_integration_docs`, `ha_concepts`, `strategies`, `repair_history`, `ha_developer_docs`, `ha_best_practices`); `ChromaKnowledgeStore` creates all 8 at startup
 - `agent_strategies` SQLite table is migration v24 in both migration files (see ADR 001 migration dual-file rule); the table gains a `runbook_state` column (Phase 2) to record seed/candidate/gap
 - `save_runbook` in all three non-code-proposal registries — any future registry must include it; `type` parameter (`seed`/`candidate`/`gap`) stored in `runbook_state` column
 - Future `AgentLoop`-based sessions must pass a `knowledge_store` to the `ToolExecutor` so `save_runbook` can embed into ChromaDB; SQLite fallback fires when `knowledge_store` is None

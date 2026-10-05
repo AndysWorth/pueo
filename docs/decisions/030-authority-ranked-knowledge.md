@@ -23,6 +23,7 @@ Add `authority_score: float = 0.0` to `KnowledgeChunk`. The score is assigned by
 | `ha_docs` (HA component source) | 1.0 |
 | `ha_concepts` (HA official docs) | 0.95 |
 | `ha_release_notes` (HA changelog) | 0.90 |
+| `ha_best_practices` (homeassistant-ai/skills reference files) | 0.90 |
 | `strategies` seed runbook | 0.85 |
 | `repair_history` (successful past repairs) | 0.70 |
 | `strategies` reviewed community runbook | 0.60 |
@@ -51,6 +52,7 @@ The weights were chosen to be simple and auditable — not tuned on eval data. R
 |---|---|
 | HA official docs / concepts | `[OFFICIAL]` |
 | Release notes | `[OFFICIAL]` |
+| HA best-practice skills | `[BEST PRACTICE]` |
 | Seed runbook | `[SEED RUNBOOK]` |
 | Candidate runbook | `[CANDIDATE RUNBOOK – unreviewed]` |
 | Community-reviewed runbook | `[COMMUNITY RUNBOOK]` |

@@ -357,7 +357,9 @@ A launchd job runs `--mode rag-refresh` every Sunday at 03:00. This fetches and 
 - HA Core release notes (breaking changes for the last N versions)
 - HACS integration changelogs (auto-discovered from your HA instance)
 - HA integration documentation and source files for installed integrations
+- HA developer docs (architecture, entity model, config flows, WebSocket/REST API)
 - HA concepts and community cases
+- HA best-practice skills (from [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills): deprecated API tables, YAML guidelines, template guidelines, dashboard patterns)
 
 If the job is already installed, this section is skipped.
 
@@ -369,7 +371,23 @@ pueo --mode rag-refresh
 ```
 
 Optional config keys (edit `config.yaml` directly to set these):
-`rag_ha_versions_to_fetch`, `rag_hacs_cache_dir`, `rag_ha_docs_cache_dir`, `ha_source_cache_dir`, `ha_concepts_cache_dir`, `rag_refresh_interval_hours` (default `168` — weekly)
+`rag_ha_versions_to_fetch`, `rag_hacs_cache_dir`, `rag_ha_docs_cache_dir`, `ha_source_cache_dir`, `ha_concepts_cache_dir`, `ha_skills_cache_dir`, `rag_refresh_interval_hours` (default `168` — weekly)
+
+### Optional HACS companion integrations
+
+Pueo can use two optional HACS integrations for additional diagnostic signals. Both are detected automatically and degrade gracefully when absent.
+
+**Prompt: Install Spook?** (`Y` / `n`)
+
+[Spook](https://spook.boo) by @frenck adds dead-entity detection and lovelace resource checks. When installed, Pueo's `get_spook_issues` tool surfaces Spook repair entries (broken automations, unknown entity references, missing lovelace resources) during lovelace and update-analysis investigations.
+
+To install: HACS → Integrations → search "Spook" → Install → restart HA.
+
+**Prompt: Install ha-upgrade-advisor?** (`Y` / `n`)
+
+[ha-upgrade-advisor](https://github.com/brianegge/ha-upgrade-advisor) by @brianegge analyses your configuration before upgrades and reports a risk score and breaking-change count. When installed and a report is ready, Pueo reads `sensor.upgrade_advisor_status` and `sensor.upgrade_advisor_risk` during update-analysis sessions and incorporates this as a second opinion alongside its own analysis. Pueo never acts on the advisor report alone — it is labelled "third-party analysis — verify independently".
+
+To install: HACS → Integrations → search "HA Upgrade Advisor" → Install → restart HA.
 
 ---
 

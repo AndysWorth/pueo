@@ -28,7 +28,7 @@ Pueo is built around four design principles:
 *   **Active Dashboard:** Review and approve pending repair actions in-browser; real-time loop health, event timeline, resource gauges, and configuration editor served at `http://127.0.0.1:8080`.
 *   **Ask Pueo:** A Chat tab in the dashboard lets you talk directly to the agent — query live HA state, read Pueo's own logs, store persistent notes that survive restarts, and extend Pueo's capabilities by proposing new tools through a sandboxed code review flow.
 *   **Personalized Update Analysis:** When HA Core, OS, or Apps updates are available, Pueo reads your actual `configuration.yaml` and integration list to identify which breaking changes affect *your* installation — not just what changed in general.
-*   **Local RAG Knowledge Base:** HA release notes, HACS changelogs, integration docs, developer docs, concept pages, runbooks (`strategies`), and past repair episodes (`repair_history`) are embedded locally in seven ChromaDB collections via `nomic-embed-text`. Every agent session begins by querying this knowledge base before forming a hypothesis — no internet access required.
+*   **Local RAG Knowledge Base:** HA release notes, HACS changelogs, integration docs, developer docs, concept pages, best-practice skills, runbooks (`strategies`), and past repair episodes (`repair_history`) are embedded locally in eight ChromaDB collections via `nomic-embed-text`. Every agent session begins by querying this knowledge base before forming a hypothesis — no internet access required.
 *   **Privacy-First:** By default all inference runs on a local Ollama instance — zero cloud API calls during monitoring or repair cycles. Cloud (Anthropic Claude) is strictly opt-in via `LLM_PROVIDER`.
 
 ---
@@ -144,7 +144,7 @@ All mutable state lives outside the repo in macOS platform directories:
 | Directory | Contents |
 |---|---|
 | `~/Library/Application Support/Pueo/` | DB, HITL cards, backups, archives, ChromaDB, registered tools |
-| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, ha_concepts |
+| `~/Library/Caches/Pueo/` | HA release notes, HACS changelogs, ha_source, ha_concepts, ha_skills |
 | `~/Library/Logs/Pueo/` | pueo.log, pueo-stderr.log |
 | `~/.config/pueo/` | config.yaml |
 
@@ -173,6 +173,7 @@ query during active sessions — no internet access needed during monitoring or 
   from the Home Assistant docs site
 - **HA developer docs and concepts** — architecture, entity model, config flows, Supervisor,
   WebSocket and REST API pages from `developers.home-assistant.io` and the HA docs site
+- **HA best-practice skills** — reference files from the [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills) repo (deprecated API tables, YAML guidelines, dashboard patterns, template guidelines) embedded into an `ha_best_practices` collection — authority score 0.9, labelled `[BEST PRACTICE]` in agent context. Generative and repair agents use these to avoid deprecated service calls and config patterns automatically.
 - **Runbooks** — human-curated seed runbooks plus candidate and gap runbooks saved by the agent
   (via the `save_runbook` tool) to a `strategies` collection, recalled automatically in future
   sessions so Pueo improves as it encounters more failure patterns
@@ -180,8 +181,8 @@ query during active sessions — no internet access needed during monitoring or 
   at each refresh, so similar earlier incidents appear as context before the first LLM call
 
 Collections: `ha_release_notes`, `hacs_changelogs`, `ha_integration_docs`, `ha_concepts`,
-`ha_developer_docs`, `strategies`, `repair_history`. Results are ranked by hybrid BM25 + cosine
-retrieval weighted by source authority.
+`ha_developer_docs`, `ha_best_practices`, `strategies`, `repair_history`. Results are ranked by
+hybrid BM25 + cosine retrieval weighted by source authority.
 
 **How the agent uses it:**
 `query_knowledge` is the first tool called in every repair, diagnostic, and chat session —
@@ -201,6 +202,20 @@ Embedded data is stored in `~/Library/Application Support/Pueo/chromadb/`. The e
 `nomic-embed-text` running locally via Ollama — zero WAN traffic after the initial scrape.
 
 Investigation runbooks are pooled in the community [pueo-kb](https://github.com/AndysWorth/pueo-kb) library and ingested automatically at each RAG refresh.
+
+### Optional HA companion integrations
+
+Two HACS integrations give Pueo additional diagnostic signals when present. Both are **optional** — Pueo degrades gracefully when they are absent and never requires them for normal operation. Third-party output is treated as supporting evidence only and labelled accordingly in agent context.
+
+**[Spook](https://spook.boo)** (by @frenck) — when installed, Pueo:
+- Calls `get_spook_issues` (repair registry filtered to `domain="spook"`) to surface dead-entity references, missing lovelace resources, broken automation references, and similar issues during lovelace and update-analysis investigations.
+- The `get_spook_issues` tool is read-only and included in the MCP server's tool list, so the HA Companion App and other MCP clients can query it directly.
+
+Install via HACS: search "Spook". Pueo detects it automatically through the HA profile.
+
+**[ha-upgrade-advisor](https://github.com/brianegge/ha-upgrade-advisor)** (by @brianegge) — when installed and a report is ready, Pueo reads `sensor.upgrade_advisor_status` and `sensor.upgrade_advisor_risk` during update-analysis sessions and incorporates the risk level and breaking-change count as a secondary input alongside its own analysis. If the advisor report is stale (for a different target version) or not yet ready, it is silently ignored.
+
+Install via HACS: search "HA Upgrade Advisor". Pueo detects it automatically through the HA REST API.
 
 ---
 
