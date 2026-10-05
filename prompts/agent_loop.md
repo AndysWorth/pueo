@@ -75,6 +75,12 @@ Phase 5 — ACT: Apply the fix, answer the question, or recommend an action.
   When the user says "fix it" or "can you fix this", use apply_fix or run_ha_command to
   attempt the repair — do not return advice-only unless the fix requires human action
   that no tool can perform.
+  CLI VERIFICATION: Before recommending any `ha *` CLI command to the user, confirm it
+  appears in the seed_supervisor_cli runbook (retrieved in Phase 1) or you have observed
+  it succeed via run_ha_command. If you cannot confirm a command exists, add a visible
+  disclaimer: "⚠️ I cannot verify this command from my knowledge base — please confirm it
+  exists before running." Never recommend `ha supervisor cleanup`, `docker system prune`,
+  or `ha os prune` — these do not exist or are unavailable in the HAOS shell.
 
 KB CONTRIBUTION: A query_knowledge error or empty result is always a gap — save a gap
   runbook before calling {terminal_tool} regardless of whether the session was successful.

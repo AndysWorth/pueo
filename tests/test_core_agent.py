@@ -8874,6 +8874,46 @@ class TestToolExecutor:
         assert not result.success
         assert "not in allowlist" in result.error
 
+    def test_run_ha_command_supervisor_repair_allowed(self):
+        """ha supervisor repair is allowlisted for container image cleanup."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha supervisor repair": (0, "Repair complete\n", "")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha supervisor repair"},
+                )
+            )
+        )
+        assert result.success
+        assert "not in allowlist" not in (result.error or "")
+
+    def test_run_ha_command_su_repair_allowed(self):
+        """ha su repair (alias) is allowlisted for container image cleanup."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={"ha su repair": (0, "Repair complete\n", "")}
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha su repair"},
+                )
+            )
+        )
+        assert result.success
+        assert "not in allowlist" not in (result.error or "")
+
     def test_read_file_allowed_path(self):
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_registry import ToolCall

@@ -57,6 +57,8 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha backups list",
         "ha apps list",
         "ha os info",
+        "ha supervisor repair",
+        "ha su repair",
     }
 )
 
