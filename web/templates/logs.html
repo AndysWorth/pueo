@@ -845,6 +845,13 @@
     _applyNavParams();
   });
 
+  // Stop the tail poll when navigating away in-page (#770).
+  window._pueoPageCleanup = function() {
+    clearInterval(_tailInterval);
+    _tailInterval = null;
+    _tailActive = false;
+  };
+
 })();
 </script>
 {% endblock %}
