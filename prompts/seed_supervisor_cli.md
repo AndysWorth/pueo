@@ -59,6 +59,7 @@ ha supervisor logs     # Show Supervisor log lines
 ha supervisor reload   # Reload Supervisor configuration (rarely needed)
 ha supervisor update   # Update the Supervisor itself
 ha supervisor info     # Show Supervisor version and state
+ha supervisor repair   # Remove unused container image layers (safe; reboot recommended)
 ```
 
 ## Network
@@ -71,7 +72,18 @@ ha network update      # Update network config (requires JSON args; prefer HA UI
 ## Disk / Maintenance
 
 ```
-ha os datadisk list    # List available data disks (for migration)
+ha os datadisk list      # List available data disks (for migration)
+ha docker reset-storage  # Nuclear: wipe all Docker storage and re-download on next reboot
+                         # (HAOS 18.3+; requires internet; for corruption recovery only)
+```
+
+## Commands that do NOT exist — never recommend these
+
+```
+ha supervisor cleanup    # DOES NOT EXIST
+ha cleanup purge         # DOES NOT EXIST
+ha os prune              # DOES NOT EXIST
+docker system prune      # docker CLI is unavailable in the HAOS SSH shell
 ```
 
 ## Common Patterns
