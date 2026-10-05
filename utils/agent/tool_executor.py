@@ -160,6 +160,18 @@ def _version_score_multiplier(
     return 1.0
 
 
+def _suppression_is_approved(key: str, db_path: str) -> bool:
+    """Return True if hitl_suppression has last_action='approved' for key."""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT last_action FROM hitl_suppression WHERE card_key = ?", (key,)
+            ).fetchone()
+        return row is not None and row[0] == "approved"
+    except sqlite3.OperationalError:
+        return False
+
+
 class ToolExecutor:
     """Executes tool calls on behalf of AgentLoop.
 
@@ -4071,6 +4083,27 @@ class ToolExecutor:
         from utils.disk.resource import get_resource_status
 
         suppression_key = f"update:{update.entity_id}"
+
+        # Race guard: if the user approved this card while the analysis was still
+        # running, skip sending a duplicate card.
+        if await asyncio.to_thread(
+            _suppression_is_approved, suppression_key, self._db_path
+        ):
+            log.info(
+                "finish_update_analysis_skipped_already_approved",
+                component=update.component,
+                version=update.latest_version,
+                suppression_key=suppression_key,
+            )
+            return ToolResult(
+                tool_name="finish_update_analysis",
+                success=True,
+                output=(
+                    f"Update {update.component} {update.latest_version} was approved "
+                    "while analysis was running — skipping duplicate card."
+                ),
+            )
+
         advisory = "SAFE" if safe_to_update else "REVIEW REQUIRED"
         body_parts = [
             f"Component: {update.component}",
