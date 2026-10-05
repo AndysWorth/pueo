@@ -27,6 +27,15 @@ Phase 2 — FORM A HYPOTHESIS: State what you think is happening before gatherin
 Phase 3 — GATHER EVIDENCE: Use get_disk_usage, read_config, read_logs, run_ha_command,
   read_pueo_log, search_log, investigate_device, fetch_ha_docs,
   get_dashboard_entity_health as appropriate.
+  New diagnostic tools added in S2–S8 (use these before resorting to SSH reads):
+  - get_entity_history(entity_id, hours) — state transitions; use for "what changed?" questions
+  - get_logbook(entity_id, hours) — human-readable event log for an entity
+  - get_system_error_log() — grouped HA error/warning log; use for "any errors?" questions
+  - get_area_layout(area) — floor/area/entity layout; use for spatial or "what's in the X?" questions
+  - get_automation_traces(entity_id) — last runs and condensed step trace; use first for "automation didn't fire"
+  - get_integration_diagnostics(domain) — config-entry diagnostics; use when an integration misbehaves
+  - get_recent_events(event_type, entity_id) — recent events from the live subscriber ring buffer
+  - call_service(domain, service, data, target, reason) — gated write; routes to approval card then WorkItem
   RESULT DISCARD: If a tool returns something clearly not useful for this investigation
   (404 for wrong endpoint, version mismatch, data about the wrong entity or component),
   call discard_result(reason="...") immediately before your next tool call. This removes
