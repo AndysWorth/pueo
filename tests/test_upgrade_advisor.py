@@ -9,8 +9,11 @@ import pytest
 
 from utils.ha.upgrade_advisor import (
     AdvisorReport,
+    PostUpgradeReport,
     _MAX_REPORT_CHARS,
+    _MAX_REGRESSIONS,
     read_advisor_report,
+    read_post_upgrade_report,
 )
 
 
@@ -192,3 +195,112 @@ class TestReadAdvisorReport:
         result = asyncio.run(read_advisor_report(rest, "2026.10.0"))
         assert result is not None
         assert result.breaking_change_count == 0
+
+
+# ---------------------------------------------------------------------------
+# PostUpgradeReport dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestPostUpgradeReport:
+    def test_valid_construction(self):
+        r = PostUpgradeReport(
+            post_upgrade_status="regressions",
+            regressions=["automation.foo broke", "light.bar unavailable"],
+        )
+        assert r.post_upgrade_status == "regressions"
+        assert len(r.regressions) == 2
+
+    def test_default_empty_regressions(self):
+        r = PostUpgradeReport(post_upgrade_status="ok")
+        assert r.regressions == []
+
+    def test_json_round_trip(self):
+        r = PostUpgradeReport(
+            post_upgrade_status="ok",
+            regressions=["issue1"],
+        )
+        data = asdict(r)
+        r2 = PostUpgradeReport(**data)
+        assert r2 == r
+
+
+# ---------------------------------------------------------------------------
+# read_post_upgrade_report
+# ---------------------------------------------------------------------------
+
+
+def _make_post_status(
+    post_upgrade_status: str = "ok",
+    post_upgrade_regressions=None,
+) -> dict:
+    attrs: dict = {"post_upgrade_status": post_upgrade_status}
+    if post_upgrade_regressions is not None:
+        attrs["post_upgrade_regressions"] = post_upgrade_regressions
+    return {"state": "report_ready", "attributes": attrs}
+
+
+class TestReadPostUpgradeReport:
+    def test_not_installed_returns_none(self):
+        rest = _FakeRest(status_raises=RuntimeError("entity not found"))
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is None
+
+    def test_no_post_upgrade_attributes_returns_none(self):
+        """Sensor present but no post_upgrade_* attrs → return None."""
+        rest = _FakeRest(status_entity={"state": "idle", "attributes": {}})
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is None
+
+    def test_happy_path_ok_status(self):
+        rest = _FakeRest(status_entity=_make_post_status("ok"))
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.post_upgrade_status == "ok"
+        assert result.regressions == []
+
+    def test_regressions_list(self):
+        rest = _FakeRest(
+            status_entity=_make_post_status(
+                "regressions",
+                post_upgrade_regressions=["automation.foo", "light.bar"],
+            )
+        )
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.regressions == ["automation.foo", "light.bar"]
+
+    def test_regressions_string_coerced_to_list(self):
+        rest = _FakeRest(
+            status_entity=_make_post_status(
+                "regressions",
+                post_upgrade_regressions="automation.foo",
+            )
+        )
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.regressions == ["automation.foo"]
+
+    def test_regressions_capped_at_max(self):
+        many = [f"issue_{i}" for i in range(_MAX_REGRESSIONS + 5)]
+        rest = _FakeRest(status_entity=_make_post_status("regressions", many))
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert len(result.regressions) == _MAX_REGRESSIONS
+
+    def test_empty_string_status_with_regressions_returns_report(self):
+        """post_upgrade_status can be empty if regressions list is present."""
+        rest = _FakeRest(status_entity=_make_post_status("", ["automation.foo"]))
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.regressions == ["automation.foo"]
+
+    def test_empty_regressions_string_not_added(self):
+        """An empty-string regression is not added to the list."""
+        rest = _FakeRest(
+            status_entity=_make_post_status("ok", post_upgrade_regressions="")
+        )
+        result = asyncio.run(read_post_upgrade_report(rest))
+        # post_upgrade_status="ok" → post_status is truthy → report is returned
+        assert result is not None
+        assert result.regressions == []

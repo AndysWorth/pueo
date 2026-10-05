@@ -5842,7 +5842,9 @@ class TestExecuteUpdate:
         notifier = FakeNotifier()
         called = []
 
-        async def fake_core(update, ssh, notifier, gate, llm_client=None):
+        async def fake_core(
+            update, ssh, notifier, gate, llm_client=None, ha_rest_client=None
+        ):
             called.append("core")
             return True
 

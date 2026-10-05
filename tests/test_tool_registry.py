@@ -506,3 +506,26 @@ class TestRegistryMembership:
         assert "limit" in props
         required = GET_RECENT_EVENTS.parameters.get("required", [])
         assert required == []  # all params optional
+
+    def test_get_spook_issues_in_lovelace_registry(self):
+        from utils.agent.tool_registry import build_lovelace_investigation_registry
+
+        reg = build_lovelace_investigation_registry()
+        assert "get_spook_issues" in reg
+
+    def test_get_spook_issues_in_update_analysis_registry(self):
+        from utils.agent.tool_registry import build_update_analysis_registry
+
+        reg = build_update_analysis_registry()
+        assert "get_spook_issues" in reg
+
+    def test_get_spook_issues_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_spook_issues" in _MCP_TOOL_NAMES
+
+    def test_get_spook_issues_not_in_code_proposal_registry(self):
+        from utils.agent.tool_registry import build_code_proposal_registry
+
+        reg = build_code_proposal_registry()
+        assert "get_spook_issues" not in reg
