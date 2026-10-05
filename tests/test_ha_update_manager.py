@@ -929,3 +929,102 @@ class TestExecuteCoreUpdateAdvisor:
         payload = notifier.sent[0]["payload"]
         assert "advisor_regressions" in payload
         assert payload["advisor_regressions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Race guard — _finish_update_analysis skips card when already approved
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisRaceGuard:
+    """Fix 1: _finish_update_analysis does not send a duplicate card when
+    hitl_suppression already shows last_action='approved' for the key."""
+
+    def _make_executor(self, db_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=None,
+            notifier=notifier,
+            db_path=db_path,
+        )
+        return executor, notifier
+
+    def _make_update(self, component="noaa_it_all"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id=f"update.{component}",
+            component=component,
+            installed_version="0.7.1",
+            latest_version="0.7.3",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_skips_card_when_suppression_already_approved(self, tmp_path, pueo_dirs):
+        """_finish_update_analysis returns success without sending when already approved."""
+        import asyncio
+
+        db_path = _make_db(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update:update.noaa_it_all", "update", "approved"),
+            )
+
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Patch update.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=True,
+            )
+        )
+
+        assert result.success
+        assert "skipping duplicate" in result.output
+        assert (
+            not notifier.send.called
+        ), "No HITL card should be sent when already approved"
+
+    def test_sends_card_when_not_yet_approved(self, tmp_path, pueo_dirs):
+        """_finish_update_analysis sends a card when no approved row exists."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Patch update.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert result.success
+        assert (
+            notifier.send.called
+        ), "HITL card should be sent when not already approved"

@@ -2913,6 +2913,58 @@ class TestApproveWorkQueueRouting:
 
         assert len(submitted) == 0, "submit must not be called when .in_progress exists"
 
+    def test_approve_update_card_writes_update_analyzed_key(
+        self, watch_dir, monkeypatch, pueo_dirs
+    ):
+        """approve() for CARD_TYPE_UPDATE writes update_analyzed:{entity_id}:{version}
+        to hitl_suppression before dispatching the WorkItem (Fix 2 race guard)."""
+        import sqlite3
+        import web.dashboard as dashboard
+        import utils.agent.work_queue as wq_mod
+        from utils.hitl.card_types import CARD_TYPE_UPDATE
+        import agents.ha_log_monitor as log_monitor
+
+        # Track what _update_mark_card_sent was called with
+        sent_keys: list = []
+
+        def _fake_mark_sent(key, card_type, description):
+            sent_keys.append(key)
+
+        monkeypatch.setattr(log_monitor, "_update_mark_card_sent", _fake_mark_sent)
+
+        submitted = []
+
+        class FakeQueue:
+            async def submit(self, item):
+                submitted.append(item)
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(wq_mod, "_work_queue", FakeQueue())
+
+        async def _noop_handler(nid, data, json_path, wd):
+            pass
+
+        monkeypatch.setitem(dashboard._CARD_DISPATCH, CARD_TYPE_UPDATE, _noop_handler)
+
+        self._write_card(
+            watch_dir,
+            "race-upd-1",
+            {
+                "card_type": "update",
+                "component": "noaa_it_all",
+                "entity_id": "update.noaa_it_all_update",
+                "installed_version": "0.7.1",
+                "latest_version": "0.7.3",
+            },
+        )
+
+        asyncio.run(dashboard.approve("race-upd-1"))
+
+        analyzed_key = "update_analyzed:update.noaa_it_all_update:0.7.3"
+        assert (
+            analyzed_key in sent_keys
+        ), f"update_analyzed key must be written on approval; got {sent_keys}"
+
     def test_approve_falls_back_to_create_task_when_no_queue(
         self, watch_dir, monkeypatch
     ):

@@ -1908,6 +1908,22 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
                 data["payload"]["unique_id_override"] = override
                 json_path.write_text(json.dumps(data, indent=2))
 
+        # Write update_analyzed key before dispatching so poll_for_updates cannot
+        # queue a duplicate analysis during the execution window.
+        if card_type == CARD_TYPE_UPDATE:
+            _entity_id = payload.get("entity_id", "")
+            _latest_version = payload.get("latest_version", "")
+            if _entity_id and _latest_version:
+                from agents.ha_log_monitor import _update_mark_card_sent
+
+                _analyzed_key = f"update_analyzed:{_entity_id}:{_latest_version}"
+                await asyncio.to_thread(
+                    _update_mark_card_sent,
+                    _analyzed_key,
+                    CARD_TYPE_UPDATE,
+                    f"Executing: {payload.get('component', '')} → {_latest_version}",
+                )
+
         handler = _CARD_DISPATCH.get(card_type)
         if handler:
             (watch_dir / f"{nid}.in_progress").touch()
