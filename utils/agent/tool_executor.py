@@ -3678,6 +3678,49 @@ class ToolExecutor:
                         error=f"Auto-reboot failed: {exc}",
                     )
 
+        # Auto-restart path: when an integration/add-on update just completed and
+        # the repair poller detects restart_required, execute ha core restart
+        # immediately without a second approval card (the pre-update backup covers recovery).
+        if action == "restart":
+            from agents.ha_update_manager import (
+                is_restart_pending_after_update,
+                set_restart_pending_after_update,
+                execute_ha_core_restart,
+            )
+
+            if is_restart_pending_after_update():
+                log.info(
+                    "auto_restart_triggered",
+                    issue_key=issue.issue_key,
+                )
+                set_restart_pending_after_update(False)
+                from agents.ha_agent_advanced import mark_repair_resolved
+
+                try:
+                    success = await execute_ha_core_restart(
+                        self._ha_ssh,  # type: ignore[arg-type]
+                        self._notifier,
+                        skip_backup=True,
+                    )
+                    if success:
+                        mark_repair_resolved(issue.issue_key)
+                    return ToolResult(
+                        tool_name="finish_repair_issue",
+                        success=success,
+                        output=(
+                            "Auto-restart executed (post-update). "
+                            f"Outcome: {'online' if success else 'timed out'}"
+                        ),
+                    )
+                except Exception as exc:
+                    log.error("auto_restart_failed", error=str(exc))
+                    return ToolResult(
+                        tool_name="finish_repair_issue",
+                        success=False,
+                        output="",
+                        error=f"Auto-restart failed: {exc}",
+                    )
+
         from utils.hitl.card_types import CARD_TYPE_HA_REPAIR
         from utils.hitl.hitl_tracker import stable_nid
         from agents.ha_agent_advanced import mark_repair_hitl_sent
