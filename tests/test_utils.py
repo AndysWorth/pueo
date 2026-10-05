@@ -764,6 +764,145 @@ class TestValidateProposedFix:
         assert result.is_safe is False
         assert len(result.reasons) >= 2
 
+    def test_deprecated_key_in_proposed_yaml_rejected(self):
+        from utils.repair.yaml_validator import validate_proposed_fix
+
+        deprecated_keys = [
+            {
+                "key": "color_temp",
+                "reason": "removed in 2026.3",
+                "removed_version": "2026.3",
+            }
+        ]
+        proposed = (
+            _VALID_FIX
+            + "light:\n  - platform: template\n    lights:\n      my_light:\n        color_temp: 300\n"
+        )
+        result = validate_proposed_fix(
+            _VALID_ORIGINAL, proposed, deprecated_keys=deprecated_keys
+        )
+        assert result.is_safe is False
+        assert any("color_temp" in r for r in result.reasons)
+
+    def test_deprecated_key_nested_in_list_rejected(self):
+        # color_temp used as a YAML key nested inside a list item
+        from utils.repair.yaml_validator import validate_proposed_fix
+
+        deprecated_keys = [
+            {
+                "key": "color_temp",
+                "reason": "removed in 2026.3",
+                "removed_version": "2026.3",
+            }
+        ]
+        proposed = (
+            _VALID_FIX
+            + "light:\n  - platform: template\n    lights:\n      my_light:\n"
+            + "        color_temp: 300\n"
+        )
+        result = validate_proposed_fix(
+            _VALID_ORIGINAL, proposed, deprecated_keys=deprecated_keys
+        )
+        assert result.is_safe is False
+        assert any("color_temp" in r for r in result.reasons)
+
+    def test_no_deprecated_keys_provided_still_passes(self):
+        from utils.repair.yaml_validator import validate_proposed_fix
+
+        result = validate_proposed_fix(
+            _VALID_ORIGINAL, _VALID_FIX, deprecated_keys=None
+        )
+        assert result.is_safe is True
+
+    def test_empty_deprecated_keys_list_still_passes(self):
+        from utils.repair.yaml_validator import validate_proposed_fix
+
+        result = validate_proposed_fix(_VALID_ORIGINAL, _VALID_FIX, deprecated_keys=[])
+        assert result.is_safe is True
+
+
+class TestLoadDeprecatedKeys:
+    def test_returns_empty_when_file_absent(self, tmp_path):
+        from utils.repair.yaml_validator import load_deprecated_keys
+
+        result = load_deprecated_keys(str(tmp_path))
+        assert result == []
+
+    def test_loads_valid_json(self, tmp_path):
+        from utils.repair.yaml_validator import load_deprecated_keys
+
+        data = [{"key": "color_temp", "reason": "removed", "removed_version": "2026.3"}]
+        (tmp_path / "deprecated_keys.json").write_text(
+            __import__("json").dumps(data), encoding="utf-8"
+        )
+        result = load_deprecated_keys(str(tmp_path))
+        assert result == data
+
+    def test_returns_empty_on_invalid_json(self, tmp_path):
+        from utils.repair.yaml_validator import load_deprecated_keys
+
+        (tmp_path / "deprecated_keys.json").write_text("not-json", encoding="utf-8")
+        result = load_deprecated_keys(str(tmp_path))
+        assert result == []
+
+
+class TestParseDeprecatedKeys:
+    _SKILL_MD = """\
+## Critical Anti-Patterns
+
+| Anti-pattern | Use instead | Why | Reference |
+|---|---|---|---|
+| Using `color_temp` (mireds) in light actions | Use `color_temp_kelvin` | The `color_temp` parameter was removed in 2026.3 | — |
+| `entered_home`/`left_home` triggers | `state` trigger `to: home` | These were removed in 2026.5 | — |
+| `enabled: false` top-level key | automation.turn_off | Not a valid top-level key | — |
+
+## Reference Files
+"""
+
+    def test_extracts_removed_entries(self, tmp_path):
+        from utils.knowledge.ha_skills_scraper import parse_deprecated_keys
+
+        (tmp_path / "SKILL.md").write_text(self._SKILL_MD, encoding="utf-8")
+        results = parse_deprecated_keys(str(tmp_path))
+        keys = [r["key"] for r in results]
+        assert "color_temp" in keys
+        assert "entered_home" in keys
+
+    def test_excludes_non_removed_entries(self, tmp_path):
+        from utils.knowledge.ha_skills_scraper import parse_deprecated_keys
+
+        (tmp_path / "SKILL.md").write_text(self._SKILL_MD, encoding="utf-8")
+        results = parse_deprecated_keys(str(tmp_path))
+        keys = [r["key"] for r in results]
+        # enabled: false has no 'removed in X.Y' in Why column → should be excluded
+        assert "enabled" not in keys
+
+    def test_writes_json_file(self, tmp_path):
+        import json
+
+        from utils.knowledge.ha_skills_scraper import parse_deprecated_keys
+
+        (tmp_path / "SKILL.md").write_text(self._SKILL_MD, encoding="utf-8")
+        parse_deprecated_keys(str(tmp_path))
+        out = json.loads((tmp_path / "deprecated_keys.json").read_text())
+        assert isinstance(out, list)
+        assert len(out) >= 2
+
+    def test_returns_empty_when_skill_md_absent(self, tmp_path):
+        from utils.knowledge.ha_skills_scraper import parse_deprecated_keys
+
+        result = parse_deprecated_keys(str(tmp_path))
+        assert result == []
+
+    def test_removed_version_captured(self, tmp_path):
+        from utils.knowledge.ha_skills_scraper import parse_deprecated_keys
+
+        (tmp_path / "SKILL.md").write_text(self._SKILL_MD, encoding="utf-8")
+        results = parse_deprecated_keys(str(tmp_path))
+        by_key = {r["key"]: r for r in results}
+        assert by_key["color_temp"]["removed_version"] == "2026.3"
+        assert by_key["entered_home"]["removed_version"] == "2026.5"
+
 
 # ── utils/ssh_client.py (FakeSSHClient) ──────────────────────────────────────────
 

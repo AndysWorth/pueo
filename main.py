@@ -326,6 +326,7 @@ def run_rag_refresh(
     from utils.knowledge.ha_skills_scraper import (
         embed_cached_ha_skills,
         fetch_ha_skills,
+        parse_deprecated_keys,
     )
 
     _cb("Fetching HA skills")
@@ -340,6 +341,10 @@ def run_rag_refresh(
     )
     store.prune("ha_best_practices", skills_ids)
     _log.info("rag_refresh_step_done", step="embed_ha_skills", embedded=n_skills)
+    _cb("Parsing deprecated YAML keys")
+    _log.info("rag_refresh_step", step="parse_deprecated_keys")
+    n_deprecated = len(parse_deprecated_keys(config.HA_SKILLS_CACHE_DIR))
+    _log.info("rag_refresh_step_done", step="parse_deprecated_keys", count=n_deprecated)
 
     total = (
         n_ha

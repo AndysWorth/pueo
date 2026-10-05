@@ -15347,3 +15347,128 @@ class TestSecurityNotificationEnforcement:
         )
 
         ws_client.dismiss_notification.assert_called_once_with("http-login")
+
+
+class TestAgentLoopToolResultSanitizer:
+    """Verify tool results are sanitized before LLM dispatch when LLM_PROVIDER != local."""
+
+    def _make_loop_with_capture(self, responses, tool_output):
+        import asyncio  # noqa: F401
+
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolRegistry, ToolDefinition, ToolResult
+
+        snapshots: list[list[dict]] = []
+
+        class _CapturingClient:
+            async def chat_with_tools(
+                self, model, messages, tools, options=None, think=None, keep_alive=None
+            ):
+                snapshots.append(list(messages))
+                return (
+                    responses.pop(0)
+                    if responses
+                    else {"role": "assistant", "content": ""}
+                )
+
+        reg = ToolRegistry()
+        for name in ("read_config", "finish_repair"):
+            reg.register(
+                ToolDefinition(
+                    name=name,
+                    description=f"{name} tool",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                )
+            )
+
+        class _CapturingExecutor(ToolExecutor):
+            async def execute(self, tool_call):  # type: ignore[override]
+                if tool_call.name == "read_config":
+                    return ToolResult(
+                        tool_name="read_config",
+                        success=True,
+                        output=tool_output,
+                    )
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    success=True,
+                    output="",
+                )
+
+        executor = _CapturingExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        loop = AgentLoop(
+            llm_client=_CapturingClient(),
+            tool_executor=executor,
+            tool_registry=reg,
+            max_tool_calls=5,
+            max_wall_seconds=30.0,
+        )
+        return loop, snapshots
+
+    def test_sanitizer_applied_for_cloud_provider(self, monkeypatch):
+        import asyncio
+
+        import utils.agent.agent_loop as al_module
+
+        monkeypatch.setattr(al_module, "LLM_PROVIDER", "cloud")
+
+        responses = [
+            {"tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]},
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {"outcome": "success", "summary": "done"},
+                        }
+                    }
+                ]
+            },
+        ]
+        sensitive_output = "api_key: mysecrettoken12345"
+        loop, snapshots = self._make_loop_with_capture(responses, sensitive_output)
+        asyncio.run(loop.run("check config"))
+
+        # The second LLM call should have received the sanitized tool result
+        # (snapshots[1] is the history after read_config executed)
+        tool_messages = [m for m in snapshots[1] if m.get("role") == "tool"]
+        assert tool_messages, "expected at least one tool message in second call"
+        assert "mysecrettoken12345" not in tool_messages[0]["content"]
+        assert "<REDACTED>" in tool_messages[0]["content"]
+
+    def test_sanitizer_not_applied_for_local_provider(self, monkeypatch):
+        import asyncio
+
+        import utils.agent.agent_loop as al_module
+
+        monkeypatch.setattr(al_module, "LLM_PROVIDER", "local")
+
+        responses = [
+            {"tool_calls": [{"function": {"name": "read_config", "arguments": {}}}]},
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "finish_repair",
+                            "arguments": {"outcome": "success", "summary": "done"},
+                        }
+                    }
+                ]
+            },
+        ]
+        sensitive_output = "api_key: mysecrettoken12345"
+        loop, snapshots = self._make_loop_with_capture(responses, sensitive_output)
+        asyncio.run(loop.run("check config"))
+
+        tool_messages = [m for m in snapshots[1] if m.get("role") == "tool"]
+        assert tool_messages, "expected at least one tool message in second call"
+        # In local mode: value passes through unchanged
+        assert "mysecrettoken12345" in tool_messages[0]["content"]

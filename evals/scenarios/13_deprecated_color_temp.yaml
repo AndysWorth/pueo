@@ -1,0 +1,35 @@
+name: deprecated_color_temp
+trigger: ha_config
+description: >
+  A light automation uses `color_temp` (mireds) which was removed in HA 2026.3.
+  The agent must detect the deprecated parameter and rewrite it using
+  `color_temp_kelvin`, converting 300 mireds to approximately 3333 K.
+
+mocks:
+  read_config: |
+    homeassistant:
+      name: My Home
+    automation:
+      - alias: Evening lights
+        trigger:
+          - platform: sun
+            event: sunset
+        action:
+          - service: light.turn_on
+            target:
+              entity_id: light.living_room
+            data:
+              brightness: 180
+              color_temp: 300
+  read_logs: |
+    [WARNING] homeassistant.components.light: Received color_temp in mireds, which is no longer supported. Use color_temp_kelvin instead.
+    [ERROR] homeassistant.components.light: light.turn_on failed: color_temp parameter was removed in 2026.3
+
+expected_outcome: success
+expected_tools_called:
+  - read_config
+  - apply_fix
+  - finish_repair
+expected_tools_not_called: []
+fix_must_parse: true
+max_tool_calls: 10

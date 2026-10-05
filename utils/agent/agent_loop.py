@@ -26,7 +26,9 @@ from config import (
     AGENT_PER_CALL_MAX_TIMEOUT_SECONDS,
     AGENT_PER_CALL_MIN_TIMEOUT_SECONDS,
     AGENT_PER_CALL_TIMEOUT_FACTOR,
+    LLM_PROVIDER,
 )
+from utils.ha.context_sanitizer import sanitize_update_context
 from utils.llm.model_options import ModelCallOptions, derive_call_options
 from utils.core.logging import get_logger
 from utils.core.prompts import load_prompt
@@ -1098,6 +1100,8 @@ class AgentLoop:
                     success=tool_result.success,
                     remaining_budget=remaining_budget,
                 )
+                if LLM_PROVIDER != "local":
+                    result_text = sanitize_update_context(result_text)
                 messages.append(
                     {
                         "role": "tool",
