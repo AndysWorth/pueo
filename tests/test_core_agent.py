@@ -5813,6 +5813,89 @@ class TestExecuteAddonUpdate:
         assert poll_called == [], "poll must not be called on non-timeout error"
         assert notifier.sent[0]["payload"]["success"] is False
 
+    def test_sets_restart_pending_flag_and_triggers_repair_scan_on_success(
+        self, monkeypatch
+    ):
+        """Successful addon update must set _restart_pending_after_update and trigger repair scan."""
+        from agents.ha_update_manager import (
+            execute_addon_update,
+            is_restart_pending_after_update,
+            set_restart_pending_after_update,
+        )
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        set_restart_pending_after_update(False)
+        scan_calls = [0]
+
+        async def fake_repair_scan(settle_seconds=5):
+            scan_calls[0] += 1
+
+        monkeypatch.setattr(
+            "agents.ha_update_manager._post_update_repair_scan", fake_repair_scan
+        )
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            return True
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=FakeHARestClient(),
+                )
+            )
+
+        assert result is True
+        assert is_restart_pending_after_update() is True
+        set_restart_pending_after_update(False)  # cleanup
+
+    def test_does_not_set_restart_pending_flag_on_failure(self, monkeypatch):
+        """Failed addon update must NOT set _restart_pending_after_update."""
+        from agents.ha_update_manager import (
+            execute_addon_update,
+            is_restart_pending_after_update,
+            set_restart_pending_after_update,
+        )
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        set_restart_pending_after_update(False)
+
+        ssh = FakeSSHClient()
+        gate = FakeAutonomyGate()
+        notifier = FakeNotifier()
+
+        async def fake_poll(slug, version, client, timeout_seconds=180):
+            return False
+
+        with self._patch_backup():
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_update(),
+                    ssh,
+                    notifier,
+                    gate,
+                    _poll=fake_poll,
+                    ha_rest_client=FakeHARestClient(),
+                )
+            )
+
+        assert result is False
+        assert is_restart_pending_after_update() is False
+
 
 # ── execute_update dispatch ────────────────────────────────────────────────────
 class TestExecuteUpdate:
@@ -12805,6 +12888,131 @@ class TestFinishRepairIssueAutoReboot:
         assert notifier.sent[0]["payload"]["action"] == "reboot"
         # Flag must still be False
         assert _um.is_reboot_pending_after_update() is False
+
+
+# ── _finish_repair_issue auto-restart ────────────────────────────────────────────
+
+
+class TestFinishRepairIssueAutoRestart:
+    """_finish_repair_issue must auto-execute ha core restart when _restart_pending_after_update is True."""
+
+    def _make_issue(self, translation_key="issue_system_restart_required"):
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        return HARepairIssue(
+            domain="homeassistant",
+            issue_id="restart-001",
+            severity="warning",
+            issue_key="homeassistant/restart-001",
+            breaks_in_ha_version=None,
+            translation_key=translation_key,
+        )
+
+    def _make_executor(self, notifier=None, ssh=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        return ToolExecutor(
+            ha_ssh_client=ssh or FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=notifier or FakeNotifier(),
+        )
+
+    def test_auto_restart_when_flag_set_no_hitl_card(self, monkeypatch):
+        """When flag is True and action='restart', restart is auto-executed, no HITL card sent."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_restart_pending_after_update(True)
+
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        executor._pending_repair_issue = self._make_issue()
+
+        async def fake_restart(ssh, notif, **kwargs):
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Restart required after integration update",
+                recommended_action="Restart",
+                requires_hitl=True,
+                action="restart",
+            )
+        )
+
+        assert result.success is True
+        assert "auto-restart" in result.output.lower()
+        # No HITL card should have been sent
+        assert len(notifier.sent) == 0
+        assert _um.is_restart_pending_after_update() is False
+
+    def test_flag_cleared_even_when_restart_fails(self, monkeypatch):
+        """Flag must be cleared even if the restart itself fails."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_restart_pending_after_update(True)
+
+        executor = self._make_executor(notifier=FakeNotifier())
+        executor._pending_repair_issue = self._make_issue()
+
+        async def fake_restart(ssh, notif, **kwargs):
+            return False
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Restart required",
+                recommended_action="Restart",
+                requires_hitl=True,
+                action="restart",
+            )
+        )
+
+        assert result.success is False
+        assert _um.is_restart_pending_after_update() is False
+
+    def test_hitl_card_sent_when_flag_not_set(self, monkeypatch):
+        """When flag is False, the normal HITL card flow is preserved."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_restart_pending_after_update(False)
+
+        notifier = FakeNotifier()
+        executor = self._make_executor(notifier=notifier)
+        executor._pending_repair_issue = self._make_issue()
+
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
+        )
+
+        result = asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Restart required",
+                recommended_action="Restart",
+                requires_hitl=True,
+                action="restart",
+            )
+        )
+
+        assert result.success is True
+        # HITL card must be sent
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0]["payload"]["action"] == "restart"
+        assert _um.is_restart_pending_after_update() is False
 
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────
