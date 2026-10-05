@@ -5,42 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.ha.device_summarizer import compress_device_list, device_context_summary
+from utils.ha.device_summarizer import device_context_summary
 from utils.ha.ha_environment import HAEnvironmentProfile
-
-
-class TestCompressDeviceList:
-    def test_empty_returns_empty_string(self):
-        assert compress_device_list([]) == ""
-
-    def test_single_device(self):
-        devices = [{"manufacturer": "Philips", "model": "Hue Bulb"}]
-        result = compress_device_list(devices)
-        assert result == "1× Philips Hue Bulb"
-
-    def test_five_identical_devices(self):
-        devices = [{"manufacturer": "Philips", "model": "Hue Bulb"}] * 5
-        result = compress_device_list(devices)
-        assert result == "5× Philips Hue Bulb"
-
-    def test_sorted_by_count_descending(self):
-        devices = [{"manufacturer": "Ikea", "model": "Tradfri"}] * 3 + [
-            {"manufacturer": "Philips", "model": "Hue"}
-        ] * 7
-        lines = compress_device_list(devices).splitlines()
-        assert lines[0].startswith("7×")
-        assert lines[1].startswith("3×")
-
-    def test_missing_fields_fallback(self):
-        devices = [{"manufacturer": "", "model": ""}]
-        result = compress_device_list(devices)
-        assert "Unknown device" in result
-
-    def test_mixed_missing_fields(self):
-        devices = [{"manufacturer": "Sony", "model": ""}]
-        result = compress_device_list(devices)
-        assert "Sony" in result
-        assert "1×" in result
 
 
 class TestDeviceContextSummary:

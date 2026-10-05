@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from utils.knowledge.ha_skills_scraper import _chunk_markdown, embed_cached_ha_skills
+from utils.knowledge.ha_skills_scraper import (
+    _cache_is_stale,
+    _chunk_markdown,
+    embed_cached_ha_skills,
+)
 from utils.knowledge.knowledge_store import (
     COLLECTIONS,
     FakeKnowledgeStore,
@@ -103,6 +107,34 @@ class TestEmbedCachedHaSkills:
         store = FakeKnowledgeStore()
         result = embed_cached_ha_skills(str(tmp_path), store)
         assert result == 0
+
+
+class TestCacheIsStale:
+    def test_missing_file_is_stale(self, tmp_path):
+        assert _cache_is_stale(tmp_path / "missing.md", max_age_seconds=3600) is True
+
+    def test_fresh_file_is_not_stale(self, tmp_path):
+        p = tmp_path / "fresh.md"
+        p.write_text("content")
+        # File was just written; it cannot be older than 1 s.
+        assert _cache_is_stale(p, max_age_seconds=1000) is False
+
+    def test_old_file_is_stale(self, tmp_path, monkeypatch):
+        import time as _time
+
+        p = tmp_path / "old.md"
+        p.write_text("content")
+        # Pretend time has advanced by 200 hours
+        fake_now = _time.time() + 200 * 3600
+        monkeypatch.setattr(
+            "utils.knowledge.ha_skills_scraper.time.time", lambda: fake_now
+        )
+        assert _cache_is_stale(p, max_age_seconds=168 * 3600) is True
+
+    def test_zero_age_always_stale(self, tmp_path):
+        p = tmp_path / "f.md"
+        p.write_text("x")
+        assert _cache_is_stale(p, max_age_seconds=0) is True
 
 
 class TestKnowledgeStoreIntegration:

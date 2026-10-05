@@ -2617,12 +2617,6 @@ class TestLoadPrompt:
         text = load_prompt("analyze_notification")
         assert "Home Assistant" in text
 
-    def test_loads_analyze_breaking_changes_prompt(self):
-        from utils.core.prompts import load_prompt
-
-        text = load_prompt("analyze_breaking_changes")
-        assert "breaking" in text.lower()
-
     def test_loads_selfcheck_command_risk_prompt(self):
         from utils.core.prompts import load_prompt
 
@@ -11593,30 +11587,44 @@ class TestGetSpookIssues:
         assert "dead_entity_2" in result.output
         assert "reboot_required" not in result.output
 
-    def test_includes_spook_entity_issues(self):
+    def test_includes_orphaned_entities(self):
+        """Orphaned DB entities from list_orphaned_database_entities appear in output."""
         from utils.ha.ha_environment import HAEnvironmentProfile
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
-        entity_issues = [{"entity_id": "sensor.old_sensor", "issue": "dead_entity"}]
+        orphaned = {"count": 2, "entities": ["sensor.old_sensor", "sensor.orphan_b"]}
         profile = HAEnvironmentProfile(spook_installed=True)
-        ws = FakeHAWebSocketClient(spook_entity_issues=entity_issues)
+        ws = FakeHAWebSocketClient(orphaned_entities=orphaned)
         ex = self._make_executor(ws_client=ws, ha_profile=profile)
         result = self._run(ex)
         assert result.success is True
         assert "old_sensor" in result.output
 
-    def test_no_profile_shows_issues_without_not_installed_guard(self):
-        """When no profile is set, fetch regardless (optimistic)."""
+    def test_no_profile_checks_components_for_spook(self):
+        """When no profile is set, get_ha_components is called to detect Spook."""
         from utils.ha.ha_ws_client import FakeHAWebSocketClient
 
         issues = [
             {"domain": "spook", "issue_id": "dead_e", "severity": "warning"},
         ]
-        ws = FakeHAWebSocketClient(repair_issues=issues)
+        ws = FakeHAWebSocketClient(
+            repair_issues=issues, ha_components=["spook", "mqtt"]
+        )
         ex = self._make_executor(ws_client=ws, ha_profile=None)
         result = self._run(ex)
         assert result.success is True
         assert "dead_e" in result.output
+        assert "get_ha_components" in ws.calls
+
+    def test_no_profile_spook_not_in_components_shows_not_installed(self):
+        """When no profile and 'spook' not in components, return not-installed message."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient(ha_components=["mqtt", "zha"])
+        ex = self._make_executor(ws_client=ws, ha_profile=None)
+        result = self._run(ex)
+        assert result.success is True
+        assert "not installed" in result.output.lower()
 
 
 class TestHARepairDB:

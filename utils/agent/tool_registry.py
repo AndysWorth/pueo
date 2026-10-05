@@ -1914,6 +1914,26 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                 "type": "boolean",
                 "description": "True to send an approval card to the user. Usually true for core/os updates.",
             },
+            "prerequisites": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Steps that must be done BEFORE applying this update (e.g. 'Update Supervisor first', 'Free at least 2 GB disk'). Empty if none.",
+            },
+            "deprecations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Settings or APIs deprecated (but not yet removed) in this release. Empty if none.",
+            },
+            "new_features": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Noteworthy new capabilities in this release that are relevant to this installation. Empty if none.",
+            },
+            "risk_score": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Overall risk score for this update: low / medium / high.",
+            },
             "summary": {
                 "type": "string",
                 "description": "One-sentence conclusion summarising the update analysis outcome.",

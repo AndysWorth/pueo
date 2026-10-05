@@ -3080,8 +3080,8 @@ class TestGetSystemErrorLogTool:
             async def get_entity_registry(self):
                 return []
 
-            async def get_spook_entity_issues(self):
-                return []
+            async def list_orphaned_database_entities(self):
+                return {}
 
             async def get_lovelace_dashboards(self):
                 return []

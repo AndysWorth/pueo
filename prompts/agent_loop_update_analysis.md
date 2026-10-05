@@ -46,6 +46,12 @@ When calling `finish_update_analysis`:
 - `proposed_config_fixes`: any config YAML fixes the user should apply before updating
 - `create_hitl_card`: must be true for core/os/supervisor updates. For add-on and HACS updates, set true if the user should review this before it is applied, false if the update is routine and low-risk.
 
+Optional fields (populate when you have the information):
+- `prerequisites`: steps that must be done BEFORE applying this update (e.g. "Update Supervisor first", "Free at least 2 GB disk space"). Leave empty if there are none.
+- `deprecations`: settings, services, or APIs that are deprecated but not yet removed in this release. Leave empty if none.
+- `new_features`: noteworthy new capabilities that are relevant to this installation. Leave empty if none notable.
+- `risk_score`: "low" / "medium" / "high" overall risk score. Match to `instance_impact` and `safe_to_update`.
+
 If the release notes are unavailable or too short to analyse, set `safe_to_update=true`, empty lists, and a recommendation explaining that notes were not available.
 
 The terminal tool for this session is `{terminal_tool}`.

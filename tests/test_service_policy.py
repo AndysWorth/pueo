@@ -61,6 +61,15 @@ class TestClassifyServiceRisk:
         [
             ("homeassistant", "restart"),
             ("homeassistant", "stop"),
+            # Spook-added destructive services
+            ("homeassistant", "delete_all_orphaned_entities"),
+            ("homeassistant", "disable_user"),
+            ("homeassistant", "enable_user"),
+            ("repairs", "ignore_all"),
+            ("repairs", "unignore_all"),
+            ("repairs", "remove"),
+            ("recorder", "import_statistics"),
+            # Standard blocked set
             ("hassio", "addon_restart"),
             ("hassio", "host_reboot"),
             ("backup", "create"),

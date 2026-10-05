@@ -992,6 +992,7 @@ async def poll_for_updates(
                         ssh_client=ssh_client,
                         notifier=_notifier,
                         knowledge_store=knowledge_store,
+                        ha_rest_client=_client,
                     )
                 try:  # pragma: no cover
                     from utils.core.timeline import write_timeline_event

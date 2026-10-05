@@ -1,6 +1,6 @@
 """HA best-practices skills scraper and embedder.
 
-Fetches SKILL.md and 8 reference files from the homeassistant-ai/skills
+Fetches SKILL.md and reference files from the homeassistant-ai/skills
 repository and embeds them into the ha_best_practices ChromaDB collection.
 
 Content includes a version-stamped table of deprecated HA APIs (e.g. removed
@@ -14,6 +14,7 @@ fix cycles.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,8 @@ _GITHUB_BASE = (
 )
 
 # SKILL.md is the top-level doc; the rest are referenced spec files.
+# Upstream (homeassistant-ai/skills) currently ships 16 reference files;
+# appdaemon.md and examples.yaml are omitted as not relevant to Pueo.
 _SKILL_FILES: list[tuple[str, str]] = [
     ("SKILL", "SKILL.md"),
     ("safe-refactoring", "references/safe-refactoring.md"),
@@ -36,7 +39,20 @@ _SKILL_FILES: list[tuple[str, str]] = [
     ("blueprint-guide", "references/blueprint-guide.md"),
     ("device-control", "references/device-control.md"),
     ("scenes", "references/scenes.md"),
+    ("template-guidelines", "references/template-guidelines.md"),
+    ("yaml-only-integrations", "references/yaml-only-integrations.md"),
+    ("dashboard-guide", "references/dashboard-guide.md"),
+    ("dashboard-cards", "references/dashboard-cards.md"),
+    ("domain-docs", "references/domain-docs.md"),
 ]
+
+
+def _cache_is_stale(cache_path: Path, max_age_seconds: float) -> bool:
+    """Return True when the file is absent or older than max_age_seconds."""
+    if not cache_path.exists():
+        return True
+    return (time.time() - cache_path.stat().st_mtime) >= max_age_seconds
+
 
 _HEADING = re.compile(r"\n## ")
 
@@ -69,10 +85,15 @@ def _chunk_markdown(
     return ids, docs, metas
 
 
-def fetch_ha_skills(cache_dir: str) -> int:  # pragma: no cover
+def fetch_ha_skills(  # pragma: no cover
+    cache_dir: str,
+    max_age_hours: int = 168,
+) -> int:
     """Fetch HA skills Markdown files from GitHub and cache locally.
 
-    Returns count of files newly fetched (cached files are skipped).
+    Files are re-fetched when they are absent or older than max_age_hours
+    (default: 168 h = 7 days, matching RAG_REFRESH_INTERVAL_HOURS).
+    Returns count of files newly fetched or refreshed.
     """
     import urllib.request
 
@@ -80,10 +101,11 @@ def fetch_ha_skills(cache_dir: str) -> int:  # pragma: no cover
 
     log = get_logger("ha_skills_scraper")
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    max_age_secs = max_age_hours * 3600
     fetched = 0
     for slug, filename in _SKILL_FILES:
         cache_path = Path(cache_dir) / f"{slug}.md"
-        if cache_path.exists():
+        if not _cache_is_stale(cache_path, max_age_secs):
             log.debug("ha_skills_cached", slug=slug)
             continue
         url = f"{_GITHUB_BASE}/{filename}"

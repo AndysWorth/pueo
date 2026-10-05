@@ -602,6 +602,13 @@ async def _run_update_analysis(
         )
         executor.set_update_status(update)
 
+        # Profile fallback: use the persisted profile when none is passed in
+        from utils.ha.ha_environment import load_environment_profile
+
+        _profile = ha_profile or load_environment_profile(DB_PATH)
+        if _profile is not None:
+            executor.set_ha_profile(_profile)
+
         system_prompt = load_prompt("agent_loop_update_analysis").replace(
             "{terminal_tool}", terminal_tool
         )
@@ -617,23 +624,27 @@ async def _run_update_analysis(
         if update.release_summary:
             initial_context += f"\nSummary: {update.release_summary}"
 
-        env_summary = device_context_summary(ha_profile)
+        env_summary = device_context_summary(_profile)
         if env_summary:
             initial_context += f"\n\n{env_summary}"
 
-        # Best-effort: read upgrade_advisor sensor state if installed
+        # Best-effort: read upgrade-advisor sensor (brianegge/ha-upgrade-advisor)
         _rest = ha_rest_client
         if _rest is not None:
             try:
-                states = await _rest.get_states(prefix="sensor.upgrade_advisor")
-                for s in states:
-                    rec = (s.get("attributes") or {}).get("recommendation", "")
-                    if rec:
-                        initial_context = (
-                            f"Upgrade advisor recommendation: {rec}\n\n"
-                            + initial_context
-                        )
-                        break
+                from utils.ha.upgrade_advisor import read_advisor_report
+
+                advisor = await read_advisor_report(_rest, update.latest_version)
+                if advisor is not None:
+                    lines = [
+                        "Third-party upgrade-advisor report"
+                        " (unverified — treat as advisory only):",
+                        f"  Risk: {advisor.risk}",
+                        f"  Breaking changes: {advisor.breaking_change_count}",
+                    ]
+                    if advisor.report:
+                        lines.append(f"  Report:\n{advisor.report}")
+                    initial_context = "\n".join(lines) + "\n\n" + initial_context
             except Exception:  # nosec B110
                 pass
 

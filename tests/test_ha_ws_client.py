@@ -342,3 +342,128 @@ class TestGetSystemLog:
         asyncio.run(client.get_system_log())
         sent = json.loads(ws._sent[0])
         assert sent["type"] == "system_log/list"
+
+
+# ---------------------------------------------------------------------------
+# list_orphaned_database_entities — uses call_service with return_response
+# ---------------------------------------------------------------------------
+
+
+class TestListOrphanedDatabaseEntities:
+    def test_happy_path_returns_response(self, monkeypatch):
+        """service_not_found returns {} without raising."""
+        response = {"count": 2, "entities": ["sensor.old_a", "sensor.old_b"]}
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": True,
+                    "result": {
+                        "context": {"id": "abc"},
+                        "response": response,
+                    },
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.list_orphaned_database_entities())
+        assert result == response
+
+    def test_service_not_found_returns_empty(self, monkeypatch):
+        """service_not_found returns {} without raising."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {
+                        "code": "service_not_found",
+                        "message": "No such service.",
+                    },
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.list_orphaned_database_entities())
+        assert result == {}
+
+    def test_unknown_error_returns_empty(self, monkeypatch):
+        """unknown_error also returns {} gracefully."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "unknown_error", "message": "err"},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        result = asyncio.run(client.list_orphaned_database_entities())
+        assert result == {}
+
+    def test_other_errors_raise(self, monkeypatch):
+        """Unexpected errors still raise RuntimeError."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "unauthorized", "message": "Unauthorized."},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        with pytest.raises(
+            RuntimeError, match="list_orphaned_database_entities failed"
+        ):
+            asyncio.run(client.list_orphaned_database_entities())
+
+    def test_sends_call_service_with_return_response(self, monkeypatch):
+        """The outgoing WS message uses call_service with return_response=True."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": True,
+                    "result": {"response": {}},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        asyncio.run(client.list_orphaned_database_entities())
+        sent = json.loads(ws._sent[0])
+        assert sent["type"] == "call_service"
+        assert sent["domain"] == "homeassistant"
+        assert sent["service"] == "list_orphaned_database_entities"
+        assert sent.get("return_response") is True
+
+
+class TestFakeHAWebSocketClientOrphanedEntities:
+    """FakeHAWebSocketClient correctly handles the orphaned_entities parameter."""
+
+    def test_returns_orphaned_entities(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        data = {"count": 3, "entities": ["a", "b", "c"]}
+        fake = FakeHAWebSocketClient(orphaned_entities=data)
+        result = asyncio.run(fake.list_orphaned_database_entities())
+        assert result == data
+        assert "list_orphaned_database_entities" in fake.calls
+
+    def test_default_empty_dict(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        result = asyncio.run(fake.list_orphaned_database_entities())
+        assert result == {}
