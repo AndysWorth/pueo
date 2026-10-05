@@ -11,18 +11,21 @@ read_advisor_report() returns a populated AdvisorReport only when:
   - state == "report_ready"
   - available_version matches the target_version being analysed
 
-Otherwise it returns None so the caller falls back to its own LLM analysis.
+read_post_upgrade_report() reads the post_upgrade_status and
+post_upgrade_regressions attributes after a completed update.  It returns
+None when the integration is absent or the attributes are empty.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from interfaces import HARestClientProtocol
 
 _MAX_REPORT_CHARS = 2000
+_MAX_REGRESSIONS = 20
 
 
 @dataclass
@@ -32,6 +35,12 @@ class AdvisorReport:
     breaking_change_count: int
     report: str  # truncated to _MAX_REPORT_CHARS
     available_version: str
+
+
+@dataclass
+class PostUpgradeReport:
+    post_upgrade_status: str  # e.g. "ok", "regressions", or arbitrary string
+    regressions: List[str] = field(default_factory=list)
 
 
 async def read_advisor_report(
@@ -82,4 +91,36 @@ async def read_advisor_report(
         breaking_change_count=breaking_change_count,
         report=report,
         available_version=available_version,
+    )
+
+
+async def read_post_upgrade_report(
+    rest: "HARestClientProtocol",
+) -> Optional[PostUpgradeReport]:
+    """Return post-upgrade status and regressions from the advisor sensor.
+
+    Reads sensor.upgrade_advisor_status attributes post_upgrade_status and
+    post_upgrade_regressions.  Returns None when the integration is absent or
+    neither attribute is populated (advisor has not analysed this update yet).
+    """
+    try:
+        status_entity = await rest.get_state("sensor.upgrade_advisor_status")
+    except Exception:  # nosec B110 — not installed; skip silently
+        return None
+
+    attrs = status_entity.get("attributes") or {}
+    post_status = str(attrs.get("post_upgrade_status") or "").strip()
+    raw_regressions = attrs.get("post_upgrade_regressions") or []
+
+    if not post_status and not raw_regressions:
+        return None
+
+    if isinstance(raw_regressions, str):
+        regressions = [raw_regressions] if raw_regressions.strip() else []
+    else:
+        regressions = [str(r) for r in list(raw_regressions)][:_MAX_REGRESSIONS]
+
+    return PostUpgradeReport(
+        post_upgrade_status=post_status,
+        regressions=regressions,
     )

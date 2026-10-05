@@ -763,3 +763,169 @@ class TestUpdateAnalysisContextBuilding:
         rest = FakeHARestClient(states=[])
         ctx = self._run(tmp_path, ha_rest_client=rest)
         assert "Available update" in ctx  # still runs fine
+
+
+# ---------------------------------------------------------------------------
+# execute_core_update — post-upgrade advisor verification
+# ---------------------------------------------------------------------------
+
+
+class _FakeCoreUpdate:
+    component = "core"
+    entity_id = "update.home_assistant_core_update"
+    installed_version = "2026.9.0"
+    latest_version = "2026.10.0"
+    release_url = None
+    release_summary = None
+
+
+class TestExecuteCoreUpdateAdvisor:
+    """Verify post-upgrade advisor integration in execute_core_update."""
+
+    def _run_core_update(self, ha_rest_client=None):
+        """Run execute_core_update with a success-always poll and return notifier."""
+        import asyncio
+        from contextlib import ExitStack
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core update": (0, "", ""),
+                "ha core check": (0, "", ""),
+            }
+        )
+        notifier = FakeNotifier()
+        gate = MagicMock()
+
+        async def _always_success(*_a, **_kw):
+            return True
+
+        from agents.ha_update_manager import execute_core_update
+
+        with ExitStack() as stack:
+            # Patched at source modules because they are imported locally inside
+            # execute_core_update's body.
+            stack.enter_context(
+                patch(
+                    "agents.ha_agent_advanced.execute_remote_backup",
+                    new=AsyncMock(return_value="slug123"),
+                )
+            )
+            stack.enter_context(patch("agents.ha_agent_advanced.record_backup_slug"))
+            stack.enter_context(
+                patch(
+                    "agents.ha_agent_advanced.offload_backup_to_local",
+                    new=AsyncMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "agents.ha_update_manager.run_pueo_self_check",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+
+            class _FakeEval:
+                root_cause_summary = ""
+                is_actionable = False
+                confidence_score = 0.0
+
+            stack.enter_context(
+                patch(
+                    "agents.ha_log_monitor.analyze_log_line_with_ai",
+                    new=AsyncMock(return_value=(_FakeEval(), None)),
+                )
+            )
+
+            asyncio.run(
+                execute_core_update(
+                    update=_FakeCoreUpdate(),
+                    ssh_client=ssh,
+                    notifier=notifier,
+                    gate=gate,
+                    _poll=_always_success,
+                    ha_rest_client=ha_rest_client,
+                )
+            )
+
+        return notifier
+
+    def test_advisor_regressions_in_card_payload(self):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        states = [
+            {
+                "entity_id": "sensor.upgrade_advisor_status",
+                "state": "report_ready",
+                "attributes": {
+                    "post_upgrade_status": "regressions",
+                    "post_upgrade_regressions": ["automation.foo broke"],
+                },
+            }
+        ]
+        rest = FakeHARestClient(states=states)
+        notifier = self._run_core_update(ha_rest_client=rest)
+
+        assert notifier.sent, "no notification sent"
+        payload = notifier.sent[0]["payload"]
+        assert "advisor_regressions" in payload
+        assert payload["advisor_regressions"] == ["automation.foo broke"]
+
+    def test_advisor_regressions_in_card_body(self):
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        states = [
+            {
+                "entity_id": "sensor.upgrade_advisor_status",
+                "state": "report_ready",
+                "attributes": {
+                    "post_upgrade_status": "regressions",
+                    "post_upgrade_regressions": ["light.bar missing"],
+                },
+            }
+        ]
+        rest = FakeHARestClient(states=states)
+        notifier = self._run_core_update(ha_rest_client=rest)
+
+        body = notifier.sent[0]["body"]
+        assert "light.bar missing" in body
+
+    def test_no_rest_client_no_advisor_check(self):
+        """Without ha_rest_client the card still sends with no advisor_regressions."""
+        notifier = self._run_core_update(ha_rest_client=None)
+        assert notifier.sent
+        payload = notifier.sent[0]["payload"]
+        assert "advisor_regressions" not in payload
+
+    def test_advisor_not_installed_no_error(self):
+        """Empty advisor sensor raises → regression check is silently skipped."""
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        rest = FakeHARestClient(states=[])
+        notifier = self._run_core_update(ha_rest_client=rest)
+        assert notifier.sent
+        payload = notifier.sent[0]["payload"]
+        assert "advisor_regressions" not in payload
+
+    def test_advisor_no_regressions_payload_empty_list(self):
+        """post_upgrade_status present but no regressions → empty list in payload."""
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        states = [
+            {
+                "entity_id": "sensor.upgrade_advisor_status",
+                "state": "report_ready",
+                "attributes": {
+                    "post_upgrade_status": "ok",
+                    "post_upgrade_regressions": [],
+                },
+            }
+        ]
+        rest = FakeHARestClient(states=states)
+        notifier = self._run_core_update(ha_rest_client=rest)
+        payload = notifier.sent[0]["payload"]
+        assert "advisor_regressions" in payload
+        assert payload["advisor_regressions"] == []

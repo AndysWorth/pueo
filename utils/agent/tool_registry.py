@@ -1959,6 +1959,8 @@ def build_update_analysis_registry() -> ToolRegistry:
     The agent fetches release notes, cross-references breaking changes
     against this installation's config, checks Pueo's command catalog,
     and calls finish_update_analysis with a structured recommendation.
+    GET_SPOOK_ISSUES is included so the agent can check for post-upgrade
+    broken references surfaced by Spook repairs.
     """
     reg = ToolRegistry()
     for tool in (
@@ -1972,6 +1974,7 @@ def build_update_analysis_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         SAVE_RUNBOOK,
         REQUEST_ESCALATION,
+        GET_SPOOK_ISSUES,
         FINISH_UPDATE_ANALYSIS,
     ):
         reg.register(tool)
@@ -2233,6 +2236,9 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
     The caller passes the list of suspicious entities as initial context.
     The agent uses WS-based tools to diagnose root causes, then calls
     finish_lovelace_investigation with findings (or an empty list).
+    GET_SPOOK_ISSUES is included because Spook surfaces lovelace-specific
+    repairs (unknown_entity_references, missing_resources) that often
+    explain why an entity appears broken on the dashboard.
     """
     reg = ToolRegistry()
     for tool in (
@@ -2246,6 +2252,7 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         GET_ENTITY_HISTORY,
         GET_LOGBOOK,
         GET_AREA_LAYOUT,
+        GET_SPOOK_ISSUES,
         SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,

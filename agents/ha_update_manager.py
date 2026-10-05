@@ -1075,6 +1075,7 @@ async def _send_post_update_card(
     log_triage_summary: str,
     notification_id: Optional[str] = None,
     self_check: Optional["PueoSelfCheckResult"] = None,
+    advisor_regressions: Optional[list] = None,
 ) -> None:
     """Send an informational result card after an update attempt."""
     nid = notification_id or str(uuid.uuid4())
@@ -1096,6 +1097,11 @@ async def _send_post_update_card(
             body_lines.append(
                 f"Command risks: {'; '.join(self_check.command_risks[:3])}"
             )
+    if advisor_regressions:
+        body_lines.append(
+            f"Upgrade advisor regressions ({len(advisor_regressions)}): "
+            + "; ".join(advisor_regressions[:3])
+        )
     body = "\n".join(body_lines)
     payload: dict = {
         "notification_id": nid,
@@ -1117,6 +1123,8 @@ async def _send_post_update_card(
             "command_risks": self_check.command_risks,
             "all_commands_ok": self_check.all_commands_ok,
         }
+    if advisor_regressions is not None:
+        payload["advisor_regressions"] = advisor_regressions
     log.info(
         "post_update_card_sent",
         component=update.component,
@@ -1136,6 +1144,7 @@ async def execute_core_update(
     _poll: Optional[Callable] = None,
     disk_free_gb: Optional[float] = None,
     cache_dir: Optional[str] = None,
+    ha_rest_client: Optional[HARestClientProtocol] = None,
 ) -> bool:
     """Execute Core update: backup → ha core update → poll → post-check → result card."""
     from .ha_agent_advanced import (
@@ -1167,6 +1176,7 @@ async def execute_core_update(
     config_check_output = ""
     log_triage_summary = ""
     self_check: Optional[PueoSelfCheckResult] = None
+    advisor_regressions: Optional[list] = None
     if success:
         _emit_step("Running post-update config check…")
         try:
@@ -1203,6 +1213,27 @@ async def execute_core_update(
         except Exception as exc:
             log.warning("post_update_self_check_failed", error=str(exc))
 
+        if ha_rest_client is not None:
+            _emit_step("Checking upgrade advisor post-upgrade report…")
+            try:
+                from utils.ha.upgrade_advisor import read_post_upgrade_report
+
+                post_report = await read_post_upgrade_report(ha_rest_client)
+                if post_report is not None:
+                    advisor_regressions = post_report.regressions
+                    log.info(
+                        "post_update_advisor_report",
+                        post_upgrade_status=post_report.post_upgrade_status,
+                        regression_count=len(post_report.regressions),
+                    )
+                    if post_report.regressions:
+                        log.warning(
+                            "post_update_advisor_regressions",
+                            count=len(post_report.regressions),
+                        )
+            except Exception as exc:
+                log.warning("post_update_advisor_check_failed", error=str(exc))
+
         _emit_step("Core update complete")
     else:
         _emit_step("Core update timed out — check HA UI")
@@ -1214,6 +1245,7 @@ async def execute_core_update(
         config_check_output,
         log_triage_summary,
         self_check=self_check,
+        advisor_regressions=advisor_regressions,
     )
 
     if not success:
@@ -1525,7 +1557,14 @@ async def execute_update(
         return False
 
     if update.component == "core":
-        return await execute_core_update(update, ssh_client, notifier, gate, llm_client)
+        return await execute_core_update(
+            update,
+            ssh_client,
+            notifier,
+            gate,
+            llm_client,
+            ha_rest_client=ha_rest_client,
+        )
     if update.component == "os":
         return await execute_os_update(update, ssh_client, notifier, gate)
     return await execute_addon_update(
