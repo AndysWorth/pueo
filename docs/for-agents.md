@@ -33,7 +33,7 @@ NetAlertX code lives in `netalertx/`; the dashboard in `web/`.
 | `core/` | Prompt loader, rate limiter/debouncer, token budget (`context.py`), structured logging, retry, timeline |
 | `debug/` | Debug episode capture and HTML report writer |
 | `disk/` | Hardware detection, disk recovery and usage, archiver, resource monitoring, Pueo backup storage |
-| `ha/` | `HARestClient`, `HAWebSocketClient`, SSH client, HA environment profile, Lovelace utils |
+| `ha/` | `HARestClient`, `HAWebSocketClient`, `HAEventSubscriber`, SSH client, HA environment profile, Lovelace utils, `service_policy.py` |
 | `hitl/` | Approval card types and tracker (`hitl_suppression`), notifier, LLM trace |
 | `knowledge/` | ChromaDB store (7 collections), scrapers, strategy seeder, repair-episode embedder, KB ingester/contributor |
 | `llm/` | `OllamaClient`, `ClaudeAPIClient`, `make_llm_client()`, model options, latency stats, Ollama monitor |
@@ -52,6 +52,7 @@ Agent functions accept these optional injected clients and fall back to real one
 | `LLMClientProtocol` | `FakeLLMClient` (`FakeToolCallingLLMClient` for loops) | `chat` / `chat_with_tools` |
 | `HARestClientProtocol` | `FakeHARestClient` | HA REST API |
 | `HAWebSocketClientProtocol` | `FakeHAWebSocketClient` | HA WebSocket API |
+| `HAEventSubscriberProtocol` | `FakeHAEventSubscriber` | Persistent HA event subscription + ring buffer |
 | `NetAlertXClientProtocol` | — (see `netalertx/`) | NetAlertX device list |
 | `KnowledgeStoreClientProtocol` | `FakeKnowledgeStore` | ChromaDB upsert/query |
 
@@ -78,10 +79,13 @@ The full CI gate is in `CLAUDE.md` (Development Procedure, step 14).
 
 ## 7. Architectural rationale
 
-Decisions are in `docs/decisions/`; `docs/decisions/000-index.md` has a one-line summary of all 31 ADRs. Most relevant for common tasks:
+Decisions are in `docs/decisions/`; `docs/decisions/000-index.md` has a one-line summary of all 33 ADRs. Most relevant for common tasks:
 
 - **ADR 001** — config centralization (adding any setting)
 - **ADR 002** — safety invariant (anything that writes to HA)
+- **ADR 017** — chat tool parity (all clients passed identically in chat and automated pipelines)
 - **ADR 018** — unified agent methodology (agent loop, 6-phase cycle, `save_runbook`)
 - **ADR 025** — serialized work queue (anything calling `AgentLoop` or writing to HA in supervisor context)
 - **ADR 026** — no concurrent LLM/HA
+- **ADR 032** — HA capability gaps (native REST/WS extension; MCP adapter rejected)
+- **ADR 033** — event-driven HA triggers (`supervisor.wake()`, fallback polling, subscriber→wake map)
