@@ -126,6 +126,33 @@ def _isolate_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("PUEO_DATA_DIR", str(tmp_path / "data"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_log_file(monkeypatch, tmp_path):
+    """Redirect LOG_FILE to tmp_path so tests never write to the real pueo.log (#771).
+
+    config.LOG_FILE is resolved at import time, before pueo_dirs can redirect
+    PUEO_LOG_DIR, so any test that calls setup_logging() would otherwise attach
+    a FileHandler to ~/Library/Logs/Pueo/pueo.log. Handlers added during the
+    test are removed and closed afterwards.
+    """
+    import logging
+
+    import config
+    import utils.core.logging as logging_utils
+
+    log_path = str(tmp_path / "pueo.log")
+    monkeypatch.setattr(config, "LOG_FILE", log_path)
+    monkeypatch.setattr(logging_utils, "LOG_FILE", log_path)
+    monkeypatch.setattr(logging_utils, "_configured", False)
+    pueo_logger = logging.getLogger("pueo")
+    original_handlers = pueo_logger.handlers[:]
+    yield
+    for h in pueo_logger.handlers[:]:
+        if h not in original_handlers:
+            pueo_logger.removeHandler(h)
+            h.close()
+
+
 def _reload_all_modules():
     agent_modules = [
         "config",

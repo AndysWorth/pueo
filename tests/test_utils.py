@@ -8157,3 +8157,23 @@ def test_ollama_embedding_function_reuses_client(monkeypatch):
     assert fn(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
     assert fn.embed_query(["c"]) == [[0.1, 0.2]]
     assert constructed == ["http://localhost:11434"]
+
+
+# ── Test log isolation (#771) ────────────────────────────────────────────────
+
+
+def test_setup_logging_writes_under_tmp_path(tmp_path):
+    """The autouse _isolate_log_file fixture must keep the file handler in tmp_path."""
+    import logging as logging_mod
+
+    import utils.core.logging as logging_utils
+
+    logging_utils.setup_logging()
+    file_handlers = [
+        h
+        for h in logging_mod.getLogger("pueo").handlers
+        if isinstance(h, logging_mod.FileHandler)
+    ]
+    assert file_handlers
+    for h in file_handlers:
+        assert Path(h.baseFilename).is_relative_to(tmp_path)
