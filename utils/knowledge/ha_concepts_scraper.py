@@ -1,7 +1,7 @@
 """HA concept documentation scraper and embedder.
 
 Fetches a curated set of Home Assistant concept pages from the home-assistant.io
-GitHub repo (entity registry, Lovelace dashboards, automation, scripts, devices,
+GitHub repo (entity registry, dashboards, automation, scripts, devices,
 areas) and embeds them into the ha_concepts ChromaDB collection.
 
 Network calls (fetch_concept_docs) only run during rag-refresh — zero WAN
@@ -28,17 +28,17 @@ _HA_DOCS_RAW_BASE = (
 # Curated concept pages: (doc_id, path_under_source)
 # path_under_source is appended to _HA_DOCS_RAW_BASE with .markdown extension.
 _CONCEPT_DOCS: list[tuple[str, str]] = [
-    # ── Lovelace / Dashboard ─────────────────────────────────────────────────
-    ("lovelace_dashboards", "lovelace/dashboards"),
-    ("lovelace_views", "lovelace/views"),
-    ("lovelace_entities_card", "lovelace/entities"),
-    ("lovelace_entity_card", "lovelace/entity"),
-    ("lovelace_glance_card", "lovelace/glance"),
-    ("lovelace_button_card", "lovelace/button"),
-    ("lovelace_conditional_card", "lovelace/conditional"),
-    ("lovelace_markdown_card", "lovelace/markdown"),
-    ("lovelace_gauge_card", "lovelace/gauge"),
-    ("lovelace_history_graph_card", "lovelace/history-graph"),
+    # ── Dashboards (was Lovelace — renamed in HA docs repo) ──────────────────
+    ("lovelace_dashboards", "dashboards/dashboards"),
+    ("lovelace_views", "dashboards/views"),
+    ("lovelace_entities_card", "_dashboards/entities"),
+    ("lovelace_entity_card", "_dashboards/entity"),
+    ("lovelace_glance_card", "_dashboards/glance"),
+    ("lovelace_button_card", "_dashboards/button"),
+    ("lovelace_conditional_card", "_dashboards/conditional"),
+    ("lovelace_markdown_card", "_dashboards/markdown"),
+    ("lovelace_gauge_card", "_dashboards/gauge"),
+    ("lovelace_history_graph_card", "_dashboards/history-graph"),
     # ── Organizing (replaces removed registry pages) ─────────────────────────
     ("ha_areas", "_docs/organizing/areas"),
     ("ha_categories", "_docs/organizing/categories"),
