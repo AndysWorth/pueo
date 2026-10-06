@@ -968,15 +968,22 @@ class TestFinishUpdateAnalysisRaceGuard:
         )
 
     def test_skips_card_when_suppression_already_approved(self, tmp_path, pueo_dirs):
-        """_finish_update_analysis returns success without sending when already approved."""
+        """Race guard skips card only when BOTH base row approved AND analyzed_key present."""
         import asyncio
 
         db_path = _make_db(tmp_path)
         with sqlite3.connect(db_path) as conn:
+            # base approval row — resolved_at IS NULL (active approval)
             conn.execute(
                 "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
                 " VALUES (?, ?, ?)",
                 ("update:update.noaa_it_all", "update", "approved"),
+            )
+            # analyzed key for this exact version — proves approval is for 0.7.3
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update_analyzed:update.noaa_it_all:0.7.3", "update", "approved"),
             )
 
         executor, notifier = self._make_executor(db_path)
@@ -1028,3 +1035,164 @@ class TestFinishUpdateAnalysisRaceGuard:
         assert (
             notifier.send.called
         ), "HITL card should be sent when not already approved"
+
+    def test_sends_card_when_approval_already_resolved(self, tmp_path, pueo_dirs):
+        """Stale approval (resolved_at set) must NOT suppress a new card.
+
+        Regression for the OTBR 3.2.0→3.2.1 bug: old approval row had
+        resolved_at set but the guard still matched it.
+        """
+        import asyncio
+        import time
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            # Old approval row with resolved_at set — the approval is done.
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, last_action, resolved_at)"
+                " VALUES (?, ?, ?, ?)",
+                ("update:update.noaa_it_all", "update", "approved", time.time()),
+            )
+
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Patch update.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert result.success
+        assert notifier.send.called, "Card must be sent when old approval is resolved"
+
+    def test_sends_card_when_analyzed_key_is_different_version(
+        self, tmp_path, pueo_dirs
+    ):
+        """Approval for a previous version must not suppress the next version's card."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            # Base row approved, unresolved.
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update:update.noaa_it_all", "update", "approved"),
+            )
+            # analyzed_key exists but for version 0.7.1, not 0.7.3.
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update_analyzed:update.noaa_it_all:0.7.1", "update", "approved"),
+            )
+
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(
+            self._make_update("noaa_it_all")
+        )  # latest_version=0.7.3
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Patch update.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert result.success
+        assert (
+            notifier.send.called
+        ), "Card must be sent when analyzed_key is a different version"
+
+    def test_timeline_event_written_on_card_sent(self, tmp_path, pueo_dirs):
+        """A timeline event is written when an approval card is sent."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        executor, _notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        timeline_calls = []
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            with patch(
+                "utils.core.timeline.write_timeline_event",
+                side_effect=lambda *a, **kw: timeline_calls.append(a),
+            ):
+                asyncio.run(
+                    executor._finish_update_analysis(
+                        safe_to_update=True,
+                        breaking_changes=[],
+                        affected_config_keys=[],
+                        pueo_command_risks=[],
+                        recommendation="Patch update.",
+                        instance_impact="none",
+                        proposed_config_fixes=[],
+                        create_hitl_card=True,
+                    )
+                )
+
+        assert any(
+            "approval card sent" in str(args) for args in timeline_calls
+        ), "Expected timeline event mentioning 'approval card sent'"
+
+    def test_timeline_event_written_on_skipped(self, tmp_path, pueo_dirs):
+        """A timeline event is written when the race guard skips the card."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update:update.noaa_it_all", "update", "approved"),
+            )
+            conn.execute(
+                "INSERT INTO hitl_suppression (card_key, card_type, last_action)"
+                " VALUES (?, ?, ?)",
+                ("update_analyzed:update.noaa_it_all:0.7.3", "update", "approved"),
+            )
+
+        executor, _notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update("noaa_it_all"))
+
+        timeline_calls = []
+        with patch(
+            "utils.core.timeline.write_timeline_event",
+            side_effect=lambda *a, **kw: timeline_calls.append(a),
+        ):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Patch update.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=True,
+                )
+            )
+
+        assert any(
+            "skipped" in str(args) for args in timeline_calls
+        ), "Expected timeline event mentioning 'skipped'"

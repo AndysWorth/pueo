@@ -162,14 +162,28 @@ def _version_score_multiplier(
     return 1.0
 
 
-def _suppression_is_approved(key: str, db_path: str) -> bool:
-    """Return True if hitl_suppression has last_action='approved' for key."""
+def _suppression_is_approved(key: str, analyzed_key: str, db_path: str) -> bool:
+    """Return True only when THIS version's approval is still active.
+
+    Both conditions must hold:
+    - The update:<entity> row has last_action='approved' AND resolved_at IS NULL.
+    - An update_analyzed:<entity>:<version> row exists with resolved_at IS NULL.
+      dashboard.approve() writes this key, so its presence proves the approval was
+      for the same version currently under analysis.
+    """
     try:
         with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT last_action FROM hitl_suppression WHERE card_key = ?", (key,)
+            base = conn.execute(
+                "SELECT last_action, resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (key,),
             ).fetchone()
-        return row is not None and row[0] == "approved"
+            if base is None or base[0] != "approved" or base[1] is not None:
+                return False
+            analyzed = conn.execute(
+                "SELECT resolved_at FROM hitl_suppression WHERE card_key = ?",
+                (analyzed_key,),
+            ).fetchone()
+            return analyzed is not None and analyzed[0] is None
     except sqlite3.OperationalError:
         return False
 
@@ -4089,6 +4103,20 @@ class ToolExecutor:
                 and not _is_blocked
             ):
                 self._pending_auto_apply = True
+                _u = self._pending_update_status
+                try:
+                    from utils.core.timeline import write_timeline_event
+
+                    await asyncio.to_thread(
+                        write_timeline_event,
+                        "INFO",
+                        "update_check",
+                        f"Update analysis: {_u.component} → {_u.latest_version}"
+                        " — SAFE, auto-applying",
+                        {"component": _u.component, "version": _u.latest_version},
+                    )
+                except Exception:  # nosec B110
+                    pass
                 return ToolResult(
                     tool_name="finish_update_analysis",
                     success=True,
@@ -4100,13 +4128,26 @@ class ToolExecutor:
                 from utils.hitl.card_types import CARD_TYPE_UPDATE
 
                 _u = self._pending_update_status
-                analyzed_key = f"update_analyzed:{_u.entity_id}:{_u.latest_version}"
+                _analyzed_key = f"update_analyzed:{_u.entity_id}:{_u.latest_version}"
                 await asyncio.to_thread(
                     _update_mark_card_sent,
-                    analyzed_key,
+                    _analyzed_key,
                     CARD_TYPE_UPDATE,
                     f"Analysis: {_u.component} {_u.latest_version} — no card needed",
                 )
+                try:
+                    from utils.core.timeline import write_timeline_event
+
+                    await asyncio.to_thread(
+                        write_timeline_event,
+                        "INFO",
+                        "update_check",
+                        f"Update analysis: {_u.component} → {_u.latest_version}"
+                        " — no approval required",
+                        {"component": _u.component, "version": _u.latest_version},
+                    )
+                except Exception:  # nosec B110
+                    pass
             return ToolResult(
                 tool_name="finish_update_analysis",
                 success=True,
@@ -4128,11 +4169,13 @@ class ToolExecutor:
         from utils.disk.resource import get_resource_status
 
         suppression_key = f"update:{update.entity_id}"
+        analyzed_key = f"update_analyzed:{update.entity_id}:{update.latest_version}"
 
-        # Race guard: if the user approved this card while the analysis was still
-        # running, skip sending a duplicate card.
+        # Race guard: skip duplicate card only when the approval is for THIS version
+        # and has not yet been resolved.  Checking analyzed_key prevents a stale
+        # approval (e.g. 3.2.0) from silently swallowing cards for later versions.
         if await asyncio.to_thread(
-            _suppression_is_approved, suppression_key, self._db_path
+            _suppression_is_approved, suppression_key, analyzed_key, self._db_path
         ):
             log.info(
                 "finish_update_analysis_skipped_already_approved",
@@ -4140,6 +4183,19 @@ class ToolExecutor:
                 version=update.latest_version,
                 suppression_key=suppression_key,
             )
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "INFO",
+                    "update_check",
+                    f"Update analysis: {update.component} → {update.latest_version}"
+                    " — skipped (approval already recorded for this version)",
+                    {"component": update.component, "version": update.latest_version},
+                )
+            except Exception:  # nosec B110
+                pass
             return ToolResult(
                 tool_name="finish_update_analysis",
                 success=True,
@@ -4233,6 +4289,20 @@ class ToolExecutor:
             version=update.latest_version,
             suppression_key=suppression_key,
         )
+        _advisory = "SAFE" if safe_to_update else "REVIEW REQUIRED"
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "update_check",
+                f"Update analysis: {update.component} → {update.latest_version}"
+                f" — {_advisory}, approval card sent",
+                {"component": update.component, "version": update.latest_version},
+            )
+        except Exception:  # nosec B110
+            pass
         return ToolResult(
             tool_name="finish_update_analysis",
             success=True,

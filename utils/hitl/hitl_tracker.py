@@ -60,6 +60,7 @@ def mark_card_sent(
         ON CONFLICT(card_key) DO UPDATE SET
             last_sent_at = excluded.last_sent_at,
             send_count = send_count + 1,
+            description = excluded.description,
             resolved_at = NULL,
             last_action = NULL,
             next_allowed_at = NULL
