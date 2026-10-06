@@ -665,6 +665,9 @@ async def tail_remote_log_stream(
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     _gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
+    # Resolve once: a per-line make_llm_client() opens a new HTTP pool for every
+    # triaged line and exhausts file descriptors during log floods (#769).
+    llm_client = llm_client or make_llm_client()
     state = _get_stream_state(source)
     await asyncio.to_thread(_init_sparkline_db, state)
     log.info("log_stream_start", host=HA_HOST, source=source)

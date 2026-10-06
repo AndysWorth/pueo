@@ -16,8 +16,33 @@ import paths as _paths
 
 _DEFAULT_CONFIG = _paths.get_dirs().config_dir / "config.yaml"
 
+# macOS defaults to a 256 soft FD limit, which Pueo's baseline (ChromaDB, SSH
+# streams, websockets, SSE clients) plus a burst can exhaust (#769).
+_FD_TARGET = 4096
+# Cap concurrent dashboard connections so browser tabs cannot exhaust FDs.
+DASHBOARD_LIMIT_CONCURRENCY = 64
+
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
+
+
+def _raise_fd_limit() -> tuple[int, int] | None:
+    """Raise the soft RLIMIT_NOFILE to min(hard, _FD_TARGET).
+
+    Returns (old_soft, new_soft) when the limit was changed, else None.
+    Never raises — platforms that refuse simply keep their current limit.
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = _FD_TARGET if hard == resource.RLIM_INFINITY else min(hard, _FD_TARGET)
+        if soft != resource.RLIM_INFINITY and soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            return soft, target
+    except (ImportError, ValueError, OSError):  # nosec B110
+        pass
+    return None
 
 
 def _write_pid_file() -> None:
@@ -1039,14 +1064,22 @@ async def supervisor_main(config_path: Path) -> None:
     # Ollama real-time model monitor (15-second poll of /api/ps)
     supervisor.start("ollama_monitor", _ollama_monitor_loop, interval_seconds=15)
 
-    # HA log monitor loops (SSH tail + AI triage) — streaming, no fixed interval
+    from utils.llm.llm_factory import make_llm_client
+
+    # HA log monitor loops (SSH tail + AI triage) — streaming, no fixed interval.
+    # One shared LLM client for triage; never one per log line (#769).
+    _triage_llm_client = make_llm_client()
     supervisor.start(
         "ha_log_monitor",
-        lambda: tail_remote_log_stream(source="core", notifier=notifier),
+        lambda: tail_remote_log_stream(
+            source="core", notifier=notifier, llm_client=_triage_llm_client
+        ),
     )
     supervisor.start(
         "ha_log_monitor_supervisor",
-        lambda: tail_remote_log_stream(source="supervisor", notifier=notifier),
+        lambda: tail_remote_log_stream(
+            source="supervisor", notifier=notifier, llm_client=_triage_llm_client
+        ),
     )
 
     # Resource polling loop — create a fresh poller on each supervisor restart.
@@ -1058,8 +1091,6 @@ async def supervisor_main(config_path: Path) -> None:
         _rest_client_for_poller = HARestClient(
             cfg.HA_HOST, cfg.HA_API_PORT, cfg.HA_API_TOKEN
         )
-
-    from utils.llm.llm_factory import make_llm_client
 
     supervisor.start(
         "resource_poll",
@@ -1294,6 +1325,7 @@ async def supervisor_main(config_path: Path) -> None:
         host="127.0.0.1",
         port=cfg.DASHBOARD_PORT,
         log_level="warning",
+        limit_concurrency=DASHBOARD_LIMIT_CONCURRENCY,
     )
     server = uvicorn.Server(uvi_config)
     await server.serve()
@@ -1419,6 +1451,12 @@ def main() -> None:
             )
         )
     )
+
+    _fd_change = _raise_fd_limit()
+    if _fd_change is not None:
+        from utils.core.logging import get_logger
+
+        get_logger("main").info("fd_limit_raised", old=_fd_change[0], new=_fd_change[1])
 
     if args.mode == "supervisor":
         asyncio.run(supervisor_main(config_path))
