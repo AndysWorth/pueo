@@ -708,11 +708,24 @@ async def _run_update_analysis(
         if env_summary:
             initial_context += f"\n\n{env_summary}"
 
-        # Best-effort: read upgrade-advisor sensor (brianegge/ha-upgrade-advisor)
+        # Best-effort: trigger and read upgrade-advisor sensor (brianegge/ha-upgrade-advisor)
         _rest = ha_rest_client
         if _rest is not None:
             try:
-                from utils.ha.upgrade_advisor import read_advisor_report
+                from utils.ha.upgrade_advisor import (
+                    read_advisor_report,
+                    request_advisor_analysis,
+                )
+
+                # Trigger analysis when the integration is installed, so the report
+                # is fresh for this exact version.  Add-ons are skipped inside
+                # request_advisor_analysis because upstream does not support them.
+                if _profile is not None and _profile.upgrade_advisor_installed:
+                    await request_advisor_analysis(
+                        _rest,
+                        update.latest_version,
+                        update.component,
+                    )
 
                 advisor = await read_advisor_report(_rest, update.latest_version)
                 if advisor is not None:

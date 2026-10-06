@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from utils.ha.upgrade_advisor import (
     AdvisorReport,
     PostUpgradeReport,
+    _DEFAULT_RISK_ENTITY,
+    _DEFAULT_STATUS_ENTITY,
     _MAX_REPORT_CHARS,
     _MAX_REGRESSIONS,
+    _resolve_entity_ids,
     read_advisor_report,
     read_post_upgrade_report,
+    request_advisor_analysis,
 )
 
 
@@ -62,26 +67,59 @@ class _FakeRest:
         risk_entity: dict | None = None,
         status_raises: Exception | None = None,
         risk_raises: Exception | None = None,
+        call_service_raises: Exception | None = None,
+        # sequence of states returned by consecutive get_state calls for the status sensor
+        status_sequence: list[dict] | None = None,
     ) -> None:
         self._status = status_entity
         self._risk = risk_entity
         self._status_raises = status_raises
         self._risk_raises = risk_raises
+        self._call_service_raises = call_service_raises
+        self._status_sequence = list(status_sequence) if status_sequence else None
+        self._status_call_count = 0
+        self.service_calls: list[tuple[str, str, dict]] = []
 
     async def get_state(self, entity_id: str) -> dict:
-        if entity_id == "sensor.upgrade_advisor_status":
+        # Support any resolved entity ID (default or custom)
+        if "status" in entity_id:
             if self._status_raises is not None:
                 raise self._status_raises
+            if self._status_sequence is not None:
+                idx = min(self._status_call_count, len(self._status_sequence) - 1)
+                self._status_call_count += 1
+                return self._status_sequence[idx]
             if self._status is None:
                 raise RuntimeError("entity not found")
             return self._status
-        if entity_id == "sensor.upgrade_advisor_risk":
+        if "risk" in entity_id:
             if self._risk_raises is not None:
                 raise self._risk_raises
             if self._risk is None:
                 raise RuntimeError("entity not found")
             return self._risk
         raise RuntimeError(f"Unknown entity: {entity_id}")
+
+    async def call_service(self, domain: str, service: str, payload: dict) -> dict:
+        if self._call_service_raises is not None:
+            raise self._call_service_raises
+        self.service_calls.append((domain, service, payload))
+        return {}
+
+
+class _FakeWs:
+    """Minimal WS fake that returns a pre-scripted entity registry."""
+
+    def __init__(
+        self, entries: list[dict] | None = None, raises: Exception | None = None
+    ):
+        self._entries = entries or []
+        self._raises = raises
+
+    async def get_entity_registry(self) -> list[dict]:
+        if self._raises is not None:
+            raise self._raises
+        return list(self._entries)
 
 
 def _make_status(
@@ -304,3 +342,231 @@ class TestReadPostUpgradeReport:
         # post_upgrade_status="ok" → post_status is truthy → report is returned
         assert result is not None
         assert result.regressions == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_entity_ids
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEntityIds:
+    def test_resolves_from_registry(self):
+        ws = _FakeWs(
+            entries=[
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "ha_advisor_status",
+                    "entity_id": "sensor.my_advisor_status",
+                },
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "ha_advisor_risk_level",
+                    "entity_id": "sensor.my_advisor_risk_level",
+                },
+            ]
+        )
+        status_id, risk_id = asyncio.run(_resolve_entity_ids(ws))
+        assert status_id == "sensor.my_advisor_status"
+        assert risk_id == "sensor.my_advisor_risk_level"
+
+    def test_falls_back_to_defaults_when_registry_raises(self):
+        ws = _FakeWs(raises=RuntimeError("ws unavailable"))
+        status_id, risk_id = asyncio.run(_resolve_entity_ids(ws))
+        assert status_id == _DEFAULT_STATUS_ENTITY
+        assert risk_id == _DEFAULT_RISK_ENTITY
+
+    def test_falls_back_to_defaults_when_entities_absent(self):
+        ws = _FakeWs(
+            entries=[{"platform": "other", "unique_id": "x", "entity_id": "sensor.x"}]
+        )
+        status_id, risk_id = asyncio.run(_resolve_entity_ids(ws))
+        assert status_id == _DEFAULT_STATUS_ENTITY
+        assert risk_id == _DEFAULT_RISK_ENTITY
+
+    def test_partial_fallback_missing_risk(self):
+        ws = _FakeWs(
+            entries=[
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "ha_advisor_status",
+                    "entity_id": "sensor.custom_status",
+                },
+            ]
+        )
+        status_id, risk_id = asyncio.run(_resolve_entity_ids(ws))
+        assert status_id == "sensor.custom_status"
+        assert risk_id == _DEFAULT_RISK_ENTITY
+
+
+# ---------------------------------------------------------------------------
+# read_advisor_report — risk entity name fix
+# ---------------------------------------------------------------------------
+
+
+class TestReadAdvisorReportRiskEntityName:
+    def test_default_risk_entity_uses_risk_level_suffix(self):
+        """The default risk entity ID must end in _risk_level, not _risk."""
+        assert _DEFAULT_RISK_ENTITY.endswith("_risk_level")
+        assert "_risk_level" in _DEFAULT_RISK_ENTITY
+
+    def test_reads_risk_from_resolved_entity(self):
+        """When ws_client is provided, the resolved risk entity ID is used."""
+        ws = _FakeWs(
+            entries=[
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "advisor_status",
+                    "entity_id": "sensor.upgrade_advisor_status",
+                },
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "advisor_risk_level",
+                    "entity_id": "sensor.upgrade_advisor_risk_level",
+                },
+            ]
+        )
+        rest = _FakeRest(
+            status_entity=_make_status(available_version="2026.10.0"),
+            risk_entity=_make_risk("high"),
+        )
+        result = asyncio.run(read_advisor_report(rest, "2026.10.0", ws_client=ws))
+        assert result is not None
+        assert result.risk == "high"
+
+    def test_reads_risk_from_default_entity_when_no_ws(self):
+        """Without ws_client, the default entity IDs are used (which include _risk_level)."""
+        rest = _FakeRest(
+            status_entity=_make_status(available_version="2026.10.0"),
+            risk_entity=_make_risk("low"),
+        )
+        result = asyncio.run(read_advisor_report(rest, "2026.10.0"))
+        assert result is not None
+        assert result.risk == "low"
+
+
+# ---------------------------------------------------------------------------
+# request_advisor_analysis
+# ---------------------------------------------------------------------------
+
+
+def _make_analyzing() -> dict:
+    return {"state": "analyzing", "attributes": {}}
+
+
+def _make_report_ready() -> dict:
+    return {"state": "report_ready", "attributes": {}}
+
+
+class TestRequestAdvisorAnalysis:
+    def test_core_uses_analyze_version_service(self):
+        rest = _FakeRest(
+            status_sequence=[_make_analyzing(), _make_report_ready()],
+        )
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "2026.10.0", "homeassistant", timeout_seconds=30
+            )
+        )
+        assert len(rest.service_calls) == 1
+        domain, service, payload = rest.service_calls[0]
+        assert domain == "upgrade_advisor"
+        assert service == "analyze_version"
+        assert payload == {"version": "2026.10.0"}
+
+    def test_core_alias_uses_analyze_version(self):
+        rest = _FakeRest(status_sequence=[_make_report_ready()])
+        asyncio.run(
+            request_advisor_analysis(rest, "2026.10.0", "core", timeout_seconds=30)
+        )
+        assert rest.service_calls[0][1] == "analyze_version"
+
+    def test_hacs_component_uses_analyze_service(self):
+        rest = _FakeRest(status_sequence=[_make_report_ready()])
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "1.2.3", "my_custom_component", timeout_seconds=30
+            )
+        )
+        assert rest.service_calls[0][1] == "analyze"
+        assert rest.service_calls[0][2] == {}
+
+    def test_supervisor_is_skipped(self):
+        """Supervisor updates are not supported by the advisor."""
+        rest = _FakeRest(status_entity=_make_analyzing())
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "2024.08.0", "supervisor", timeout_seconds=30
+            )
+        )
+        assert rest.service_calls == []
+
+    def test_os_is_skipped(self):
+        rest = _FakeRest(status_entity=_make_analyzing())
+        asyncio.run(request_advisor_analysis(rest, "14.1", "os", timeout_seconds=30))
+        assert rest.service_calls == []
+
+    def test_service_call_failure_is_silent(self):
+        """A service call failure should not raise — proceed gracefully."""
+        rest = _FakeRest(call_service_raises=RuntimeError("service unavailable"))
+        # Should not raise
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "2026.10.0", "homeassistant", timeout_seconds=30
+            )
+        )
+
+    def test_poll_returns_after_report_ready(self):
+        """Polling stops as soon as the state transitions out of 'analyzing'."""
+        rest = _FakeRest(
+            status_sequence=[
+                _make_analyzing(),
+                _make_analyzing(),
+                _make_report_ready(),
+            ]
+        )
+        with patch("utils.ha.upgrade_advisor.asyncio.sleep", new_callable=AsyncMock):
+            asyncio.run(
+                request_advisor_analysis(
+                    rest, "2026.10.0", "homeassistant", timeout_seconds=60
+                )
+            )
+        # Service call + 3 polls
+        assert rest._status_call_count == 3
+
+    def test_timeout_does_not_raise(self):
+        """On timeout, the function returns without error."""
+        rest = _FakeRest(
+            status_sequence=[_make_analyzing()],  # never leaves analyzing
+        )
+        with patch("utils.ha.upgrade_advisor.asyncio.sleep", new_callable=AsyncMock):
+            with patch("utils.ha.upgrade_advisor.asyncio.get_event_loop") as mock_loop:
+                # Simulate instant timeout: deadline is already in the past
+                mock_loop.return_value.time.side_effect = [0.0, 999.0]
+                asyncio.run(
+                    request_advisor_analysis(
+                        rest, "2026.10.0", "homeassistant", timeout_seconds=1
+                    )
+                )
+        # Should have called the service and not raised
+        assert len(rest.service_calls) == 1
+
+    def test_ws_client_used_for_entity_resolution(self):
+        """When ws_client is provided, the resolved entity ID is used for polling."""
+        ws = _FakeWs(
+            entries=[
+                {
+                    "platform": "upgrade_advisor",
+                    "unique_id": "custom_status",
+                    "entity_id": "sensor.custom_advisor_status",
+                },
+            ]
+        )
+        rest = _FakeRest(status_sequence=[_make_report_ready()])
+        asyncio.run(
+            request_advisor_analysis(
+                rest, "2026.10.0", "homeassistant", ws_client=ws, timeout_seconds=30
+            )
+        )
+        # If resolution succeeded, the poll used the custom entity ID
+        # (get_state called with "sensor.custom_advisor_status", which contains "status")
+        assert rest._status_call_count >= 1

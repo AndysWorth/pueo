@@ -53,23 +53,40 @@ The tool is registered in the HA repair, lovelace, and chat registries (read-onl
 included in `_MCP_TOOL_NAMES` — Spook's dead-entity data is valuable for read-only consumers such
 as the HA Companion App.
 
-### 3. ha-upgrade-advisor: `read_advisor_report()` with stale-version guard
+### 3. ha-upgrade-advisor: entity registry resolution, `request_advisor_analysis`, and stale-version guard
 
-`utils/ha/upgrade_advisor.py::read_advisor_report(rest, target_version) -> AdvisorReport | None`
-reads `sensor.upgrade_advisor_status` and `sensor.upgrade_advisor_risk` via the HA REST API.
+**Entity IDs.** The integration exposes `sensor.upgrade_advisor_status` and
+`sensor.upgrade_advisor_risk_level` (note `_level` suffix — not `_risk`). Both IDs are resolved at
+runtime through `config/entity_registry/list` (WebSocket), filtering for `platform == "upgrade_advisor"`
+and matching on the entity's `unique_id` suffix (`_status`, `_risk_level`). Hard-coded fallback IDs
+(`sensor.upgrade_advisor_status`, `sensor.upgrade_advisor_risk_level`) are used when a WS client is
+not available or the registry call fails.
 
-A report is used only when **both** conditions are true:
+**`request_advisor_analysis(rest, version, component_type, *, ws_client, timeout_seconds)` — trigger and poll.**
+When `HAEnvironmentProfile.upgrade_advisor_installed` is `True`, `_run_update_analysis` calls
+`request_advisor_analysis` before reading the report. This function:
+1. Calls `upgrade_advisor.analyze_version` (Core/HA updates) or `upgrade_advisor.analyze` (HACS
+   integrations) via `HARestClient.call_service`, bypassing `service_policy.py` — this is a
+   direct infrastructure call from the update manager, not an agent-tool `call_service` call, so it
+   does not require user approval.
+2. Polls `sensor.upgrade_advisor_status` every `_POLL_INTERVAL_SECONDS` (10 s) until state ≠
+   `"analyzing"` or the timeout expires. On timeout, logs a warning and returns — the caller
+   proceeds to `read_advisor_report`, which will return `None` for a stale/absent report.
+3. Skips add-ons and Supervisor/OS components (upstream does not analyse them).
+
+**`read_advisor_report(rest, target_version, *, ws_client) -> AdvisorReport | None`**
+reads the status and risk-level sensors.  A report is used only when **both** conditions are true:
 - `state == "report_ready"` — the advisor has finished its analysis
 - `available_version == target_version` — the report is for the version Pueo is about to act on
 
-If either condition fails (state is `idle`, `analyzing`, or `error`; or the version does not match
-the pending upgrade), `read_advisor_report` returns `None` and the caller proceeds without the
+If either condition fails, `read_advisor_report` returns `None` and the caller proceeds without the
 advisor data. This prevents applying stale analysis from a previous upgrade cycle.
 
 When a valid report is returned, `_run_update_analysis` in `ha_update_manager.py` injects the
 risk level, breaking-change count, and truncated report text into the initial context, labelled
-**"third-party LLM analysis — verify independently"**. The label is mandatory: it reminds the
-agent that this is not Pueo's own conclusion and should be treated as supporting evidence.
+**"Third-party upgrade-advisor report (unverified — treat as advisory only)"**. The label is
+mandatory: it reminds the agent that this is not Pueo's own conclusion and should be treated as
+supporting evidence.
 
 ### 4. Third-party output is supporting evidence, never a decision trigger
 
@@ -133,8 +150,10 @@ reliable than relying on the agent to reason about whether each call is safe.
   Both default `False` when detection fails. All existing callers are unaffected.
 - `get_spook_issues` replaces the dead `get_spook_entity_issues` in `ha_ws_client.py` and
   `interfaces.HAWebSocketClientProtocol`. `FakeHAWebSocketClient` grows a corresponding method.
-- `utils/ha/upgrade_advisor.py` is a new module; it imports only `HARestClientProtocol` and
-  returns a typed `AdvisorReport` dataclass — no agent logic, testable in isolation.
+- `utils/ha/upgrade_advisor.py` exposes `read_advisor_report`, `request_advisor_analysis`, and
+  `read_post_upgrade_report`. Entity IDs are resolved via the entity registry; hard-coded defaults
+  are the fallback. The module imports `HARestClientProtocol` and `HAWebSocketClientProtocol` only
+  under `TYPE_CHECKING` — no agent logic, testable in isolation.
 - Five services are added to `service_policy._BLOCKED`; tests cover each of them.
 - `docs/setup-guide.md` Section 7 gains two optional companion prompts (Spook, Upgrade Advisor).
 - `README.md` gains an "Optional HA companion integrations" subsection.
