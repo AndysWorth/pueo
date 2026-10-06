@@ -97,6 +97,8 @@ Agent scripts in `agents/` are runnable directly for debugging; under `superviso
 
 **Safety invariant**: No write operation proceeds without a confirmed HA backup slug. Ordering is always `execute_remote_backup()` → `record_backup_slug()` → remediation. Never bypass this chain.
 
+**Long-lived clients, bounded FDs**: LLM and embedding clients are created once and injected; never construct one per call or per log line (each opens an HTTP pool). `main.py::_raise_fd_limit()` lifts the soft `RLIMIT_NOFILE` to 4096 at startup (the launchd plist sets `NumberOfFiles` too), both uvicorn servers set `limit_concurrency`, and `resource_poll` logs `open_fds`/`fd_limit` plus `fd_warn` above 80% — checked before SSH so it still reports when FD exhaustion is why SSH fails (#769).
+
 **SSH connections**: Each function opens its own `asyncssh.connect()` context. `known_hosts=None` is intentional for local-network HA hosts — flag in any security review.
 
 **Single config source**: `config.py` is the only place settings are defined. Agent scripts must import from it (`from config import ...`) and must never redeclare constants. Adding a new setting means adding it to `config.yaml.default`, `config.py`, and `setup.sh` — nowhere else. `setup.sh` also generates `docker-compose.yml` for Docker deployments — changes to the compose file structure belong in `setup.sh`'s heredoc, not in `docker-compose.yml.example` (the committed placeholder template); `docker-compose.yml` is gitignored because setup.sh generates it with the user's SSH key path embedded.

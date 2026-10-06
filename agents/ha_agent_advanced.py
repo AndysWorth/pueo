@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Layer 2 — diagnose + SQLite state memory + pre-repair backup triggering."""
 
+import asyncio
 import hashlib
 import json
 import re
@@ -1013,7 +1014,8 @@ async def offload_backup_to_local(
         local_dir.mkdir(parents=True, exist_ok=True)
         local_path = local_dir / f"{slug}.tar"
         await client.download_file(remote_path, str(local_path))
-        local_hash = _sha256_file(local_path)
+        # Hash in a thread: multi-GB tars block the event loop otherwise (#769).
+        local_hash = await asyncio.to_thread(_sha256_file, local_path)
         _, stdout, _ = await client.run(f"sha256sum {remote_path}", check=False)
         remote_hash = stdout.strip().split()[0] if stdout.strip() else None
         if remote_hash and remote_hash != local_hash:
@@ -1272,6 +1274,4 @@ async def main(
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())

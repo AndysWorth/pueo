@@ -65,3 +65,67 @@ def test_write_pid_file_does_not_register_atexit(tmp_path):
             m._write_pid_file()
 
     assert not registered, "_write_pid_file must not call atexit.register"
+
+
+# ---------------------------------------------------------------------------
+# _raise_fd_limit (#769)
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseFdLimit:
+    def _patch(self, monkeypatch, soft, hard, set_exc=None):
+        import resource
+
+        calls: list[tuple] = []
+
+        def _set(which, limits):
+            if set_exc is not None:
+                raise set_exc
+            calls.append(limits)
+
+        monkeypatch.setattr(resource, "getrlimit", lambda which: (soft, hard))
+        monkeypatch.setattr(resource, "setrlimit", _set)
+        return calls
+
+    def test_raises_soft_limit_to_target(self, monkeypatch):
+        import main
+
+        calls = self._patch(monkeypatch, 256, 10240)
+        assert main._raise_fd_limit() == (256, main._FD_TARGET)
+        assert calls == [(main._FD_TARGET, 10240)]
+
+    def test_caps_at_hard_limit(self, monkeypatch):
+        import main
+
+        calls = self._patch(monkeypatch, 256, 1024)
+        assert main._raise_fd_limit() == (256, 1024)
+        assert calls == [(1024, 1024)]
+
+    def test_unlimited_hard_uses_target(self, monkeypatch):
+        import resource
+
+        import main
+
+        calls = self._patch(monkeypatch, 256, resource.RLIM_INFINITY)
+        assert main._raise_fd_limit() == (256, main._FD_TARGET)
+        assert calls == [(main._FD_TARGET, resource.RLIM_INFINITY)]
+
+    def test_leaves_higher_limit_alone(self, monkeypatch):
+        import main
+
+        calls = self._patch(monkeypatch, 8192, 10240)
+        assert main._raise_fd_limit() is None
+        assert calls == []
+
+    @pytest.mark.parametrize("exc", [ValueError("no"), OSError("no")])
+    def test_survives_setrlimit_error(self, monkeypatch, exc):
+        import main
+
+        self._patch(monkeypatch, 256, 10240, set_exc=exc)
+        assert main._raise_fd_limit() is None
+
+
+def test_dashboard_limit_concurrency_constant():
+    import main
+
+    assert 0 < main.DASHBOARD_LIMIT_CONCURRENCY <= 256

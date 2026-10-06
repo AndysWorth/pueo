@@ -1,6 +1,7 @@
 """Disk and memory sensing for the HA host via 'ha host info' and /proc/meminfo."""
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -72,6 +73,36 @@ async def poll_host_resources(
     )
 
 
+# Fraction of the soft FD limit at which Pueo warns about its own FD usage (#769).
+FD_WARN_FRACTION = 0.8
+
+
+def count_open_fds() -> int:
+    """Return the number of file descriptors open in this process, or -1 if unknown."""
+    try:
+        return len(os.listdir("/dev/fd"))
+    except OSError:
+        return -1
+
+
+def fd_soft_limit() -> int:
+    """Return this process's soft RLIMIT_NOFILE, or -1 if unknown/unlimited."""
+    try:
+        import resource
+
+        soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        return -1 if soft == resource.RLIM_INFINITY else int(soft)
+    except (ImportError, ValueError, OSError):
+        return -1
+
+
+def fd_usage_high(open_fds: int, limit: int) -> bool:
+    """True when open_fds exceeds FD_WARN_FRACTION of a known limit."""
+    if open_fds < 0 or limit <= 0:
+        return False
+    return open_fds > limit * FD_WARN_FRACTION
+
+
 # Cached last-known resource state — updated by ResourcePoller after each successful poll.
 # execute_remote_backup() reads this to block when disk is critically low.
 _last_resource_status: Optional[ResourceStatus] = None
@@ -134,6 +165,12 @@ class ResourcePoller:
         """Poll indefinitely — start via asyncio.create_task()."""
         while True:
             _outcome = ""
+            # Local FD check runs before SSH so it still reports when FD
+            # exhaustion is the reason SSH is failing (#769).
+            _open_fds = count_open_fds()
+            _fd_limit = fd_soft_limit()
+            if fd_usage_high(_open_fds, _fd_limit):
+                log.warning("fd_warn", open_fds=_open_fds, fd_limit=_fd_limit)
             try:
                 status = await poll_host_resources(
                     self._ssh,
@@ -176,12 +213,19 @@ class ResourcePoller:
                     disk_warn=status.disk_warn,
                     disk_critical=status.disk_critical,
                     mem_warn=status.mem_warn,
+                    open_fds=_open_fds,
+                    fd_limit=_fd_limit,
                 )
                 await self._check_and_alert(status)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.error("resource_poll_failed", error=str(e))
+                log.error(
+                    "resource_poll_failed",
+                    error=str(e),
+                    open_fds=_open_fds,
+                    fd_limit=_fd_limit,
+                )
             try:
                 from utils.agent.supervisor import get_supervisor_instance
 

@@ -7999,3 +7999,161 @@ class TestPueoWorkQueue:
 
         order = asyncio.run(run())
         assert order == ["critical", "normal", "low"]
+
+
+# ── FD monitoring helpers (utils/disk/resource.py, #769) ─────────────────────
+
+
+class TestFdMonitoring:
+    def test_count_open_fds_positive(self):
+        from utils.disk.resource import count_open_fds
+
+        assert count_open_fds() > 0
+
+    def test_count_open_fds_returns_minus_one_on_error(self, monkeypatch):
+        from utils.disk import resource as res
+
+        def _boom(path):
+            raise OSError("nope")
+
+        monkeypatch.setattr(res.os, "listdir", _boom)
+        assert res.count_open_fds() == -1
+
+    def test_fd_soft_limit_positive(self):
+        from utils.disk.resource import fd_soft_limit
+
+        assert fd_soft_limit() != 0
+
+    def test_fd_soft_limit_unlimited_returns_minus_one(self, monkeypatch):
+        import resource
+
+        from utils.disk.resource import fd_soft_limit
+
+        monkeypatch.setattr(
+            resource,
+            "getrlimit",
+            lambda which: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
+        )
+        assert fd_soft_limit() == -1
+
+    def test_fd_soft_limit_error_returns_minus_one(self, monkeypatch):
+        import resource
+
+        from utils.disk.resource import fd_soft_limit
+
+        def _boom(which):
+            raise OSError("nope")
+
+        monkeypatch.setattr(resource, "getrlimit", _boom)
+        assert fd_soft_limit() == -1
+
+    @pytest.mark.parametrize(
+        "open_fds,limit,expected",
+        [
+            (205, 256, True),  # above 80%
+            (204, 256, False),  # at/below 80%
+            (10, 4096, False),
+            (-1, 256, False),  # unknown count
+            (300, -1, False),  # unknown limit
+        ],
+    )
+    def test_fd_usage_high(self, open_fds, limit, expected):
+        from utils.disk.resource import fd_usage_high
+
+        assert fd_usage_high(open_fds, limit) is expected
+
+    def _run_one_poll(self, monkeypatch, ssh, open_fds, limit):
+        from utils.disk import resource as res
+        from utils.hitl.notify import FakeNotifier
+
+        events: list[tuple[str, str, dict]] = []
+
+        def _rec(level):
+            return lambda event, **kw: events.append((level, event, kw))
+
+        monkeypatch.setattr(res.log, "info", _rec("info"))
+        monkeypatch.setattr(res.log, "warning", _rec("warning"))
+        monkeypatch.setattr(res.log, "error", _rec("error"))
+        monkeypatch.setattr(res, "count_open_fds", lambda: open_fds)
+        monkeypatch.setattr(res, "fd_soft_limit", lambda: limit)
+
+        async def _stop(*a, **kw):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr("utils.agent.supervisor.supervised_sleep", _stop)
+        poller = res.ResourcePoller(
+            ssh_client=ssh,
+            notifier=FakeNotifier(),
+            interval_seconds=60,
+            disk_warn_gb=1.0,
+            disk_critical_gb=0.5,
+            mem_warn_mb=1.0,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+        return events
+
+    def test_poll_warns_and_reports_fds_when_ssh_fails(self, monkeypatch):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        class _FailingSSH(FakeSSHClient):
+            async def run(self, *a, **kw):
+                raise OSError(24, "Too many open files")
+
+        events = self._run_one_poll(monkeypatch, _FailingSSH(), 250, 256)
+        names = [e[1] for e in events]
+        assert "fd_warn" in names
+        failed = next(e for e in events if e[1] == "resource_poll_failed")
+        assert failed[2]["open_fds"] == 250
+        assert failed[2]["fd_limit"] == 256
+
+    def test_poll_no_warn_and_logs_fds_on_success(self, monkeypatch):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha host info": (
+                    0,
+                    "disk_free: 20.0\ndisk_total: 30.0\ndisk_used: 10.0\n",
+                    "",
+                ),
+                "cat /proc/meminfo": (
+                    0,
+                    "MemTotal: 4000000 kB\nMemAvailable: 2000000 kB\n",
+                    "",
+                ),
+            }
+        )
+        events = self._run_one_poll(monkeypatch, ssh, 40, 4096)
+        names = [e[1] for e in events]
+        assert "fd_warn" not in names
+        poll = next(e for e in events if e[1] == "resource_poll")
+        assert poll[2]["open_fds"] == 40
+        assert poll[2]["fd_limit"] == 4096
+
+
+# ── Embedding client reuse (utils/knowledge/knowledge_store.py, #769) ────────
+
+
+def test_ollama_embedding_function_reuses_client(monkeypatch):
+    import sys
+    import types
+
+    from utils.knowledge.knowledge_store import _OllamaEmbeddingFunction
+
+    constructed: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, host):
+            constructed.append(host)
+
+        def embeddings(self, model, prompt):
+            return {"embedding": [0.1, 0.2]}
+
+    monkeypatch.setitem(
+        sys.modules, "ollama", types.SimpleNamespace(Client=_FakeClient)
+    )
+    fn = _OllamaEmbeddingFunction("nomic", "http://localhost:11434")
+    assert fn(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
+    assert fn.embed_query(["c"]) == [[0.1, 0.2]]
+    assert constructed == ["http://localhost:11434"]
