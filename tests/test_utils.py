@@ -8159,7 +8159,7 @@ def test_ollama_embedding_function_reuses_client(monkeypatch):
     assert constructed == ["http://localhost:11434"]
 
 
-# ── Test log isolation (#771) ────────────────────────────────────────────────
+# ── Test log isolation (#771, #794) ─────────────────────────────────────────
 
 
 def test_setup_logging_writes_under_tmp_path(tmp_path):
@@ -8177,6 +8177,70 @@ def test_setup_logging_writes_under_tmp_path(tmp_path):
     assert file_handlers
     for h in file_handlers:
         assert Path(h.baseFilename).is_relative_to(tmp_path)
+
+
+def test_isolate_log_file_patches_pueo_log_dir_env(tmp_path):
+    """_isolate_log_file sets PUEO_LOG_DIR so fresh paths.get_dirs() resolves to tmp_path."""
+    import os
+
+    log_dir = os.environ.get("PUEO_LOG_DIR", "")
+    assert log_dir, "PUEO_LOG_DIR must be set by the autouse fixture"
+    assert Path(log_dir).is_relative_to(
+        tmp_path
+    ), f"PUEO_LOG_DIR={log_dir!r} does not point under tmp_path={tmp_path}"
+
+
+def test_assert_no_production_log_handlers_passes_for_tmp_path(tmp_path):
+    """Guard helper does not raise when handlers point to tmp_path."""
+    import logging as logging_mod
+
+    logger = logging_mod.getLogger("pueo.test_guard_tmp")
+    h = logging_mod.FileHandler(str(tmp_path / "ok.log"))
+    logger.addHandler(h)
+    try:
+        # Should not raise — handler is under tmp_path, not ~/Library/Logs
+        _check_no_production_handlers(logger)
+    finally:
+        logger.removeHandler(h)
+        h.close()
+
+
+def test_assert_no_production_log_handlers_fails_for_library_logs(tmp_path):
+    """Guard helper calls pytest.fail when a handler targets ~/Library/Logs."""
+    import logging as logging_mod
+
+    import pytest
+
+    log_path = tmp_path / "prod_sim.log"
+    log_path.write_text("")
+
+    logger = logging_mod.getLogger("pueo.test_guard_prod")
+    h = logging_mod.FileHandler(str(log_path))
+    # Fake a production-looking path on the handler directly
+    h.baseFilename = str(Path.home() / "Library" / "Logs" / "Pueo" / "pueo.log")
+    logger.addHandler(h)
+    try:
+        with pytest.raises(pytest.fail.Exception):
+            _check_no_production_handlers(logger)
+    finally:
+        logger.removeHandler(h)
+        h.close()
+
+
+def _check_no_production_handlers(logger) -> None:
+    """Inline copy of conftest._assert_no_production_log_handlers for test use."""
+    import logging as logging_mod
+
+    production_prefixes = (
+        str(Path.home() / "Library" / "Logs"),
+        str(Path.home() / "Library" / "Application Support"),
+    )
+    for h in logger.handlers:
+        if isinstance(h, logging_mod.FileHandler):
+            if any(h.baseFilename.startswith(p) for p in production_prefixes):
+                pytest.fail(
+                    f"Production log handler detected on {logger.name}: {h.baseFilename}"
+                )
 
 
 class TestHaSourceCache:
