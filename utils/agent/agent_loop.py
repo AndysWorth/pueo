@@ -714,6 +714,8 @@ class AgentLoop:
             except Exception as exc:  # nosec B110
                 log.warning("episode_html_write_failed", error=str(exc))
 
+        await self._maybe_auto_save_gap_runbook(outcome, steps)
+
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
             steps=steps,
@@ -727,6 +729,79 @@ class AgentLoop:
             tool_call_records=list(self._tool_call_records),
             debug_log_path=debug_log_path,
         )
+
+    async def _maybe_auto_save_gap_runbook(
+        self, outcome: str, steps: list[AgentStep]
+    ) -> None:
+        """Auto-save a gap runbook when the model failed to save one itself.
+
+        Fires when:
+        - A knowledge store is configured (no store = no KB gap to record)
+        - outcome != "success", OR every query_knowledge call returned empty
+        - AND the model did not call save_runbook during the session
+        - AND no gap runbook with the same trigger_pattern exists from the last 7 days
+        """
+        if self._knowledge_store is None:
+            return
+        ex = self._executor
+        should_save = (
+            outcome != "success" or not ex._query_knowledge_had_results
+        ) and not ex._save_runbook_called
+        if not should_save:
+            return
+
+        trigger_pattern = self._trigger
+        # Dedup: skip if we already have a recent gap for this trigger.
+        try:
+            already_exists = await asyncio.to_thread(
+                ex._has_recent_gap_runbook, trigger_pattern
+            )
+        except Exception:  # nosec B110
+            already_exists = False
+        if already_exists:
+            log.debug("gap_runbook_dedup_skip", trigger=trigger_pattern)
+            return
+
+        # Build a concise approach description from what was tried.
+        tool_names_used = sorted({s.tool_call.name for s in steps})
+        queries_tried = [
+            s.tool_call.arguments.get("query", "")
+            for s in steps
+            if s.tool_call.name == "query_knowledge"
+        ]
+        query_summary = "; ".join(q for q in queries_tried if q) or "none"
+        approach = (
+            f"Outcome: {outcome}\n"
+            f"KB queries tried: {query_summary}\n"
+            f"Tools used: {', '.join(tool_names_used) or 'none'}\n"
+            f"KB returned results: {ex._query_knowledge_had_results}"
+        )
+        title = f"Gap: {trigger_pattern} ({outcome})"
+        try:
+            await ex._save_strategy(title, trigger_pattern, approach, "gap")
+            log.info(
+                "gap_runbook_auto_saved",
+                trigger=trigger_pattern,
+                outcome=outcome,
+                kb_had_results=ex._query_knowledge_had_results,
+            )
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                write_timeline_event(
+                    "WARN",
+                    "agent_loop",
+                    f"Gap runbook auto-saved — {trigger_pattern}",
+                    detail={
+                        "trigger": trigger_pattern,
+                        "outcome": outcome,
+                        "episode_id": self._episode_id,
+                    },
+                )
+            except Exception:  # nosec B110
+                pass
+        except Exception as exc:  # nosec B110
+            log.warning("gap_runbook_auto_save_failed", error=str(exc))
 
     async def _maybe_extend_budget(
         self,

@@ -15931,3 +15931,247 @@ class TestRunRagRefreshKbSync:
         )
         # Must not raise
         main_mod.run_rag_refresh(store)
+
+
+# ── Gap runbook auto-save ─────────────────────────────────────────────────────
+
+
+class TestGapRunbookAutoSave:
+    """AgentLoop auto-saves a gap runbook when the model does not."""
+
+    def _make_loop(self, tmp_path, knowledge_store=None, call_sequence=None):
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        db = str(tmp_path / "test.db")
+        # Initialise the schema so agent_strategies table exists.
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            knowledge_store=knowledge_store,
+            db_path=db,
+        )
+        loop = AgentLoop(
+            llm_client=FakeToolCallingLLMClient(call_sequence or []),
+            tool_executor=executor,
+            tool_registry=build_ha_tool_registry(),
+            knowledge_store=knowledge_store,
+            trigger="test_trigger",
+            db_path=db,
+        )
+        return loop, executor, db
+
+    def _gap_rows(self, db: str, trigger: str) -> list:
+        with sqlite3.connect(db) as conn:
+            return conn.execute(
+                "SELECT id FROM agent_strategies"
+                " WHERE runbook_state='gap' AND trigger_pattern=?",
+                (trigger,),
+            ).fetchall()
+
+    def test_empty_kb_saves_gap_runbook(self, tmp_path, monkeypatch):
+        """Empty KB results trigger auto-save even on success outcome."""
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        from utils.agent.tool_registry import build_ha_tool_registry
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()  # empty — all queries return nothing
+        loop, executor, db = self._make_loop(
+            tmp_path,
+            knowledge_store=store,
+            # Model calls query_knowledge then finish_repair (success, no results)
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "query_knowledge",
+                                "arguments": {"query": "disk space HA"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "none",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        result = asyncio.run(loop.run("fix disk"))
+        assert result.outcome == "success"
+        assert not executor._query_knowledge_had_results
+        rows = self._gap_rows(db, "test_trigger")
+        assert len(rows) == 1
+
+    def test_failed_outcome_saves_gap_runbook(self, tmp_path, monkeypatch):
+        """Non-success outcome triggers auto-save when no runbook was saved."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        # Empty call sequence → loop exhausts budget immediately
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
+        result = asyncio.run(loop.run("investigate issue"))
+        assert result.outcome == "exhausted"
+        rows = self._gap_rows(db, "test_trigger")
+        assert len(rows) == 1
+
+    def test_success_with_kb_results_no_auto_save(self, tmp_path, monkeypatch):
+        """Success + KB had results → no auto-save."""
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["r1"],
+            documents=["disk space fix: run ha supervisor repair"],
+            metadatas=[{"source": "seed", "runbook_type": "seed"}],
+        )
+        loop, executor, db = self._make_loop(
+            tmp_path,
+            knowledge_store=store,
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "query_knowledge",
+                                "arguments": {"query": "disk space"},
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "done",
+                                    "action_taken": "none",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        result = asyncio.run(loop.run("disk space fix"))
+        assert result.outcome == "success"
+        assert executor._query_knowledge_had_results
+        rows = self._gap_rows(db, "test_trigger")
+        assert len(rows) == 0
+
+    def test_model_saved_runbook_no_auto_save(self, tmp_path, monkeypatch):
+        """Model already called save_runbook → no auto-save even on failure."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        loop, executor, db = self._make_loop(
+            tmp_path,
+            knowledge_store=FakeKnowledgeStore(),
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "save_runbook",
+                                "arguments": {
+                                    "title": "my gap",
+                                    "trigger_pattern": "test_trigger",
+                                    "approach": "tried X",
+                                    "runbook_type": "gap",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        result = asyncio.run(loop.run("investigate"))
+        # Outcome is exhausted but model already saved
+        assert result.outcome == "exhausted"
+        assert executor._save_runbook_called
+        rows = self._gap_rows(db, "test_trigger")
+        # Exactly 1 row from the model's own save (not an extra auto-save)
+        assert len(rows) == 1
+
+    def test_dedup_skips_when_recent_gap_exists(self, tmp_path, monkeypatch):
+        """Dedup: skip auto-save if a gap row already exists within 7 days."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
+        # Pre-insert a gap row with same trigger
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES (?, ?, ?, ?, 'gap', datetime('now'))",
+                ("existing-id", "existing gap", "test_trigger", "prior attempt"),
+            )
+            conn.commit()
+        result = asyncio.run(loop.run("investigate again"))
+        assert result.outcome == "exhausted"
+        # Still only 1 row (no second auto-save)
+        rows = self._gap_rows(db, "test_trigger")
+        assert len(rows) == 1
+
+    def test_dedup_does_not_skip_old_gap(self, tmp_path, monkeypatch):
+        """Dedup: does NOT skip when existing gap row is older than 7 days."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
+        # Pre-insert an old gap row (8 days ago)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES (?, ?, ?, ?, 'gap', datetime('now', '-8 days'))",
+                ("old-id", "old gap", "test_trigger", "prior attempt"),
+            )
+            conn.commit()
+        result = asyncio.run(loop.run("investigate"))
+        assert result.outcome == "exhausted"
+        # New row was added (total 2)
+        rows = self._gap_rows(db, "test_trigger")
+        assert len(rows) == 2

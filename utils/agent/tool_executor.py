@@ -231,6 +231,9 @@ class ToolExecutor:
         self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
+        # Per-session gap-runbook tracking (reset in reset())
+        self._query_knowledge_had_results: bool = False
+        self._save_runbook_called: bool = False
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -238,6 +241,8 @@ class ToolExecutor:
         self._pending_patch = {}
         self._sandbox_passed = False
         self._sandbox_output = ""
+        self._query_knowledge_had_results = False
+        self._save_runbook_called = False
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -868,6 +873,7 @@ class ToolExecutor:
                 ),
             )
 
+        self._query_knowledge_had_results = True
         # Runbook hits (strategies collection) go first so the agent sees the plan before evidence.
         runbook_chunks = [c for c in chunks if c.collection == "strategies"]
         other_chunks = [c for c in chunks if c.collection != "strategies"]
@@ -2942,6 +2948,7 @@ class ToolExecutor:
                 output="",
                 error="title and approach are required",
             )
+        self._save_runbook_called = True
         _VALID_TYPES = {"candidate", "gap", "seed"}
         rtype = runbook_type if runbook_type in _VALID_TYPES else "candidate"
         strategy_id = str(uuid.uuid4())
@@ -2980,6 +2987,22 @@ class ToolExecutor:
             success=True,
             output=f"Runbook '{title}' saved as {rtype} (id={strategy_id})",
         )
+
+    def _has_recent_gap_runbook(self, trigger_pattern: str, days: int = 7) -> bool:
+        """Return True if a gap runbook with this trigger_pattern exists within `days`."""
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM agent_strategies"
+                    " WHERE runbook_state = 'gap'"
+                    " AND trigger_pattern = ?"
+                    " AND created_at >= datetime('now', ?)"
+                    " LIMIT 1",
+                    (trigger_pattern, f"-{days} days"),
+                ).fetchone()
+            return row is not None
+        except Exception:  # nosec B110
+            return False
 
     async def _read_pueo_log(
         self,
