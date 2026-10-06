@@ -998,4 +998,47 @@ class TestAutonomyGate:
         )
 
 
+class TestMarkCardSentDescription:
+    """mark_card_sent ON CONFLICT updates the description so the row stays current."""
+
+    def _make_db(self, tmp_path: Path) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(tmp_path / "test.db"))
+        conn.execute(
+            """
+            CREATE TABLE hitl_suppression (
+                card_key         TEXT PRIMARY KEY,
+                card_type        TEXT NOT NULL DEFAULT '',
+                description      TEXT NOT NULL DEFAULT '',
+                first_sent_at    REAL NOT NULL DEFAULT 0,
+                last_sent_at     REAL NOT NULL DEFAULT 0,
+                send_count       INTEGER NOT NULL DEFAULT 1,
+                last_action      TEXT,
+                last_action_at   REAL,
+                rejection_count  INTEGER NOT NULL DEFAULT 0,
+                next_allowed_at  REAL,
+                known_issue      INTEGER NOT NULL DEFAULT 0,
+                known_issue_note TEXT,
+                resolved_at      REAL
+            )
+            """
+        )
+        conn.commit()
+        return conn
+
+    def test_description_updated_on_conflict(self, tmp_path):
+        """Second mark_card_sent call with a newer description overwrites the old one."""
+        from utils.hitl.hitl_tracker import mark_card_sent
+
+        conn = self._make_db(tmp_path)
+        mark_card_sent(conn, "update:update.foo", "update", "foo 0.1.0 → 0.2.0")
+        mark_card_sent(conn, "update:update.foo", "update", "foo 0.2.0 → 0.3.0")
+
+        row = conn.execute(
+            "SELECT description, send_count FROM hitl_suppression WHERE card_key = ?",
+            ("update:update.foo",),
+        ).fetchone()
+        assert row[0] == "foo 0.2.0 → 0.3.0", "description should be updated to latest"
+        assert row[1] == 2, "send_count should increment"
+
+
 # ── netalertx.* config keys ─────────────────────────────────────────────────────
