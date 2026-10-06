@@ -246,7 +246,7 @@ async def fetch_release_notes_cached(
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
                     cache_path.write_text(ws_notes)
                     return ws_notes
-            except Exception:  # nosec B112
+            except Exception:  # nosec B110
                 pass
 
         # 2. Try release_url HTTP fetch.
@@ -256,7 +256,7 @@ async def fetch_release_notes_cached(
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(notes)
                 return notes
-            except Exception:  # nosec B112
+            except Exception:  # nosec B110
                 pass
 
         # 3. Build a concrete CHANGELOG URL from the entity_id component name.
