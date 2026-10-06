@@ -56,7 +56,7 @@ Agent functions accept these optional injected clients and fall back to real one
 | `NetAlertXClientProtocol` | — (see `netalertx/`) | NetAlertX device list |
 | `KnowledgeStoreClientProtocol` | `FakeKnowledgeStore` | ChromaDB upsert/query |
 
-`FakeAutonomyGate` (`utils/agent/autonomy.py`) is the approval-gate double.
+`FakeAutonomyGate` (`utils/agent/autonomy.py`) is the approval-gate double. `AutonomyGate` levels run 0–4: 0=report-only, 1=suggest, 2=guided(auto-LOW), 3=autonomous(auto-LOW/MED/HIGH), 4=full-autonomous(auto-all when LLM confidence ≥ threshold). The level-4 confidence bypass lives in `_finish_update_analysis()` in `utils/agent/tool_executor.py`, not inside the gate itself (ADR 035).
 
 ## 5. Prompts (`prompts/`)
 

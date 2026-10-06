@@ -239,7 +239,7 @@ async def run_investigation(
     if gate is None:
         from utils.agent.autonomy import AutonomyGate
 
-        gate = AutonomyGate(level=4)  # AUTONOMOUS — investigation registry is read-only
+        gate = AutonomyGate(level=3)  # AUTONOMOUS — investigation registry is read-only
 
     system_prompt = _investigation_system_prompt(
         topic=topic,

@@ -183,16 +183,18 @@ Config key: `ollama.model`
 
 ---
 
-**Prompt: Autonomy level** (`1`–`4`, default: `2`)
+**Prompt: Autonomy level** (`0`–`4`, default: `1`)
 
 | Level | Name | Behaviour |
 |---|---|---|
-| `1` | Report only | Diagnoses and explains issues; never writes to HA |
-| `2` | Suggest | Generates proposed fixes and sends them to the dashboard; you approve each one |
-| `3` | Guided | Auto-executes LOW-severity fixes; approval for MEDIUM and CRITICAL |
-| `4` | Autonomous | Auto-executes LOW and MEDIUM fixes; approval for CRITICAL only |
+| `0` | Report only | Diagnoses and explains issues; never writes to HA; no approval cards sent |
+| `1` | Suggest | Generates proposed fixes and sends them to the dashboard; you approve each one |
+| `2` | Guided | Auto-executes LOW-severity fixes; approval for MEDIUM / HIGH / CRITICAL |
+| `3` | Autonomous | Auto-executes LOW / MEDIUM / HIGH fixes; approval for CRITICAL only (Core / OS updates) |
+| `4` | Full-autonomous | Auto-executes all fixes including CRITICAL when LLM confidence ≥ threshold; approval when confidence is below threshold |
 
-Config key: `agent.autonomy_level`
+Config key: `agent.autonomy_level`  
+Related key: `agent.auto_apply_confidence_threshold` (default `0.85`) — level 4 only
 
 ---
 

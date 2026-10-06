@@ -439,7 +439,7 @@ class TestAutonomyConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 2
+        assert config.AUTONOMY_LEVEL == 1
 
     def test_autonomy_level_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"autonomy_level": 4}}))
@@ -448,26 +448,26 @@ class TestAutonomyConfigKeys:
 
         assert config.AUTONOMY_LEVEL == 4
 
-    def test_netalertx_mode_diagnose_maps_to_level1(self, isolated_config):
+    def test_netalertx_mode_diagnose_maps_to_level0(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "diagnose"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 1
+        assert config.AUTONOMY_LEVEL == 0
 
-    def test_netalertx_mode_auto_fix_maps_to_level3(self, isolated_config):
+    def test_netalertx_mode_auto_fix_maps_to_level2(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "auto_fix"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 3
+        assert config.AUTONOMY_LEVEL == 2
 
-    def test_netalertx_mode_autonomous_maps_to_level4(self, isolated_config):
+    def test_netalertx_mode_autonomous_maps_to_level3(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "autonomous"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 4
+        assert config.AUTONOMY_LEVEL == 3
 
     def test_agent_autonomy_level_takes_precedence_over_netalertx_mode(
         self, isolated_config
@@ -510,21 +510,21 @@ class TestAutonomyGate:
     def test_level1_never_auto_executes(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
-        gate = AutonomyGate(level=1)
+        gate = AutonomyGate(level=0)
         for risk in RiskLevel:
             assert gate.should_auto_execute(risk) is False
 
     def test_level2_never_auto_executes(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         for risk in RiskLevel:
             assert gate.should_auto_execute(risk) is False
 
     def test_level3_auto_executes_low_only(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         assert gate.should_auto_execute(RiskLevel.LOW) is True
         assert gate.should_auto_execute(RiskLevel.MEDIUM) is False
         assert gate.should_auto_execute(RiskLevel.HIGH) is False
@@ -533,7 +533,7 @@ class TestAutonomyGate:
     def test_level4_auto_executes_except_critical(self):
         from utils.agent.autonomy import AutonomyGate, RiskLevel
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         assert gate.should_auto_execute(RiskLevel.LOW) is True
         assert gate.should_auto_execute(RiskLevel.MEDIUM) is True
         assert gate.should_auto_execute(RiskLevel.HIGH) is True
@@ -541,11 +541,16 @@ class TestAutonomyGate:
 
     # ── should_ask_preference ────────────────────────────────────────────────────
 
-    def test_levels_1_2_3_ask_preference(self):
+    def test_levels_0_1_2_ask_preference(self):
         from utils.agent.autonomy import AutonomyGate
 
-        for level in [1, 2, 3]:
+        for level in [0, 1, 2]:
             assert AutonomyGate(level=level).should_ask_preference("context") is True
+
+    def test_level3_does_not_ask_preference(self):
+        from utils.agent.autonomy import AutonomyGate
+
+        assert AutonomyGate(level=3).should_ask_preference("context") is False
 
     def test_level4_does_not_ask_preference(self):
         from utils.agent.autonomy import AutonomyGate
@@ -558,7 +563,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=1)
+        gate = AutonomyGate(level=0)
         for risk in RiskLevel:
             notifier = FakeNotifier(approve=True)
             result = asyncio.run(
@@ -573,7 +578,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -587,7 +592,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -601,7 +606,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -615,7 +620,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
         result = asyncio.run(
             gate.require_approval(
@@ -629,7 +634,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -643,7 +648,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -657,7 +662,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
         asyncio.run(
             gate.require_approval(
@@ -670,7 +675,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
         asyncio.run(
             gate.require_approval(
@@ -683,7 +688,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier(approve=True)
         asyncio.run(
             gate.require_approval(
@@ -696,7 +701,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         for risk in RiskLevel:
             notifier = FakeNotifier(approve=True)
             asyncio.run(
@@ -710,7 +715,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         notifier = FakeNotifier(approve=True)
         result = asyncio.run(
             gate.require_approval(
@@ -724,7 +729,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         notifier = FakeNotifier(approve=False)
         result = asyncio.run(
             gate.require_approval(
@@ -739,7 +744,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         notifier = FakeNotifier(approve=True)
         with caplog.at_level(logging.INFO):
             result = asyncio.run(
@@ -806,7 +811,7 @@ class TestAutonomyGate:
                 }
             ]
         )
-        gate = AutonomyGate(level=1)
+        gate = AutonomyGate(level=0)
         notifier = FakeNotifier(approve=True)
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -853,7 +858,7 @@ class TestAutonomyGate:
                 }
             ]
         )
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -900,7 +905,7 @@ class TestAutonomyGate:
                 }
             ]
         )
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
         ha_agent_sandbox_engine.init_local_database()
         asyncio.run(
@@ -917,7 +922,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=1)
+        gate = AutonomyGate(level=0)
         notifier = FakeNotifier()
         result = asyncio.run(
             gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.HIGH)
@@ -929,7 +934,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier()
         result = asyncio.run(
             gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.HIGH)
@@ -941,7 +946,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier()
         result = asyncio.run(
             gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.LOW)
@@ -953,7 +958,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=2)
+        gate = AutonomyGate(level=1)
         notifier = FakeNotifier()
         result = asyncio.run(
             gate.queue_for_approval(
@@ -971,7 +976,7 @@ class TestAutonomyGate:
         from utils.agent.autonomy import AutonomyGate, RiskLevel
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         notifier = FakeNotifier()
         result = asyncio.run(
             gate.queue_for_approval(
@@ -996,6 +1001,64 @@ class TestAutonomyGate:
             FakeAutonomyGate(auto_execute_result=False).should_ask_preference("ctx")
             is True
         )
+
+
+class TestAutonomyGateLevel4:
+    """Level 4 FULL_AUTONOMOUS: auto-executes all risks including CRITICAL."""
+
+    def test_level4_auto_executes_all_risks(self):
+        from utils.agent.autonomy import AutonomyGate, RiskLevel
+
+        gate = AutonomyGate(level=4)
+        for risk in RiskLevel:
+            assert gate.should_auto_execute(risk) is True, f"should auto-execute {risk}"
+
+    def test_level4_require_approval_approves_critical_without_notifying(self):
+        from utils.agent.autonomy import AutonomyGate, RiskLevel
+        from utils.hitl.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier(approve=False)
+        result = asyncio.run(
+            gate.require_approval(
+                "s", "b", {"notification_id": "x"}, notifier, RiskLevel.CRITICAL
+            )
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level4_queue_for_approval_returns_true_for_critical_without_notifying(
+        self,
+    ):
+        from utils.agent.autonomy import AutonomyGate, RiskLevel
+        from utils.hitl.notify import FakeNotifier
+
+        gate = AutonomyGate(level=4)
+        notifier = FakeNotifier()
+        result = asyncio.run(
+            gate.queue_for_approval("s", "b", {}, notifier, RiskLevel.CRITICAL)
+        )
+        assert result is True
+        assert len(notifier.sent) == 0
+
+    def test_level4_level_property_returns_full_autonomous(self):
+        from utils.agent.autonomy import AutonomyGate, AutonomyLevel
+
+        gate = AutonomyGate(level=4)
+        assert gate.level == AutonomyLevel.FULL_AUTONOMOUS
+
+
+class TestAutonomyGateLevelProperty:
+    """AutonomyGate.level property exposes the current level."""
+
+    def test_level_property_matches_constructor_arg(self):
+        from utils.agent.autonomy import AutonomyGate, AutonomyLevel
+
+        assert AutonomyGate(level=0).level == AutonomyLevel.REPORT_ONLY
+        assert AutonomyGate(level=1).level == AutonomyLevel.SUGGEST
+        assert AutonomyGate(level=2).level == AutonomyLevel.GUIDED
+        assert AutonomyGate(level=3).level == AutonomyLevel.AUTONOMOUS
+        assert AutonomyGate(level=4).level == AutonomyLevel.FULL_AUTONOMOUS
 
 
 class TestMarkCardSentDescription:

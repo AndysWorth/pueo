@@ -38,3 +38,4 @@ One row per ADR. Open the linked file for context, rationale, and consequences.
 | [032](032-ha-mcp-consumption.md) | HA capability gaps: native REST/WS | Accepted | MCP adapter rejected; all 8 gaps closed via native REST/WS extension + `HAEventSubscriber` |
 | [033](033-ha-event-triggers.md) | Event-driven HA triggers | Accepted | `supervisor.wake()`; non-cancelling sleep interrupt; subscriber→wake map; fallback interval |
 | [034](034-opportunistic-hacs-companion-integrations.md) | Opportunistic HACS companion integrations | Accepted | Detect via profile; graceful absence; third-party output as unverified evidence; blocklist companion-added destructive services |
+| [035](035-full-autonomous-confidence-gate.md) | Full-autonomous level + level renumber | Accepted | Renumber 1–4 → 0–3; add level 4 FULL_AUTONOMOUS with LLM confidence gate for CRITICAL updates; bypass in `_finish_update_analysis()` not AutonomyGate; breaking change for existing level-2 users |

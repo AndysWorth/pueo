@@ -1938,6 +1938,10 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                 "type": "string",
                 "description": "One-sentence conclusion summarising the update analysis outcome.",
             },
+            "confidence": {
+                "type": "number",
+                "description": "Your confidence in the safety assessment, 0.0–1.0. Provide honestly — this is used at autonomy level 4 to decide whether to auto-apply without asking.",
+            },
         },
         "required": [
             "safe_to_update",

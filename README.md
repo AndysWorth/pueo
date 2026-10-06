@@ -137,6 +137,30 @@ pueo --mode export-episodes --since 2026-09-01          # export episodes on or 
 
 ---
 
+### Autonomy levels
+
+`agent.autonomy_level` in `config.yaml` controls how much Pueo acts without asking:
+
+| Level | Name | What Pueo does automatically | What still needs your approval |
+|---|---|---|---|
+| 0 | report-only | Nothing — silent observation | Everything (no cards sent) |
+| 1 | suggest | Nothing | Everything (approval card for every action) |
+| 2 | guided | LOW-risk actions (read-only, name locks) | MEDIUM / HIGH / CRITICAL |
+| 3 | autonomous | LOW / MEDIUM / HIGH risk actions | CRITICAL (Core + OS updates) |
+| 4 | full-autonomous | All actions when LLM confidence ≥ threshold | CRITICAL if confidence < threshold |
+
+**Risk tiers in practice:**
+- **LOW** — read-only calls, device name locks
+- **MEDIUM** — non-production config writes, NetAlertX app.conf
+- **HIGH** — production HA config write, add-on restart, `ha core restart`
+- **CRITICAL** — removing top-level config blocks, Core/OS updates, actions without a backup slug
+
+At level 4, Pueo auto-applies Core and OS updates only when the LLM analysis returns `safe_to_update=True` **and** a confidence score ≥ `agent.auto_apply_confidence_threshold` (default `0.85`). If confidence is below the threshold, a normal approval card is sent.
+
+> ⚠️ **Upgrading from a previous version?** If your `config.yaml` has `autonomy_level: 2`, it will now mean **guided** (auto-executes LOW-risk actions) instead of the old **suggest** (approve everything). Set `autonomy_level: 1` to restore the original behavior.
+
+---
+
 ## 🗂️ Runtime Data & Paths
 
 All mutable state lives outside the repo in macOS platform directories:

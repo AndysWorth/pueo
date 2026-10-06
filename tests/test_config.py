@@ -276,7 +276,7 @@ class TestAutonomyConfigKeys:
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 2
+        assert config.AUTONOMY_LEVEL == 1
 
     def test_autonomy_level_from_yaml(self, isolated_config):
         isolated_config.write_text(yaml.dump({"agent": {"autonomy_level": 4}}))
@@ -285,26 +285,26 @@ class TestAutonomyConfigKeys:
 
         assert config.AUTONOMY_LEVEL == 4
 
-    def test_netalertx_mode_diagnose_maps_to_level1(self, isolated_config):
+    def test_netalertx_mode_diagnose_maps_to_level0(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "diagnose"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 1
+        assert config.AUTONOMY_LEVEL == 0
 
-    def test_netalertx_mode_auto_fix_maps_to_level3(self, isolated_config):
+    def test_netalertx_mode_auto_fix_maps_to_level2(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "auto_fix"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 3
+        assert config.AUTONOMY_LEVEL == 2
 
-    def test_netalertx_mode_autonomous_maps_to_level4(self, isolated_config):
+    def test_netalertx_mode_autonomous_maps_to_level3(self, isolated_config):
         isolated_config.write_text(yaml.dump({"netalertx": {"mode": "autonomous"}}))
         importlib.reload(sys.modules["config"])
         import config
 
-        assert config.AUTONOMY_LEVEL == 4
+        assert config.AUTONOMY_LEVEL == 3
 
     def test_agent_autonomy_level_takes_precedence_over_netalertx_mode(
         self, isolated_config
@@ -318,6 +318,21 @@ class TestAutonomyConfigKeys:
         import config
 
         assert config.AUTONOMY_LEVEL == 3
+
+    def test_auto_apply_confidence_threshold_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTO_APPLY_CONFIDENCE_THRESHOLD == 0.85
+
+    def test_auto_apply_confidence_threshold_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"auto_apply_confidence_threshold": 0.9}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.AUTO_APPLY_CONFIDENCE_THRESHOLD == 0.9
 
     def test_escalation_preference_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
