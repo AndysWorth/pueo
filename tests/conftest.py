@@ -14,6 +14,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 _DEFAULT_CONFIG_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
+_PRODUCTION_LOG_PREFIXES = (
+    str(Path.home() / "Library" / "Logs"),
+    str(Path.home() / "Library" / "Application Support"),
+)
+
+
+def _assert_no_production_log_handlers(logger) -> None:
+    """Fail the test if any FileHandler on *logger* targets a production path."""
+    import logging
+
+    for h in logger.handlers:
+        if isinstance(h, logging.FileHandler):
+            if any(h.baseFilename.startswith(p) for p in _PRODUCTION_LOG_PREFIXES):
+                pytest.fail(
+                    f"Production log handler leaked onto pueo logger: {h.baseFilename}"
+                )
+
+
 _DEFAULT_COMMAND_RESULTS = {
     "ha backup new": (0, "Slug: test-slug-abc\n", ""),
     "ha core check": (0, "", ""),
@@ -128,12 +146,13 @@ def _isolate_data_dir(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _isolate_log_file(monkeypatch, tmp_path):
-    """Redirect LOG_FILE to tmp_path so tests never write to the real pueo.log (#771).
+    """Redirect LOG_FILE and PUEO_LOG_DIR to tmp_path so tests never write to pueo.log.
 
-    config.LOG_FILE is resolved at import time, before pueo_dirs can redirect
-    PUEO_LOG_DIR, so any test that calls setup_logging() would otherwise attach
-    a FileHandler to ~/Library/Logs/Pueo/pueo.log. Handlers added during the
-    test are removed and closed afterwards.
+    config.LOG_FILE is resolved at import time, so we patch both the already-resolved
+    constant and the PUEO_LOG_DIR env var so that any fresh paths.get_dirs() call during
+    a test also resolves to tmp_path. Handlers added during the test are removed and
+    closed afterwards. A guard fires if any FileHandler targeting ~/Library/Logs is
+    found on the pueo logger after teardown. (#771, #794)
     """
     import logging
 
@@ -144,6 +163,7 @@ def _isolate_log_file(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "LOG_FILE", log_path)
     monkeypatch.setattr(logging_utils, "LOG_FILE", log_path)
     monkeypatch.setattr(logging_utils, "_configured", False)
+    monkeypatch.setenv("PUEO_LOG_DIR", str(tmp_path))
     pueo_logger = logging.getLogger("pueo")
     original_handlers = pueo_logger.handlers[:]
     yield
@@ -151,6 +171,7 @@ def _isolate_log_file(monkeypatch, tmp_path):
         if h not in original_handlers:
             pueo_logger.removeHandler(h)
             h.close()
+    _assert_no_production_log_handlers(pueo_logger)
 
 
 def _reload_all_modules():
