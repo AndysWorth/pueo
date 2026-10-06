@@ -232,6 +232,7 @@ class ToolExecutor:
         self._pending_notification = pending_notification
         self._pending_update_status: Optional[Any] = None
         self._pending_auto_apply: bool = False
+        self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
 
@@ -3978,19 +3979,36 @@ class ToolExecutor:
             from agents.ha_update_manager import fetch_release_notes_cached
             import config as _cfg
 
-            # Pass release_url from the stored update status when the version
-            # matches — allows HACS/App updates to fetch from their own repos
-            # instead of the HA core GitHub API (which 404s for non-core versions).
+            # Match the stored update status when the passed version contains
+            # (or equals) the pending update's latest_version.  This handles the
+            # common pattern of the model calling
+            # get_update_release_notes("openthread_border_router 3.2.1") where the
+            # argument is "component version" rather than a bare version string.
             _release_url: Optional[str] = None
+            _entity_id: Optional[str] = None
+            _bare_version = target_version  # may be overridden below
             if self._pending_update_status is not None:
-                if self._pending_update_status.latest_version == target_version:
+                _pv = self._pending_update_status.latest_version or ""
+                if _pv and _pv in target_version:
                     _release_url = self._pending_update_status.release_url
+                    _entity_id = self._pending_update_status.entity_id
+                    _bare_version = _pv
+
+            _ws_fetcher = None
+            if self._ws_client is not None:
+                _ws_fetcher = self._ws_client.get_update_release_notes
 
             notes = await fetch_release_notes_cached(
-                target_version,
+                _bare_version,
                 _cfg.HA_UPDATE_RELEASE_NOTES_CACHE_DIR,
+                entity_id=_entity_id,
                 release_url=_release_url,
+                ws_fetcher=_ws_fetcher,
             )
+            # Mark that real notes were obtained (not the "unavailable" sentinel).
+            _UNAVAILABLE_SENTINEL = "Release notes unavailable"
+            if notes and not notes.startswith(_UNAVAILABLE_SENTINEL):
+                self._release_notes_obtained = True
             return ToolResult(
                 tool_name="get_update_release_notes",
                 success=True,
@@ -4076,6 +4094,24 @@ class ToolExecutor:
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
+        # No-notes override: when a pending update exists and no real release notes were
+        # obtained, force approval-card creation and cap confidence at 0.5.  The model
+        # must never auto-apply based on an unverified "no breaking changes" claim.
+        if self._pending_update_status is not None and not self._release_notes_obtained:
+            create_hitl_card = True
+            if confidence is not None and confidence > 0.5:
+                confidence = 0.5
+            _no_notes_prefix = (
+                "Release notes could not be retrieved — verdict not verified against"
+                " the changelog. "
+            )
+            recommendation = _no_notes_prefix + recommendation
+            log.warning(
+                "update_analysis_no_release_notes",
+                component=self._pending_update_status.component,
+                version=self._pending_update_status.latest_version,
+            )
+
         # Gate override: the user's autonomy level may require approval even if the LLM
         # decided create_hitl_card=False. Updates are always at least MEDIUM risk.
         if not create_hitl_card and self._gate is not None:

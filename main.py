@@ -728,6 +728,41 @@ async def _ollama_monitor_loop() -> None:
             )
 
 
+def _is_update_wake_worthy(ev: dict) -> bool:
+    """Return True only when a ``state_changed`` event for an ``update.*`` entity
+    represents a meaningful change that warrants waking the update_check loop.
+
+    Attribute-only mutations (``in_progress``, ``update_percentage``, …) that happen
+    every few seconds during an install are *not* wake-worthy — they generate a wake
+    storm that duplicates "Update available" timeline entries and queues redundant
+    analysis runs.
+
+    An event is wake-worthy when:
+    - the entity state value itself changed (e.g. "on" → "off"), OR
+    - ``attributes.latest_version`` changed (a new version became available), OR
+    - ``old_state`` is absent (first time we see the entity, treat as worthy).
+    """
+    data = ev.get("data", {})
+    old = data.get("old_state") or {}
+    new = data.get("new_state") or {}
+
+    # No old state: entity is new or just loaded — treat as worthy.
+    if not old:
+        return True
+
+    old_state_val = old.get("state", "")
+    new_state_val = new.get("state", "")
+    if old_state_val != new_state_val:
+        return True
+
+    old_latest = (old.get("attributes") or {}).get("latest_version", "")
+    new_latest = (new.get("attributes") or {}).get("latest_version", "")
+    if old_latest != new_latest:
+        return True
+
+    return False
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     _write_pid_file()
@@ -1231,7 +1266,9 @@ async def supervisor_main(config_path: Path) -> None:
                     elif etype == "repairs_issue_registry_updated":
                         target = "repair_poll"
                     elif etype == "state_changed":
-                        if ev.get("entity_id", "").startswith("update."):
+                        if ev.get("entity_id", "").startswith(
+                            "update."
+                        ) and _is_update_wake_worthy(ev):
                             target = "update_check"
                     if target is None:
                         continue

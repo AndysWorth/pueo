@@ -1401,6 +1401,9 @@ class TestUpdateAnalyzedSuppression:
             in_progress=False,
         )
         executor.set_update_status(update)
+        # Simulate release notes obtained — ensures the no-notes override does not
+        # force create_hitl_card=True and lets us test the no-card (analyzed) path.
+        executor._release_notes_obtained = True
 
         # _update_mark_card_sent reads DB_PATH from ha_log_monitor._config.
         with mock.patch("agents.ha_log_monitor._config") as mc:

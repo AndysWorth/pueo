@@ -200,40 +200,88 @@ async def fetch_release_notes_cached(
     version: str,
     cache_dir: str,
     *,
+    entity_id: Optional[str] = None,
     release_url: Optional[str] = None,
-    _fetcher=None,  # injectable for tests
+    ws_fetcher=None,  # injectable: async callable(entity_id) -> str | None
+    _fetcher=None,  # injectable for tests (HA Core GitHub fetch)
 ) -> str:
     """Return cached release notes; fetch from GitHub API if not yet cached.
 
     For HA Core versions (YYYY.M.P), fetches from the home-assistant/core
-    GitHub API.  For HACS / App updates (non-YYYY versions), fetches from
-    release_url when provided.
+    GitHub API.  For HACS / App / add-on updates (non-YYYY versions), the
+    fetch order is:
+
+    1. WS ``update/release_notes`` (when ``ws_fetcher`` and ``entity_id`` are
+       provided) — most reliable for supervisor add-ons.
+    2. ``release_url`` (HTTP fetch) — used when WS notes are absent.
+    3. A concrete CHANGELOG URL derived from the entity's component name in the
+       HA add-ons repo, suitable for the agent to fetch directly.
+
+    Cache key for non-core: ``{entity_id}_{version}.txt`` to avoid collisions
+    between different add-ons that share a version string (e.g. ``0.7.1``).
+    Core cache key is unchanged: ``{version}.txt``.
 
     GA monthly releases often have a blog-URL stub body (<500 chars).  When
     detected, tries beta tags (b5→b0) for the same minor version to get the
     real changelog content.
     """
-    cache_path = Path(cache_dir) / f"{version}.txt"
+    _is_ha_core = version[:4].isdigit() and version.startswith("20")
+
+    # Non-core cache key includes the entity_id to avoid cross-add-on collisions.
+    if _is_ha_core or entity_id is None:
+        cache_path = Path(cache_dir) / f"{version}.txt"
+    else:
+        _safe_eid = entity_id.replace(".", "_").replace("/", "_")
+        cache_path = Path(cache_dir) / f"{_safe_eid}_{version}.txt"
+
     if cache_path.exists():
         return cache_path.read_text()
 
-    # Non-HA-Core version (HACS, App, add-on): use release_url if available.
-    _is_ha_core = version[:4].isdigit() and version.startswith("20")
-    if not _is_ha_core and release_url:
-        try:
-            notes = await _fetch_release_notes_from_url(release_url)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(notes)
-            return notes
-        except Exception:  # nosec B112
-            return f"Release notes unavailable (fetched from {release_url})."
+    if not _is_ha_core:
+        # 1. Try WS update/release_notes first — most reliable for supervisor add-ons.
+        if ws_fetcher is not None and entity_id is not None:
+            try:
+                ws_notes = await ws_fetcher(entity_id)
+                if ws_notes:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(ws_notes)
+                    return ws_notes
+            except Exception:  # nosec B110
+                pass
 
-    if not _is_ha_core and not release_url:
+        # 2. Try release_url HTTP fetch.
+        if release_url:
+            try:
+                notes = await _fetch_release_notes_from_url(release_url)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(notes)
+                return notes
+            except Exception:  # nosec B110
+                pass
+
+        # 3. Build a concrete CHANGELOG URL from the entity_id component name.
+        _component = ""
+        if entity_id:
+            # entity_id form: "update.<component>_update" → component is everything
+            # between "update." and the final "_update" suffix (if present).
+            _eid_body = entity_id.removeprefix("update.")
+            if _eid_body.endswith("_update"):
+                _component = _eid_body[: -len("_update")]
+            else:
+                _component = _eid_body
+        if _component:
+            _changelog_url = (
+                f"https://raw.githubusercontent.com/home-assistant/addons/master/"
+                f"{_component}/CHANGELOG.md"
+            )
+        else:
+            _changelog_url = (
+                "https://raw.githubusercontent.com/home-assistant/addons/master/"
+                "<component>/CHANGELOG.md"
+            )
         return (
-            "Release notes unavailable — this supervisor add-on does not provide a release "
-            "URL. To get the changelog, try: "
-            "fetch_url('https://raw.githubusercontent.com/home-assistant/addons/master/"
-            "<slug>/CHANGELOG.md') — replace <slug> with the add-on name."
+            f"Release notes unavailable via WebSocket or release URL. "
+            f"Fetch the changelog directly: {_changelog_url}"
         )
 
     fetcher = _fetcher or _fetch_github_release_notes
@@ -580,8 +628,14 @@ async def _run_update_analysis(
     knowledge_store: Optional[Any] = None,
     ha_profile: Optional["HAEnvironmentProfile"] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
-) -> None:
-    """Run a single AgentLoop to analyse an update and create the HITL card via the terminal tool."""
+) -> bool:
+    """Run a single AgentLoop to analyse an update and create the HITL card via the terminal tool.
+
+    Returns True when the analysis was accepted by the work queue (or when the work queue is
+    absent), False when it was deduplicated (another analysis for this entity is already queued
+    or running).  The caller should write the "update_available" timeline entry and log event
+    only on True so that dedup drops do not produce duplicate entries.
+    """
     from utils.agent.agent_loop import AgentLoop
     from utils.agent.supervisor import (
         decrement_active_agent,
@@ -617,6 +671,16 @@ async def _run_update_analysis(
             db_path=DB_PATH,
         )
         executor.set_update_status(update)
+
+        # Inject a WS client so the executor can call update/release_notes directly.
+        if HA_API_TOKEN:
+            from utils.ha.ha_ws_client import HAWebSocketClient
+
+            executor.set_ws_client(
+                HAWebSocketClient(
+                    HA_HOST, HA_API_PORT, HA_API_TOKEN
+                )  # pragma: no cover
+            )
 
         # Profile fallback: use the persisted profile when none is passed in
         from utils.ha.ha_environment import load_environment_profile
@@ -771,7 +835,7 @@ async def _run_update_analysis(
 
     _wq = get_work_queue_or_none()
     if _wq is not None:
-        await _wq.submit(
+        return await _wq.submit(
             WorkItem(
                 priority=PRIORITY_NORMAL,
                 activity_type="update_analysis",
@@ -783,6 +847,7 @@ async def _run_update_analysis(
         )
     else:
         await _coro()
+        return True
 
 
 # ── Pueo Self-Check (item 37) ─────────────────────────────────────────────────
@@ -1358,10 +1423,41 @@ async def execute_addon_update(
     )
 
     log.info("addon_update_start", slug=update.component, version=update.latest_version)
+
+    def _tl(level: str, msg: str, extra: dict) -> None:  # pragma: no cover
+        """Write a timeline event; best-effort, never raises."""
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            write_timeline_event(level, "update_check", msg, extra)
+        except Exception:  # nosec B110
+            pass
+
     backup_slug = await execute_remote_backup(ssh_client=ssh_client)
     record_backup_slug(backup_slug)
     await offload_backup_to_local(backup_slug, ssh_client=ssh_client)
     log.info("addon_update_backup_complete", slug=backup_slug)
+    await asyncio.to_thread(
+        _tl,
+        "INFO",
+        f"{update.component}: backup created ({backup_slug})",
+        {
+            "component": update.component,
+            "version": update.latest_version,
+            "backup_slug": backup_slug,
+            "step": "backup_created",
+        },
+    )
+    await asyncio.to_thread(
+        _tl,
+        "INFO",
+        f"{update.component}: install started → {update.latest_version}",
+        {
+            "component": update.component,
+            "version": update.latest_version,
+            "step": "install_started",
+        },
+    )
 
     rest: HARestClientProtocol
     if ha_rest_client is not None:
@@ -1394,6 +1490,17 @@ async def execute_addon_update(
             slug=update.component,
             error=str(exc)[:200] or repr(exc),
         )
+        await asyncio.to_thread(
+            _tl,
+            "WARNING",
+            f"{update.component}: update service call failed",
+            {
+                "component": update.component,
+                "version": update.latest_version,
+                "step": "install_result",
+                "success": False,
+            },
+        )
         await _send_post_update_card(update, notifier, False, "", "")
         return False
 
@@ -1419,8 +1526,30 @@ async def execute_addon_update(
             "HA may require a Core restart to complete this update. "
             "If so, Pueo will restart automatically — no further approval needed."
         )
+        await asyncio.to_thread(
+            _tl,
+            "INFO",
+            f"{update.component}: updated to {update.latest_version} ✓",
+            {
+                "component": update.component,
+                "version": update.latest_version,
+                "step": "install_result",
+                "success": True,
+            },
+        )
         await _send_post_update_card(update, notifier, True, "", _restart_note)
     else:
+        await asyncio.to_thread(
+            _tl,
+            "WARNING",
+            f"{update.component}: update timed out — check HA UI",
+            {
+                "component": update.component,
+                "version": update.latest_version,
+                "step": "install_result",
+                "success": False,
+            },
+        )
         await _send_post_update_card(update, notifier, False, "", "")
         log.warning(
             "addon_update_timed_out",

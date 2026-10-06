@@ -219,6 +219,26 @@ class HAWebSocketClient:  # pragma: no cover
         )
         return result if isinstance(result, dict) else {}
 
+    async def get_update_release_notes(self, entity_id: str) -> str | None:
+        """Fetch release notes for an update entity via WS ``update/release_notes``.
+
+        Returns the notes string, or ``None`` when the command fails or returns
+        nothing (e.g. no notes available for this update).
+        """
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(
+                json.dumps(
+                    {"id": 1, "type": "update/release_notes", "entity_id": entity_id}
+                )
+            )
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                return None
+            return msg.get("result") or None
+        finally:
+            await ws.close()
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -276,6 +296,7 @@ class FakeHAWebSocketClient:
         label_registry: list[dict] | None = None,
         traces: list[dict] | None = None,
         trace_detail: dict | None = None,
+        update_release_notes: dict[str, str | None] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -298,6 +319,8 @@ class FakeHAWebSocketClient:
         self._traces: list[dict] = traces or []
         # trace_detail: full trace dict returned by get_trace (same for all run_ids)
         self._trace_detail: dict = trace_detail or {}
+        # update_release_notes: entity_id → release notes string (or None)
+        self._update_release_notes: dict[str, str | None] = update_release_notes or {}
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -376,3 +399,7 @@ class FakeHAWebSocketClient:
     async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict:
         self.calls.append(f"get_trace:{domain}:{item_id}:{run_id}")
         return dict(self._trace_detail)
+
+    async def get_update_release_notes(self, entity_id: str) -> str | None:
+        self.calls.append(f"get_update_release_notes:{entity_id}")
+        return self._update_release_notes.get(entity_id)
