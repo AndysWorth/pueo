@@ -395,9 +395,9 @@ class TestFinishUpdateAnalysisGate:
         from utils.agent.autonomy import AutonomyGate
         from utils.hitl.card_types import CARD_TYPE_UPDATE
 
-        # autonomy_level=3 (GUIDED) → only LOW risk auto-executes;
+        # autonomy_level=2 (GUIDED) → only LOW risk auto-executes;
         # updates are MEDIUM so gate blocks auto-execute → card required
-        gate = AutonomyGate(level=3)
+        gate = AutonomyGate(level=2)
         executor, notifier = self._make_executor(gate)
         update = self._make_update("noaa_it_all")
         executor.set_update_status(update)
@@ -428,8 +428,8 @@ class TestFinishUpdateAnalysisGate:
 
         from utils.agent.autonomy import AutonomyGate
 
-        # autonomy_level=4 (AUTONOMOUS) → MEDIUM risk auto-executes
-        gate = AutonomyGate(level=4)
+        # autonomy_level=3 (AUTONOMOUS) → MEDIUM risk auto-executes
+        gate = AutonomyGate(level=3)
         executor, notifier = self._make_executor(gate)
         update = self._make_update("noaa_it_all")
         executor.set_update_status(update)
@@ -460,7 +460,7 @@ class TestFinishUpdateAnalysisGate:
 
         from utils.agent.autonomy import AutonomyGate
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         executor, notifier = self._make_executor(gate)
         update = self._make_update("noaa_it_all")
         executor.set_update_status(update)
@@ -485,6 +485,192 @@ class TestFinishUpdateAnalysisGate:
         assert (
             not executor._pending_auto_apply
         ), "unsafe update must not trigger auto-apply"
+
+
+# ---------------------------------------------------------------------------
+# Level 4 FULL_AUTONOMOUS: confidence-gated bypass for core/os components
+# ---------------------------------------------------------------------------
+
+
+class TestFullAutonomousBypass:
+    """FULL_AUTONOMOUS (level 4) bypasses the core/os block when LLM confidence is high."""
+
+    def _make_executor(self, gate):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        return (
+            ToolExecutor(
+                ha_ssh_client=MagicMock(),
+                gate=gate,
+                notifier=notifier,
+                db_path=":memory:",
+            ),
+            notifier,
+        )
+
+    def _make_core_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.core",
+            component="core",
+            installed_version="2026.9.0",
+            latest_version="2026.10.0",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_level3_critical_still_sends_card(self, pueo_dirs):
+        """Level 3 AUTONOMOUS: core update still requires a card even at high confidence."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=3)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_core_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=0.95,
+                )
+            )
+
+        assert result.success
+        assert not executor._pending_auto_apply, "level 3 must not auto-apply core"
+
+    def test_level4_high_confidence_safe_bypasses_block(self, pueo_dirs):
+        """Level 4 + safe_to_update=True + confidence ≥ threshold → auto-apply (no card)."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_core_update())
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,
+                confidence=0.95,
+            )
+        )
+
+        assert result.success
+        assert executor._pending_auto_apply, "level 4 + high confidence must auto-apply"
+        assert not notifier.send.called, "no card should be sent"
+
+    def test_level4_low_confidence_sends_card(self, pueo_dirs):
+        """Level 4 + confidence below threshold → sends card as fallback."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_core_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=0.70,  # below 0.85 threshold
+                )
+            )
+
+        assert result.success
+        assert not executor._pending_auto_apply, "low confidence must not auto-apply"
+
+    def test_level4_not_safe_sends_card(self, pueo_dirs):
+        """Level 4 + safe_to_update=False → sends card regardless of confidence."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_core_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=False,
+                    breaking_changes=["Removed deprecated API"],
+                    affected_config_keys=["some_key"],
+                    pueo_command_risks=[],
+                    recommendation="Review required.",
+                    instance_impact="high",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=0.95,
+                )
+            )
+
+        assert result.success
+        assert not executor._pending_auto_apply, "unsafe update must not auto-apply"
+
+    def test_level4_none_confidence_sends_card(self, pueo_dirs):
+        """Level 4 + confidence=None → sends card (no confidence reported)."""
+        import asyncio
+
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = AutonomyGate(level=4)
+        executor, notifier = self._make_executor(gate)
+        executor.set_update_status(self._make_core_update())
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "agents.ha_log_monitor._update_mark_card_sent"
+        ):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Safe.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=None,
+                )
+            )
+
+        assert result.success
+        assert not executor._pending_auto_apply, "no confidence → must not auto-apply"
 
 
 # ---------------------------------------------------------------------------

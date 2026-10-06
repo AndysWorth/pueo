@@ -88,10 +88,10 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "yaml_key": "autonomy_level",
         "config_attr": "AUTONOMY_LEVEL",
         "val_type": "int",
-        "description": "1 = report only · 2 = suggest + approve all · 3 = auto LOW, approve rest · 4 = auto LOW/MED/HIGH, approve CRITICAL",
+        "description": "0 = report only · 1 = suggest + approve all · 2 = auto LOW, approve rest · 3 = auto LOW/MED/HIGH, approve CRITICAL · 4 = auto all when confident",
         "group": "Autonomy",
         "restart_required": False,
-        "min_val": 1,
+        "min_val": 0,
         "max_val": 4,
     },
     "self_healing_enabled": {

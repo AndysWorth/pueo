@@ -136,8 +136,8 @@ Full spec: [plan/conversational-agent.md](plan/conversational-agent.md)
 - Update availability read from `update.*` REST state entities — no WebSocket, no SSH parsing
 - Breaking-change analysis is **advisory only** — never a hard gate; human decides
 - Release notes fetched from GitHub once per version and cached locally — no WAN during active monitoring
-- Core and OS updates always require approval regardless of autonomy level
-- Add-on updates are MEDIUM risk and may auto-execute at autonomy level 4
+- Core and OS updates require approval at levels 0–3; at level 4 (FULL_AUTONOMOUS) they auto-apply when LLM confidence ≥ `AUTO_APPLY_CONFIDENCE_THRESHOLD`
+- Add-on updates are MEDIUM risk and may auto-execute at autonomy level 3+
 - `execute_remote_backup()` runs before every update (safety invariant unchanged)
 
 **Tasks:**

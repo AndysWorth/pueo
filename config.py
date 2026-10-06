@@ -304,7 +304,7 @@ NETALERTX_SEVERITY_CONFIDENCE_THRESHOLD: float = float(
 
 # Autonomy control
 _netalertx_mode = _nax.get("mode", "")
-_NETALERTX_MODE_MAP: dict[str, int] = {"diagnose": 1, "auto_fix": 3, "autonomous": 4}
+_NETALERTX_MODE_MAP: dict[str, int] = {"diagnose": 0, "auto_fix": 2, "autonomous": 3}
 _autonomy_raw = _agent.get("autonomy_level", None)
 if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
     import logging as _logging
@@ -313,7 +313,10 @@ if _netalertx_mode in _NETALERTX_MODE_MAP and _autonomy_raw is None:
         "config: netalertx.mode is deprecated; migrate to agent.autonomy_level"
     )
     _autonomy_raw = _NETALERTX_MODE_MAP[_netalertx_mode]
-AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 2)
+AUTONOMY_LEVEL: int = int(_autonomy_raw if _autonomy_raw is not None else 1)
+AUTO_APPLY_CONFIDENCE_THRESHOLD: float = float(
+    _agent.get("auto_apply_confidence_threshold", 0.85)
+)
 
 # Escalation routing when the agent is stuck and calls request_escalation()
 ESCALATION_PREFERENCE: str = str(_agent.get("escalation_preference", "hitl"))

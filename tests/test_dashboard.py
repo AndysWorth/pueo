@@ -5184,7 +5184,7 @@ class TestConfigEditor:
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.post("/config", json={"key": "autonomy_level", "value": "0"})
+        response = client.post("/config", json={"key": "autonomy_level", "value": "-1"})
         assert response.status_code == 400
 
     def test_above_max_returns_400(self, cfg_path, tmp_path, monkeypatch):

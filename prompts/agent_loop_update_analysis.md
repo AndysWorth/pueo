@@ -51,6 +51,7 @@ Optional fields (populate when you have the information):
 - `deprecations`: settings, services, or APIs that are deprecated but not yet removed in this release. Leave empty if none.
 - `new_features`: noteworthy new capabilities that are relevant to this installation. Leave empty if none notable.
 - `risk_score`: "low" / "medium" / "high" overall risk score. Match to `instance_impact` and `safe_to_update`.
+- `confidence`: your confidence in the safety assessment, 0.0–1.0. Be honest — at autonomy level 4 (full-autonomous), Pueo uses this to decide whether to auto-apply CRITICAL updates (core/os) without asking the user. Provide a high value only when you have thoroughly verified the release notes and config.
 
 If the release notes are unavailable or too short to analyse, set `safe_to_update=true`, empty lists, and a recommendation explaining that notes were not available.
 

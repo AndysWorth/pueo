@@ -4072,6 +4072,7 @@ class ToolExecutor:
         deprecations: Optional[list] = None,
         new_features: Optional[list] = None,
         risk_score: Optional[str] = None,
+        confidence: Optional[float] = None,
         **_extra: Any,
     ) -> ToolResult:
         """Create a HITL approval card for the pending HA update."""
@@ -4087,12 +4088,28 @@ class ToolExecutor:
                 create_hitl_card = True
 
         if not create_hitl_card:
-            # Core/OS/Supervisor updates are never auto-applied — they always require
-            # human review. Write suppression so the analysis is not repeated this cycle.
+            # Core/OS/Supervisor updates are blocked from auto-apply unless:
+            # • autonomy level is FULL_AUTONOMOUS (4), AND
+            # • safe_to_update=True, AND
+            # • confidence ≥ AUTO_APPLY_CONFIDENCE_THRESHOLD
+            from utils.agent.autonomy import AutonomyGate as _AutonomyGate
+            from utils.agent.autonomy import AutonomyLevel
+
             _BLOCKED_COMPONENTS = {"homeassistant", "core", "os", "supervisor"}
+            _is_level4 = (
+                self._gate is not None
+                and isinstance(self._gate, _AutonomyGate)
+                and self._gate.level == AutonomyLevel.FULL_AUTONOMOUS
+            )
+            _high_confidence: bool = False
+            if _is_level4 and safe_to_update and confidence is not None:
+                from config import AUTO_APPLY_CONFIDENCE_THRESHOLD
+
+                _high_confidence = confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD
             _is_blocked = (
                 self._pending_update_status is not None
                 and self._pending_update_status.component.lower() in _BLOCKED_COMPONENTS
+                and not (_is_level4 and _high_confidence)
             )
             # Only signal auto-apply when a real gate is present, execution is approved,
             # and the component is not in the hard-blocked set.

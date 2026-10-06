@@ -627,7 +627,7 @@ if $WRITE_CONFIG; then
     echo "              instance; you approve by touching the approval file via SSH"
     echo "    webhook — HTTP POST to any URL (e.g. an HA automation)"
     echo
-    ask "Autonomy level (1=report-only 2=suggest 3=guided 4=autonomous)"  "2"  AUTONOMY_LEVEL
+    ask "Autonomy level (0=report-only 1=suggest 2=guided 3=autonomous 4=full-autonomous)"  "1"  AUTONOMY_LEVEL
     ask "Dashboard port"  "8080"  DASHBOARD_PORT
     ask "Notifier type (file/ntfy/webhook)"  "file"  NOTIFIER_TYPE
 

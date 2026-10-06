@@ -4248,7 +4248,7 @@ class TestRequestUpdateApproval:
         from utils.agent.autonomy import AutonomyGate
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
         result = asyncio.run(
             request_update_approval(self._make_update("some_addon"), gate, notifier)
@@ -4262,7 +4262,7 @@ class TestRequestUpdateApproval:
         from utils.agent.autonomy import AutonomyGate
         from utils.hitl.notify import FakeNotifier
 
-        gate = AutonomyGate(level=4)
+        gate = AutonomyGate(level=3)
         notifier = FakeNotifier(approve=True)
         result = asyncio.run(
             request_update_approval(self._make_update("core"), gate, notifier)

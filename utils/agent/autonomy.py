@@ -1,10 +1,12 @@
 """Unified autonomy gate — single ask/skip decision point for all Pueo actions.
 
 Levels:
-  1 REPORT_ONLY  — observe and report; never execute or notify
-  2 SUGGEST      — propose every action; require explicit approval for all
-  3 GUIDED       — auto-execute LOW-risk; pause for MEDIUM / HIGH / CRITICAL
-  4 AUTONOMOUS   — auto-execute LOW / MEDIUM / HIGH; pause only for CRITICAL
+  0 REPORT_ONLY    — observe and report; never execute or notify
+  1 SUGGEST        — propose every action; require explicit approval for all
+  2 GUIDED         — auto-execute LOW-risk; pause for MEDIUM / HIGH / CRITICAL
+  3 AUTONOMOUS     — auto-execute LOW / MEDIUM / HIGH; pause only for CRITICAL
+  4 FULL_AUTONOMOUS— auto-execute all risks when LLM confidence ≥ threshold;
+                     pause for CRITICAL only when confidence is below threshold
 
 Risk taxonomy:
   LOW      — read-only calls, name locks
@@ -33,17 +35,23 @@ class RiskLevel(IntEnum):
 
 
 class AutonomyLevel(IntEnum):
-    REPORT_ONLY = 1
-    SUGGEST = 2
-    GUIDED = 3
-    AUTONOMOUS = 4
+    REPORT_ONLY = 0
+    SUGGEST = 1
+    GUIDED = 2
+    AUTONOMOUS = 3
+    FULL_AUTONOMOUS = 4
 
 
 class AutonomyGate:
     """Decision point imported by all Pueo modules to ask or skip an action."""
 
-    def __init__(self, level: int = 2) -> None:
+    def __init__(self, level: int = 1) -> None:
         self._level = AutonomyLevel(level)
+
+    @property
+    def level(self) -> AutonomyLevel:
+        """The current autonomy level."""
+        return self._level
 
     def should_auto_execute(self, risk: RiskLevel) -> bool:
         """True if the current level permits executing at ``risk`` without asking."""
@@ -53,12 +61,18 @@ class AutonomyGate:
             return False
         if self._level == AutonomyLevel.GUIDED:
             return risk == RiskLevel.LOW
-        # AUTONOMOUS: auto for LOW / MEDIUM / HIGH
-        return risk != RiskLevel.CRITICAL
+        if self._level == AutonomyLevel.AUTONOMOUS:
+            # AUTONOMOUS: auto for LOW / MEDIUM / HIGH
+            return risk != RiskLevel.CRITICAL
+        # FULL_AUTONOMOUS: auto for all risks
+        return True
 
     def should_ask_preference(self, context: str) -> bool:
         """True if a preference question is appropriate at the current level."""
-        return self._level != AutonomyLevel.AUTONOMOUS
+        return self._level not in (
+            AutonomyLevel.AUTONOMOUS,
+            AutonomyLevel.FULL_AUTONOMOUS,
+        )
 
     async def require_approval(
         self,
@@ -70,13 +84,15 @@ class AutonomyGate:
     ) -> bool:
         """Request human approval if required by the current level and risk.
 
-        Returns True (proceed) or False (skip/rejected).  At level 1 returns
-        False without notifying.  At level 4 short-circuits to True for risks
+        Returns True (proceed) or False (skip/rejected).  At level 0 returns
+        False without notifying.  At level 3/4 short-circuits to True for risks
         below CRITICAL without notifying.  All other cases send a notification
         and poll for approval up to ``timeout_minutes``.
         """
         if self._level == AutonomyLevel.REPORT_ONLY:
             return False
+        if self._level == AutonomyLevel.FULL_AUTONOMOUS:
+            return True
         if self._level == AutonomyLevel.AUTONOMOUS and risk != RiskLevel.CRITICAL:
             return True
         if self._level == AutonomyLevel.GUIDED and risk == RiskLevel.LOW:
@@ -107,6 +123,8 @@ class AutonomyGate:
         """
         if self._level == AutonomyLevel.REPORT_ONLY:
             return False
+        if self._level == AutonomyLevel.FULL_AUTONOMOUS:
+            return True
         if self._level == AutonomyLevel.AUTONOMOUS and risk != RiskLevel.CRITICAL:
             return True
         if self._level == AutonomyLevel.GUIDED and risk == RiskLevel.LOW:
