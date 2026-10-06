@@ -922,7 +922,8 @@ class TestUpdateAnalysisContextBuilding:
     def test_upgrade_advisor_sensor_prepended(self, tmp_path, pueo_dirs):
         from utils.ha.ha_rest_client import FakeHARestClient
 
-        # The new advisor integration uses sensor.upgrade_advisor_status and _risk.
+        # The advisor integration uses sensor.upgrade_advisor_status and
+        # sensor.upgrade_advisor_risk_level (not _risk).
         # available_version must match the update's latest_version ("2026.9.1").
         states = [
             {
@@ -935,7 +936,7 @@ class TestUpdateAnalysisContextBuilding:
                 },
             },
             {
-                "entity_id": "sensor.upgrade_advisor_risk",
+                "entity_id": "sensor.upgrade_advisor_risk_level",
                 "state": "medium",
                 "attributes": {},
             },

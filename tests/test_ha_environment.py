@@ -484,3 +484,62 @@ class TestSpookDetection:
             )
         )
         assert profile.spook_installed is False
+
+
+# ---------------------------------------------------------------------------
+# upgrade_advisor_installed detection
+# ---------------------------------------------------------------------------
+
+
+class TestUpgradeAdvisorDetection:
+    def _run(self, integrations):
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: integrations,
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_upgrade_advisor_installed_when_in_integrations(self):
+        profile = self._run(["zha", "upgrade_advisor", "mqtt"])
+        assert profile.upgrade_advisor_installed is True
+
+    def test_upgrade_advisor_not_installed_when_absent(self):
+        profile = self._run(["zha", "mqtt"])
+        assert profile.upgrade_advisor_installed is False
+
+    def test_upgrade_advisor_false_when_integrations_empty(self):
+        profile = self._run([])
+        assert profile.upgrade_advisor_installed is False
+
+
+class TestFormatProfileSummaryUpgradeAdvisor:
+    def _make_profile(self, **kwargs) -> HAEnvironmentProfile:
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            **kwargs,
+        )
+
+    def test_advisor_line_shown_when_installed(self):
+        profile = self._make_profile(upgrade_advisor_installed=True)
+        assert "ha-upgrade-advisor: installed" in format_profile_summary(profile)
+
+    def test_no_advisor_line_when_not_installed(self):
+        profile = self._make_profile(upgrade_advisor_installed=False)
+        assert "upgrade-advisor" not in format_profile_summary(profile)
