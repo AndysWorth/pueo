@@ -1059,7 +1059,8 @@
     }
   }, 1000);
 
-  var es = window._pueoES || new EventSource('/events');
+  // Assign the shared stream so base.html reuses it instead of opening a second one (#770).
+  var es = window._pueoES = window._pueoES || new EventSource('/events');
 
   // Initialize widget from queue state on page load.
   fetch('/api/pueo-queue').then(function(r) { return r.json(); }).then(function(d) {

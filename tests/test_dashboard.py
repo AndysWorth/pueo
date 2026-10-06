@@ -7373,3 +7373,34 @@ class TestSparklineEndpoints:
         # The current in-progress bucket should appear (with 7 total and 2 matches)
         found = any(b[1] == 7 and b[2] == 2 for b in data["buckets"])
         assert found
+
+
+# ── SSE stream reuse (#770) ──────────────────────────────────────────────────
+
+
+class TestSharedSSEStreams:
+    """Page scripts run before base.html's script on a direct load. Any page that
+    creates /events or /chat/events must store it on the shared window global, or
+    base.html opens a second stream that is never closed."""
+
+    _TEMPLATES = Path(__file__).resolve().parent.parent / "web" / "templates"
+
+    @pytest.mark.parametrize("name", ["overview.html", "settings.html", "chat.html"])
+    def test_events_stream_is_assigned_to_shared_global(self, name):
+        import re
+
+        src = (self._TEMPLATES / name).read_text()
+        for line in src.splitlines():
+            if "new EventSource('/events')" in line:
+                assert re.search(r"window\._pueoES\s*=", line), line.strip()
+
+    def test_chat_events_stream_is_assigned_to_shared_global(self):
+        src = (self._TEMPLATES / "chat.html").read_text()
+        for line in src.splitlines():
+            if "new EventSource('/chat/events')" in line:
+                assert "window._pueoChat =" in line, line.strip()
+
+    def test_logs_page_registers_cleanup_for_tail_interval(self):
+        src = (self._TEMPLATES / "logs.html").read_text()
+        idx = src.index("window._pueoPageCleanup")
+        assert "clearInterval(_tailInterval)" in src[idx : idx + 200]

@@ -287,7 +287,9 @@
   window.refreshModelCache = refreshModelCache;
 
   // SSE: flash confirmation when config_saved event arrives
-  var _settingsES = window._pueoES || (window.EventSource ? new EventSource('/events') : null);
+  // Assign the shared stream so base.html reuses it instead of opening a second one (#770).
+  if (!window._pueoES && window.EventSource) window._pueoES = new EventSource('/events');
+  var _settingsES = window._pueoES || null;
   if (_settingsES) {
     var _settingsMsg = function (e) {
       try {
