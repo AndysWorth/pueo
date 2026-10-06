@@ -711,7 +711,7 @@ class TestAutoApplyBlock:
 
         # Simulate loop returning success + executor has _pending_auto_apply=True
         def _make_mock_loop(executor_ref):
-            async def _fake_run(initial_context):
+            async def _fake_run(initial_context, **kwargs):
                 executor_ref._pending_auto_apply = True
                 return AgentLoopResult(outcome="success")
 
@@ -828,7 +828,7 @@ class TestUpdateAnalysisContextBuilding:
 
             mock_instance = MagicMock()
 
-            async def _capture_run(ctx):
+            async def _capture_run(ctx, **kwargs):
                 captured_context.append(ctx)
                 return AgentLoopResult(outcome="success")
 
@@ -883,7 +883,7 @@ class TestUpdateAnalysisContextBuilding:
             MockLoop = mocks[0]
             mock_instance = MagicMock()
 
-            async def _capture_run(ctx):
+            async def _capture_run(ctx, **kwargs):
                 captured_context.append(ctx)
                 return AgentLoopResult(outcome="success")
 

@@ -160,6 +160,51 @@ class TestAgentLoopPreInject:
         result = loop._pre_inject_knowledge("unrelated query")
         assert result == "unrelated query"
 
+    def test_pre_inject_includes_authority_label(self):
+        """Authority labels are prepended to each injected chunk."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["s1"],
+            documents=["ZHA error: seed runbook fix"],
+            metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
+        )
+        loop = self._make_loop(knowledge_store=store)
+        result = loop._pre_inject_knowledge("ZHA error")
+        assert "[SEED RUNBOOK]" in result
+
+    def test_pre_inject_official_label_for_ha_docs(self):
+        """ha_integration_docs chunks are labelled [OFFICIAL]."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "ha_integration_docs",
+            ids=["d1"],
+            documents=["ZHA integration documentation"],
+            metadatas=[{"source": "ha_docs/zha"}],
+        )
+        loop = self._make_loop(knowledge_store=store)
+        result = loop._pre_inject_knowledge("ZHA integration")
+        assert "[OFFICIAL]" in result
+
+    def test_run_accepts_knowledge_query_kwarg(self):
+        """AgentLoop.run() accepts knowledge_query without raising."""
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(knowledge_store=store)
+        result = asyncio.run(
+            loop.run(
+                "Available update: homeassistant 2026.8.0 → 2026.9.0",
+                knowledge_query="homeassistant core update breaking changes",
+            )
+        )
+        assert result.outcome in ("exhausted", "success", "stuck", "timeout")
+
 
 class TestAgentLoopPreInjectHaProfile:
     """AgentLoop._pre_inject_ha_profile prepends a compact profile block."""
