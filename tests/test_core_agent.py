@@ -16027,11 +16027,15 @@ class TestGapRunbookAutoSave:
 
     def test_failed_outcome_saves_gap_runbook(self, tmp_path, monkeypatch):
         """Non-success outcome triggers auto-save when no runbook was saved."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
         # Empty call sequence → loop exhausts budget immediately
-        loop, executor, db = self._make_loop(tmp_path, call_sequence=[])
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
         result = asyncio.run(loop.run("investigate issue"))
         assert result.outcome == "exhausted"
         rows = self._gap_rows(db, "test_trigger")
@@ -16088,11 +16092,14 @@ class TestGapRunbookAutoSave:
 
     def test_model_saved_runbook_no_auto_save(self, tmp_path, monkeypatch):
         """Model already called save_runbook → no auto-save even on failure."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
         loop, executor, db = self._make_loop(
             tmp_path,
+            knowledge_store=FakeKnowledgeStore(),
             call_sequence=[
                 {
                     "tool_calls": [
@@ -16121,10 +16128,14 @@ class TestGapRunbookAutoSave:
 
     def test_dedup_skips_when_recent_gap_exists(self, tmp_path, monkeypatch):
         """Dedup: skip auto-save if a gap row already exists within 7 days."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
-        loop, executor, db = self._make_loop(tmp_path, call_sequence=[])
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
         # Pre-insert a gap row with same trigger
         with sqlite3.connect(db) as conn:
             conn.execute(
@@ -16142,10 +16153,14 @@ class TestGapRunbookAutoSave:
 
     def test_dedup_does_not_skip_old_gap(self, tmp_path, monkeypatch):
         """Dedup: does NOT skip when existing gap row is older than 7 days."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
-        loop, executor, db = self._make_loop(tmp_path, call_sequence=[])
+        loop, executor, db = self._make_loop(
+            tmp_path, knowledge_store=FakeKnowledgeStore(), call_sequence=[]
+        )
         # Pre-insert an old gap row (8 days ago)
         with sqlite3.connect(db) as conn:
             conn.execute(

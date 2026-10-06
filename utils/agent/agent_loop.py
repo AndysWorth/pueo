@@ -736,10 +736,13 @@ class AgentLoop:
         """Auto-save a gap runbook when the model failed to save one itself.
 
         Fires when:
+        - A knowledge store is configured (no store = no KB gap to record)
         - outcome != "success", OR every query_knowledge call returned empty
         - AND the model did not call save_runbook during the session
         - AND no gap runbook with the same trigger_pattern exists from the last 7 days
         """
+        if self._knowledge_store is None:
+            return
         ex = self._executor
         should_save = (
             outcome != "success" or not ex._query_knowledge_had_results
