@@ -2135,8 +2135,8 @@ class TestSupervisorMain:
             ha_env_mod, "save_environment_profile", lambda *a, **kw: None
         )
 
-        # Prevent rag_refresh and kb_sync loops from calling scrapers over the network.
-        # The lambda inside supervisor_main looks these up from main's global namespace.
+        # Prevent rag_refresh loop from calling scrapers over the network.
+        # The lambda inside supervisor_main looks this up from main's global namespace.
         import main as _main_mod
 
         async def _noop_rag(*a: object, **kw: object) -> None:
@@ -2145,7 +2145,6 @@ class TestSupervisorMain:
         monkeypatch.setattr(
             _main_mod, "_rag_refresh_loop", lambda *a, **kw: _noop_rag()
         )
-        monkeypatch.setattr(_main_mod, "_kb_sync_loop", lambda *a, **kw: _noop_rag())
 
         import utils.hitl.notify as notify_mod
 
@@ -15756,3 +15755,134 @@ class TestAgentLoopToolResultSanitizer:
         assert tool_messages, "expected at least one tool message in second call"
         # In local mode: value passes through unchanged
         assert "mysecrettoken12345" in tool_messages[0]["content"]
+
+
+class TestRunRagRefreshKbSync:
+    """run_rag_refresh step 9: pueo-kb sync."""
+
+    def _make_store(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        return FakeKnowledgeStore()
+
+    def _minimal_patches(self, monkeypatch):
+        """Patch all I/O-heavy steps in run_rag_refresh so only kb_sync is live."""
+        import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_reembed_orphaned_runbooks", lambda *a, **kw: 0)
+        # Patch each scraper step to no-op
+        scrapers = [
+            ("utils.knowledge.ha_blog_scraper", "fetch_blog_release_notes"),
+            ("utils.knowledge.ha_release_notes_scraper", "fetch_ha_release_notes"),
+            ("utils.knowledge.ha_release_notes_scraper", "scrape_cached_release_notes"),
+            ("utils.knowledge.hacs_scraper", "discover_hacs_integrations"),
+            ("utils.knowledge.hacs_scraper", "embed_cached_changelogs"),
+            ("utils.knowledge.ha_docs_scraper", "discover_installed_integrations"),
+            ("utils.knowledge.ha_docs_scraper", "fetch_integration_doc"),
+            ("utils.knowledge.ha_docs_scraper", "embed_cached_integration_docs"),
+            ("utils.knowledge.ha_source_cache", "preload_domains"),
+            ("utils.knowledge.ha_concepts_scraper", "fetch_concept_docs"),
+            ("utils.knowledge.ha_concepts_scraper", "embed_cached_concept_docs"),
+            (
+                "utils.knowledge.ha_developer_docs_scraper",
+                "fetch_developer_docs",
+            ),
+            (
+                "utils.knowledge.ha_developer_docs_scraper",
+                "embed_cached_developer_docs",
+            ),
+            ("utils.knowledge.strategy_seeder", "seed_strategies"),
+            ("utils.knowledge.strategy_seeder", "seed_home_profile"),
+            ("utils.knowledge.repair_episode_embedder", "embed_repair_episodes"),
+            ("utils.knowledge.ha_skills_scraper", "fetch_ha_skills"),
+            ("utils.knowledge.ha_skills_scraper", "embed_cached_ha_skills"),
+        ]
+        import importlib
+
+        for mod_path, fn_name in scrapers:
+            mod = importlib.import_module(mod_path)
+            monkeypatch.setattr(mod, fn_name, lambda *a, **kw: 0)
+
+        # parse_deprecated_keys returns a list; len() is called on it
+        import utils.knowledge.ha_skills_scraper as _skills_mod
+
+        monkeypatch.setattr(_skills_mod, "parse_deprecated_keys", lambda *a, **kw: [])
+
+    def test_kb_sync_called_when_repo_configured(self, monkeypatch, tmp_path):
+        import config as _cfg
+        import main as main_mod
+
+        monkeypatch.setattr(_cfg, "PUEO_KB_REPO", "Owner/repo")
+        monkeypatch.setattr(_cfg, "KB_SYNC_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
+
+        self._minimal_patches(monkeypatch)
+
+        calls: list[tuple] = []
+
+        def _fake_run_kb_sync(repo, cache_dir, store, integration_profile=None):
+            calls.append((repo, cache_dir))
+            return 3
+
+        import utils.knowledge.kb_ingester as kb_mod
+
+        monkeypatch.setattr(kb_mod, "run_kb_sync", _fake_run_kb_sync)
+
+        store = self._make_store()
+        from utils.core.timeline import write_timeline_event
+
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        main_mod.run_rag_refresh(store)
+        assert calls == [("Owner/repo", str(tmp_path))]
+
+    def test_kb_sync_skipped_when_repo_not_configured(self, monkeypatch, tmp_path):
+        import config as _cfg
+        import main as main_mod
+
+        monkeypatch.setattr(_cfg, "PUEO_KB_REPO", "")
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
+
+        self._minimal_patches(monkeypatch)
+
+        calls: list = []
+
+        import utils.knowledge.kb_ingester as kb_mod
+
+        monkeypatch.setattr(
+            kb_mod, "run_kb_sync", lambda *a, **kw: calls.append(1) or 0
+        )
+
+        store = self._make_store()
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        main_mod.run_rag_refresh(store)
+        assert calls == []
+
+    def test_kb_sync_error_does_not_abort_refresh(self, monkeypatch, tmp_path):
+        import config as _cfg
+        import main as main_mod
+        from utils.knowledge.kb_ingester import KbIngestError
+
+        monkeypatch.setattr(_cfg, "PUEO_KB_REPO", "Owner/repo")
+        monkeypatch.setattr(_cfg, "KB_SYNC_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
+
+        self._minimal_patches(monkeypatch)
+
+        import utils.knowledge.kb_ingester as kb_mod
+
+        monkeypatch.setattr(
+            kb_mod,
+            "run_kb_sync",
+            lambda *a, **kw: (_ for _ in ()).throw(KbIngestError("fail")),
+        )
+
+        store = self._make_store()
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+        # Must not raise
+        main_mod.run_rag_refresh(store)

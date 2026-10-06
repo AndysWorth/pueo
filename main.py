@@ -120,13 +120,16 @@ def run_rag_refresh(
       1. Fetch + embed HA Core release notes (breaking changes for configured versions)
       2. Fetch + embed HACS component changelogs (auto-discovered from HA instance)
       3. Fetch + embed HA integration docs for installed integrations
-      4. Fetch + embed HA concept pages
-      5. Fetch + embed HA developer docs (architecture, entity model, config flows,
-         Supervisor/WebSocket/REST API pages from developers.home-assistant.io)
-      5.5 Seed strategies from prompt files + dynamic HA instance profile
+      3.2 Pre-populate HA source cache (manifest.json + __init__.py per domain)
+      3.5 Fetch + embed HA concept pages
+      3.7 Fetch + embed HA developer docs (architecture, entity model, config flows,
+          Supervisor/WebSocket/REST API pages from developers.home-assistant.io)
+      5. Seed strategies from prompt files + dynamic HA instance profile
+      5.5 Home profile seed
       6. Re-embed orphaned candidate/gap runbooks
       7. Embed new repair episodes from SQLite into `repair_history`
       8. Fetch + embed HA best-practice skills (homeassistant-ai/skills reference files)
+      9. Sync from federated pueo-kb (when PUEO_KB_REPO is configured)
     """
     import config
     from utils.ha.ha_environment import load_environment_profile
@@ -267,6 +270,31 @@ def run_rag_refresh(
     if docs_ids:
         store.prune("ha_integration_docs", docs_ids)
 
+    # ── 3.2. HA source cache pre-population ─────────────────────────────────
+    if ha_token:
+        from utils.knowledge.ha_source_cache import preload_domains
+
+        _cb("Pre-populating HA source cache")
+        _log.info("rag_refresh_step", step="preload_ha_source_cache")
+        _source_domains = discover_installed_integrations(ha_url, ha_token)
+        _ttl = config.RAG_REFRESH_INTERVAL_HOURS * 3600
+        _src_fetched, _src_skipped = preload_domains(
+            _source_domains, config.HA_SOURCE_CACHE_DIR, _ttl
+        )
+        _log.info(
+            "rag_refresh_step_done",
+            step="preload_ha_source_cache",
+            fetched=_src_fetched,
+            skipped=_src_skipped,
+            domains=len(_source_domains),
+        )
+    else:
+        _log.info(
+            "rag_refresh_step_skipped",
+            step="preload_ha_source_cache",
+            reason="no_ha_token",
+        )
+
     # ── 3.5. HA concept docs ────────────────────────────────────────────────
     from utils.knowledge.ha_concepts_scraper import (
         embed_cached_concept_docs,
@@ -371,6 +399,33 @@ def run_rag_refresh(
     n_deprecated = len(parse_deprecated_keys(config.HA_SKILLS_CACHE_DIR))
     _log.info("rag_refresh_step_done", step="parse_deprecated_keys", count=n_deprecated)
 
+    # ── 9. pueo-kb sync ─────────────────────────────────────────────────────
+    n_kb_sync = 0
+    if config.PUEO_KB_REPO:
+        from utils.knowledge.kb_ingester import KbIngestError, run_kb_sync
+
+        _cb("Syncing pueo-kb")
+        _log.info("rag_refresh_step", step="kb_sync")
+        _integration_profile: list[str] = []
+        if _env_profile and _env_profile.installed_integrations:
+            _integration_profile = _env_profile.installed_integrations
+        try:
+            n_kb_sync = run_kb_sync(
+                config.PUEO_KB_REPO,
+                config.KB_SYNC_CACHE_DIR,
+                store,
+                _integration_profile,
+            )
+            _log.info("rag_refresh_step_done", step="kb_sync", embedded=n_kb_sync)
+        except KbIngestError as exc:
+            _log.warning("kb_sync_failed", error=str(exc))
+        except Exception as exc:  # nosec B110 — kb sync failure is non-fatal
+            _log.warning("kb_sync_error", error=str(exc))
+    else:
+        _log.info("rag_refresh_step_skipped", step="kb_sync", reason="not_configured")
+
+    from utils.knowledge.knowledge_store import COLLECTIONS
+
     total = (
         n_ha
         + n_hacs
@@ -382,6 +437,7 @@ def run_rag_refresh(
         + n_reembedded
         + n_episodes
         + n_skills
+        + n_kb_sync
     )
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
@@ -389,7 +445,7 @@ def run_rag_refresh(
     _log.info(
         "rag_refresh_complete",
         total_embedded=total,
-        collections=8,
+        collections=len(COLLECTIONS),
     )
 
 
@@ -587,49 +643,6 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
             )  # pragma: no cover
         finally:
             set_rag_refreshing(False)
-
-
-async def _kb_sync_loop(knowledge_store: Any, interval_hours: int) -> None:
-    """Periodically sync from the federated pueo-kb: download and embed relevant entries."""
-    import config as _cfg
-    from utils.core.logging import get_logger as _gl
-    from utils.core.timeline import write_timeline_event
-
-    _log = _gl("main")
-
-    if not _cfg.PUEO_KB_REPO or not _cfg.DEVELOPMENT_MODE:
-        _log.info(
-            "kb_sync_skipped",
-            reason="not_configured" if not _cfg.PUEO_KB_REPO else "dev_mode_disabled",
-        )
-        return
-
-    _log.info("kb_sync_loop_started", next_run_hours=interval_hours)
-    while True:
-        from utils.agent.supervisor import supervised_sleep as _sup_sleep_kb
-
-        await _sup_sleep_kb("kb_sync", interval_hours * 3600)
-        _log.info("kb_sync_start")
-        try:
-            from utils.knowledge.kb_ingester import KbIngestError, run_kb_sync
-
-            count = await asyncio.to_thread(
-                run_kb_sync,
-                _cfg.PUEO_KB_REPO,
-                _cfg.KB_SYNC_CACHE_DIR,
-                knowledge_store,
-            )
-            _log.info("kb_sync_done", embedded=count)
-            write_timeline_event(
-                "INFO",
-                "kb_sync",
-                f"KB sync complete: {count} new entries",
-            )
-        except KbIngestError as exc:
-            _log.warning("kb_sync_failed", error=str(exc))
-            write_timeline_event("WARN", "kb_sync", f"KB sync failed: {exc}")
-        except Exception as exc:  # nosec B110
-            _log.warning("kb_sync_error", error=str(exc))
 
 
 async def _known_issues_poll_loop(
@@ -1149,11 +1162,6 @@ async def supervisor_main(config_path: Path) -> None:
             "rag_refresh",
             lambda: _rag_refresh_loop(knowledge_store, cfg.RAG_REFRESH_INTERVAL_HOURS),
             interval_seconds=int(cfg.RAG_REFRESH_INTERVAL_HOURS * 3600),
-        )
-        supervisor.start(
-            "kb_sync",
-            lambda: _kb_sync_loop(knowledge_store, cfg.KB_SYNC_INTERVAL_HOURS),
-            interval_seconds=int(cfg.KB_SYNC_INTERVAL_HOURS * 3600),
         )
 
     # Per-path disk usage polling loop

@@ -2967,10 +2967,16 @@ async def loop_run_now(loop_name: str) -> JSONResponse:
     sv = get_supervisor_instance()
     if sv is None:
         raise HTTPException(status_code=503, detail="Supervisor not running")
-    try:
-        sv.run_now(loop_name)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
+    if loop_name in _WAKE_ONLY_LOOPS:
+        # Sleep-first loops: wake() interrupts the sleep without cancelling the
+        # coroutine.  run_now() would cancel it and the bootstrap guard would
+        # immediately skip the work if collections are non-empty.
+        sv.wake(loop_name)
+    else:
+        try:
+            sv.run_now(loop_name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"Loop {loop_name!r} not found")
     log.info("loop_run_now", loop=loop_name)
     return JSONResponse({"ok": True})
 
@@ -3041,6 +3047,11 @@ _RUNNABLE_MODES: frozenset[str] = frozenset(
     {"audit", "update-check", "backup-status", "netalertx-diagnose", "rag-refresh"}
 )
 
+# These loops sleep before their first work cycle (no immediate run on start).
+# wake() interrupts the sleep; run_now() would cancel the coroutine and the
+# bootstrap guard would immediately skip them if collections are non-empty.
+_WAKE_ONLY_LOOPS: frozenset[str] = frozenset({"rag_refresh"})
+
 _PUEO_DIR = _get_dirs().resources_dir
 
 
@@ -3063,6 +3074,19 @@ async def control_run(mode: str = Query(...)) -> JSONResponse:
 
     if mode not in _RUNNABLE_MODES:
         raise HTTPException(status_code=400, detail=f"Unknown mode: {mode!r}")
+
+    # For rag-refresh: route through the supervisor so the work runs in-process
+    # (visible in the dashboard, uses the same ChromaDB client, no second process).
+    if mode == "rag-refresh":
+        from utils.agent.supervisor import get_rag_refreshing, get_supervisor_instance
+
+        sv = get_supervisor_instance()
+        if sv is not None and sv._handles.get("rag_refresh") is not None:
+            if get_rag_refreshing():
+                return JSONResponse({"ok": True, "already_running": True, "mode": mode})
+            sv.wake("rag_refresh")
+            return JSONResponse({"ok": True, "mode": mode})
+        # Supervisor not running (standalone --mode dashboard): fall through to subprocess.
 
     async def _background() -> None:
         proc = await asyncio.create_subprocess_exec(

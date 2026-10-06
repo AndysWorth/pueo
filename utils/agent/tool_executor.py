@@ -64,10 +64,6 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
 
 _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
-_HA_SOURCE_RAW_URL = (
-    "https://raw.githubusercontent.com/home-assistant/core/dev"
-    "/homeassistant/components/{domain}/{filename}"
-)
 _MAX_HA_DOC_FETCH_CHARS: int = 16_000
 _MAX_FETCH_URL_CHARS: int = 8_000
 _PRIVATE_IP_BLOCKS: tuple[str, ...] = (
@@ -1837,6 +1833,11 @@ class ToolExecutor:
 
     async def _fetch_ha_docs(self, domain: str, filename: str) -> ToolResult:
         """Return HA component source from cache; fetch live only in cloud/both mode."""
+        from utils.knowledge.ha_source_cache import (
+            cache_path_for,
+            fetch_and_cache,
+        )
+
         # Path-traversal guard on domain and filename
         if "/" in domain or ".." in domain or "/" in filename or ".." in filename:
             return ToolResult(
@@ -1853,7 +1854,7 @@ class ToolExecutor:
                 str(_get_dirs().cache_dir / "ha_source"),
             )
         )
-        cache_path = cache_dir / domain / filename
+        cache_path = cache_path_for(cache_dir, domain, filename)
 
         if cache_path.exists():
             try:
@@ -1882,31 +1883,28 @@ class ToolExecutor:
                 ),
             )
 
-        # cloud or both — fetch live
-        import urllib.request
-
-        url = _HA_SOURCE_RAW_URL.format(domain=domain, filename=filename)
-        req = urllib.request.Request(url, headers={"User-Agent": "pueo-ha-lookup/1.0"})
-        try:
-            raw = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: urllib.request.urlopen(req, timeout=60).read(),  # nosec B310
-            )
-        except Exception as exc:
+        # cloud or both — fetch live using the shared helper
+        ok = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: fetch_and_cache(domain, filename, cache_dir),
+        )
+        if not ok:
             return ToolResult(
                 tool_name="fetch_ha_docs",
                 success=False,
                 output="",
-                error=f"Fetch failed for {domain}/{filename}: {exc}",
+                error=f"Fetch failed for {domain}/{filename}",
             )
-
-        text = raw.decode("utf-8", errors="replace")[:_MAX_HA_DOC_FETCH_CHARS]
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            cache_path.write_text(text, encoding="utf-8")
-        except OSError:
-            pass  # cache write failure is non-fatal
-        return ToolResult(tool_name="fetch_ha_docs", success=True, output=text)
+            content = cache_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return ToolResult(
+                tool_name="fetch_ha_docs",
+                success=False,
+                output="",
+                error=str(exc),
+            )
+        return ToolResult(tool_name="fetch_ha_docs", success=True, output=content)
 
     async def _fetch_url(self, url: str) -> ToolResult:
         """GET an external URL for diagnostic verification (read-only, private IPs blocked)."""

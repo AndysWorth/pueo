@@ -8177,3 +8177,115 @@ def test_setup_logging_writes_under_tmp_path(tmp_path):
     assert file_handlers
     for h in file_handlers:
         assert Path(h.baseFilename).is_relative_to(tmp_path)
+
+
+class TestHaSourceCache:
+    """Tests for utils/knowledge/ha_source_cache.py."""
+
+    def test_cache_path_for(self, tmp_path):
+        from utils.knowledge.ha_source_cache import cache_path_for
+
+        p = cache_path_for(tmp_path, "hue", "manifest.json")
+        assert p == tmp_path / "hue" / "manifest.json"
+
+    def test_is_cache_fresh_missing(self, tmp_path):
+        from utils.knowledge.ha_source_cache import is_cache_fresh
+
+        assert not is_cache_fresh(tmp_path / "missing.json", 3600)
+
+    def test_is_cache_fresh_old_file(self, tmp_path):
+        import time
+        from utils.knowledge.ha_source_cache import is_cache_fresh
+
+        f = tmp_path / "manifest.json"
+        f.write_text("{}")
+        # backdate mtime to 2 hours ago
+        old_time = time.time() - 7200
+        import os
+
+        os.utime(f, (old_time, old_time))
+        assert not is_cache_fresh(f, 3600)
+
+    def test_is_cache_fresh_recent_file(self, tmp_path):
+        from utils.knowledge.ha_source_cache import is_cache_fresh
+
+        f = tmp_path / "manifest.json"
+        f.write_text("{}")
+        assert is_cache_fresh(f, 3600)
+
+    def test_fetch_and_cache_path_traversal(self, tmp_path):
+        from utils.knowledge.ha_source_cache import fetch_and_cache
+
+        assert not fetch_and_cache("../evil", "manifest.json", tmp_path)
+        assert not fetch_and_cache("hue", "../evil.py", tmp_path)
+
+    def test_fetch_and_cache_writes_file(self, tmp_path, monkeypatch):
+        import urllib.request
+        from utils.knowledge.ha_source_cache import fetch_and_cache
+
+        class _FakeResponse:
+            def read(self):
+                return b'{"domain":"hue"}'
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda req, timeout=30: _FakeResponse()
+        )
+        result = fetch_and_cache("hue", "manifest.json", tmp_path)
+        assert result is True
+        assert (tmp_path / "hue" / "manifest.json").read_text() == '{"domain":"hue"}'
+
+    def test_fetch_and_cache_network_error_returns_false(self, tmp_path, monkeypatch):
+        import urllib.request
+        from utils.knowledge.ha_source_cache import fetch_and_cache
+
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("timeout")),
+        )
+        assert fetch_and_cache("hue", "manifest.json", tmp_path) is False
+
+    def test_preload_domains_skips_fresh_cache(self, tmp_path, monkeypatch):
+        import time
+        import urllib.request
+        from utils.knowledge.ha_source_cache import preload_domains, _PRELOAD_FILES
+
+        fetch_count = [0]
+
+        class _FakeResp:
+            def read(self):
+                return b"{}"
+
+        original_urlopen = urllib.request.urlopen
+
+        def _counting_urlopen(req, timeout=30):
+            fetch_count[0] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", _counting_urlopen)
+
+        # Pre-populate cache so files are fresh
+        for fname in _PRELOAD_FILES:
+            p = tmp_path / "hue" / fname
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{}")
+
+        fetched, skipped = preload_domains(["hue"], tmp_path, ttl_seconds=3600)
+        assert fetched == 0
+        assert skipped == len(_PRELOAD_FILES)
+        assert fetch_count[0] == 0
+
+    def test_preload_domains_fetches_missing(self, tmp_path, monkeypatch):
+        import urllib.request
+        from utils.knowledge.ha_source_cache import preload_domains, _PRELOAD_FILES
+
+        class _FakeResp:
+            def read(self):
+                return b"{}"
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda req, timeout=30: _FakeResp()
+        )
+        fetched, skipped = preload_domains(["hue"], tmp_path, ttl_seconds=3600)
+        assert fetched == len(_PRELOAD_FILES)
+        assert skipped == 0
