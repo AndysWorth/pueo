@@ -5897,6 +5897,157 @@ class TestControlTab:
         assert resp.json()["ok"] is True
         assert resp.json()["mode"] == "audit"
 
+    def test_control_run_rag_refresh_uses_supervisor_wake(self, tmp_path, monkeypatch):
+        """rag-refresh via control/run calls sv.wake() when supervisor is present."""
+        from fastapi.testclient import TestClient
+        from types import SimpleNamespace
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+
+        woken: list[str] = []
+
+        class _FakeSV:
+            _handles = {"rag_refresh": object()}
+
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: False)
+
+        client = TestClient(dashboard.app)
+        resp = client.post("/control/run?mode=rag-refresh")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert woken == ["rag_refresh"]
+
+    def test_control_run_rag_refresh_already_running(self, tmp_path, monkeypatch):
+        """rag-refresh returns already_running=True when refresh is in progress."""
+        from fastapi.testclient import TestClient
+        from types import SimpleNamespace
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+
+        class _FakeSV:
+            _handles = {"rag_refresh": object()}
+
+            def wake(self, name: str) -> None:
+                pass
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: True)
+
+        client = TestClient(dashboard.app)
+        resp = client.post("/control/run?mode=rag-refresh")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["already_running"] is True
+
+    def test_control_run_rag_refresh_fallback_subprocess(self, tmp_path, monkeypatch):
+        """rag-refresh falls back to subprocess when supervisor is not running."""
+        import asyncio
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: None)
+        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: False)
+
+        launched: list[str] = []
+
+        async def fake_subprocess(*args, **kwargs):
+            launched.append(args[1] if len(args) > 1 else "")
+
+            class _Proc:
+                async def wait(self):
+                    pass
+
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+        client = TestClient(dashboard.app)
+        resp = client.post("/control/run?mode=rag-refresh")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_loop_run_now_wake_only_uses_wake(self, tmp_path, monkeypatch):
+        """loop_run_now uses wake() for rag_refresh, not run_now()."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        woken: list[str] = []
+        run_now_called: list[str] = []
+
+        class _FakeSV:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+            def run_now(self, name: str) -> None:
+                run_now_called.append(name)
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/loops/rag_refresh/run-now")
+        assert resp.status_code == 200
+        assert "rag_refresh" in woken
+        assert run_now_called == []
+
+    def test_loop_run_now_other_loops_use_run_now(self, tmp_path, monkeypatch):
+        """loop_run_now uses run_now() for non-wake-only loops."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        woken: list[str] = []
+        run_now_called: list[str] = []
+
+        class _FakeSV:
+            def wake(self, name: str) -> None:
+                woken.append(name)
+
+            def run_now(self, name: str) -> None:
+                run_now_called.append(name)
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/loops/repair_poll/run-now")
+        assert resp.status_code == 200
+        assert run_now_called == ["repair_poll"]
+        assert woken == []
+
     def test_control_run_invalid_mode_returns_400(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
 
