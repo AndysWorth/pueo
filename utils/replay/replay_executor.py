@@ -48,6 +48,9 @@ class ReplayToolExecutor:
     def reset(self) -> None:
         """Reset position — called by AgentLoop.run() at start of each run."""
         self._pos = 0
+        # Suppress gap-runbook auto-save during replay (not a real investigation).
+        self._query_knowledge_had_results: bool = True
+        self._save_runbook_called: bool = True
 
     def get_ha_profile_summary(self) -> str:
         """Stub — profile injection is suppressed during replay."""
