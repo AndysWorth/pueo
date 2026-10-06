@@ -389,9 +389,17 @@ class AgentLoop:
         ]
         if repair_chunks:
             log.info("pre_inject_similar_episodes", count=len(repair_chunks))
+        from utils.agent.tool_executor import ToolExecutor as _TE
+
         parts = ["Relevant context (use as reference, verify before applying):"]
         for chunk in chunks:
-            parts.append(f"\n{chunk.text}")
+            label = _TE._knowledge_authority_label(
+                getattr(chunk, "collection", ""),
+                getattr(chunk, "metadata", {}),
+            )
+            source = getattr(chunk, "source", "")
+            col = getattr(chunk, "collection", "")
+            parts.append(f"\n{label} [{col} | {source}]\n{chunk.text}")
         block = truncate_to_budget("\n".join(parts), 1000)
         log.debug("agent_loop_knowledge_injected", runbooks_found=len(chunks))
         import config as _al_cfg
@@ -520,6 +528,7 @@ class AgentLoop:
         self,
         initial_context: str,
         initial_messages: Optional[list[dict]] = None,
+        knowledge_query: str = "",
     ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
@@ -544,13 +553,14 @@ class AgentLoop:
         self._episode_id = str(uuid.uuid4())
         self._raw_initial_context = initial_context
 
-        # Save the raw user question before any injection so ChromaDB gets
-        # user intent, not the prepended HA profile block.
-        knowledge_query = initial_context[:500]
+        # Use the caller-supplied knowledge_query for a more targeted ChromaDB search
+        # (e.g. update manager passes "<component> <from>→<to> update breaking changes").
+        # Fall back to the start of initial_context if none supplied.
+        _effective_knowledge_query = knowledge_query or initial_context[:500]
 
         if self._knowledge_store is not None:
             enriched = self._pre_inject_knowledge(
-                initial_context, query_text=knowledge_query
+                initial_context, query_text=_effective_knowledge_query
             )
             if (
                 enriched != initial_context

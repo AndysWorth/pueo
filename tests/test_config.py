@@ -1063,6 +1063,19 @@ class TestHAUpdateManagerConfig:
 
         assert config.RAG_HYBRID_WEIGHT == 0.0
 
+    def test_rag_min_score_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_MIN_SCORE == 0.35
+
+    def test_rag_min_score_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"rag_min_score": 0.5}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RAG_MIN_SCORE == 0.5
+
     def test_chat_memory_top_k_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config

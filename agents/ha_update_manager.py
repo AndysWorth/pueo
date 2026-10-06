@@ -747,10 +747,15 @@ async def _run_update_analysis(
             ),
             capture_llm=True,
         )
+        _knowledge_query = (
+            f"{update.component} "
+            f"{update.installed_version} → {update.latest_version} "
+            "update breaking changes"
+        )
         _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:
-            _result = await loop.run(initial_context)
+            _result = await loop.run(initial_context, knowledge_query=_knowledge_query)
             if _result.outcome != "success":
                 import sqlite3 as _sqlite3
                 from utils.hitl.hitl_tracker import mark_investigation_backoff

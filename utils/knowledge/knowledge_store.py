@@ -59,10 +59,10 @@ def _authority_score(collection: str, metadata: dict) -> float:
         return 1.0
     if collection == "strategies":
         src = metadata.get("source", "")
-        if src == "seed_prompt":
-            return 0.8
         runbook_type = metadata.get("runbook_type", "")
-        if runbook_type == "seed":
+        if runbook_type == "gap":
+            return 0.3
+        if src == "seed_prompt" or runbook_type == "seed":
             return 0.8
         # pueo_kb runbooks that have been reviewed are community-grade
         if src == "pueo_kb":

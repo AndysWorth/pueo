@@ -2045,6 +2045,76 @@ class TestQueryKnowledgeAuthorityLabels:
             == "[COMMUNITY]"
         )
 
+    def test_authority_label_ha_developer_docs_is_official(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label("ha_developer_docs", {})
+            == "[OFFICIAL]"
+        )
+
+    def test_authority_label_gap_runbook(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label(
+                "strategies", {"runbook_type": "gap"}
+            )
+            == "[KNOWN GAP – prior attempt unresolved]"
+        )
+
+    def test_min_score_floor_filters_low_chunks(self, tmp_path):
+        """Chunks with score below RAG_MIN_SCORE are excluded from output."""
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        # FakeKnowledgeStore assigns score=1.0 for text matches; inject a
+        # non-matching doc so score stays at 0.0, which is below the floor.
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["completely unrelated content"],
+            metadatas=[{"source": "release_notes"}],
+        )
+        result = asyncio.run(executor._query_knowledge("mqtt"))
+        assert result.success is True
+        assert "No relevant knowledge found" in result.output
+        assert "knowledge gap" in result.output
+
+    def test_nothing_found_message_mentions_gap(self, tmp_path):
+        """'Nothing found' message instructs agent to record a knowledge gap."""
+        import asyncio
+
+        executor, _ = self._make_executor_with_store(tmp_path)
+        result = asyncio.run(executor._query_knowledge("nonexistent query xyz123"))
+        assert result.success is True
+        assert "knowledge gap" in result.output.lower()
+
+    def test_strategies_chunks_ordered_first(self, tmp_path):
+        """Runbook chunks from strategies appear before other chunks."""
+        import asyncio
+
+        executor, store = self._make_executor_with_store(tmp_path)
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn-1"],
+            documents=["disk space release note content"],
+            metadatas=[{"source": "release_notes"}],
+        )
+        store.upsert(
+            "strategies",
+            ids=["seed-1"],
+            documents=["disk space seed runbook plan"],
+            metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
+        )
+        result = asyncio.run(executor._query_knowledge("disk space"))
+        assert result.success is True
+        seed_pos = result.output.find("[SEED RUNBOOK]")
+        official_pos = result.output.find("[OFFICIAL]")
+        assert (
+            seed_pos < official_pos
+        ), "Strategies (runbook) must appear before other chunks"
+
 
 class TestQueryKnowledgeTypeRouting:
     """Tests for query_type routing in _query_knowledge."""
@@ -2099,10 +2169,10 @@ class TestQueryKnowledgeTypeRouting:
         assert result.success is True
         # repair_history included
         assert "[PAST REPAIR]" in result.output
-        # strategies not included for diagnostic
-        assert "runbook" not in result.output
+        # strategies IS now included for diagnostic (Phase 1 "retrieve plan")
+        assert "[SEED RUNBOOK]" in result.output
 
-    def test_version_check_routes_to_release_notes_only(self, tmp_path):
+    def test_version_check_routes_to_release_notes_and_strategies(self, tmp_path):
         import asyncio
 
         executor, store = self._make_executor_with_store(tmp_path)
@@ -2237,12 +2307,24 @@ class TestQueryKnowledgeTypeRouting:
         assert "repair_history" in cols
         assert "ha_release_notes" in cols
         assert "ha_integration_docs" in cols
+        assert "strategies" in cols
+        assert "hacs_changelogs" in cols
 
-    def test_version_check_only_release_notes(self):
+    def test_all_routes_include_strategies(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        for route, cols in ToolExecutor._QUERY_TYPE_COLLECTIONS.items():
+            assert "strategies" in cols, f"strategies missing from {route} route"
+
+    def test_version_check_includes_release_notes_strategies_hacs(self):
         from utils.agent.tool_executor import ToolExecutor
 
         cols = ToolExecutor._QUERY_TYPE_COLLECTIONS["version_check"]
-        assert cols == ["ha_release_notes"]
+        assert "ha_release_notes" in cols
+        assert "strategies" in cols
+        assert "hacs_changelogs" in cols
+        # integration_docs not in version_check
+        assert "ha_integration_docs" not in cols
 
 
 class TestVersionScoreBoosting:

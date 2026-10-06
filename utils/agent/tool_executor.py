@@ -757,14 +757,19 @@ class ToolExecutor:
     @staticmethod
     def _knowledge_authority_label(collection: str, metadata: dict) -> str:
         """Return a human-readable trust label for a knowledge chunk."""
-        if collection in ("ha_integration_docs", "ha_concepts", "ha_release_notes"):
+        if collection in (
+            "ha_integration_docs",
+            "ha_concepts",
+            "ha_release_notes",
+            "ha_developer_docs",
+        ):
             return "[OFFICIAL]"
         if collection == "strategies":
             src = metadata.get("source", "")
-            if src == "seed_prompt":
-                return "[SEED RUNBOOK]"
             runbook_type = metadata.get("runbook_type", "")
-            if runbook_type == "seed":
+            if runbook_type == "gap":
+                return "[KNOWN GAP – prior attempt unresolved]"
+            if src == "seed_prompt" or runbook_type == "seed":
                 return "[SEED RUNBOOK]"
             if runbook_type == "candidate":
                 return "[CANDIDATE RUNBOOK – unreviewed]"
@@ -778,26 +783,36 @@ class ToolExecutor:
         return "[COMMUNITY]"
 
     # Collections queried per query_type; None → all collections (default behaviour).
+    # strategies is included in every route so Phase 1 ("retrieve plan") always has access
+    # to seed runbooks. hacs_changelogs is added to diagnostic and version_check for
+    # integration-specific breaking-change context.
     _QUERY_TYPE_COLLECTIONS: dict[str, list[str]] = {
         "diagnostic": [
+            "strategies",
             "repair_history",
             "ha_release_notes",
+            "hacs_changelogs",
             "ha_integration_docs",
             "ha_best_practices",
         ],
         "procedural": [
+            "strategies",
             "ha_developer_docs",
             "ha_concepts",
             "ha_integration_docs",
             "ha_best_practices",
         ],
         "generative": [
+            "strategies",
             "ha_concepts",
             "ha_integration_docs",
-            "strategies",
             "ha_best_practices",
         ],
-        "version_check": ["ha_release_notes"],
+        "version_check": [
+            "strategies",
+            "ha_release_notes",
+            "hacs_changelogs",
+        ],
     }
 
     async def _query_knowledge(
@@ -814,14 +829,18 @@ class ToolExecutor:
                 output="",
                 error="Knowledge store not configured (run --mode rag-refresh first)",
             )
-        from config import RAG_TOP_K
+        from config import RAG_MIN_SCORE, RAG_TOP_K
 
         collections = self._QUERY_TYPE_COLLECTIONS.get(query_type or "", None)
         where = None
         if integration_filter:
             where = {"impacted_integration": {"$in": integration_filter}}
         chunks = self._knowledge_store.query(
-            query, top_k=RAG_TOP_K, collections=collections, where=where
+            query,
+            top_k=RAG_TOP_K,
+            collections=collections,
+            where=where,
+            min_score=RAG_MIN_SCORE,
         )
 
         # Version-aware score boosting: use explicit ha_version or auto-detect from profile.
@@ -843,12 +862,21 @@ class ToolExecutor:
             return ToolResult(
                 tool_name="query_knowledge",
                 success=True,
-                output="No relevant knowledge found.",
+                output=(
+                    "No relevant knowledge found (no chunk above relevance floor). "
+                    "Record this as a knowledge gap."
+                ),
             )
+
+        # Runbook hits (strategies collection) go first so the agent sees the plan before evidence.
+        runbook_chunks = [c for c in chunks if c.collection == "strategies"]
+        other_chunks = [c for c in chunks if c.collection != "strategies"]
+        ordered = runbook_chunks + other_chunks
+
         output = "\n\n".join(
             f"{self._knowledge_authority_label(c.collection, c.metadata)} "
             f"[{c.collection} | {c.source}]\n{c.text}"
-            for c in chunks
+            for c in ordered
         )
         return ToolResult(tool_name="query_knowledge", success=True, output=output)
 
