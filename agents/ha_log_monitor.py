@@ -971,6 +971,18 @@ async def poll_for_updates(
                 _update_gone.pop(
                     suppression_key, None
                 )  # update came back — reset timer
+
+                # Skip updates that are already being installed — HA emits rapid
+                # attribute-only changes (in_progress, update_percentage) during an
+                # install; these would create duplicate timeline entries.
+                if u.in_progress:
+                    log.debug(
+                        "update_poll_skip_in_progress",
+                        component=u.component,
+                        version=u.latest_version,
+                    )
+                    continue
+
                 _should_send = await asyncio.to_thread(
                     _update_check_should_send, suppression_key
                 )
@@ -980,23 +992,32 @@ async def poll_for_updates(
                 analyzed_key = f"update_analyzed:{u.entity_id}:{u.latest_version}"
                 if await asyncio.to_thread(_update_already_analyzed, analyzed_key):
                     continue
-                log.info(
-                    "update_available",
-                    component=u.component,
-                    installed=u.installed_version,
-                    latest=u.latest_version,
-                )
 
+                _analysis_accepted = True
                 if HA_UPDATE_NOTIFY_ON_AVAILABLE:
                     from .ha_update_manager import _run_update_analysis
 
-                    await _run_update_analysis(
+                    _analysis_accepted = await _run_update_analysis(
                         u,
                         ssh_client=ssh_client,
                         notifier=_notifier,
                         knowledge_store=knowledge_store,
                         ha_rest_client=_client,
                     )
+                    if not _analysis_accepted:
+                        log.debug(
+                            "update_analysis_already_queued",
+                            component=u.component,
+                            version=u.latest_version,
+                        )
+                        continue
+
+                log.info(
+                    "update_available",
+                    component=u.component,
+                    installed=u.installed_version,
+                    latest=u.latest_version,
+                )
                 try:  # pragma: no cover
                     from utils.core.timeline import write_timeline_event
 

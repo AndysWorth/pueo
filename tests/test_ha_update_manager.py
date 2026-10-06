@@ -433,6 +433,8 @@ class TestFinishUpdateAnalysisGate:
         executor, notifier = self._make_executor(gate)
         update = self._make_update("noaa_it_all")
         executor.set_update_status(update)
+        # Simulate that release notes were successfully obtained (happy path).
+        executor._release_notes_obtained = True
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -563,6 +565,8 @@ class TestFullAutonomousBypass:
         gate = AutonomyGate(level=4)
         executor, notifier = self._make_executor(gate)
         executor.set_update_status(self._make_core_update())
+        # Simulate release notes obtained — required for the auto-apply path.
+        executor._release_notes_obtained = True
 
         result = asyncio.run(
             executor._finish_update_analysis(
@@ -1382,3 +1386,820 @@ class TestFinishUpdateAnalysisRaceGuard:
         assert any(
             "skipped" in str(args) for args in timeline_calls
         ), "Expected timeline event mentioning 'skipped'"
+
+
+# ---------------------------------------------------------------------------
+# _is_update_wake_worthy  (wake-storm filter)
+# ---------------------------------------------------------------------------
+
+
+class TestIsUpdateWakeWorthy:
+    """_is_update_wake_worthy filters attribute-only update.* state changes."""
+
+    def _make_ev(
+        self,
+        entity_id="update.openthread_border_router_update",
+        old_state=None,
+        new_state=None,
+    ):
+        data = {"entity_id": entity_id}
+        if old_state is not None:
+            data["old_state"] = old_state
+        if new_state is not None:
+            data["new_state"] = new_state
+        return {
+            "event_type": "state_changed",
+            "data": data,
+        }
+
+    def test_state_value_change_is_worthy(self):
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            old_state={"state": "off", "attributes": {"latest_version": "3.2.0"}},
+            new_state={"state": "on", "attributes": {"latest_version": "3.2.1"}},
+        )
+        assert _is_update_wake_worthy(ev) is True
+
+    def test_latest_version_change_is_worthy(self):
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            old_state={"state": "on", "attributes": {"latest_version": "3.2.0"}},
+            new_state={"state": "on", "attributes": {"latest_version": "3.2.1"}},
+        )
+        assert _is_update_wake_worthy(ev) is True
+
+    def test_attribute_only_in_progress_not_worthy(self):
+        """in_progress / update_percentage changes must NOT wake the loop."""
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            old_state={
+                "state": "on",
+                "attributes": {"latest_version": "3.2.1", "in_progress": False},
+            },
+            new_state={
+                "state": "on",
+                "attributes": {"latest_version": "3.2.1", "in_progress": True},
+            },
+        )
+        assert _is_update_wake_worthy(ev) is False
+
+    def test_update_percentage_change_not_worthy(self):
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            old_state={
+                "state": "on",
+                "attributes": {"latest_version": "3.2.1", "update_percentage": 10},
+            },
+            new_state={
+                "state": "on",
+                "attributes": {"latest_version": "3.2.1", "update_percentage": 80},
+            },
+        )
+        assert _is_update_wake_worthy(ev) is False
+
+    def test_missing_old_state_is_worthy(self):
+        """First observation of an entity (no old_state) should wake."""
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            new_state={"state": "on", "attributes": {"latest_version": "3.2.1"}}
+        )
+        assert _is_update_wake_worthy(ev) is True
+
+    def test_non_update_entity_state_value_change_is_worthy(self):
+        """Non-update entities pass through the function (callers already filter)."""
+        from main import _is_update_wake_worthy
+
+        ev = self._make_ev(
+            entity_id="light.living_room",
+            old_state={"state": "off", "attributes": {}},
+            new_state={"state": "on", "attributes": {}},
+        )
+        assert _is_update_wake_worthy(ev) is True
+
+
+# ---------------------------------------------------------------------------
+# fetch_release_notes_cached — WS-first, per-entity cache key
+# ---------------------------------------------------------------------------
+
+
+class TestFetchReleaseNotesCachedWS:
+    """WS-first fetch order and per-entity cache key (non-core add-ons)."""
+
+    def test_ws_fetcher_used_first_for_non_core(self, tmp_path):
+        """For a non-core add-on, WS notes take priority over release_url."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        ws_notes = "## 3.2.1\nKeep retrying unavailable network RCPs."
+
+        async def _fake_ws(entity_id):
+            return ws_notes
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "3.2.1",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.openthread_border_router_update",
+                release_url="https://example.com/release",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url"
+        ) as mock_url:
+            result = asyncio.run(_run())
+
+        mock_url.assert_not_called()
+        assert "RCPs" in result
+
+    def test_release_url_used_when_ws_returns_none(self, tmp_path):
+        """Falls back to release_url when WS returns None."""
+        import asyncio
+        from unittest.mock import patch
+
+        async def _fake_ws(entity_id):
+            return None
+
+        async def _fake_url(url):
+            return "CHANGELOG from release_url"
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "3.2.1",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.otbr_update",
+                release_url="https://example.com/releases/3.2.1",
+                ws_fetcher=_fake_ws,
+            )
+
+        with patch(
+            "agents.ha_update_manager._fetch_release_notes_from_url",
+            side_effect=_fake_url,
+        ):
+            result = asyncio.run(_run())
+
+        assert "CHANGELOG from release_url" in result
+
+    def test_concrete_url_fallback_when_ws_and_url_absent(self, tmp_path):
+        """With no WS notes and no release_url, returns a concrete CHANGELOG URL."""
+        import asyncio
+
+        async def _fake_ws(entity_id):
+            return None
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "3.2.1",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.openthread_border_router_update",
+                release_url=None,
+                ws_fetcher=_fake_ws,
+            )
+
+        result = asyncio.run(_run())
+        assert "openthread_border_router" in result
+        assert "CHANGELOG.md" in result
+        # Must not be an ambiguous <slug> placeholder
+        assert "<" not in result
+
+    def test_per_entity_cache_key_prevents_collision(self, tmp_path):
+        """Two add-ons at the same version use separate cache files."""
+        import asyncio
+
+        call_count = 0
+
+        async def _fake_ws(entity_id):
+            nonlocal call_count
+            call_count += 1
+            return f"Notes for {entity_id}"
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            r1 = await fetch_release_notes_cached(
+                "0.7.1",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.addon_a_update",
+                ws_fetcher=_fake_ws,
+            )
+            r2 = await fetch_release_notes_cached(
+                "0.7.1",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.addon_b_update",
+                ws_fetcher=_fake_ws,
+            )
+            return r1, r2
+
+        r1, r2 = asyncio.run(_run())
+        # Both fetched independently (ws called once each → 2 total)
+        assert call_count == 2
+        assert "addon_a" in r1
+        assert "addon_b" in r2
+
+    def test_core_cache_key_unchanged(self, tmp_path):
+        """HA Core versions continue to use the bare version as cache key."""
+        import asyncio
+
+        async def _fake_fetcher(version):
+            return f"Core notes for {version}"
+
+        async def _run():
+            from agents.ha_update_manager import fetch_release_notes_cached
+
+            return await fetch_release_notes_cached(
+                "2026.9.2",
+                cache_dir=str(tmp_path / "cache"),
+                entity_id="update.home_assistant_core_update",
+                _fetcher=_fake_fetcher,
+            )
+
+        asyncio.run(_run())
+        cache_files = list((tmp_path / "cache").glob("*.txt"))
+        assert len(cache_files) == 1
+        assert cache_files[0].name == "2026.9.2.txt"
+
+
+# ---------------------------------------------------------------------------
+# _get_update_release_notes — version substring matching
+# ---------------------------------------------------------------------------
+
+
+class TestGetUpdateReleaseNotesMatcher:
+    """_get_update_release_notes matches 'component version' strings."""
+
+    def _make_executor_with_ws(self, update_release_notes: dict):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        ws = FakeHAWebSocketClient(update_release_notes=update_release_notes)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        executor.set_ws_client(ws)
+        update = SimpleNamespace(
+            entity_id="update.openthread_border_router_update",
+            component="openthread_border_router",
+            installed_version="3.2.0",
+            latest_version="3.2.1",
+            release_url=None,
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        return executor
+
+    def test_component_version_string_matches_pending(self, tmp_path, pueo_dirs):
+        """'openthread_border_router 3.2.1' matches the pending 3.2.1 update."""
+        import asyncio
+        from unittest.mock import patch
+
+        notes_text = "## 3.2.1\nKeep retrying unavailable network RCPs."
+        executor = self._make_executor_with_ws(
+            {"update.openthread_border_router_update": notes_text}
+        )
+        import config as _cfg
+
+        with patch.object(
+            _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+        ):
+            result = asyncio.run(
+                executor._get_update_release_notes("openthread_border_router 3.2.1")
+            )
+
+        assert result.success
+        assert "RCPs" in result.output
+        assert executor._release_notes_obtained is True
+
+    def test_release_notes_obtained_false_on_unavailable(self, tmp_path, pueo_dirs):
+        """_release_notes_obtained stays False when WS returns None."""
+        import asyncio
+        from unittest.mock import patch
+
+        executor = self._make_executor_with_ws({})  # WS returns None
+        import config as _cfg
+
+        with patch.object(
+            _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+        ):
+            result = asyncio.run(
+                executor._get_update_release_notes("openthread_border_router 3.2.1")
+            )
+
+        assert result.success
+        assert executor._release_notes_obtained is False
+        assert (
+            "unavailable" in result.output.lower()
+            or "changelog" in result.output.lower()
+        )
+
+
+# ---------------------------------------------------------------------------
+# _finish_update_analysis — no-notes override
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisNoNotes:
+    """No-notes override in _finish_update_analysis."""
+
+    def _make_executor(self, db_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        # AUTONOMOUS level (3) would normally permit auto-apply for add-ons.
+        gate = AutonomyGate(level=3)
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=db_path,
+        )
+        return executor, notifier
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.openthread_border_router_update",
+            component="openthread_border_router",
+            installed_version="3.2.0",
+            latest_version="3.2.1",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_no_notes_forces_card_and_caps_confidence(self, tmp_path, pueo_dirs):
+        """When _release_notes_obtained=False, create_hitl_card=False is overridden."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update())
+        # _release_notes_obtained defaults to False — no notes obtained
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            result = asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Looks fine.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,  # LLM says no card
+                    confidence=0.9,  # high confidence from model
+                )
+            )
+
+        # Must have sent a card despite LLM saying no card
+        assert notifier.send.called, "Card must be sent when no release notes obtained"
+        assert result.success
+        # _pending_auto_apply must NOT be set — no auto-apply without notes
+        assert executor._pending_auto_apply is False
+
+    def test_no_notes_recommendation_prefixed(self, tmp_path, pueo_dirs):
+        """Recommendation is prefixed with the no-notes warning string."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update())
+
+        sent_payloads = []
+
+        async def _capture_send(**kwargs):
+            sent_payloads.append(kwargs)
+
+        notifier.send.side_effect = _capture_send
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            asyncio.run(
+                executor._finish_update_analysis(
+                    safe_to_update=True,
+                    breaking_changes=[],
+                    affected_config_keys=[],
+                    pueo_command_risks=[],
+                    recommendation="Auto-apply is fine.",
+                    instance_impact="none",
+                    proposed_config_fixes=[],
+                    create_hitl_card=False,
+                    confidence=0.95,
+                )
+            )
+
+        assert sent_payloads, "Expected notifier.send to be called"
+        body = sent_payloads[0].get("body", "") or ""
+        assert "Release notes could not be retrieved" in body or any(
+            "Release notes could not be retrieved" in str(p) for p in sent_payloads
+        )
+
+    def test_with_notes_auto_applies_as_before(self, tmp_path, pueo_dirs):
+        """When _release_notes_obtained=True, auto-apply proceeds normally."""
+        import asyncio
+        from unittest.mock import patch
+
+        db_path = _make_db(tmp_path)
+        executor, notifier = self._make_executor(db_path)
+        executor.set_update_status(self._make_update())
+        executor._release_notes_obtained = True  # notes were obtained
+
+        with patch("agents.ha_log_monitor._update_mark_card_sent"):
+            with patch("utils.core.timeline.write_timeline_event"):
+                asyncio.run(
+                    executor._finish_update_analysis(
+                        safe_to_update=True,
+                        breaking_changes=[],
+                        affected_config_keys=[],
+                        pueo_command_risks=[],
+                        recommendation="Safe bug fix.",
+                        instance_impact="none",
+                        proposed_config_fixes=[],
+                        create_hitl_card=False,  # LLM says no card — gate allows
+                        confidence=0.9,
+                    )
+                )
+
+        # Auto-apply should be signalled (no card sent, pending_auto_apply set)
+        assert executor._pending_auto_apply is True
+        assert not notifier.send.called
+
+
+# ---------------------------------------------------------------------------
+# poll_for_updates — in_progress skip
+# ---------------------------------------------------------------------------
+
+
+class TestPollForUpdatesInProgress:
+    """poll_for_updates skips updates that are already in_progress."""
+
+    def test_in_progress_update_skipped(self, tmp_path, pueo_dirs):
+        """An update with in_progress=True must not trigger _run_update_analysis."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from agents.ha_log_monitor import _update_check_should_send
+
+        in_progress_update = SimpleNamespace(
+            entity_id="update.openthread_border_router_update",
+            component="openthread_border_router",
+            installed_version="3.2.0",
+            latest_version="3.2.1",
+            update_available=True,
+            in_progress=True,  # ← install running
+            release_url=None,
+            release_summary=None,
+        )
+
+        run_called = []
+
+        async def _fake_run_update_analysis(*args, **kwargs):
+            run_called.append(True)
+            return True
+
+        async def _run():
+            from agents.ha_log_monitor import poll_for_updates
+
+            rest = MagicMock()
+            rest.get_states = AsyncMock(return_value=[])
+            with (
+                patch(
+                    "agents.ha_log_monitor.get_update_status",
+                    AsyncMock(return_value=[in_progress_update]),
+                ),
+                patch(
+                    "agents.ha_log_monitor._update_check_should_send",
+                    return_value=True,
+                ),
+                patch(
+                    "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE",
+                    True,
+                ),
+                patch(
+                    "agents.ha_log_monitor._run_update_analysis_ref",
+                    _fake_run_update_analysis,
+                    create=True,
+                ),
+                patch(
+                    "agents.ha_update_manager._run_update_analysis",
+                    _fake_run_update_analysis,
+                ),
+                patch(
+                    "agents.ha_log_monitor.HA_UPDATE_CHECK_INTERVAL_HOURS",
+                    0,
+                ),
+                # _update_sweep_absent_pending hits DB; stub it out since we are
+                # not testing that path here.
+                patch(
+                    "agents.ha_log_monitor._update_sweep_absent_pending",
+                    return_value=[],
+                ),
+                # reconcile_stale_approved_cards is a deferred import from ha_update_manager.
+                patch(
+                    "agents.ha_update_manager.reconcile_stale_approved_cards",
+                    return_value=0,
+                ),
+            ):
+                # Run only one iteration by making sleep raise to break the while loop.
+                async def _raise(*a, **kw):
+                    raise asyncio.CancelledError
+
+                with patch("asyncio.sleep", side_effect=_raise):
+                    try:
+                        await poll_for_updates(ha_rest_client=rest)
+                    except asyncio.CancelledError:
+                        pass
+
+        asyncio.run(_run())
+        assert run_called == [], "in_progress update must not trigger analysis"
+
+
+# ---------------------------------------------------------------------------
+# _run_update_analysis — returns bool
+# ---------------------------------------------------------------------------
+
+
+class TestRunUpdateAnalysisReturnsBool:
+    """_run_update_analysis returns the work-queue submit result."""
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.test_addon_update",
+            component="test_addon",
+            installed_version="1.0.0",
+            latest_version="1.0.1",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_returns_false_on_dedup(self, tmp_path, pueo_dirs):
+        """Returns False when the work queue deduplicates the submission."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_wq = MagicMock()
+        fake_wq.submit = AsyncMock(return_value=False)  # deduped
+
+        # get_work_queue_or_none is a deferred import inside _run_update_analysis;
+        # patch at the source module, not the caller.
+        with (
+            patch(
+                "utils.agent.work_queue.get_work_queue_or_none",
+                return_value=fake_wq,
+            ),
+            patch("utils.llm.llm_factory.make_llm_client", MagicMock()),
+            patch("utils.agent.agent_loop.AgentLoop", MagicMock()),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["_run_update_analysis"],
+                )._run_update_analysis(self._make_update())
+            )
+
+        assert result is False
+
+    def test_returns_true_on_accept(self, tmp_path, pueo_dirs):
+        """Returns True when the work queue accepts the item."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_wq = MagicMock()
+        fake_wq.submit = AsyncMock(return_value=True)
+
+        with (
+            patch(
+                "utils.agent.work_queue.get_work_queue_or_none",
+                return_value=fake_wq,
+            ),
+            patch("utils.llm.llm_factory.make_llm_client", MagicMock()),
+            patch("utils.agent.agent_loop.AgentLoop", MagicMock()),
+        ):
+            result = asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["_run_update_analysis"],
+                )._run_update_analysis(self._make_update())
+            )
+
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# execute_addon_update — timeline events
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteAddonUpdateTimeline:
+    """execute_addon_update writes timeline events for backup, install start, result."""
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.test_addon_update",
+            component="test_addon",
+            installed_version="1.0.0",
+            latest_version="1.0.1",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_timeline_events_on_success(self, tmp_path, pueo_dirs):
+        """Backup created + install started + success result events are written."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        timeline_calls = []
+
+        async def _fake_backup(**kwargs):
+            return "abc123"
+
+        async def _fake_poll(*args, **kwargs):
+            return True
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_gate = MagicMock()
+        fake_ssh = MagicMock()
+        # Rest client must be a mock with an AsyncMock call_service so the
+        # install service call succeeds (and we reach the poll path).
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch(
+                "agents.ha_agent_advanced.offload_backup_to_local",
+                AsyncMock(),
+            ),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch("agents.ha_update_manager.set_restart_pending_after_update"),
+            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("asyncio.create_task"),
+            patch(
+                "utils.core.timeline.write_timeline_event",
+                side_effect=lambda *a, **kw: timeline_calls.append(a),
+            ),
+        ):
+            asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["execute_addon_update"],
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=fake_ssh,
+                    notifier=fake_notifier,
+                    gate=fake_gate,
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        # write_timeline_event(level, source, msg, extra) → 4-tuple; extra is index 3
+        steps = [
+            a[3].get("step")
+            for a in timeline_calls
+            if len(a) >= 4 and isinstance(a[3], dict)
+        ]
+        assert "backup_created" in steps
+        assert "install_started" in steps
+        assert "install_result" in steps
+        result_ev = next(
+            a
+            for a in timeline_calls
+            if len(a) >= 4
+            and isinstance(a[3], dict)
+            and a[3].get("step") == "install_result"
+        )
+        assert result_ev[3]["success"] is True
+
+    def test_timeline_event_on_failure(self, tmp_path, pueo_dirs):
+        """A failure result timeline event is written when the poll times out."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        timeline_calls = []
+
+        async def _fake_backup(**kwargs):
+            return "abc123"
+
+        async def _fake_poll_fail(*args, **kwargs):
+            return False
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                side_effect=_fake_backup,
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch(
+                "agents.ha_agent_advanced.offload_backup_to_local",
+                AsyncMock(),
+            ),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll_fail,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch(
+                "utils.core.timeline.write_timeline_event",
+                side_effect=lambda *a, **kw: timeline_calls.append(a),
+            ),
+        ):
+            asyncio.run(
+                __import__(
+                    "agents.ha_update_manager",
+                    fromlist=["execute_addon_update"],
+                ).execute_addon_update(
+                    self._make_update(),
+                    ssh_client=MagicMock(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+
+        result_events = [
+            a
+            for a in timeline_calls
+            if len(a) >= 4
+            and isinstance(a[3], dict)
+            and a[3].get("step") == "install_result"
+        ]
+        assert result_events, "Expected an install_result timeline event on failure"
+        assert result_events[0][3]["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# FakeHAWebSocketClient — get_update_release_notes
+# ---------------------------------------------------------------------------
+
+
+class TestFakeWSClientReleaseNotes:
+    """FakeHAWebSocketClient supports get_update_release_notes."""
+
+    def test_returns_configured_notes(self):
+        import asyncio
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient(
+            update_release_notes={
+                "update.otbr": "## 3.2.1\nBug fix.",
+            }
+        )
+        result = asyncio.run(fake.get_update_release_notes("update.otbr"))
+        assert result == "## 3.2.1\nBug fix."
+        assert "get_update_release_notes:update.otbr" in fake.calls
+
+    def test_returns_none_for_missing_entity(self):
+        import asyncio
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        result = asyncio.run(fake.get_update_release_notes("update.unknown"))
+        assert result is None

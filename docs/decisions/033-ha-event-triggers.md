@@ -72,3 +72,8 @@ lengthening their sleep interval.
 - `supervised_sleep` gains an extra `asyncio.wait_for` call per sleep; overhead is
   negligible (one coroutine awaited per loop iteration).
 - A new supervisor task `ha_event_wake_dispatch` appears on the Overview page.
+- `update.*` state changes are filtered by `_is_update_wake_worthy` (`main.py`) before
+  waking `update_check`.  Attribute-only mutations such as `in_progress` and
+  `update_percentage` — emitted every few seconds during an install — are ignored so the
+  wake debounce is not exhausted and the poll loop does not produce duplicate timeline
+  entries during the install window.
