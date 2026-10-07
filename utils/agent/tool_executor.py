@@ -249,6 +249,10 @@ class ToolExecutor:
         """Register a user-approved dynamic tool callable by name."""
         self._dynamic_tools[name] = fn
 
+    @property
+    def ha_profile(self) -> "Optional[HAEnvironmentProfile]":
+        return self._ha_profile
+
     def set_ha_profile(self, profile: "HAEnvironmentProfile") -> None:
         """Cache the HA environment profile so get_ha_profile tool can return it."""
         self._ha_profile = profile

@@ -5,9 +5,11 @@ buffers filtered events in a collections.deque ring buffer.  Query the buffer
 with get_events() — this is synchronous and safe to call from any async context.
 
 Subscribed event types:
-  state_changed        — filtered to update.* entities and unavailable/unknown
+  state_changed        — filtered to update.* entities, unavailable/unknown,
+                         and automation.ai_agent_auto_* (ai_agent_ha companion)
   repairs_issue_registry_updated
   automation_triggered
+  lovelace_updated     — dashboard config changes (ai_agent_ha companion)
   persistent_notification/subscribe  — stored as "persistent_notification_event"
 """
 
@@ -26,6 +28,9 @@ _log = get_logger("ha_event_subscriber")
 _INTERESTING_DOMAINS = frozenset({"update"})
 _INTERESTING_STATES = frozenset({"unavailable", "unknown"})
 
+# ai_agent_ha creates automations with this entity-id prefix
+_AI_AGENT_HA_AUTOMATION_PREFIX = "automation.ai_agent_auto_"
+
 _DEFAULT_BUFFER_SIZE = 500
 
 # Subscription ID → event type label stored in the ring buffer
@@ -33,6 +38,7 @@ _SUB_EVENTS = [
     "state_changed",
     "repairs_issue_registry_updated",
     "automation_triggered",
+    "lovelace_updated",
 ]
 _NOTIF_SUB_TYPE = "persistent_notification/subscribe"
 _NOTIF_EVENT_LABEL = "persistent_notification_event"
@@ -45,7 +51,13 @@ def _is_interesting_state_change(data: dict) -> bool:
     new_state: str = (
         new_state_dict.get("state", "") if isinstance(new_state_dict, dict) else ""
     )
-    return domain in _INTERESTING_DOMAINS or new_state in _INTERESTING_STATES
+    if domain in _INTERESTING_DOMAINS or new_state in _INTERESTING_STATES:
+        return True
+    # Pass through state changes for ai_agent_ha-managed automations so the
+    # wake dispatcher can trigger a validation investigation on them.
+    if entity_id.startswith(_AI_AGENT_HA_AUTOMATION_PREFIX):
+        return True
+    return False
 
 
 class HAEventSubscriber:  # pragma: no cover

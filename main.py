@@ -741,6 +741,27 @@ async def _ollama_monitor_loop() -> None:
             )
 
 
+def _is_ai_agent_ha_automation_event(ev: dict) -> bool:
+    """Return True when *ev* is an event from an ai_agent_ha-managed automation.
+
+    Matches both ``automation_triggered`` (entity_id in the event root) and
+    ``state_changed`` for ``automation.ai_agent_auto_*`` entities.  Used to wake
+    ``lovelace_poll`` for a post-change validation investigation.
+    """
+    etype = ev.get("event_type", "")
+    if etype == "automation_triggered":
+        entity_id: str = ev.get("entity_id", "") or (ev.get("data") or {}).get(
+            "entity_id", ""
+        )
+        return entity_id.startswith("automation.ai_agent_auto_")
+    if etype == "state_changed":
+        entity_id = ev.get("entity_id", "") or (ev.get("data") or {}).get(
+            "entity_id", ""
+        )
+        return entity_id.startswith("automation.ai_agent_auto_")
+    return False
+
+
 def _is_update_wake_worthy(ev: dict) -> bool:
     """Return True only when a ``state_changed`` event for an ``update.*`` entity
     represents a meaningful change that warrants waking the update_check loop.
@@ -1247,6 +1268,7 @@ async def supervisor_main(config_path: Path) -> None:
 
         _esub_wd = _event_sub
         _sv_wd = supervisor
+        _exec_wd = _shared_executor
 
         async def _ha_event_wake_dispatcher() -> None:
             """Watch the event ring buffer and wake poll loops on relevant HA events."""
@@ -1266,6 +1288,10 @@ async def supervisor_main(config_path: Path) -> None:
                     e for e in all_events if e.get("time", 0) >= _last_checked
                 ]
                 _last_checked = now
+                _profile_wd = _exec_wd.ha_profile
+                _ai_installed = _profile_wd is not None and getattr(
+                    _profile_wd, "ai_agent_ha_installed", False
+                )
                 for ev in new_events:
                     etype = ev.get("event_type", "")
                     target: str | None = None
@@ -1278,6 +1304,13 @@ async def supervisor_main(config_path: Path) -> None:
                             "update."
                         ) and _is_update_wake_worthy(ev):
                             target = "update_check"
+                        elif _ai_installed and _is_ai_agent_ha_automation_event(ev):
+                            target = "lovelace_poll"
+                    elif etype == "automation_triggered":
+                        if _ai_installed and _is_ai_agent_ha_automation_event(ev):
+                            target = "lovelace_poll"
+                    elif etype == "lovelace_updated" and _ai_installed:
+                        target = "lovelace_poll"
                     if target is None:
                         continue
                     if now - _last_wake.get(target, 0.0) >= _DEBOUNCE:

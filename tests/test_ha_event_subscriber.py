@@ -79,6 +79,56 @@ class TestIsInterestingStateChange:
     def test_no_entity_id_not_interesting(self):
         assert not self._fn({"new_state": {"state": "on"}})
 
+    def test_ai_agent_ha_automation_is_interesting(self):
+        assert self._fn(
+            {
+                "entity_id": "automation.ai_agent_auto_lights",
+                "new_state": {"state": "on"},
+            }
+        )
+
+    def test_ai_agent_ha_automation_off_is_interesting(self):
+        assert self._fn(
+            {
+                "entity_id": "automation.ai_agent_auto_notify",
+                "new_state": {"state": "off"},
+            }
+        )
+
+    def test_non_ai_agent_automation_not_interesting(self):
+        assert not self._fn(
+            {"entity_id": "automation.my_lights", "new_state": {"state": "on"}}
+        )
+
+
+# ---------------------------------------------------------------------------
+# _AI_AGENT_HA_AUTOMATION_PREFIX constant
+# ---------------------------------------------------------------------------
+
+
+class TestAiAgentHaPrefix:
+    def test_prefix_value(self):
+        from utils.ha.ha_event_subscriber import _AI_AGENT_HA_AUTOMATION_PREFIX
+
+        assert _AI_AGENT_HA_AUTOMATION_PREFIX == "automation.ai_agent_auto_"
+
+
+# ---------------------------------------------------------------------------
+# lovelace_updated in _SUB_EVENTS
+# ---------------------------------------------------------------------------
+
+
+class TestSubEvents:
+    def test_lovelace_updated_subscribed(self):
+        from utils.ha.ha_event_subscriber import _SUB_EVENTS
+
+        assert "lovelace_updated" in _SUB_EVENTS
+
+    def test_automation_triggered_subscribed(self):
+        from utils.ha.ha_event_subscriber import _SUB_EVENTS
+
+        assert "automation_triggered" in _SUB_EVENTS
+
 
 # ---------------------------------------------------------------------------
 # FakeHAEventSubscriber
@@ -341,7 +391,7 @@ class _ScriptedWs:
 
 
 def _auth_ok_sequence() -> list[dict]:
-    """Auth + 4 successful subscribe_result messages."""
+    """Auth + successful subscribe_result messages for all _SUB_EVENTS + notification."""
     return [
         {"type": "auth_required"},
         {"type": "auth_ok"},
@@ -349,6 +399,7 @@ def _auth_ok_sequence() -> list[dict]:
         {"type": "result", "id": 2, "success": True},
         {"type": "result", "id": 3, "success": True},
         {"type": "result", "id": 4, "success": True},
+        {"type": "result", "id": 5, "success": True},
     ]
 
 
