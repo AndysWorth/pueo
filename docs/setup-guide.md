@@ -31,7 +31,7 @@ Both macOS and Docker are equally supported deployment targets.
 
 | Mode | What setup.sh does |
 |---|---|
-| `macos` | Creates `.venv`, installs Ollama model, writes `~/Library/Application Support/Pueo/config.yaml`, installs launchd service and RAG refresh job, symlinks `pueo` command |
+| `macos` | Creates `.venv`, installs Ollama model, writes `~/Library/Application Support/Pueo/config.yaml`, installs launchd service, symlinks `pueo` command |
 | `docker` | Skips venv and launchd; writes `config/config.yaml` and generates `docker-compose.yml` with SSH key mount |
 | `both` | Does everything: macOS config + infrastructure, plus Docker config and `docker-compose.yml` |
 
@@ -345,17 +345,11 @@ launchctl remove com.pueo.agent     # uninstall
 
 ## Section 7 — RAG Knowledge-Base Refresh
 
-> **Docker mode: this section is skipped.** Refresh the knowledge base manually:
-> ```bash
-> docker exec pueo-agent python main.py --mode rag-refresh
-> ```
-> Or add a cron job on the host to run it on a schedule.
+RAG refresh is managed automatically by the Pueo supervisor. On first start it bootstraps
+ChromaDB immediately; thereafter it refreshes every `rag_refresh_interval_hours` (default 168 — weekly).
+No prompt is shown; no separate launchd job is installed.
 
-**One prompt (macOS/both).**
-
-**Prompt: Install weekly RAG refresh job?** (`Y` / `n`)
-
-A launchd job runs `--mode rag-refresh` every Sunday at 03:00. This fetches and re-embeds:
+This fetches and re-embeds:
 - HA Core release notes (breaking changes for the last N versions)
 - HACS integration changelogs (auto-discovered from your HA instance)
 - HA integration documentation and source files for installed integrations
@@ -363,13 +357,11 @@ A launchd job runs `--mode rag-refresh` every Sunday at 03:00. This fetches and 
 - HA concepts and community cases
 - HA best-practice skills (from [homeassistant-ai/skills](https://github.com/homeassistant-ai/skills): deprecated API tables, YAML guidelines, template guidelines, dashboard patterns)
 
-If the job is already installed, this section is skipped.
-
-To trigger a refresh immediately after installing:
+To trigger a refresh immediately:
 ```bash
-launchctl start io.pueo.rag-refresh
-# or
 pueo --mode rag-refresh
+# Docker:
+docker exec pueo-agent python main.py --mode rag-refresh
 ```
 
 Optional config keys (edit `config.yaml` directly to set these):

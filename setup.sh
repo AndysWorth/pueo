@@ -197,7 +197,6 @@ if [[ "${1:-}" == "--reset" ]]; then
     _RESET_SVC_INSTALLED=false
     _RESET_RAG_INSTALLED=false
     launchctl list "com.pueo.agent"      &>/dev/null 2>&1 && _RESET_SVC_INSTALLED=true
-    launchctl list "io.pueo.rag-refresh" &>/dev/null 2>&1 && _RESET_RAG_INSTALLED=true
     _do_clean true
     ok "Reset: state cleared, config.yaml preserved. Continuing with setup..."
     _RESET_MODE=true
@@ -1082,52 +1081,10 @@ fi
 # ── 7. RAG Knowledge-Base Refresh ────────────────────────────────────────────────
 hdr "7. RAG Knowledge-Base Refresh"
 
+info "RAG refresh is managed by the Pueo supervisor (runs weekly, bootstraps on first start)."
+info "To trigger a manual refresh: pueo --mode rag-refresh"
 if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    info "Docker mode — skipping launchd RAG refresh job."
-    info "To refresh the knowledge base in Docker:"
-    info "  docker exec pueo-agent python main.py --mode rag-refresh"
-else
-    RAG_PLIST_LABEL="io.pueo.rag-refresh"
-    RAG_PLIST_TARGET="$HOME/Library/LaunchAgents/${RAG_PLIST_LABEL}.plist"
-
-    if launchctl list "$RAG_PLIST_LABEL" &>/dev/null 2>&1; then
-        ok "RAG refresh launchd job is already installed"
-    else
-        if [[ "$_RESET_MODE" == "true" && "$_RESET_RAG_INSTALLED" == "true" ]]; then
-            info "Reset mode: reinstalling RAG refresh job (was installed before reset)"
-            install_rag="Y"
-        else
-            echo
-            echo "  Pueo uses a local ChromaDB vector store (RAG) for HA knowledge: release"
-            echo "  notes (last 24 versions / ~2 years), HACS integration changelogs (auto-discovered"
-            echo "  from your HA instance), and HA integration documentation. A weekly"
-            echo "  launchd job fetches and re-embeds this content every Sunday at 03:00."
-            echo "  Optional config keys: rag_ha_versions_to_fetch, rag_hacs_cache_dir,"
-            echo "  rag_ha_docs_cache_dir, ha_source_cache_dir, ha_concepts_cache_dir, ha_developer_docs_cache_dir, ha_skills_cache_dir,"
-            echo "  rag_refresh_interval_hours (default 168, i.e. weekly), rag_hybrid_weight (default 0.3), rag_min_score (default 0.35),"
-            echo "  pueo_kb_repo (default AndysWorth/pueo-kb), kb_sync_interval_hours,"
-            echo "  kb_sync_cache_dir — see config.yaml.default for details."
-            echo
-            read -rp "  Install the weekly RAG refresh job? [Y/n]: " install_rag
-        fi
-        if [[ "${install_rag:-Y}" =~ ^[Yy] ]]; then
-            PYTHON_PATH="${PUEO_DIR}/.venv/bin/python"
-            mkdir -p "$PUEO_LOG_DIR"
-            sed -e "s|{{ PUEO_DIR }}|${PUEO_DIR}|g" \
-                -e "s|{{ PYTHON_PATH }}|${PYTHON_PATH}|g" \
-                -e "s|{{ PUEO_CONFIG_DIR }}|${PUEO_CONFIG_DIR}|g" \
-                -e "s|{{ PUEO_DATA_DIR }}|${PUEO_DATA_DIR}|g" \
-                -e "s|{{ PUEO_STATE_DIR }}|${PUEO_STATE_DIR}|g" \
-                -e "s|{{ PUEO_CACHE_DIR }}|${PUEO_CACHE_DIR}|g" \
-                -e "s|{{ PUEO_LOG_DIR }}|${PUEO_LOG_DIR}|g" \
-                deploy/pueo-rag-refresh.plist.template > "$RAG_PLIST_TARGET"
-            launchctl load -w "$RAG_PLIST_TARGET"
-            ok "RAG refresh job installed: ${RAG_PLIST_LABEL} (runs Sundays at 03:00)"
-            info "Run immediately: launchctl start ${RAG_PLIST_LABEL}"
-        else
-            info "Skipped — run manually: pueo --mode rag-refresh"
-        fi
-    fi
+    info "  or: docker exec pueo-agent python main.py --mode rag-refresh"
 fi
 
 # ── 8. pueo command ──────────────────────────────────────────────────────────────
