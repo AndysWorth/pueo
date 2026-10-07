@@ -1,0 +1,36 @@
+name: automation_create_request
+trigger: chat
+description: >
+  The user asks Pueo to create an automation that turns on the porch light
+  30 minutes before sunset. The agent must call query_knowledge to retrieve
+  the automation authoring runbook, then call propose_automation with a valid
+  sun-event trigger and a light.turn_on action, then call finish_chat to
+  report that the draft is ready for approval.
+
+mocks:
+  query_knowledge: |
+    [
+      {
+        "source": "seed_automation_authoring",
+        "authority": 0.8,
+        "content": "Use propose_automation to create automations. Required fields: alias, description, mode, trigger, action. For a sun-event trigger use platform: sun with event: sunset and a negative offset for 'before sunset'. Example: {platform: sun, event: sunset, offset: '-00:30:00'}. Default mode to 'single'. Always call check_entity_status to confirm entity IDs exist before building the trigger. After propose_automation succeeds, call finish_chat to report the card is ready for review."
+      }
+    ]
+  check_entity_status: |
+    {
+      "entity_id": "light.porch",
+      "state": "off",
+      "attributes": {"friendly_name": "Porch Light", "supported_features": 1}
+    }
+
+expected_outcome: success
+expected_tools_called:
+  - query_knowledge
+  - propose_automation
+  - finish_chat
+expected_tools_not_called:
+  - apply_fix
+  - run_ha_command
+  - trigger_backup
+fix_must_parse: false
+max_tool_calls: 15
