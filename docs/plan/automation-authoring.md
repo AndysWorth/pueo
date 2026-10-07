@@ -1,6 +1,6 @@
 # Automation Authoring — Implementation Spec
 
-**Status:** S9 complete — PR #815 open  
+**Status:** S10 complete — all sessions done  
 **Issue:** [#801](https://github.com/AndysWorth/pueo/issues/801)  
 **ADR:** [ADR 037](../decisions/037-automation-authoring.md)
 
@@ -274,4 +274,4 @@ ToolDefinition(
 | S7 (this) | Spec + ADR only |
 | S8 | `propose_automation` tool + `validate_automation_config` WS helper + `CARD_TYPE_AUTOMATION_CREATE` + card template + REST helpers (create/delete) + stub executor + tests |
 | S9 ✅ | `_execute_automation_create` (backup→write→reload→verify) + security review + timeline event — PR #815 |
-| S10 | Seed runbook + eval scenario + end-to-end exercise |
+| S10 ✅ | Seed runbook + eval scenario + end-to-end exercise — PR #817 |
