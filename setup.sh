@@ -446,11 +446,12 @@ if [[ "$_RESET_MODE" == "true" ]]; then
     ok "Reset mode: LLM provider unchanged: ${LLM_PROVIDER}"
 else
     echo "  Choose how Pueo runs LLM inference:"
-    echo "    local  — Ollama only (default, no WAN; privacy-first)"
-    echo "    cloud  — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
-    echo "    both   — Ollama for autonomous cycles + Claude available for approved escalation"
+    echo "    local         — Ollama only (default, no WAN; privacy-first)"
+    echo "    cloud         — Anthropic Claude API as primary (requires ANTHROPIC_API_KEY)"
+    echo "    both          — Ollama for autonomous cycles + Claude available for approved escalation"
+    echo "    openai_compat — Any OpenAI-compatible server (LM Studio, mlx-lm, vLLM, etc.)"
     echo
-    ask "LLM provider (local/cloud/both)" "local" LLM_PROVIDER
+    ask "LLM provider (local/cloud/both/openai_compat)" "local" LLM_PROVIDER
 
     if [[ "$LLM_PROVIDER" == "cloud" || "$LLM_PROVIDER" == "both" ]]; then
         ask "Claude model" "claude-sonnet-5" CLOUD_MODEL_VAL
@@ -470,6 +471,17 @@ else
             info "Ollama inference model pull skipped (cloud mode — not needed for inference)."
             info "nomic-embed-text was already pulled above for RAG embeddings."
         fi
+    elif [[ "$LLM_PROVIDER" == "openai_compat" ]]; then
+        ask "OpenAI-compatible server base URL" "http://localhost:1234/v1" OPENAI_COMPAT_BASE_URL_VAL
+        ask "Model name to send in requests" "qwen2.5-coder:7b" OPENAI_COMPAT_MODEL_VAL
+        echo
+        info "Set OPENAI_COMPAT_API_KEY in your environment if your server requires a key."
+        info "Most local servers accept any non-empty string (e.g. 'not-needed')."
+        if [[ "$DEPLOY_MODE" != "docker" ]]; then
+            info "Ollama inference model pull skipped (openai_compat mode)."
+            info "nomic-embed-text was already pulled above for RAG embeddings."
+        fi
+        ok "OpenAI-compatible provider configured: ${OPENAI_COMPAT_BASE_URL_VAL}"
     else
         ok "Using local Ollama inference (no cloud API required)"
     fi
@@ -558,6 +570,8 @@ fi
 
 # Defaults that may already be set in docker-only path (no Ollama section ran)
 CONFIGURED_MODEL="${CONFIGURED_MODEL:-qwen2.5-coder:7b}"
+OPENAI_COMPAT_BASE_URL_VAL="${OPENAI_COMPAT_BASE_URL_VAL:-http://localhost:1234/v1}"
+OPENAI_COMPAT_MODEL_VAL="${OPENAI_COMPAT_MODEL_VAL:-qwen2.5-coder:7b}"
 
 # Initialize unbound variables before the NAX prompts to avoid set -u failures
 NAX_DOCKER_CONFIG_PATH=""
@@ -845,6 +859,10 @@ ollama:
 
 llm:
   provider: "${LLM_PROVIDER}"
+  openai_compat:
+    base_url: "${OPENAI_COMPAT_BASE_URL_VAL}"
+    model: "${OPENAI_COMPAT_MODEL_VAL}"
+    num_ctx: 8192
 
 cloud:
   model: "${CLOUD_MODEL_VAL}"

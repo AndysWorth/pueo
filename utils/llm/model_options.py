@@ -139,13 +139,18 @@ def derive_call_options(
 
 
 def one_shot_options(model_name: str | None = None) -> dict:
-    """Return an Ollama options dict for a one-shot structured output call.
+    """Return an options dict for a one-shot structured output call.
 
-    Derives num_ctx from cached hardware + model info; uses temperature=0.0 and
-    num_predict=1024 to cap generation for short JSON responses.  Safe to call
-    synchronously from any context — relies on cached hardware/model data.
+    For openai_compat: returns temperature=0.0 + num_predict=1024 (no num_ctx —
+    the OpenAI-compat request body uses max_tokens, not num_ctx).
+    For Ollama: derives num_ctx from cached hardware + model info.
+    Safe to call synchronously from any context — relies on cached data.
     """
     import config as _cfg
+
+    if _cfg.LLM_PROVIDER == "openai_compat":
+        return {"temperature": 0.0, "num_predict": 1024}
+
     from utils.disk.hardware import detect_local_hardware, list_ollama_models
 
     name = model_name or _cfg.OLLAMA_MODEL
