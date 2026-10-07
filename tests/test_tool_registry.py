@@ -573,3 +573,42 @@ class TestRegistryMembership:
 
         reg = build_code_proposal_registry()
         assert "get_statistics" not in reg
+
+    def test_propose_automation_in_chat_registry_only(self):
+        """propose_automation is in chat registry but not in ha/netalertx/code-proposal."""
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_code_proposal_registry,
+            build_ha_tool_registry,
+            build_netalertx_tool_registry,
+        )
+
+        assert "propose_automation" in build_chat_tool_registry()
+        assert "propose_automation" not in build_ha_tool_registry()
+        assert "propose_automation" not in build_netalertx_tool_registry()
+        assert "propose_automation" not in build_code_proposal_registry()
+
+    def test_propose_automation_schema(self):
+        """propose_automation has required alias/description/mode/trigger/action."""
+        from utils.agent.tool_registry import PROPOSE_AUTOMATION
+
+        props = PROPOSE_AUTOMATION.parameters.get("properties", {})
+        assert "alias" in props
+        assert "description" in props
+        assert "mode" in props
+        assert "trigger" in props
+        assert "condition" in props
+        assert "action" in props
+        required = PROPOSE_AUTOMATION.parameters.get("required", [])
+        assert "alias" in required
+        assert "description" in required
+        assert "mode" in required
+        assert "trigger" in required
+        assert "action" in required
+        assert "condition" not in required
+
+    def test_propose_automation_not_in_mcp(self):
+        """propose_automation is never exposed via MCP."""
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "propose_automation" not in _MCP_TOOL_NAMES

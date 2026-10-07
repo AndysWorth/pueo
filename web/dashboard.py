@@ -48,6 +48,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_RESOURCE_ACTION,
     CARD_TYPE_UNREGISTERED_ENTITY,
     CARD_TYPE_SERVICE_CALL,
+    CARD_TYPE_AUTOMATION_CREATE,
     CARD_TYPE_UPDATE,
 )
 
@@ -1261,6 +1262,22 @@ async def _execute_service_call(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_automation_create(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Stub executor for CARD_TYPE_AUTOMATION_CREATE — full implementation in S9."""
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        data["fix_error"] = "Automation creation executor not yet implemented (S9)"
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 async def _execute_code_proposal(
     nid: str,
     data: dict,
@@ -1838,6 +1855,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
     CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
     CARD_TYPE_SERVICE_CALL: _execute_service_call,
+    CARD_TYPE_AUTOMATION_CREATE: _execute_automation_create,
 }
 
 

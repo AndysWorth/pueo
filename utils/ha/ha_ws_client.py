@@ -267,6 +267,34 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def validate_automation_config(
+        self,
+        trigger: list | None = None,
+        condition: list | None = None,
+        action: list | None = None,
+    ) -> dict[str, dict]:
+        """Validate automation components via HA WS validate_config.
+
+        Returns a dict mapping component name to {"valid": bool, "error": str|None}.
+        Only components passed (non-None) are included in the request and response.
+        """
+        payload: dict = {}
+        if trigger is not None:
+            payload["trigger"] = trigger
+        if condition is not None:
+            payload["condition"] = condition
+        if action is not None:
+            payload["action"] = action
+        ws = await self._connect_and_auth()
+        try:
+            await ws.send(json.dumps({"id": 1, "type": "validate_config", **payload}))
+            msg = json.loads(await ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"validate_config failed: {msg}")
+            return msg.get("result", {})
+        finally:
+            await ws.close()
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -352,6 +380,9 @@ class FakeHAWebSocketClient:
         # statistics: statistic_id → list of buckets (keyed by the joined statistic_ids)
         self._statistics: dict = {}
         self.calls: list[str] = []
+        # validate_automation_config: pre-loaded validation result per call index
+        self._validate_automation_result: dict = {}
+        self.validate_automation_calls: list[dict] = []
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -450,3 +481,19 @@ class FakeHAWebSocketClient:
     async def get_update_release_notes(self, entity_id: str) -> str | None:
         self.calls.append(f"get_update_release_notes:{entity_id}")
         return self._update_release_notes.get(entity_id)
+
+    async def validate_automation_config(
+        self,
+        trigger: list | None = None,
+        condition: list | None = None,
+        action: list | None = None,
+    ) -> dict[str, dict]:
+        self.calls.append("validate_automation_config")
+        self.validate_automation_calls.append(
+            {"trigger": trigger, "condition": condition, "action": action}
+        )
+        return dict(self._validate_automation_result)
+
+    def set_validate_automation_result(self, result: dict) -> None:
+        """Pre-load the validation result for tests."""
+        self._validate_automation_result = result

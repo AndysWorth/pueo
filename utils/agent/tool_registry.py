@@ -716,6 +716,48 @@ CALL_SERVICE = ToolDefinition(
     },
 )
 
+PROPOSE_AUTOMATION = ToolDefinition(
+    name="propose_automation",
+    description=(
+        "Draft a new Home Assistant automation and send it for human approval. "
+        "Validates triggers/conditions/actions via HA validate_config before raising the card. "
+        "On approval, creates a backup, writes the automation to HA storage, and reloads. "
+        "Always include alias, description, mode, trigger, and action. "
+        "condition is optional."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "alias": {
+                "type": "string",
+                "description": "Human-readable automation name",
+            },
+            "description": {
+                "type": "string",
+                "description": "One-sentence purpose of this automation",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["single", "restart", "queued", "parallel"],
+                "description": "Execution mode; 'single' is the safe default",
+            },
+            "trigger": {
+                "type": "array",
+                "description": "List of trigger objects",
+            },
+            "condition": {
+                "type": "array",
+                "description": "List of condition objects (optional)",
+            },
+            "action": {
+                "type": "array",
+                "description": "List of action objects",
+            },
+        },
+        "required": ["alias", "description", "mode", "trigger", "action"],
+    },
+)
+
 GET_RECENT_EVENTS = ToolDefinition(
     name="get_recent_events",
     description=(
@@ -2197,6 +2239,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         GET_INTEGRATION_DIAGNOSTICS,
         RELOAD_INTEGRATION,
         CALL_SERVICE,
+        PROPOSE_AUTOMATION,
         GET_RECENT_EVENTS,
         GET_DASHBOARD_ENTITY_HEALTH,
         CHECK_ENTITY_STATUS,

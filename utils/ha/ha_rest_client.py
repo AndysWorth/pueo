@@ -211,6 +211,25 @@ class HARestClient:  # pragma: no cover
             )
             resp.raise_for_status()
 
+    async def create_automation(self, unique_id: str, config: dict) -> None:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/automation/config/{unique_id}",
+                headers=self._headers,
+                json=config,
+            )
+            resp.raise_for_status()
+
+    async def delete_automation(self, unique_id: str) -> None:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.delete(
+                f"{base}/api/config/automation/config/{unique_id}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+
 
 @dataclass
 class HARepairIssue:
@@ -341,3 +360,9 @@ class FakeHARestClient:
 
     async def reload_config_entry(self, entry_id: str) -> None:
         self.reloaded.append(entry_id)
+
+    async def create_automation(self, unique_id: str, config: dict) -> None:
+        self.posted.append((f"/api/config/automation/config/{unique_id}", config))
+
+    async def delete_automation(self, unique_id: str) -> None:
+        self.deleted.append(f"/api/config/automation/config/{unique_id}")
