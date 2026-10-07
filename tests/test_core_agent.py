@@ -1887,7 +1887,7 @@ class TestMain:
 class TestAuditModeDeprecation:
     """--mode audit emits a DeprecationWarning and still calls main_audit."""
 
-    def test_audit_emits_deprecation_warning(self, monkeypatch):
+    def test_audit_emits_deprecation_warning(self, monkeypatch, tmp_path):
         import asyncio
         import sys
         import warnings
@@ -1896,6 +1896,9 @@ class TestAuditModeDeprecation:
         import utils.system.audit as audit_mod
         from agents import ha_agent_advanced as adv
 
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+
         called: list[bool] = []
 
         async def fake_main_audit():
@@ -1903,7 +1906,9 @@ class TestAuditModeDeprecation:
 
         monkeypatch.setattr(audit_mod, "main_audit", fake_main_audit)
         monkeypatch.setattr(adv, "init_local_database", lambda: None)
-        monkeypatch.setattr(sys, "argv", ["pueo", "--mode", "audit"])
+        monkeypatch.setattr(
+            sys, "argv", ["pueo", "--config", str(config), "--mode", "audit"]
+        )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
