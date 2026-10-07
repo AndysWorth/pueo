@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from config import (
     AUTONOMY_LEVEL,
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from interfaces import LLMClientProtocol, SSHClientProtocol
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import NotifierProtocol
+    from utils.knowledge.knowledge_store import ChromaKnowledgeStore
 
 log = get_logger("netalertx.one_shot_diagnose")
 
@@ -152,15 +153,26 @@ async def run_diagnose(
     healer: "NetAlertXHealer | None" = None,
     addon_slug: str | None = None,
     mqtt_probe_fn: "Callable[[str], Awaitable[bool]] | None" = None,
+    knowledge_store: "ChromaKnowledgeStore | None" = None,
 ) -> None:
     """One-shot NetAlertX diagnosis and optional healing.
 
-    Entry point for ``--mode netalertx-diagnose``.
+    Entry point for ``--mode netalertx-diagnose`` and the dashboard /netalertx/diagnose
+    route.  Pass ``knowledge_store`` when calling from the dashboard so the diagnosis
+    loop can query the shared ChromaDB instance instead of opening a second one.
     """
     from netalertx.api_client import NetAlertXAPIClient
     from utils.agent.autonomy import AutonomyGate
+    from utils.core.timeline import write_timeline_event
     from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
+
+    await asyncio.to_thread(
+        write_timeline_event,
+        "INFO",
+        "netalertx_diagnose",
+        "NetAlertX one-shot diagnosis started",
+    )
 
     _ssh = ssh_client or AsyncSSHClient(
         NETALERTX_SSH_HOST, NETALERTX_SSH_USER, NETALERTX_SSH_KEY_PATH
@@ -285,11 +297,27 @@ async def run_diagnose(
 
     # 5. AI synthesis — pass _ha_ssh to enable adaptive AgentLoop evidence gathering
     diagnostic, _llm_trace = await diagnose_health_report(
-        report, config_issues, llm_client, ssh_client=_ha_ssh
+        report,
+        config_issues,
+        llm_client,
+        ssh_client=_ha_ssh,
+        knowledge_store=knowledge_store,
     )
 
     # 6. Print summary
     _print_summary(report, log_evaluation, config_issues, diagnostic)
+
+    _result_msg = (
+        f"NetAlertX diagnosis complete: {diagnostic.severity} — {diagnostic.issue[:80]}"
+        if diagnostic is not None
+        else "NetAlertX diagnosis complete: no issues found"
+    )
+    await asyncio.to_thread(
+        write_timeline_event,
+        "INFO" if diagnostic is None else "WARN",
+        "netalertx_diagnose",
+        _result_msg,
+    )
 
     # 7. Heal — the healer + autonomy gate handle auto-execute vs. approval-required blocking.
     # At level 4, healer runs immediately. At levels 2–3, healer calls
@@ -311,4 +339,32 @@ async def run_diagnose(
         # Use the AgentLoop-based repair path (item 46).
         from utils.llm.llm_factory import make_llm_client
 
-        await _healer.heal_with_loop(diagnostic, llm_client=make_llm_client())
+        _heal_llm = make_llm_client()
+        _healer_snap = _healer
+
+        async def _heal_coro(
+            _h: "Any" = _healer_snap,
+            _lc: "Any" = _heal_llm,
+        ) -> None:
+            await _h.heal_with_loop(diagnostic, llm_client=_lc)
+
+        from utils.agent.work_queue import (
+            PRIORITY_HIGH,
+            WorkItem,
+            get_work_queue_or_none,
+        )
+
+        _wq = get_work_queue_or_none()
+        if _wq is not None:
+            await _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_HIGH,
+                    activity_type="netalertx_repair",
+                    description=f"NetAlertX repair: {diagnostic.issue[:80]}",
+                    dedup_key="netalertx_repair",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_heal_coro,
+                )
+            )
+        else:
+            await _heal_coro()

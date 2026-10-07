@@ -1884,6 +1884,41 @@ class TestMain:
         assert "Invalid" in capsys.readouterr().err
 
 
+class TestAuditModeDeprecation:
+    """--mode audit emits a DeprecationWarning and still calls main_audit."""
+
+    def test_audit_emits_deprecation_warning(self, monkeypatch, tmp_path):
+        import asyncio
+        import sys
+        import warnings
+
+        import main as main_module
+        import utils.system.audit as audit_mod
+        from agents import ha_agent_advanced as adv
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+
+        called: list[bool] = []
+
+        async def fake_main_audit():
+            called.append(True)
+
+        monkeypatch.setattr(audit_mod, "main_audit", fake_main_audit)
+        monkeypatch.setattr(adv, "init_local_database", lambda: None)
+        monkeypatch.setattr(
+            sys, "argv", ["pueo", "--config", str(config), "--mode", "audit"]
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            main_module.main()
+
+        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert dep_warnings, "No DeprecationWarning emitted for --mode audit"
+        assert called, "main_audit was never called"
+
+
 class TestRepairEpisodeResultSummary:
     """result_summary is stored per step in tool_sequence and round-trips through SQLite."""
 

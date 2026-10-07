@@ -73,7 +73,7 @@ A Python package of ~30 `.md` files, loaded via `utils/core/prompts.py::load_pro
 | `mypy --ignore-missing-imports .` | Type check |
 | `bandit -r . -x ./tests,./.venv` | Security scan |
 | `python main.py --mode rag-refresh` | Refresh the knowledge base |
-| `python main.py --mode audit` | Self-consistency audit |
+| `python main.py --mode audit` | Self-consistency audit (deprecated — use Overview/Disk/Backups tabs) |
 
 The full CI gate is in `CLAUDE.md` (Development Procedure, step 14).
 

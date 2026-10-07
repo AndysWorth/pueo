@@ -5678,6 +5678,234 @@ class TestServiceActions:
         assert runs and "load" in runs[0]
 
 
+class TestSettingsServiceCard:
+    """Settings page renders the correct service state machine states."""
+
+    def _hw_patches(self, monkeypatch):
+        import utils.disk.hardware as hw
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            hw, "detect_local_hardware", lambda: SimpleNamespace(chip="test", ram_gb=8)
+        )
+        monkeypatch.setattr(hw, "list_ollama_models", lambda: [])
+        monkeypatch.setattr(hw, "recommend_model", lambda p, a: None)
+
+    def test_settings_running_state(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        plist = tmp_path / "com.pueo.agent.plist"
+        plist.touch()
+        monkeypatch.setattr(svc, "PLIST_TARGET", plist)
+        monkeypatch.setattr(
+            svc, "service_status", lambda: {"loaded": True, "running": True, "pid": 42}
+        )
+        self._hw_patches(monkeypatch)
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert b"Running" in resp.content
+        assert b"Restart" in resp.content
+        assert b"Stop" in resp.content
+
+    def test_settings_stopped_state(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        plist = tmp_path / "com.pueo.agent.plist"
+        plist.touch()
+        monkeypatch.setattr(svc, "PLIST_TARGET", plist)
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": True, "running": False, "pid": None},
+        )
+        self._hw_patches(monkeypatch)
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert b"Start" in resp.content
+
+    def test_settings_not_installed_shows_install_guard(self, tmp_path, monkeypatch):
+        """When plist is absent and Pueo is not under launchd, the install guard note appears."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "missing.plist")
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {"loaded": False, "running": False, "pid": None},
+        )
+        self._hw_patches(monkeypatch)
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        # The install guard note should reference the current PID or "outside launchd"
+        assert b"outside launchd" in resp.content
+
+    def test_settings_launchd_unavailable(self, tmp_path, monkeypatch):
+        """When launchd returns an error, the card shows launchd unavailable."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "missing.plist")
+        monkeypatch.setattr(
+            svc,
+            "service_status",
+            lambda: {
+                "error": "macOS only",
+                "loaded": False,
+                "running": False,
+                "pid": None,
+            },
+        )
+        self._hw_patches(monkeypatch)
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert b"launchd unavailable" in resp.content
+
+    def test_settings_confirm_text_present(self, tmp_path, monkeypatch):
+        """Stop/Uninstall buttons use confirmSvcAction with the warning text."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.system.service as svc
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        plist = tmp_path / "com.pueo.agent.plist"
+        plist.touch()
+        monkeypatch.setattr(svc, "PLIST_TARGET", plist)
+        monkeypatch.setattr(
+            svc, "service_status", lambda: {"loaded": True, "running": True, "pid": 1}
+        )
+        self._hw_patches(monkeypatch)
+        client = TestClient(dashboard.app)
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        assert b"confirmSvcAction" in resp.content
+        assert b"dashboard will go offline" in resp.content
+
+
+class TestNetalertxDiagnoseRoute:
+    """POST /netalertx/diagnose creates a task and returns ok."""
+
+    def test_netalertx_diagnose_503_without_supervisor(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: None)
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        resp = client.post("/netalertx/diagnose")
+        assert resp.status_code == 503
+
+    def test_netalertx_diagnose_creates_task(self, tmp_path, monkeypatch):
+        import asyncio
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+        import netalertx.one_shot_diagnose as osd
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "_netalertx_diagnose_task", None)
+
+        called_with_ks: list = []
+
+        async def fake_run_diagnose(**kwargs):
+            called_with_ks.append(kwargs.get("knowledge_store"))
+
+        monkeypatch.setattr(osd, "run_diagnose", fake_run_diagnose)
+
+        class _FakeExecutor:
+            _knowledge_store = object()
+
+        class _FakeSV:
+            _tool_executor = _FakeExecutor()
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/netalertx/diagnose")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json().get("already_running") is not True
+
+    def test_netalertx_diagnose_already_running(self, tmp_path, monkeypatch):
+        import asyncio
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+        import utils.agent.supervisor as sup_mod
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+
+        # Inject a running task
+        async def _noop():
+            pass
+
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(_noop())
+        monkeypatch.setattr(dashboard, "_netalertx_diagnose_task", task)
+
+        class _FakeSV:
+            _tool_executor = None
+
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
+        client = TestClient(dashboard.app)
+        resp = client.post("/netalertx/diagnose")
+        assert resp.status_code == 200
+        assert resp.json()["already_running"] is True
+        loop.close()
+
+
+class TestOverviewNetalertxCard:
+    """Overview page shows or hides the NetAlertX diagnose card based on config."""
+
+    def _render_overview(self, monkeypatch, tmp_path, netalertx_enabled: bool):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import utils.disk.resource as res_mod
+        import utils.agent.supervisor as sup_mod
+        import utils.core.timeline as tl_mod
+        import config as _config
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(res_mod, "get_resource_status", lambda: {})
+        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: None)
+        monkeypatch.setattr(tl_mod, "load_timeline_events", lambda n: [])
+        monkeypatch.setattr(_config, "NETALERTX_ENABLED", netalertx_enabled)
+        client = TestClient(dashboard.app)
+        return client.get("/")
+
+    def test_netalertx_card_hidden_when_disabled(self, tmp_path, monkeypatch):
+        resp = self._render_overview(monkeypatch, tmp_path, netalertx_enabled=False)
+        assert resp.status_code == 200
+        assert b"netalertx-diagnose-card" not in resp.content
+
+    def test_netalertx_card_shown_when_enabled(self, tmp_path, monkeypatch):
+        resp = self._render_overview(monkeypatch, tmp_path, netalertx_enabled=True)
+        assert resp.status_code == 200
+        assert b"netalertx-diagnose-card" in resp.content
+        assert b"Run diagnose" in resp.content
+
+
 class TestDashboardServiceEndpoints:
     def test_get_service_status_returns_dict(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
@@ -5824,178 +6052,7 @@ class TestDashboardServiceEndpoints:
         assert resp.status_code == 500
 
 
-class TestControlTab:
-    def test_control_page_renders(self, tmp_path, monkeypatch):
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": True, "running": True, "pid": 1234},
-        )
-        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "com.pueo.agent.plist")
-        client = TestClient(dashboard.app)
-        resp = client.get("/control")
-        assert resp.status_code == 200
-        assert b"Pueo Service" in resp.content
-        assert b"Run a Mode" in resp.content
-
-    def test_control_page_shows_install_button_when_no_plist(
-        self, tmp_path, monkeypatch
-    ):
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "missing.plist")
-        client = TestClient(dashboard.app)
-        resp = client.get("/control")
-        assert resp.status_code == 200
-        assert b"Install service" in resp.content
-
-    def test_control_run_valid_mode_returns_ok(self, tmp_path, monkeypatch):
-        import asyncio
-
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-
-        launched: list[str] = []
-
-        async def fake_subprocess(*args, **kwargs):
-            launched.append(args[1] if len(args) > 1 else "")
-
-            class _Proc:
-                async def wait(self):
-                    pass
-
-            return _Proc()
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
-        client = TestClient(dashboard.app)
-        resp = client.post("/control/run?mode=audit")
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert resp.json()["mode"] == "audit"
-
-    def test_control_run_rag_refresh_uses_supervisor_wake(self, tmp_path, monkeypatch):
-        """rag-refresh via control/run calls sv.wake() when supervisor is present."""
-        from fastapi.testclient import TestClient
-        from types import SimpleNamespace
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-        import utils.agent.supervisor as sup_mod
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-
-        woken: list[str] = []
-
-        class _FakeSV:
-            _handles = {"rag_refresh": object()}
-
-            def wake(self, name: str) -> None:
-                woken.append(name)
-
-        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
-        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: False)
-
-        client = TestClient(dashboard.app)
-        resp = client.post("/control/run?mode=rag-refresh")
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert woken == ["rag_refresh"]
-
-    def test_control_run_rag_refresh_already_running(self, tmp_path, monkeypatch):
-        """rag-refresh returns already_running=True when refresh is in progress."""
-        from fastapi.testclient import TestClient
-        from types import SimpleNamespace
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-        import utils.agent.supervisor as sup_mod
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-
-        class _FakeSV:
-            _handles = {"rag_refresh": object()}
-
-            def wake(self, name: str) -> None:
-                pass
-
-        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: _FakeSV())
-        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: True)
-
-        client = TestClient(dashboard.app)
-        resp = client.post("/control/run?mode=rag-refresh")
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert resp.json()["already_running"] is True
-
-    def test_control_run_rag_refresh_fallback_subprocess(self, tmp_path, monkeypatch):
-        """rag-refresh falls back to subprocess when supervisor is not running."""
-        import asyncio
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-        import utils.agent.supervisor as sup_mod
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-        monkeypatch.setattr(sup_mod, "get_supervisor_instance", lambda: None)
-        monkeypatch.setattr(sup_mod, "get_rag_refreshing", lambda: False)
-
-        launched: list[str] = []
-
-        async def fake_subprocess(*args, **kwargs):
-            launched.append(args[1] if len(args) > 1 else "")
-
-            class _Proc:
-                async def wait(self):
-                    pass
-
-            return _Proc()
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
-        client = TestClient(dashboard.app)
-        resp = client.post("/control/run?mode=rag-refresh")
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-
+class TestLoopRunNow:
     def test_loop_run_now_wake_only_uses_wake(self, tmp_path, monkeypatch):
         """loop_run_now uses wake() for rag_refresh, not run_now()."""
         from fastapi.testclient import TestClient
@@ -6047,40 +6104,6 @@ class TestControlTab:
         assert resp.status_code == 200
         assert run_now_called == ["repair_poll"]
         assert woken == []
-
-    def test_control_run_invalid_mode_returns_400(self, tmp_path, monkeypatch):
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-        client = TestClient(dashboard.app, raise_server_exceptions=False)
-        resp = client.post("/control/run?mode=rm_rf")
-        assert resp.status_code == 400
-
-    def test_control_nav_link_active_on_control_page(self, tmp_path, monkeypatch):
-        from fastapi.testclient import TestClient
-
-        import web.dashboard as dashboard
-        import utils.system.service as svc
-
-        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            svc,
-            "service_status",
-            lambda: {"loaded": False, "running": False, "pid": None},
-        )
-        monkeypatch.setattr(svc, "PLIST_TARGET", tmp_path / "missing.plist")
-        client = TestClient(dashboard.app)
-        resp = client.get("/control")
-        assert resp.status_code == 200
-        assert b"nav-link active" in resp.content
 
 
 # ── Phase 12.5 — Update Ordering Guard ────────────────────────────────────────
@@ -6620,11 +6643,12 @@ class TestAsyncThreadOffloading:
         resp = client.get("/disk")
         assert resp.status_code == 200
 
-    def test_control_tab_service_status_called(self, tmp_path, monkeypatch):
-        """service_status is called when /control is requested."""
+    def test_settings_tab_service_status_called(self, tmp_path, monkeypatch):
+        """service_status is called when /settings is requested."""
         from fastapi.testclient import TestClient
 
         import utils.system.service as svc
+        import utils.disk.hardware as hw
         import web.dashboard as dashboard
 
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
@@ -6636,11 +6660,30 @@ class TestAsyncThreadOffloading:
             return {"loaded": False, "running": False, "pid": None}
 
         monkeypatch.setattr(svc, "service_status", recording_status)
+
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            hw, "detect_local_hardware", lambda: SimpleNamespace(chip="test", ram_gb=8)
+        )
+        monkeypatch.setattr(hw, "list_ollama_models", lambda: [])
+        monkeypatch.setattr(hw, "recommend_model", lambda p, a: None)
+
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.get("/control")
+        resp = client.get("/settings")
 
         assert resp.status_code == 200
         assert calls, "service_status was never called"
+
+    def test_control_routes_gone(self, monkeypatch):
+        """/control and /control/run return 404 after removal."""
+        from fastapi.testclient import TestClient
+
+        import web.dashboard as dashboard
+
+        client = TestClient(dashboard.app, raise_server_exceptions=False)
+        assert client.get("/control").status_code == 404
+        assert client.post("/control/run?mode=audit").status_code in (404, 405)
 
     def test_service_status_endpoint_returns_json(self, monkeypatch):
         """GET /service/status returns JSON with 'loaded' key."""
