@@ -4505,3 +4505,140 @@ class TestGetStatistics:
         )
         assert result.success is True
         assert "sensor.energy" in result.output
+
+
+# ── _propose_automation ───────────────────────────────────────────────────────
+
+
+class TestProposeAutomation:
+    """Tests for the propose_automation tool."""
+
+    def _make_executor(self, ws_client=None, auto_execute=True):
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=auto_execute),
+            notifier=FakeNotifier(),
+        )
+        if ws_client is not None:
+            ex.set_ws_client(ws_client)
+        return ex
+
+    def test_missing_ws_client_returns_error(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="propose_automation",
+                    arguments={
+                        "alias": "Turn off lights",
+                        "description": "Test",
+                        "mode": "single",
+                        "trigger": [{"platform": "time", "at": "00:00:00"}],
+                        "action": [{"service": "light.turn_off"}],
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "WebSocket" in (result.error or "")
+
+    def test_missing_alias_returns_error(self):
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        executor = self._make_executor(ws_client=FakeHAWebSocketClient())
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="propose_automation",
+                    arguments={
+                        "alias": "",
+                        "description": "Test",
+                        "mode": "single",
+                        "trigger": [{"platform": "time", "at": "00:00:00"}],
+                        "action": [{"service": "light.turn_off"}],
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "required" in (result.error or "").lower()
+
+    def test_validation_error_stops_before_card(self):
+        """When validate_config returns an invalid component, no card is raised."""
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_validate_automation_result(
+            {
+                "trigger": {"valid": True, "error": None},
+                "action": {"valid": False, "error": "Invalid service format"},
+            }
+        )
+        executor = self._make_executor(ws_client=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="propose_automation",
+                    arguments={
+                        "alias": "Bad automation",
+                        "description": "Test",
+                        "mode": "single",
+                        "trigger": [{"platform": "time", "at": "00:00:00"}],
+                        "action": [{"service": "bad"}],
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert "action" in (result.error or "")
+        assert "Invalid service format" in (result.error or "")
+
+    def test_happy_path_raises_card_when_gate_queues(self):
+        """Valid automation → gate queues for approval → awaiting_approval result."""
+        import asyncio
+
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        ws.set_validate_automation_result(
+            {
+                "trigger": {"valid": True, "error": None},
+                "action": {"valid": True, "error": None},
+            }
+        )
+        executor = self._make_executor(ws_client=ws, auto_execute=False)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="propose_automation",
+                    arguments={
+                        "alias": "Turn off lights at midnight",
+                        "description": "Saves energy",
+                        "mode": "single",
+                        "trigger": [{"platform": "time", "at": "00:00:00"}],
+                        "action": [{"service": "light.turn_off"}],
+                    },
+                )
+            )
+        )
+        assert not result.success
+        assert result.awaiting_approval is True
+        assert "queued for approval" in (result.output or "")

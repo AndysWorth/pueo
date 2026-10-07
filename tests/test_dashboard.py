@@ -7598,3 +7598,43 @@ class TestSharedSSEStreams:
         src = (self._TEMPLATES / "logs.html").read_text()
         idx = src.index("window._pueoPageCleanup")
         assert "clearInterval(_tailInterval)" in src[idx : idx + 200]
+
+
+# ── _execute_automation_create stub ──────────────────────────────────────────
+
+
+class TestExecuteAutomationCreate:
+    def test_stub_sets_fix_error_and_rejected(self, tmp_path):
+        """Stub executor writes fix_error and creates .rejected (S9 not yet wired)."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+
+        nid = "auto-create-stub-1"
+        json_path = tmp_path / f"{nid}.json"
+        payload = {
+            "card_type": "automation_create",
+            "unique_id": "pueo_auto_test_12345678",
+            "alias": "Test automation",
+        }
+        data: dict = {"payload": payload}
+        json_path.write_text(_json.dumps(data))
+        (tmp_path / f"{nid}.in_progress").touch()
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+
+    def test_automation_create_in_dispatch_table(self):
+        """CARD_TYPE_AUTOMATION_CREATE is registered in the approve dispatch table."""
+        from utils.hitl.card_types import CARD_TYPE_AUTOMATION_CREATE
+
+        import web.dashboard as dashboard
+
+        assert CARD_TYPE_AUTOMATION_CREATE in dashboard._CARD_DISPATCH

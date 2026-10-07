@@ -587,3 +587,110 @@ class TestFakeHAWebSocketClientStatistics:
         )
         assert any("get_statistics" in c for c in fake.calls)
         assert any("day" in c for c in fake.calls)
+
+
+# ---------------------------------------------------------------------------
+# validate_automation_config
+# ---------------------------------------------------------------------------
+
+
+class TestValidateAutomationConfig:
+    def test_happy_path_all_valid(self, monkeypatch):
+        """All components valid → returns the result dict."""
+        result = {
+            "trigger": {"valid": True, "error": None},
+            "action": {"valid": True, "error": None},
+        }
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": True,
+                    "result": result,
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        out = asyncio.run(
+            client.validate_automation_config(
+                trigger=[{"platform": "state", "entity_id": "light.living_room"}],
+                action=[
+                    {
+                        "service": "light.turn_off",
+                        "target": {"entity_id": "light.living_room"},
+                    }
+                ],
+            )
+        )
+        assert out == result
+        sent = json.loads(ws._sent[0])
+        assert sent["type"] == "validate_config"
+        assert "trigger" in sent
+        assert "action" in sent
+        assert "condition" not in sent
+
+    def test_partial_fields_only_trigger(self, monkeypatch):
+        """Only trigger passed → condition and action not included in the request."""
+        result = {"trigger": {"valid": True, "error": None}}
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": True,
+                    "result": result,
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        out = asyncio.run(
+            client.validate_automation_config(
+                trigger=[{"platform": "state", "entity_id": "light.x"}],
+            )
+        )
+        assert out == result
+        sent = json.loads(ws._sent[0])
+        assert "trigger" in sent
+        assert "condition" not in sent
+        assert "action" not in sent
+
+    def test_failure_raises_runtime_error(self, monkeypatch):
+        """WS failure response → RuntimeError raised."""
+        ws = _MockWs(
+            [
+                {
+                    "id": 1,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "unknown_error", "message": "err"},
+                }
+            ]
+        )
+        _patch_connect(monkeypatch, ws)
+        client = _make_client()
+        with pytest.raises(RuntimeError, match="validate_config failed"):
+            asyncio.run(client.validate_automation_config(trigger=[]))
+
+    def test_fake_records_call(self):
+        """FakeHAWebSocketClient records the call and returns preset result."""
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        result = {
+            "trigger": {"valid": True, "error": None},
+            "action": {"valid": False, "error": "Invalid action"},
+        }
+        fake = FakeHAWebSocketClient()
+        fake.set_validate_automation_result(result)
+        out = asyncio.run(
+            fake.validate_automation_config(
+                trigger=[{"platform": "state", "entity_id": "light.x"}],
+                action=[{"service": "bad"}],
+            )
+        )
+        assert out == result
+        assert "validate_automation_config" in fake.calls
+        assert len(fake.validate_automation_calls) == 1
+        assert fake.validate_automation_calls[0]["trigger"] is not None

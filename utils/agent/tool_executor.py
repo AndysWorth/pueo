@@ -402,6 +402,15 @@ class ToolExecutor:
                     target=args.get("target") or {},
                     reason=args.get("reason", ""),
                 )
+            if name == "propose_automation":
+                return await self._propose_automation(
+                    alias=args.get("alias", ""),
+                    description=args.get("description", ""),
+                    mode=args.get("mode", "single"),
+                    trigger=args.get("trigger") or [],
+                    condition=args.get("condition") or [],
+                    action=args.get("action") or [],
+                )
             if name == "get_recent_events":
                 return await self._get_recent_events(
                     event_type=args.get("event_type") or None,
@@ -1728,6 +1737,120 @@ class ToolExecutor:
             tool_name="call_service",
             success=True,
             output=f"{domain}.{service} called successfully.",
+        )
+
+    async def _propose_automation(
+        self,
+        alias: str,
+        description: str,
+        mode: str,
+        trigger: list,
+        condition: list,
+        action: list,
+    ) -> ToolResult:
+        """Validate, then raise a HITL card to create a new HA automation."""
+        import re
+
+        if not alias or not trigger or not action:
+            return ToolResult(
+                tool_name="propose_automation",
+                success=False,
+                output="",
+                error="alias, trigger, and action are required",
+            )
+        if self._ws_client is None:
+            return ToolResult(
+                tool_name="propose_automation",
+                success=False,
+                output="",
+                error="WebSocket client not available",
+            )
+
+        # Step 1: validate via WS before raising the card
+        try:
+            validation = await self._ws_client.validate_automation_config(
+                trigger=trigger,
+                condition=condition if condition else None,
+                action=action,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="propose_automation",
+                success=False,
+                output="",
+                error=f"validate_config failed: {exc}",
+            )
+
+        errors = [
+            f"{component}: {info.get('error')}"
+            for component, info in validation.items()
+            if not info.get("valid")
+        ]
+        if errors:
+            return ToolResult(
+                tool_name="propose_automation",
+                success=False,
+                output="",
+                error="Automation validation failed — fix these errors before re-submitting:\n"
+                + "\n".join(errors),
+            )
+
+        # Step 2: generate unique_id using pueo_auto_ prefix
+        slug = re.sub(r"[^a-z0-9]+", "_", alias.lower()).strip("_")[:40]
+        short_uuid = uuid.uuid4().hex[:8]
+        unique_id = f"pueo_auto_{slug}_{short_uuid}"
+
+        from utils.agent.autonomy import RiskLevel
+        from utils.hitl.card_types import CARD_TYPE_AUTOMATION_CREATE
+
+        automation_config = {
+            "alias": alias,
+            "description": description,
+            "mode": mode,
+            "trigger": trigger,
+            "action": action,
+        }
+        if condition:
+            automation_config["condition"] = condition
+
+        nid = get_correlation_id() or str(uuid.uuid4())
+        approved = await self._gate.queue_for_approval(
+            subject=f"Pueo: create automation — {alias}",
+            body=(
+                f"Alias: {alias}\n"
+                f"Description: {description}\n"
+                f"Mode: {mode}\n"
+                f"Unique ID: {unique_id}\n"
+                f"Validation: all components valid"
+            ),
+            payload={
+                "notification_id": nid,
+                "card_type": CARD_TYPE_AUTOMATION_CREATE,
+                "unique_id": unique_id,
+                "alias": alias,
+                "description": description,
+                "mode": mode,
+                "trigger": trigger,
+                "condition": condition,
+                "action": action,
+                "validation_result": validation,
+            },
+            notifier=self._notifier,
+            risk=RiskLevel.MEDIUM,
+        )
+        if not approved:
+            log.info("propose_automation_queued_for_hitl", nid=nid, alias=alias)
+            return ToolResult(
+                tool_name="propose_automation",
+                success=False,
+                output=f"Automation creation queued for approval (id={nid}); agent loop exiting",
+                awaiting_approval=True,
+            )
+
+        return ToolResult(
+            tool_name="propose_automation",
+            success=True,
+            output=f"Automation '{alias}' approved and queued for creation (id={nid}).",
         )
 
     async def _get_recent_events(
