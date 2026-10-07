@@ -7600,36 +7600,263 @@ class TestSharedSSEStreams:
         assert "clearInterval(_tailInterval)" in src[idx : idx + 200]
 
 
-# ── _execute_automation_create stub ──────────────────────────────────────────
+# ── _execute_automation_create ────────────────────────────────────────────────
+
+
+def _make_automation_payload(
+    unique_id: str = "pueo_auto_test_12345678",
+    alias: str = "Test automation",
+) -> dict:
+    return {
+        "card_type": "automation_create",
+        "unique_id": unique_id,
+        "alias": alias,
+        "description": "A test",
+        "mode": "single",
+        "trigger": [{"platform": "state", "entity_id": "input_boolean.test"}],
+        "condition": [],
+        "action": [{"service": "light.turn_on", "target": {"entity_id": "light.test"}}],
+    }
 
 
 class TestExecuteAutomationCreate:
-    def test_stub_sets_fix_error_and_rejected(self, tmp_path):
-        """Stub executor writes fix_error and creates .rejected (S9 not yet wired)."""
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        unique_id: str = "pueo_auto_test_12345678",
+        alias: str = "Test automation",
+        backup_slug: str = "slug-auto-1",
+        api_token: str = "tok",
+        extra_states: list | None = None,
+    ):
         import asyncio
         import json as _json
 
         import web.dashboard as dashboard
+        from agents import ha_agent_sandbox_engine
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+        import config as _config_mod
 
-        nid = "auto-create-stub-1"
+        states = list(extra_states or [])
+        # Pre-populate the automation entity so verify poll succeeds.
+        states.append(
+            {
+                "entity_id": f"automation.{alias.lower().replace(' ', '_')}",
+                "state": "on",
+                "attributes": {"id": unique_id},
+            }
+        )
+        fake_rest = FakeHARestClient(states=states)
+
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "execute_remote_backup",
+            _make_async_return(backup_slug),
+        )
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        import utils.ha.ha_rest_client as rest_mod
+
+        monkeypatch.setattr(rest_mod, "HARestClient", lambda *a, **kw: fake_rest)
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", api_token)
+        monkeypatch.setattr(_config_mod, "HA_HOST", "ha")
+        monkeypatch.setattr(_config_mod, "HA_API_PORT", 8123)
+
+        nid = "auto-create-1"
         json_path = tmp_path / f"{nid}.json"
-        payload = {
-            "card_type": "automation_create",
-            "unique_id": "pueo_auto_test_12345678",
-            "alias": "Test automation",
-        }
+        payload = _make_automation_payload(unique_id=unique_id, alias=alias)
         data: dict = {"payload": payload}
         json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+        return fake_rest, nid, json_path
+
+    def test_happy_path_approved(self, tmp_path, monkeypatch):
+        """backup → create_automation → reload → verify → .approved written."""
+        import json as _json
+
+        fake_rest, nid, json_path = self._run(tmp_path, monkeypatch)
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+        assert saved["fix_backup_slug"] == "slug-auto-1"
+        # create_automation was called once
+        assert any(
+            "/api/config/automation/config/pueo_auto_test_12345678" in p
+            for p, _ in fake_rest.posted
+        )
+        # automation.reload was called
+        assert ("automation", "reload", {}) in fake_rest.service_calls
+
+    def test_verify_fails_writes_rejected(self, tmp_path, monkeypatch):
+        """When automation entity never appears, executor writes .rejected."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        from agents import ha_agent_sandbox_engine
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        # No automation entity in states → verify fails
+        fake_rest = FakeHARestClient(states=[])
+
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine,
+            "execute_remote_backup",
+            _make_async_return("slug-x"),
+        )
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        import utils.ha.ha_rest_client as rest_mod
+
+        monkeypatch.setattr(rest_mod, "HARestClient", lambda *a, **kw: fake_rest)
+
+        import config as _config_mod
+
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", "tok")
+        monkeypatch.setattr(_config_mod, "HA_HOST", "ha")
+        monkeypatch.setattr(_config_mod, "HA_API_PORT", 8123)
+
+        # Skip the 2 s sleeps
+        monkeypatch.setattr(asyncio, "sleep", _make_async_return(None))
+
+        nid = "auto-create-verify-fail"
+        json_path = tmp_path / f"{nid}.json"
+        payload = _make_automation_payload()
+        data: dict = {"payload": payload}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "fix_error" in saved
+        assert "did not appear" in saved["fix_error"]
+
+    def test_no_api_token_writes_rejected(self, tmp_path, monkeypatch):
+        """Missing HA_API_TOKEN causes .rejected without touching HA."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        import config as _config_mod
+
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", "")
+
+        nid = "auto-create-no-token"
+        json_path = tmp_path / f"{nid}.json"
+        payload = _make_automation_payload()
+        data: dict = {"payload": payload}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "HA_API_TOKEN" in saved["fix_error"]
+
+    def test_missing_unique_id_writes_rejected(self, tmp_path, monkeypatch):
+        """Missing unique_id in payload causes .rejected."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        import config as _config_mod
+
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", "tok")
+
+        nid = "auto-create-no-uid"
+        json_path = tmp_path / f"{nid}.json"
+        data: dict = {"payload": {"alias": "Test", "mode": "single"}}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "unique_id" in saved["fix_error"]
+
+    def test_backup_failure_writes_rejected(self, tmp_path, monkeypatch):
+        """Backup failure propagates as .rejected."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        from agents import ha_agent_sandbox_engine
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+        import config as _config_mod
+
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", "tok")
+        monkeypatch.setattr(_config_mod, "HA_HOST", "ha")
+        monkeypatch.setattr(_config_mod, "HA_API_PORT", 8123)
+
+        async def _fail(*a, **kw):
+            raise RuntimeError("backup failed")
+
+        monkeypatch.setattr(ha_agent_sandbox_engine, "execute_remote_backup", _fail)
+        monkeypatch.setattr(
+            ha_agent_sandbox_engine, "record_backup_slug", lambda *a: None
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda: FakeSSHClient())
+
+        nid = "auto-create-backup-fail"
+        json_path = tmp_path / f"{nid}.json"
+        payload = _make_automation_payload()
+        data: dict = {"payload": payload}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(
+            dashboard._execute_automation_create(nid, data, json_path, tmp_path)
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "backup failed" in saved["fix_error"]
+
+    def test_in_progress_always_removed(self, tmp_path, monkeypatch):
+        """The .in_progress sentinel is always cleaned up."""
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        import config as _config_mod
+
+        monkeypatch.setattr(_config_mod, "HA_API_TOKEN", "")
+
+        nid = "auto-create-cleanup"
+        json_path = tmp_path / f"{nid}.json"
         (tmp_path / f"{nid}.in_progress").touch()
+        data: dict = {"payload": _make_automation_payload()}
+        json_path.write_text(_json.dumps(data))
 
         asyncio.run(
             dashboard._execute_automation_create(nid, data, json_path, tmp_path)
         )
 
         assert not (tmp_path / f"{nid}.in_progress").exists()
-        assert (tmp_path / f"{nid}.rejected").exists()
-        saved = _json.loads(json_path.read_text())
-        assert "fix_error" in saved
 
     def test_automation_create_in_dispatch_table(self):
         """CARD_TYPE_AUTOMATION_CREATE is registered in the approve dispatch table."""

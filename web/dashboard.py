@@ -1268,10 +1268,81 @@ async def _execute_automation_create(
     json_path: Path,
     watch_dir: Path,
 ) -> None:
-    """Stub executor for CARD_TYPE_AUTOMATION_CREATE — full implementation in S9."""
+    """backup → REST write → automation.reload → verify entity → timeline event."""
+    import config as _config
+
+    payload = data.get("payload", {})
+    unique_id = payload.get("unique_id", "")
+    alias = payload.get("alias", "")
+    automation_config = {
+        "alias": alias,
+        "description": payload.get("description", ""),
+        "mode": payload.get("mode", "single"),
+        "trigger": payload.get("trigger", []),
+        "condition": payload.get("condition", []),
+        "action": payload.get("action", []),
+    }
+
     (watch_dir / f"{nid}.in_progress").touch()
     try:
-        data["fix_error"] = "Automation creation executor not yet implemented (S9)"
+        if not _config.HA_API_TOKEN:
+            raise RuntimeError("HA_API_TOKEN not configured")
+        if not unique_id:
+            raise RuntimeError("Card payload missing unique_id")
+
+        from agents.ha_agent_sandbox_engine import (
+            execute_remote_backup,
+            record_backup_slug,
+        )
+        from utils.ha.ha_rest_client import HARestClient
+        from utils.ha.ssh_client import AsyncSSHClient
+
+        ssh = AsyncSSHClient()
+        slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(slug)
+
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        await rest.create_automation(unique_id, automation_config)
+        await rest.call_service("automation", "reload", {})
+
+        # Verify the automation entity appears (poll × 3, 2 s apart).
+        verified = False
+        for _ in range(3):
+            try:
+                entities = await rest.get_states("automation.")
+                for ent in entities:
+                    if ent.get("attributes", {}).get("id") == unique_id:
+                        verified = True
+                        break
+                if verified:
+                    break
+            except Exception:  # nosec B110
+                pass
+            await asyncio.sleep(2)
+
+        if not verified:
+            raise RuntimeError(
+                f"Automation {unique_id!r} did not appear in HA states after reload"
+            )
+
+        data["fix_applied"] = True
+        data["fix_backup_slug"] = slug
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "automation_create",
+                f"Automation created: {alias!r} ({unique_id})",
+                {"unique_id": unique_id, "alias": alias},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.rejected").touch()
     finally:
