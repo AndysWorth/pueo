@@ -457,3 +457,48 @@ docker exec pueo-agent python main.py --mode update-check
 ```
 
 See `python main.py --help` for the full mode list.
+
+---
+
+## Pueo in the HA Sidebar
+
+You can embed the Pueo dashboard directly in the Home Assistant sidebar so it is always one click away — no need to open a separate browser tab.
+
+### Step-by-step (Settings → Dashboards → Webpage)
+
+This is the modern approach (HA 2026+). The legacy `panel_iframe` YAML configuration still works and is described below.
+
+1. In HA: **Settings → Dashboards → Add Dashboard** (bottom-right button).
+2. Choose **Webpage**.
+3. Set **Title** (e.g. `Pueo`) and optionally upload an icon.
+4. Set **URL** to the Pueo dashboard address reachable from the HA browser — typically `http://<your-mac-lan-ip>:8080` (e.g. `http://192.168.1.50:8080`).  
+   Use the LAN IP here, not `127.0.0.1` — `127.0.0.1` is your Mac's loopback, not HA's.
+5. Save. The **Pueo** entry appears in the HA sidebar.
+
+To find your Mac's LAN IP: `ipconfig getifaddr en0` (Wi-Fi) or `en1` (Ethernet).
+
+### HTTPS / mixed-content caveat
+
+If your HA instance is accessed over **HTTPS** (e.g. via Nabu Casa or a local SSL certificate), the browser will refuse to load the Pueo iframe over plain **HTTP** — this is a standard browser mixed-content restriction and cannot be worked around in the iframe config.
+
+Options:
+- Access HA over plain HTTP on your LAN (e.g. `http://homeassistant.local:8123`) — the iframe loads fine.
+- Put Pueo behind a local reverse proxy (e.g. nginx) with a self-signed or Let's Encrypt certificate on the same domain as HA.
+
+### No authentication
+
+The Pueo dashboard has **no login screen**. Anyone on your LAN who can reach `<your-mac-ip>:8080` can view the dashboard, approve repair cards, and use the Chat interface. Do not expose this port to the internet.
+
+### Legacy: `panel_iframe` YAML
+
+If you prefer to configure the sidebar via `configuration.yaml`, add this to `configuration.yaml` on your HA host (then restart HA Core):
+
+```yaml
+panel_iframe:
+  pueo:
+    title: Pueo
+    icon: mdi:robot
+    url: "http://<your-mac-lan-ip>:8080"
+```
+
+HA will automatically migrate existing `panel_iframe` entries to the Webpage Dashboard format on the next restart, so both approaches end up in the same place.
