@@ -129,3 +129,120 @@ def test_dashboard_limit_concurrency_constant():
     import main
 
     assert 0 < main.DASHBOARD_LIMIT_CONCURRENCY <= 256
+
+
+# ---------------------------------------------------------------------------
+# _is_update_wake_worthy
+# ---------------------------------------------------------------------------
+
+
+class TestIsUpdateWakeWorthy:
+    def _fn(self, ev: dict) -> bool:
+        import main
+
+        return main._is_update_wake_worthy(ev)
+
+    def test_no_old_state_is_worthy(self):
+        ev = {"event_type": "state_changed", "data": {}}
+        assert self._fn(ev)
+
+    def test_state_value_change_is_worthy(self):
+        ev = {
+            "data": {
+                "old_state": {"state": "off", "attributes": {}},
+                "new_state": {"state": "on", "attributes": {}},
+            }
+        }
+        assert self._fn(ev)
+
+    def test_attribute_only_change_not_worthy(self):
+        ev = {
+            "data": {
+                "old_state": {
+                    "state": "on",
+                    "attributes": {"in_progress": False, "latest_version": "2026.9.0"},
+                },
+                "new_state": {
+                    "state": "on",
+                    "attributes": {"in_progress": True, "latest_version": "2026.9.0"},
+                },
+            }
+        }
+        assert not self._fn(ev)
+
+    def test_latest_version_change_is_worthy(self):
+        ev = {
+            "data": {
+                "old_state": {
+                    "state": "on",
+                    "attributes": {"latest_version": "2026.9.0"},
+                },
+                "new_state": {
+                    "state": "on",
+                    "attributes": {"latest_version": "2026.10.0"},
+                },
+            }
+        }
+        assert self._fn(ev)
+
+
+# ---------------------------------------------------------------------------
+# _is_ai_agent_ha_automation_event
+# ---------------------------------------------------------------------------
+
+
+class TestIsAiAgentHaAutomationEvent:
+    def _fn(self, ev: dict) -> bool:
+        import main
+
+        return main._is_ai_agent_ha_automation_event(ev)
+
+    def test_automation_triggered_with_ai_entity(self):
+        ev = {
+            "event_type": "automation_triggered",
+            "entity_id": "automation.ai_agent_auto_lights",
+        }
+        assert self._fn(ev)
+
+    def test_automation_triggered_with_ai_entity_in_data(self):
+        ev = {
+            "event_type": "automation_triggered",
+            "data": {"entity_id": "automation.ai_agent_auto_notify"},
+        }
+        assert self._fn(ev)
+
+    def test_automation_triggered_non_ai_entity(self):
+        ev = {
+            "event_type": "automation_triggered",
+            "entity_id": "automation.my_custom_automation",
+        }
+        assert not self._fn(ev)
+
+    def test_state_changed_ai_automation(self):
+        ev = {
+            "event_type": "state_changed",
+            "entity_id": "automation.ai_agent_auto_scene",
+        }
+        assert self._fn(ev)
+
+    def test_state_changed_ai_automation_in_data(self):
+        ev = {
+            "event_type": "state_changed",
+            "data": {"entity_id": "automation.ai_agent_auto_camera"},
+        }
+        assert self._fn(ev)
+
+    def test_state_changed_regular_automation(self):
+        ev = {
+            "event_type": "state_changed",
+            "entity_id": "automation.my_lights",
+        }
+        assert not self._fn(ev)
+
+    def test_lovelace_updated_returns_false(self):
+        ev = {"event_type": "lovelace_updated"}
+        assert not self._fn(ev)
+
+    def test_unrelated_event_returns_false(self):
+        ev = {"event_type": "state_changed", "entity_id": "light.bedroom"}
+        assert not self._fn(ev)

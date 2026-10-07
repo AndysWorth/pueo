@@ -33,11 +33,14 @@ Key properties:
 The `ha_event_wake_dispatch` supervisor task polls the ring buffer every second and maps
 events to loop names with a per-loop 5-second debounce:
 
-| Event type | Target loop |
-|---|---|
-| `persistent_notification_event` | `notification_poll` |
-| `repairs_issue_registry_updated` | `repair_poll` |
-| `state_changed` (entity `update.*`) | `update_check` |
+| Event type | Condition | Target loop |
+|---|---|---|
+| `persistent_notification_event` | — | `notification_poll` |
+| `repairs_issue_registry_updated` | — | `repair_poll` |
+| `state_changed` | entity `update.*`, state or `latest_version` changed | `update_check` |
+| `state_changed` | entity `automation.ai_agent_auto_*`, `ai_agent_ha_installed` | `lovelace_poll` |
+| `automation_triggered` | entity `automation.ai_agent_auto_*`, `ai_agent_ha_installed` | `lovelace_poll` |
+| `lovelace_updated` | `ai_agent_ha_installed` | `lovelace_poll` |
 
 ### Fallback poll interval
 
@@ -68,6 +71,15 @@ lengthening their sleep interval.
 
 - Three poll loops react to HA events within ~6 seconds (1 s poll + 5 s debounce) when
   the subscriber is connected.
+- When `ai_agent_ha` is installed, `lovelace_poll` also wakes promptly on
+  `automation.ai_agent_auto_*` creation/change and on any lovelace config update; the
+  existing lovelace investigation then checks dashboard entity health and raises a card on
+  failure.  All three new wake types are gated on `ai_agent_ha_installed` from the
+  HA environment profile so the extra dispatching is a no-op for installations without the
+  companion.
+- `lovelace_updated` is added to `_SUB_EVENTS` in `ha_event_subscriber.py`, and
+  `_is_interesting_state_change` is extended to pass through `automation.ai_agent_auto_*`
+  state changes so they reach the wake dispatcher.
 - Polling CPU overhead is reduced when the subscriber is healthy.
 - `supervised_sleep` gains an extra `asyncio.wait_for` call per sleep; overhead is
   negligible (one coroutine awaited per loop iteration).

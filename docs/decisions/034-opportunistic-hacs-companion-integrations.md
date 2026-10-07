@@ -170,6 +170,14 @@ reliable than relying on the agent to reason about whether each call is safe.
 - `prompts/seed_ai_agent_ha.md` seed runbook documents ai_agent_ha quirks and is registered in
   `_SEED_PROMPTS` so agents surface it via `query_knowledge` when ai_agent_ha is detected.
   Mirrored to `pueo-kb/runbooks/`.
+- When `ai_agent_ha_installed` is `True`, the `ha_event_wake_dispatch` task wakes
+  `lovelace_poll` on three additional event types: `state_changed` for
+  `automation.ai_agent_auto_*` entities, `automation_triggered` for those same entities,
+  and any `lovelace_updated` event (added to `_SUB_EVENTS`). This triggers the existing
+  lovelace entity-health investigation promptly after ai_agent_ha makes dashboard or
+  automation changes, and raises a HITL card when issues are found. The wake is gated on
+  the profile flag so installations without the companion see no extra dispatching. See
+  ADR 033 for the subscriber → wake map.
 
 ## Related decisions
 - [ADR 002 — Safety invariant](002-safety-invariant.md): companion output is supporting evidence
