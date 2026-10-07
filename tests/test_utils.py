@@ -6583,6 +6583,21 @@ class TestStrategySeeder:
         assert "remember" in text.lower()
         assert "Phase 4" in text
 
+    def test_ai_agent_ha_seed_is_included(self):
+        """seed_ai_agent_ha.md is registered in _SEED_PROMPTS and retrieves on phantom-state query."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, seed_strategies
+
+        filenames = [f for f, _, _ in _SEED_PROMPTS]
+        assert "seed_ai_agent_ha.md" in filenames
+
+        store = FakeKnowledgeStore()
+        seed_strategies(store)
+        # FakeKnowledgeStore does substring match; "phantom state" is a literal phrase
+        # in the runbook's set_entity_state fallback section.
+        chunks = store.query("phantom state", top_k=10, collections=["strategies"])
+        assert any("ai_agent" in (c.text or "").lower() for c in chunks)
+
 
 class TestSeedHomeProfile:
     def test_returns_one_on_success(self):

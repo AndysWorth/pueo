@@ -18,6 +18,14 @@ that produce diagnostic signals Pueo can use:
   target HA version. It exposes `sensor.upgrade_advisor_status` (idle/analyzing/report_ready/error)
   and `sensor.upgrade_advisor_risk` (low/medium/high) via the standard HA REST API.
 
+- **[ai_agent_ha](https://github.com/sbenodiz/ai_agent_ha)** (by @sbenodiz) — a HACS
+  integration (`custom_components/ai_agent_ha`) that adds an LLM sidebar chat to HA. It can
+  create automations (ids prefixed `ai_agent_auto_`), dashboards, and call services. Its
+  `set_entity_state` tool falls back to `hass.states.async_set` for non-standard domains
+  (anything other than light, switch, cover, climate, fan), creating **phantom state** that does
+  not reflect the underlying device. Pueo detects its presence to surface relevant runbook
+  guidance when diagnosing automation or state anomalies.
+
 Neither integration is required for Pueo to function; requiring them would add friction to setup
 and force a hard dependency on third-party HACS projects that may become unmaintained or introduce
 incompatibilities. However, discarding their signals entirely is wasteful when users have already
@@ -32,11 +40,11 @@ exist on the real sensor entities. This ADR formalises the pattern that replaces
 
 ### 1. Detection via `HAEnvironmentProfile`
 
-`HAEnvironmentProfile` (`utils/ha/ha_environment.py`) gains two boolean fields:
-`spook_installed: bool` and `upgrade_advisor_installed: bool`. Detection uses the same mechanism
-already applied to HACS — checking `get_ha_components()` for the component domain (`"spook"`,
-`"upgrade_advisor"`). Detection is best-effort: a missing HA API token or a REST/WS failure causes
-the field to default to `False` rather than raising.
+`HAEnvironmentProfile` (`utils/ha/ha_environment.py`) gains three boolean fields:
+`spook_installed: bool`, `upgrade_advisor_installed: bool`, and `ai_agent_ha_installed: bool`.
+Detection checks `installed_integrations` for the component domain (`"spook"`,
+`"upgrade_advisor"`, `"ai_agent_ha"`). Detection is best-effort: a missing HA API token or a
+REST/WS failure causes each field to default to `False` rather than raising.
 
 Callers check the profile field before making companion-specific API calls. When the field is
 `False`, the call is skipped entirely — no `unknown_command` errors, no confusing empty results.
@@ -146,8 +154,9 @@ reliable than relying on the agent to reason about whether each call is safe.
 
 ## Consequences
 
-- `HAEnvironmentProfile` gains `spook_installed` and `upgrade_advisor_installed` boolean fields.
-  Both default `False` when detection fails. All existing callers are unaffected.
+- `HAEnvironmentProfile` gains `spook_installed`, `upgrade_advisor_installed`, and
+  `ai_agent_ha_installed` boolean fields. All default `False` when detection fails.
+  All existing callers are unaffected.
 - `get_spook_issues` replaces the dead `get_spook_entity_issues` in `ha_ws_client.py` and
   `interfaces.HAWebSocketClientProtocol`. `FakeHAWebSocketClient` grows a corresponding method.
 - `utils/ha/upgrade_advisor.py` exposes `read_advisor_report`, `request_advisor_analysis`, and
@@ -158,6 +167,9 @@ reliable than relying on the agent to reason about whether each call is safe.
 - `docs/setup-guide.md` Section 7 gains two optional companion prompts (Spook, Upgrade Advisor).
 - `README.md` gains an "Optional HA companion integrations" subsection.
 - `CLAUDE.md` gains an "Opportunistic HACS companion integrations" key-pattern paragraph.
+- `prompts/seed_ai_agent_ha.md` seed runbook documents ai_agent_ha quirks and is registered in
+  `_SEED_PROMPTS` so agents surface it via `query_knowledge` when ai_agent_ha is detected.
+  Mirrored to `pueo-kb/runbooks/`.
 
 ## Related decisions
 - [ADR 002 — Safety invariant](002-safety-invariant.md): companion output is supporting evidence
