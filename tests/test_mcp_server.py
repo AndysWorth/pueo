@@ -111,6 +111,26 @@ class TestMCPDispatch:
         assert "Error executing read_logs" in out
         assert "connection refused" in out
 
+    def test_dispatch_get_statistics_routes_to_executor(self, server, executor):
+        from utils.agent.tool_registry import ToolResult
+
+        executor.execute.return_value = ToolResult(
+            tool_name="get_statistics", success=True, output="Statistics data"
+        )
+        out = asyncio.run(
+            server._dispatch(
+                "get_statistics",
+                {
+                    "statistic_ids": ["sensor.energy"],
+                    "start_time": "2026-01-01 00:00:00",
+                    "period": "hour",
+                    "types": ["mean"],
+                },
+            )
+        )
+        assert out == "Statistics data"
+        executor.execute.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # TestMCPAuth

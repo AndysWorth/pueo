@@ -519,6 +519,15 @@ class ToolExecutor:
                 return await self._get_ha_components()
             if name == "get_spook_issues":
                 return await self._get_spook_issues()
+            if name == "get_statistics":
+                return await self._get_statistics(
+                    statistic_ids=args.get("statistic_ids", []),
+                    start_time=args.get("start_time", ""),
+                    end_time=args.get("end_time") or None,
+                    period=args.get("period", "hour"),
+                    types=args.get("types", ["mean"]),
+                    units=args.get("units") or None,
+                )
             if name == "finish_lovelace_investigation":
                 return await self._finish_lovelace_investigation(
                     args.get("findings", [])
@@ -3601,6 +3610,79 @@ class ToolExecutor:
         output = truncate_to_budget("\n".join(parts), max_tokens=1000, strategy="head")
         return ToolResult(
             tool_name="get_spook_issues",
+            success=True,
+            output=output,
+        )
+
+    async def _get_statistics(
+        self,
+        statistic_ids: list[str],
+        start_time: str,
+        end_time: str | None,
+        period: str,
+        types: list[str],
+        units: dict | None = None,
+    ) -> ToolResult:
+        """Fetch long-term recorder statistics via WS recorder/statistics_during_period."""
+        from utils.core.context import truncate_to_budget
+
+        if not self._ws_client:
+            return ToolResult(
+                tool_name="get_statistics",
+                success=False,
+                output="",
+                error="WS client not available",
+            )
+        if not statistic_ids:
+            return ToolResult(
+                tool_name="get_statistics",
+                success=False,
+                output="",
+                error="statistic_ids must not be empty",
+            )
+
+        try:
+            data = await self._ws_client.get_statistics(
+                statistic_ids=statistic_ids,
+                start_time=start_time,
+                end_time=end_time,
+                period=period,
+                types=types,
+                units=units,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_statistics",
+                success=False,
+                output="",
+                error=f"Failed to fetch statistics: {exc}",
+            )
+
+        if not data:
+            return ToolResult(
+                tool_name="get_statistics",
+                success=True,
+                output="No statistics found for the given parameters.",
+            )
+
+        lines: list[str] = [
+            f"Statistics ({period}) for {', '.join(statistic_ids)}:",
+            f"  Period: {start_time} → {end_time or 'now'}",
+            f"  Value types: {', '.join(types)}",
+            "",
+        ]
+        for stat_id, buckets in data.items():
+            lines.append(f"{stat_id} ({len(buckets)} buckets):")
+            for bucket in buckets[:20]:
+                start_ms = bucket.get("start", "?")
+                values = {k: v for k, v in bucket.items() if k != "start"}
+                lines.append(f"  {start_ms}: {values}")
+            if len(buckets) > 20:
+                lines.append(f"  ... and {len(buckets) - 20} more buckets")
+
+        output = truncate_to_budget("\n".join(lines), max_tokens=1500, strategy="head")
+        return ToolResult(
+            tool_name="get_statistics",
             success=True,
             output=output,
         )

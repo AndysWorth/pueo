@@ -25,13 +25,13 @@ Add a `PueoMCPServer` class (`utils/mcp/pueo_mcp_server.py`) that:
   dashboard which stays on `127.0.0.1`. The MCP server binds to `0.0.0.0` so HA can reach
   it over the LAN.
 - Is started by `LoopSupervisor` alongside the dashboard when `MCP_ENABLED=true`.
-- Exposes a curated read-heavy subset of 13 tools from the existing chat tool registry
+- Exposes a curated read-heavy subset of 22 tools from the existing chat tool registry
   (see `_MCP_TOOL_NAMES`).
 - Supports an optional Bearer token auth gate (`MCP_TOKEN`).
 - Defers all `mcp` SDK imports into method bodies so Pueo starts normally when the package
   is not installed.
 
-### Exposed tools (13)
+### Exposed tools (22)
 
 | Tool | Purpose |
 |---|---|
@@ -48,6 +48,16 @@ Add a `PueoMCPServer` class (`utils/mcp/pueo_mcp_server.py`) that:
 | `recall` | Retrieve notes from Pueo's memory store |
 | `search_integrations` | Search installed integrations by name |
 | `get_dashboard_entity_health` | Check Lovelace dashboards for missing/disabled entities |
+| `get_entity_history` | State history for an entity over the last N hours |
+| `get_logbook` | HA logbook entries for an entity over the last N hours |
+| `render_ha_template` | Render a Jinja2 template via the live HA template engine |
+| `get_system_error_log` | Filtered HA system error log entries |
+| `get_area_layout` | Area, floor, and label registry layout |
+| `get_automation_traces` | Recent automation/script run traces |
+| `get_integration_diagnostics` | Diagnostics for a config entry or domain |
+| `get_recent_events` | Recent events from the HA event subscriber ring buffer |
+| `get_spook_issues` | Spook repair issues and orphaned-entity analysis |
+| `get_statistics` | Long-term recorder statistics for one or more entities |
 
 ### Excluded tools (never exposed via MCP)
 

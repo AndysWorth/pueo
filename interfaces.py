@@ -84,6 +84,15 @@ class HAWebSocketClientProtocol(Protocol):
         self, domain: str, item_id: str | None = None
     ) -> list[dict]: ...
     async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict: ...
+    async def get_statistics(
+        self,
+        statistic_ids: list[str],
+        start_time: str,
+        end_time: str | None,
+        period: str,
+        types: list[str],
+        units: dict | None = None,
+    ) -> dict: ...
     async def get_update_release_notes(self, entity_id: str) -> str | None: ...
 
 

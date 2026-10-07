@@ -44,6 +44,7 @@ _MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "get_integration_diagnostics",
         "get_recent_events",
         "get_spook_issues",
+        "get_statistics",
     }
 )
 
@@ -115,6 +116,7 @@ class PueoMCPServer:
             GET_LOGBOOK,
             GET_RECENT_EVENTS,
             GET_SPOOK_ISSUES,
+            GET_STATISTICS,
             GET_SYSTEM_ERROR_LOG,
             QUERY_KNOWLEDGE,
             READ_CONFIG,
@@ -150,6 +152,7 @@ class PueoMCPServer:
             GET_INTEGRATION_DIAGNOSTICS,
             GET_RECENT_EVENTS,
             GET_SPOOK_ISSUES,
+            GET_STATISTICS,
         ]
         tool_defs = [td for td in _all_tool_defs if td.name in _MCP_TOOL_NAMES]
         token = _cfg.MCP_TOKEN

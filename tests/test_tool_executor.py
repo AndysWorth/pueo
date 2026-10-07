@@ -4358,3 +4358,150 @@ class TestGetRecentEvents:
         fake_sub = FakeHAEventSubscriber()
         ex.set_event_subscriber(fake_sub)
         assert ex._event_subscriber is fake_sub
+
+
+# ---------------------------------------------------------------------------
+# TestGetStatistics
+# ---------------------------------------------------------------------------
+
+
+class TestGetStatistics:
+    """_get_statistics fetches recorder long-term statistics via WS client."""
+
+    def _make_executor(self, ws=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            ha_ws_client=ws,
+        )
+
+    def test_no_ws_client_returns_error(self):
+        import asyncio
+
+        executor = self._make_executor(ws=None)
+        result = asyncio.run(
+            executor._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result.success is False
+        assert "WS client" in (result.error or "")
+
+    def test_empty_statistic_ids_returns_error(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(
+            executor._get_statistics(
+                statistic_ids=[],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result.success is False
+        assert "statistic_ids" in (result.error or "")
+
+    def test_returns_formatted_buckets(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        data = {
+            "sensor.energy": [
+                {"start": 1700000000000, "mean": 1.5},
+                {"start": 1700003600000, "mean": 2.3},
+            ]
+        }
+        ws = FakeHAWebSocketClient()
+        ws.set_statistics(data)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(
+            executor._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result.success is True
+        assert "sensor.energy" in result.output
+        assert "2 buckets" in result.output
+
+    def test_empty_response_returns_no_statistics_found(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        ws = FakeHAWebSocketClient()  # set_statistics not called → {}
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(
+            executor._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result.success is True
+        assert "No statistics" in result.output
+
+    def test_ws_exception_returns_error(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        class _BrokenWS(FakeHAWebSocketClient):
+            async def get_statistics(self, **kwargs):  # type: ignore[override]
+                raise RuntimeError("connection refused")
+
+        executor = self._make_executor(ws=_BrokenWS())
+        result = asyncio.run(
+            executor._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result.success is False
+        assert "connection refused" in (result.error or "")
+
+    def test_dispatch_via_execute(self):
+        """get_statistics is reachable through ToolExecutor.execute."""
+        import asyncio
+        from utils.agent.tool_registry import ToolCall
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        data = {"sensor.energy": [{"start": 1700000000000, "mean": 5.0}]}
+        ws = FakeHAWebSocketClient()
+        ws.set_statistics(data)
+        executor = self._make_executor(ws=ws)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="get_statistics",
+                    arguments={
+                        "statistic_ids": ["sensor.energy"],
+                        "start_time": "2026-01-01 00:00:00",
+                        "period": "hour",
+                        "types": ["mean"],
+                    },
+                )
+            )
+        )
+        assert result.success is True
+        assert "sensor.energy" in result.output
