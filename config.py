@@ -204,13 +204,22 @@ KB_SYNC_CACHE_DIR: str = _agent.get(
 # LLM provider selection
 _llm_cfg = _cfg.get("llm", {})
 _cloud_cfg = _cfg.get("cloud", {})
-LLM_PROVIDER: str = _llm_cfg.get("provider", "local")  # "local" | "cloud" | "both"
+LLM_PROVIDER: str = _llm_cfg.get(
+    "provider", "local"
+)  # "local" | "cloud" | "both" | "openai_compat"
 CLOUD_MODEL: str = _cloud_cfg.get("model", "claude-sonnet-5")
 CLOUD_MAX_COST_PER_INCIDENT_USD: float = float(
     _cloud_cfg.get("max_cost_per_incident_usd", 0.50)
 )
 CLOUD_MAX_DAILY_SPEND_USD: float = float(_cloud_cfg.get("max_daily_spend_usd", 5.00))
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+_openai_compat_cfg = _llm_cfg.get("openai_compat", {})
+OPENAI_COMPAT_BASE_URL: str = _openai_compat_cfg.get(
+    "base_url", "http://localhost:1234/v1"
+)
+OPENAI_COMPAT_MODEL: str = _openai_compat_cfg.get("model", "qwen2.5-coder:7b")
+OPENAI_COMPAT_NUM_CTX: int = int(_openai_compat_cfg.get("num_ctx", 8192))
 
 # Startup guards — fire at import time so the process fails fast at launch
 if LLM_PROVIDER in ("cloud", "both") and not ANTHROPIC_API_KEY:

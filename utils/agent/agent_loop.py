@@ -122,6 +122,15 @@ def _derive_loop_call_options(model_name: str) -> ModelCallOptions:
     from utils.disk.hardware import detect_local_hardware, list_ollama_models
     from utils.agent.work_queue import get_work_queue_or_none
 
+    if _cfg.LLM_PROVIDER == "openai_compat":
+        ctx = _cfg.OPENAI_COMPAT_NUM_CTX
+        return ModelCallOptions(
+            think=None,
+            num_ctx=ctx,
+            temperature=0.0,
+            keep_alive="5m",  # unused by OpenAI-compat client; harmless placeholder
+        )
+
     hw = detect_local_hardware()
     models = list_ollama_models()
     model_info_map = {m.name: m for m in models}

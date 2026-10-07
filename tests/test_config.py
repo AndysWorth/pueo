@@ -1390,6 +1390,65 @@ class TestLLMProviderStartupGuards:
             importlib.reload(sys.modules["config"])
 
 
+class TestOpenAICompatConfig:
+    def test_base_url_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_BASE_URL == "http://localhost:1234/v1"
+
+    def test_base_url_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {"llm": {"openai_compat": {"base_url": "http://localhost:8000/v1"}}}
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_BASE_URL == "http://localhost:8000/v1"
+
+    def test_model_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_MODEL == "qwen2.5-coder:7b"
+
+    def test_model_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"llm": {"openai_compat": {"model": "llama-3.2-3b"}}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_MODEL == "llama-3.2-3b"
+
+    def test_num_ctx_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_NUM_CTX == 8192
+
+    def test_num_ctx_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"llm": {"openai_compat": {"num_ctx": 32768}}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.OPENAI_COMPAT_NUM_CTX == 32768
+
+    def test_openai_compat_provider_loads_without_anthropic_key(
+        self, isolated_config, monkeypatch
+    ):
+        isolated_config.write_text(yaml.dump({"llm": {"provider": "openai_compat"}}))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.LLM_PROVIDER == "openai_compat"
+
+
 class TestFederatedCasesRepoConfig:
     def test_pueo_kb_repo_default(self, isolated_config):
         importlib.reload(sys.modules["config"])

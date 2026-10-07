@@ -30,11 +30,16 @@ ollama:
   #                                   # ignored when keep_alive is set explicitly (not "auto")
 
 llm:
-  provider: "local"  # "local" | "cloud" | "both"
+  provider: "local"  # "local" | "cloud" | "both" | "openai_compat"
                      # local: Ollama only (default, no WAN for inference)
                      # cloud: Anthropic API as primary LLM
                      # both: Ollama for autonomous cycles + Claude available for approved escalation
+                     # openai_compat: any OpenAI-compatible server (LM Studio, mlx-lm, vLLM, etc.)
                      # Note: "cloud" and "both" require ANTHROPIC_API_KEY env var — never put it here
+  # openai_compat:                               # Uncomment when provider: "openai_compat"
+  #   base_url: http://localhost:1234/v1         # LM Studio default; change for mlx-lm / vLLM
+  #   model: qwen2.5-coder:7b                    # Model name sent in every request
+  #   num_ctx: 8192                              # Context window (can't be auto-detected)
 
 cloud:
   model: "claude-sonnet-5"             # Claude model for cloud/both modes
