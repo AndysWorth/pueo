@@ -1583,6 +1583,67 @@ GET_HA_COMPONENTS = ToolDefinition(
     parameters={"type": "object", "properties": {}, "required": []},
 )
 
+GET_STATISTICS = ToolDefinition(
+    name="get_statistics",
+    description=(
+        "Return long-term recorder statistics for one or more entities over a time range. "
+        "Useful for spotting stuck/drifting sensors, energy anomalies, and gaps in recorder data. "
+        "Each period bucket contains the requested value types (mean, min, max, sum, state, change). "
+        "Timestamps are milliseconds since the Unix epoch. "
+        "Use period='hour' for recent diagnosis; 'day' or 'month' for trend analysis."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "statistic_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Entity or external statistic IDs to fetch "
+                    "(e.g. ['sensor.energy_meter', 'sensor.water_usage'])"
+                ),
+            },
+            "start_time": {
+                "type": "string",
+                "description": "Start of the period (ISO-8601 or 'YYYY-MM-DD HH:MM:SS')",
+            },
+            "end_time": {
+                "type": "string",
+                "description": "End of the period; omit to fetch from start_time to now",
+            },
+            "period": {
+                "type": "string",
+                "enum": ["5minute", "hour", "day", "week", "month"],
+                "description": "Bucket size",
+            },
+            "types": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "change",
+                        "last_reset",
+                        "max",
+                        "mean",
+                        "min",
+                        "state",
+                        "sum",
+                    ],
+                },
+                "description": "Value types to include in each bucket",
+            },
+            "units": {
+                "type": "object",
+                "description": (
+                    "Optional unit conversion map by device class "
+                    '(e.g. {"energy": "kWh", "volume": "L"})'
+                ),
+            },
+        },
+        "required": ["statistic_ids", "start_time", "period", "types"],
+    },
+)
+
 GET_SPOOK_ISSUES = ToolDefinition(
     name="get_spook_issues",
     description=(
@@ -2030,6 +2091,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_RECENT_EVENTS,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
+        GET_STATISTICS,
         DISCARD_RESULT,
     ):
         reg.register(tool)
@@ -2142,6 +2204,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
+        GET_STATISTICS,
         RESOLVE_HITL_CARD,
         DISCARD_RESULT,
     ):

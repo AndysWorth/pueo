@@ -529,3 +529,47 @@ class TestRegistryMembership:
 
         reg = build_code_proposal_registry()
         assert "get_spook_issues" not in reg
+
+    def test_get_statistics_in_ha_and_chat_registries(self):
+        from utils.agent.tool_registry import (
+            build_chat_tool_registry,
+            build_ha_tool_registry,
+        )
+
+        for registry_fn, label in (
+            (build_ha_tool_registry, "ha"),
+            (build_chat_tool_registry, "chat"),
+        ):
+            reg = registry_fn()
+            assert (
+                "get_statistics" in reg
+            ), f"get_statistics missing from {label} registry"
+
+    def test_get_statistics_in_mcp_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_statistics" in _MCP_TOOL_NAMES
+
+    def test_get_statistics_schema(self):
+        from utils.agent.tool_registry import GET_STATISTICS
+
+        props = GET_STATISTICS.parameters.get("properties", {})
+        assert "statistic_ids" in props
+        assert "start_time" in props
+        assert "end_time" in props
+        assert "period" in props
+        assert "types" in props
+        assert "units" in props
+        required = GET_STATISTICS.parameters.get("required", [])
+        assert "statistic_ids" in required
+        assert "start_time" in required
+        assert "period" in required
+        assert "types" in required
+        assert "end_time" not in required  # optional
+        assert "units" not in required  # optional
+
+    def test_get_statistics_not_in_code_proposal_registry(self):
+        from utils.agent.tool_registry import build_code_proposal_registry
+
+        reg = build_code_proposal_registry()
+        assert "get_statistics" not in reg

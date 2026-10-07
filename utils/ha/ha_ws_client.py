@@ -219,6 +219,34 @@ class HAWebSocketClient:  # pragma: no cover
         )
         return result if isinstance(result, dict) else {}
 
+    async def get_statistics(
+        self,
+        statistic_ids: list[str],
+        start_time: str,
+        end_time: str | None,
+        period: str,
+        types: list[str],
+        units: dict | None = None,
+    ) -> dict:
+        """Fetch long-term recorder statistics via recorder/statistics_during_period.
+
+        Returns a dict mapping statistic_id → list of period buckets.
+        Each bucket has a start timestamp (ms since epoch) and the requested
+        value types (mean, min, max, sum, state, change, last_reset).
+        """
+        payload: dict = {
+            "statistic_ids": statistic_ids,
+            "start_time": start_time,
+            "period": period,
+            "types": types,
+        }
+        if end_time is not None:
+            payload["end_time"] = end_time
+        if units is not None:
+            payload["units"] = units
+        result = await self._call("recorder/statistics_during_period", **payload)
+        return result if isinstance(result, dict) else {}
+
     async def get_update_release_notes(self, entity_id: str) -> str | None:
         """Fetch release notes for an update entity via WS ``update/release_notes``.
 
@@ -321,6 +349,8 @@ class FakeHAWebSocketClient:
         self._trace_detail: dict = trace_detail or {}
         # update_release_notes: entity_id → release notes string (or None)
         self._update_release_notes: dict[str, str | None] = update_release_notes or {}
+        # statistics: statistic_id → list of buckets (keyed by the joined statistic_ids)
+        self._statistics: dict = {}
         self.calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
@@ -399,6 +429,23 @@ class FakeHAWebSocketClient:
     async def get_trace(self, domain: str, item_id: str, run_id: str) -> dict:
         self.calls.append(f"get_trace:{domain}:{item_id}:{run_id}")
         return dict(self._trace_detail)
+
+    async def get_statistics(
+        self,
+        statistic_ids: list[str],
+        start_time: str,
+        end_time: str | None,
+        period: str,
+        types: list[str],
+        units: dict | None = None,
+    ) -> dict:
+        key = ",".join(sorted(statistic_ids))
+        self.calls.append(f"get_statistics:{key}:{period}")
+        return dict(self._statistics)
+
+    def set_statistics(self, data: dict) -> None:
+        """Pre-load statistics response data for tests."""
+        self._statistics = data
 
     async def get_update_release_notes(self, entity_id: str) -> str | None:
         self.calls.append(f"get_update_release_notes:{entity_id}")

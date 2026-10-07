@@ -522,3 +522,68 @@ class TestConnectAndAuthClosesOnError:
         result = asyncio.run(_make_client()._connect_and_auth())
         assert result is ws
         assert ws.closed is False
+
+
+# ---------------------------------------------------------------------------
+# TestFakeHAWebSocketClientStatistics
+# ---------------------------------------------------------------------------
+
+
+class TestFakeHAWebSocketClientStatistics:
+    """FakeHAWebSocketClient correctly handles get_statistics."""
+
+    def test_returns_empty_dict_by_default(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        result = asyncio.run(
+            fake.get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result == {}
+
+    def test_returns_preset_data(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        data = {
+            "sensor.energy": [
+                {"start": 1700000000000, "mean": 1.5},
+                {"start": 1700003600000, "mean": 2.3},
+            ]
+        }
+        fake = FakeHAWebSocketClient()
+        fake.set_statistics(data)
+        result = asyncio.run(
+            fake.get_statistics(
+                statistic_ids=["sensor.energy"],
+                start_time="2026-01-01 00:00:00",
+                end_time="2026-01-02 00:00:00",
+                period="hour",
+                types=["mean"],
+            )
+        )
+        assert result == data
+
+    def test_records_call(self):
+        import asyncio
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        fake = FakeHAWebSocketClient()
+        asyncio.run(
+            fake.get_statistics(
+                statistic_ids=["sensor.energy", "sensor.water"],
+                start_time="2026-01-01 00:00:00",
+                end_time=None,
+                period="day",
+                types=["sum"],
+            )
+        )
+        assert any("get_statistics" in c for c in fake.calls)
+        assert any("day" in c for c in fake.calls)
