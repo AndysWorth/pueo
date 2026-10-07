@@ -512,6 +512,7 @@ async def overview(request: Request) -> HTMLResponse:
             "recent_events": recent_events,
             "llm_location_label": llm_location_label,
             "kb_health": kb_health,
+            "netalertx_enabled": _cfg.NETALERTX_ENABLED,
         },
     )
 
@@ -2686,19 +2687,26 @@ def _build_settings_groups() -> list[dict]:
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_tab(request: Request) -> HTMLResponse:
+    import os as _os
+
     import config as _config
     from utils.disk.hardware import (
         detect_local_hardware,
         list_ollama_models,
         recommend_model,
     )
-    from utils.system.service import service_status
+    from utils.system.service import PLIST_TARGET, service_status
 
     profile, available, svc = await asyncio.gather(
         asyncio.to_thread(detect_local_hardware),
         asyncio.to_thread(list_ollama_models),
         asyncio.to_thread(service_status),
     )
+    svc["plist_exists"] = PLIST_TARGET.exists()
+    # Expose the current PID so the template can warn when Pueo is running outside
+    # launchd and installing a service would start a colliding second copy.
+    if not svc.get("error") and not svc.get("plist_exists"):
+        svc["self_pid"] = _os.getpid()
     recommended = recommend_model(profile, available)
 
     return templates.TemplateResponse(
@@ -2993,7 +3001,7 @@ async def service_install() -> JSONResponse:
     from utils.system.service import install_service
 
     try:
-        install_service()
+        await asyncio.to_thread(install_service)
         return JSONResponse({"ok": True})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3004,7 +3012,7 @@ async def service_restart_endpoint() -> JSONResponse:
     from utils.system.service import restart_service
 
     try:
-        restart_service()
+        await asyncio.to_thread(restart_service)
         return JSONResponse({"ok": True})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3015,7 +3023,7 @@ async def service_uninstall() -> JSONResponse:
     from utils.system.service import uninstall_service
 
     try:
-        uninstall_service()
+        await asyncio.to_thread(uninstall_service)
         return JSONResponse({"ok": True})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3026,7 +3034,7 @@ async def service_stop() -> JSONResponse:
     from utils.system.service import stop_service
 
     try:
-        stop_service()
+        await asyncio.to_thread(stop_service)
         return JSONResponse({"ok": True})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -3037,15 +3045,11 @@ async def service_start() -> JSONResponse:
     from utils.system.service import start_service
 
     try:
-        start_service()
+        await asyncio.to_thread(start_service)
         return JSONResponse({"ok": True})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-
-_RUNNABLE_MODES: frozenset[str] = frozenset(
-    {"audit", "update-check", "backup-status", "netalertx-diagnose", "rag-refresh"}
-)
 
 # These loops sleep before their first work cycle (no immediate run on start).
 # wake() interrupts the sleep; run_now() would cancel the coroutine and the
@@ -3054,54 +3058,30 @@ _WAKE_ONLY_LOOPS: frozenset[str] = frozenset({"rag_refresh"})
 
 _PUEO_DIR = _get_dirs().resources_dir
 
+# Module-level handle for an in-progress netalertx diagnose task.
+_netalertx_diagnose_task: "asyncio.Task[None] | None" = None
 
-@app.get("/control", response_class=HTMLResponse)
-async def control_tab(request: Request) -> HTMLResponse:
-    from utils.system.service import PLIST_TARGET, service_status
 
-    svc = await asyncio.to_thread(service_status)
-    svc["plist_exists"] = PLIST_TARGET.exists()
-    return templates.TemplateResponse(
-        request,
-        "control.html",
-        {"service": svc, "runnable_modes": sorted(_RUNNABLE_MODES)},
+@app.post("/netalertx/diagnose")
+async def netalertx_diagnose() -> JSONResponse:
+    global _netalertx_diagnose_task
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        raise HTTPException(status_code=503, detail="Supervisor not running")
+
+    if _netalertx_diagnose_task is not None and not _netalertx_diagnose_task.done():
+        return JSONResponse({"ok": True, "already_running": True})
+
+    from netalertx.one_shot_diagnose import run_diagnose
+
+    knowledge_store = getattr(sv._tool_executor, "_knowledge_store", None)
+
+    _netalertx_diagnose_task = asyncio.create_task(
+        run_diagnose(knowledge_store=knowledge_store)
     )
-
-
-@app.post("/control/run")
-async def control_run(mode: str = Query(...)) -> JSONResponse:
-    import sys as _sys
-
-    if mode not in _RUNNABLE_MODES:
-        raise HTTPException(status_code=400, detail=f"Unknown mode: {mode!r}")
-
-    # For rag-refresh: route through the supervisor so the work runs in-process
-    # (visible in the dashboard, uses the same ChromaDB client, no second process).
-    if mode == "rag-refresh":
-        from utils.agent.supervisor import get_rag_refreshing, get_supervisor_instance
-
-        sv = get_supervisor_instance()
-        if sv is not None and sv._handles.get("rag_refresh") is not None:
-            if get_rag_refreshing():
-                return JSONResponse({"ok": True, "already_running": True, "mode": mode})
-            sv.wake("rag_refresh")
-            return JSONResponse({"ok": True, "mode": mode})
-        # Supervisor not running (standalone --mode dashboard): fall through to subprocess.
-
-    async def _background() -> None:
-        proc = await asyncio.create_subprocess_exec(
-            _sys.executable,
-            str(_PUEO_DIR / "main.py"),
-            "--mode",
-            mode,
-            cwd=str(_PUEO_DIR),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-
-    asyncio.create_task(_background())
-    return JSONResponse({"ok": True, "mode": mode})
+    return JSONResponse({"ok": True})
 
 
 # ── Chat routes ───────────────────────────────────────────────────────────────

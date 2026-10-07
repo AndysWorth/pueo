@@ -262,6 +262,21 @@
     </div>
   </div>
 
+  <!-- NetAlertX one-shot diagnose card (only when NETALERTX_ENABLED) -->
+  {% if netalertx_enabled %}
+  <div class="card" id="netalertx-diagnose-card">
+    <div class="section-title">NetAlertX</div>
+    <p style="font-size:0.82rem;color:#666;margin-bottom:0.75rem;">
+      Run a one-shot check of the current NetAlertX and HA integration state with AI
+      diagnosis. Results appear in the <a href="/timeline" style="color:#1a73e8;">Timeline</a>.
+    </p>
+    <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+      <button id="netalertx-diagnose-btn" class="loop-ctrl-btn" onclick="runNetalertxDiagnose()">Run diagnose</button>
+      <span id="netalertx-diagnose-status" style="font-size:0.82rem;color:#666;"></span>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Current Activity Widget -->
   <div class="card full-width" id="active-activity-widget" style="display:none;border-left:3px solid #6366f1;">
     <div class="section-title" style="display:flex;align-items:center;gap:0.5rem;">
@@ -822,6 +837,33 @@
       }
     }
   }
+
+  function runNetalertxDiagnose() {
+    var btn = document.getElementById('netalertx-diagnose-btn');
+    var statusEl = document.getElementById('netalertx-diagnose-status');
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Starting…';
+    fetch('/netalertx/diagnose', {method: 'POST'})
+      .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+      .then(function(res) {
+        if (!res.ok) {
+          if (statusEl) statusEl.textContent = 'Error: ' + (res.d.detail || 'unknown');
+          if (btn) btn.disabled = false;
+          return;
+        }
+        var msg = res.d.already_running ? 'Already running — check Timeline.' : 'Running — results in Timeline.';
+        if (statusEl) statusEl.textContent = msg;
+        setTimeout(function() {
+          if (btn) btn.disabled = false;
+          if (statusEl) statusEl.textContent = '';
+        }, 8000);
+      })
+      .catch(function(e) {
+        if (statusEl) statusEl.textContent = 'Request failed: ' + e;
+        if (btn) btn.disabled = false;
+      });
+  }
+  window.runNetalertxDiagnose = runNetalertxDiagnose;
 
   function loopControl(name, action, btn) {
     fetch('/loops/' + name + '/' + action, {method: 'POST'})

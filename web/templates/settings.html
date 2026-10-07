@@ -143,28 +143,52 @@
 <div style="max-width:720px;margin-top:1.25rem;">
   <div class="card">
     <div class="group-title">Service</div>
-    <div style="margin-bottom:0.6rem;">
-      Status:
-      {% if service.running %}
-      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#d1fae5;color:#065f46;border-radius:4px;font-size:0.78rem;font-weight:700;">Running</span>
-      {% if service.pid %}<span style="font-size:0.78rem;color:#888;margin-left:0.35rem;">PID {{ service.pid }}</span>{% endif %}
-      {% elif service.loaded %}
-      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#fef3c7;color:#92400e;border-radius:4px;font-size:0.78rem;font-weight:700;">Loaded (stopped)</span>
+    <div style="margin-bottom:0.6rem;display:flex;align-items:center;gap:0.5rem;">
+      {% if service.get("error") %}
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#adb5bd;"></span>
+        <span style="font-size:0.85rem;">launchd unavailable ({{ service.error }})</span>
+      {% elif not service.plist_exists %}
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#adb5bd;"></span>
+        <span style="display:inline-block;padding:0.1rem 0.5rem;background:#f3f4f6;color:#6b7280;border-radius:4px;font-size:0.78rem;font-weight:700;">Not installed</span>
+      {% elif not service.loaded %}
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fd7e14;"></span>
+        <span style="display:inline-block;padding:0.1rem 0.5rem;background:#fef3c7;color:#92400e;border-radius:4px;font-size:0.78rem;font-weight:700;">Plist exists, not loaded</span>
+      {% elif service.running %}
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#28a745;"></span>
+        <span style="display:inline-block;padding:0.1rem 0.5rem;background:#d1fae5;color:#065f46;border-radius:4px;font-size:0.78rem;font-weight:700;">Running</span>
+        {% if service.pid %}<span style="font-size:0.78rem;color:#888;">PID {{ service.pid }}</span>{% endif %}
       {% else %}
-      <span style="display:inline-block;padding:0.1rem 0.5rem;background:#f3f4f6;color:#6b7280;border-radius:4px;font-size:0.78rem;font-weight:700;">Not installed</span>
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#adb5bd;"></span>
+        <span style="display:inline-block;padding:0.1rem 0.5rem;background:#fef3c7;color:#92400e;border-radius:4px;font-size:0.78rem;font-weight:700;">Loaded, stopped</span>
       {% endif %}
     </div>
     <div style="font-size:0.77rem;color:#888;margin-bottom:0.75rem;">
-      launchd keeps Pueo running at login and restarts it on crash. Binds to 127.0.0.1 only.
+      Service label: <code>com.pueo.agent</code> — launchd keeps Pueo running at login and restarts on crash.
     </div>
+    {% if not service.get("error") %}
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      {% if not service.loaded %}
-      <button class="btn-save" onclick="serviceAction('install')">Install &amp; Start</button>
+      {% if service.plist_exists and service.loaded and service.running %}
+        <button class="btn-save" onclick="serviceAction('restart')">Restart</button>
+        <button class="btn-save" style="background:#fd7e14;" onclick="confirmSvcAction('stop','Stop','The dashboard will go offline. Restart with `pueo` or `python main.py --mode start-service`.')">Stop</button>
+        <button class="btn-save" style="background:#dc3545;" onclick="confirmSvcAction('uninstall','Uninstall','The dashboard will go offline. Restart with `pueo` or `python main.py --mode start-service`.')">Uninstall</button>
+      {% elif service.plist_exists and service.loaded and not service.running %}
+        <button class="btn-save" onclick="serviceAction('start')">Start</button>
+        <button class="btn-save" style="background:#dc3545;" onclick="confirmSvcAction('uninstall','Uninstall','The dashboard will go offline. Restart with `pueo` or `python main.py --mode start-service`.')">Uninstall</button>
+      {% elif service.plist_exists and not service.loaded %}
+        <button class="btn-save" onclick="serviceAction('start')">Enable &amp; Start</button>
+        <button class="btn-save" style="background:#dc3545;" onclick="confirmSvcAction('uninstall','Uninstall','The dashboard will go offline. Restart with `pueo` or `python main.py --mode start-service`.')">Uninstall</button>
       {% else %}
-      <button class="btn-save" onclick="serviceAction('restart')">Restart</button>
-      <button class="btn-save" style="background:#dc3545;" onclick="serviceAction('uninstall')">Uninstall</button>
+        {% if service.self_pid %}
+          <button class="btn-save" disabled title="Stop the running Pueo process first">Install service</button>
+          <p style="font-size:0.77rem;color:#856404;background:#fff3cd;padding:0.4rem 0.6rem;border-radius:4px;margin:0.5rem 0 0;">
+            Pueo is running outside launchd (PID {{ service.self_pid }}). Installing would start a second copy that collides on ports 8080/8765. Stop this process first.
+          </p>
+        {% else %}
+          <button class="btn-save" onclick="serviceAction('install')">Install &amp; Start</button>
+        {% endif %}
       {% endif %}
     </div>
+    {% endif %}
     <div id="service-action-msg" style="margin-top:0.5rem;font-size:0.8rem;font-weight:600;"></div>
   </div>
 </div>
@@ -229,6 +253,12 @@
       });
   }
   window.serviceAction = serviceAction;
+
+  function confirmSvcAction(action, label, warning) {
+    if (!confirm(label + ' Pueo service?\n\n' + warning)) return;
+    serviceAction(action);
+  }
+  window.confirmSvcAction = confirmSvcAction;
 
   function _modelStatus(text, color) {
     var el = document.getElementById('model-switch-status');
