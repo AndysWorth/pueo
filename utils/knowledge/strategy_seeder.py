@@ -104,6 +104,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Automation or script failure investigation",
         "automation didn't fire, automation not triggering, script failed, automation stopped, condition blocked, trigger not matching",
     ),
+    (
+        "seed_ai_agent_ha.md",
+        "ai_agent_ha companion integration awareness",
+        "ai_agent_ha installed, ai_agent_auto_ automation broken, phantom entity state, set_entity_state wrong value, LLM-created dashboard broken, automations.yaml.bak",
+    ),
 ]
 
 

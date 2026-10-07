@@ -33,6 +33,7 @@ class HAEnvironmentProfile:
     fetch_errors: dict = field(default_factory=dict)
     spook_installed: bool = False
     upgrade_advisor_installed: bool = False
+    ai_agent_ha_installed: bool = False
 
 
 async def build_environment_profile(
@@ -112,6 +113,7 @@ async def build_environment_profile(
     profile.upgrade_advisor_installed = (
         "upgrade_advisor" in profile.installed_integrations
     )
+    profile.ai_agent_ha_installed = "ai_agent_ha" in profile.installed_integrations
 
     # 5. config_yaml_top_keys from remote configuration.yaml
     # Use regex instead of yaml.safe_load: HA config files use !include tags that
@@ -159,6 +161,8 @@ def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
         lines.append("  Spook: installed")
     if profile.upgrade_advisor_installed:
         lines.append("  ha-upgrade-advisor: installed")
+    if profile.ai_agent_ha_installed:
+        lines.append("  ai_agent_ha: installed")
     return "\n".join(lines)
 
 
