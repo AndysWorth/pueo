@@ -1411,7 +1411,7 @@ def main() -> None:
             "  start-service       load and enable the launchd service\n"
             "  stop-service        unload the launchd service (suppresses KeepAlive restart)\n"
             "  restart-service     stop the service; launchd KeepAlive restarts it immediately\n"
-            "  audit               self-diagnostics: gap report saved to audits/\n"
+            "  audit               self-diagnostics: gap report saved to audits/ (deprecated)\n"
             "  export-episodes     export anonymized repair episodes as YAML (use --since DATE)\n"
         ),
     )
@@ -1622,6 +1622,15 @@ def main() -> None:
         restart_service()
         print("Pueo service restarting (launchd KeepAlive will restart it).")
     elif args.mode == "audit":
+        import warnings
+
+        _AUDIT_DEPRECATION = (
+            "--mode audit is deprecated and will be removed in the next major release "
+            "(0.2.0). Its checks are covered live by Overview (pending actions, "
+            "resources, loops), the Disk tab and the Backups tab."
+        )
+        warnings.warn(_AUDIT_DEPRECATION, DeprecationWarning, stacklevel=1)
+        print(f"WARNING: {_AUDIT_DEPRECATION}", file=sys.stderr)
         from agents import ha_agent_advanced
         from utils.system.audit import main_audit
 

@@ -109,7 +109,7 @@ pueo --mode netalertx-diagnose  # NetAlertX health check and optional heal
 pueo --mode update-check        # check for available HA Core/OS/add-on updates
 pueo --mode notifications       # triage HA persistent notifications
 pueo --mode backup-status       # print backup inventory table
-pueo --mode audit               # self-diagnostics gap report (saved to audits/)
+pueo --mode audit               # self-diagnostics gap report (saved to audits/) [deprecated]
 
 # Setup and maintenance
 pueo --mode netalertx-setup     # install and configure NetAlertX on HA
@@ -131,7 +131,7 @@ pueo --mode export-episodes                             # export all repair epis
 pueo --mode export-episodes --since 2026-09-01          # export episodes on or after a date
 ```
 
-> **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`, `audit`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts.
+> **One-shot modes and the dashboard:** The one-shot diagnostic modes (`diagnose`, `repair`, `update-check`, `notifications`, `netalertx-diagnose`, `backup-status`) are designed to run while Pueo is already running normally. Any approval cards they generate are picked up and displayed by the already-running dashboard in real time. If Pueo is not running when you fire a one-shot mode, the cards are written to the watch directory but won't appear in the dashboard until Pueo starts. (`--mode audit` is deprecated — use the Overview, Disk, and Backups tabs instead.)
 >
 > **`replay-episode` and `export-episodes`** are developer/debugging tools, not operational one-shots — they don't generate dashboard cards. `replay-episode` requires `--episode-id`; see the **Episode Replay** section below.
 

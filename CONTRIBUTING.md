@@ -138,6 +138,8 @@ The `audits/` directory (gitignored) is for operational state snapshots and diag
 
 `python main.py --mode audit` produces these reports automatically: it checks SSH connectivity, verifies HA state and disk, inspects the SQLite database, and surfaces a structured gap report comparing intended vs. actual operational state. Reports are saved to `audits/` with a datestamped filename. Insights from real audit reports inform improvements that can be contributed back via the normal PR process.
 
+> **Deprecated:** `--mode audit` is deprecated and will be removed in 0.2.0. Its checks are covered live by the Overview tab (pending actions, resources, loop health), the Disk tab, and the Backups tab.
+
 ---
 
 ## Reporting issues
