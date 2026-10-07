@@ -79,6 +79,7 @@ class TestEvalScenario:
                 "ha_log",
                 "netalertx",
                 "investigation",
+                "chat",
             ), f"{p.name}: unknown trigger {s.trigger!r}"
             assert s.expected_outcome in (
                 "success",

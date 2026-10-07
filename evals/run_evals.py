@@ -32,6 +32,7 @@ from utils.agent.tool_registry import (  # noqa: E402
     AgentLoopResult,
     ToolCall,
     ToolResult,
+    build_chat_tool_registry,
     build_ha_tool_registry,
     build_netalertx_tool_registry,
 )
@@ -45,6 +46,7 @@ _TRIGGER_CONTEXTS = {
     "ha_log": "Analyze recent Home Assistant log output for errors that require remediation.",
     "netalertx": "Check NetAlertX health and fix any configuration or operational issues found.",
     "investigation": "Investigate the reported issue, consult the knowledge base, and produce a structured report of root causes and ranked remediation options.",
+    "chat": "You are Pueo, a Home Assistant assistant. Help the user with their request.",
 }
 
 
@@ -141,6 +143,24 @@ class FakeToolExecutor:
                 tool_name=name,
                 success=True,
                 output=tool_call.arguments.get("summary", "Repair complete"),
+            )
+
+        if name == "finish_chat":
+            return ToolResult(
+                tool_name=name,
+                success=True,
+                output=tool_call.arguments.get("response", "Chat complete"),
+            )
+
+        if name == "propose_automation":
+            alias = tool_call.arguments.get("alias", "unnamed")
+            return ToolResult(
+                tool_name=name,
+                success=True,
+                output=(
+                    f"Automation '{alias}' validated and card raised for approval. "
+                    "Waiting for human review."
+                ),
             )
 
         if name in self._mocks:
@@ -250,14 +270,19 @@ async def run_scenario(scenario: EvalScenario) -> ScenarioScore:  # pragma: no c
 
     if scenario.trigger == "netalertx":
         registry = build_netalertx_tool_registry()
+    elif scenario.trigger == "chat":
+        registry = build_chat_tool_registry()
     else:
         registry = build_ha_tool_registry()
+
+    terminal_tool = "finish_chat" if scenario.trigger == "chat" else "finish_repair"
 
     llm = make_llm_client()
     loop = AgentLoop(
         llm_client=llm,
         tool_executor=executor,  # type: ignore[arg-type]
         tool_registry=registry,
+        terminal_tool_name=terminal_tool,
         max_tool_calls=scenario.max_tool_calls
         + 5,  # allow slight overrun; efficiency is soft
     )

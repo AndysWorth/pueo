@@ -109,6 +109,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "ai_agent_ha companion integration awareness",
         "ai_agent_ha installed, ai_agent_auto_ automation broken, phantom entity state, set_entity_state wrong value, LLM-created dashboard broken, automations.yaml.bak",
     ),
+    (
+        "seed_automation_authoring.md",
+        "Automation authoring via propose_automation",
+        "create automation, add automation, write automation, build automation, automate lights, automate when, turn on when, notify me when, schedule automation",
+    ),
 ]
 
 
