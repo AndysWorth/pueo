@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <style>
-  .rb-state-candidate { background:#fff3cd;color:#856404;border:1px solid #ffc107; }
-  .rb-state-gap       { background:#f8d7da;color:#58151c;border:1px solid #dc3545; }
-  .rb-state-seed      { background:#d1e7dd;color:#0a3622;border:1px solid #28a745; }
+  .rb-state-candidate  { background:#fff3cd;color:#856404;border:1px solid #ffc107; }
+  .rb-state-gap        { background:#f8d7da;color:#58151c;border:1px solid #dc3545; }
+  .rb-state-seed       { background:#d1e7dd;color:#0a3622;border:1px solid #28a745; }
+  .rb-state-validated  { background:#cff4fc;color:#055160;border:1px solid #0dcaf0; }
   .rb-actions { display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.6rem; }
   .rb-btn { padding:0.3rem 0.75rem;font-size:0.8rem;border:none;border-radius:4px;cursor:pointer;font-weight:600; }
   .rb-btn-promote { background:#28a745;color:#fff; }
@@ -19,8 +20,14 @@
   .rb-btn:disabled { opacity:0.5;cursor:default; }
   .dup-warning { background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.5rem 0.75rem;font-size:0.82rem;margin-bottom:0.75rem;color:#856404; }
   .rb-meta { font-size:0.75rem;color:#888;margin-top:0.25rem; }
+  .rb-usage { font-size:0.75rem;margin-top:0.2rem; }
+  .rb-usage-good  { color:#0a8754; }
+  .rb-usage-bad   { color:#b30000; }
+  .rb-usage-none  { color:#888; }
+  .rb-sig { font-size:0.72rem;color:#6c757d;margin-top:0.15rem;font-family:monospace; }
   .rb-approach { font-size:0.82rem;color:#444;margin-top:0.35rem;white-space:pre-wrap;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:4px;padding:0.5rem;max-height:10rem;overflow-y:auto; }
   .section-header { font-size:0.95rem;font-weight:700;color:#333;margin:1.25rem 0 0.5rem; }
+  .gap-sig-header { font-size:0.82rem;font-weight:600;color:#58151c;background:#fce8ea;border:1px solid #f5c2c7;border-radius:4px;padding:0.3rem 0.6rem;margin:0.75rem 0 0.3rem;font-family:monospace; }
   .flash { display:none;font-size:0.8rem;margin-left:0.5rem;color:#28a745; }
   .kb-bar { background:#e8f4fd;border:1px solid #b6d4fe;border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap; }
   .kb-bar code { font-size:0.8rem;background:#fff;border:1px solid #ccc;border-radius:3px;padding:0.1rem 0.35rem; }
@@ -33,15 +40,20 @@
 </div>
 
 {% set queued_count = report.contribution_ready | length %}
-{% if kb_repo_configured and queued_count > 0 %}
+{% if kb_repo_configured and (queued_count > 0 or report.gaps | length > 0) %}
 <div class="kb-bar">
-  <span class="kb-bar-count"><strong>{{ queued_count }}</strong> runbook{{ 's' if queued_count != 1 }} queued for contribution to <code>{{ kb_repo }}</code></span>
+  <span class="kb-bar-count">
+    {% if queued_count > 0 %}<strong>{{ queued_count }}</strong> validated runbook{{ 's' if queued_count != 1 }} queued{% endif %}
+    {% if queued_count > 0 and report.gaps | length > 0 %} + {% endif %}
+    {% if report.gaps | length > 0 %}<strong>{{ report.gaps | length }}</strong> open gap{{ 's' if report.gaps | length != 1 }}{% endif %}
+    &nbsp;for contribution to <code>{{ kb_repo }}</code>
+  </span>
   <button class="rb-btn rb-btn-submit" id="submit-btn" onclick="submitToKb(this)">Submit to pueo-kb</button>
   <span class="flash" id="flash-submit" style="color:#0d6efd;"></span>
 </div>
 {% elif kb_repo_configured %}
 <div class="kb-bar" style="color:#666;">
-  <span class="kb-bar-count">No runbooks queued for contribution to <code>{{ kb_repo }}</code>. Review a candidate and click "Queue for contribution" to add it.</span>
+  <span class="kb-bar-count">No validated runbooks queued for contribution to <code>{{ kb_repo }}</code>. Auto-validate a candidate (3 successful uses) or promote it to seed.</span>
 </div>
 {% endif %}
 
@@ -56,6 +68,52 @@
   {% endfor %}
 {% endif %}
 
+<div class="section-header">Validated ({{ report.validated|length }})</div>
+
+{% if not report.validated %}
+  <p class="empty">No validated runbooks yet. A candidate auto-validates after {{ config.RUNBOOK_VALIDATE_MIN_SUCCESSES if config is defined else 3 }} successful uses with no failures.</p>
+{% else %}
+  {% for rb in report.validated %}
+  <div class="card" id="rb-{{ rb.id }}">
+    <div class="card-header">
+      <span class="badge rb-state-validated">validated</span>
+      <span class="subject">{{ rb.title }}</span>
+      {% if rb.version and rb.version > 1 %}<span style="font-size:0.72rem;color:#555;margin-left:0.4rem;">v{{ rb.version }}</span>{% endif %}
+    </div>
+    {% if rb.signature %}<div class="rb-sig">{{ rb.signature }}</div>{% endif %}
+    <div class="rb-meta">
+      Created: {{ rb.created_at[:10] }}
+      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
+      {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
+    </div>
+    {% if rb.usage_count > 0 %}
+    <div class="rb-usage {% if rb.success_rate is not none %}{% if rb.success_rate >= 0.8 %}rb-usage-good{% elif rb.success_rate < 0.5 %}rb-usage-bad{% else %}rb-usage-none{% endif %}{% else %}rb-usage-none{% endif %}">
+      {{ rb.usage_count }} use{{ 's' if rb.usage_count != 1 }}
+      {% if rb.success_rate is not none %} · {{ "%.0f"|format(rb.success_rate * 100) }}% success{% endif %}
+    </div>
+    {% else %}
+    <div class="rb-usage rb-usage-none">No usage recorded yet</div>
+    {% endif %}
+    <details style="margin-top:0.4rem;">
+      <summary>Approach</summary>
+      <div class="rb-approach">{{ rb.approach }}</div>
+    </details>
+    <div class="rb-actions">
+      {% if not rb.reviewed_at %}
+      <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
+      {% endif %}
+      <button class="rb-btn rb-btn-promote" onclick="promoteRunbook('{{ rb.id }}', this)">Promote → seed</button>
+      {% if not rb.contributed_at %}
+      <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
+      {% endif %}
+      <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
+      <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
+    </div>
+  </div>
+  {% endfor %}
+{% endif %}
+
 <div class="section-header">Candidates ({{ report.candidates|length }})</div>
 
 {% if not report.candidates %}
@@ -66,14 +124,21 @@
     <div class="card-header">
       <span class="badge rb-state-candidate">candidate</span>
       <span class="subject">{{ rb.title }}</span>
+      {% if rb.version and rb.version > 1 %}<span style="font-size:0.72rem;color:#555;margin-left:0.4rem;">v{{ rb.version }}</span>{% endif %}
     </div>
+    {% if rb.signature %}<div class="rb-sig">{{ rb.signature }}</div>{% endif %}
     <div class="rb-meta">
-      Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
-      &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
+      Created: {{ rb.created_at[:10] }}
       {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
-      {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
-      {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
     </div>
+    {% if rb.usage_count > 0 %}
+    <div class="rb-usage {% if rb.success_rate is not none %}{% if rb.success_rate >= 0.8 %}rb-usage-good{% elif rb.success_rate < 0.5 %}rb-usage-bad{% else %}rb-usage-none{% endif %}{% else %}rb-usage-none{% endif %}">
+      {{ rb.usage_count }} use{{ 's' if rb.usage_count != 1 }}
+      {% if rb.success_rate is not none %} · {{ "%.0f"|format(rb.success_rate * 100) }}% success{% endif %}
+    </div>
+    {% else %}
+    <div class="rb-usage rb-usage-none">No usage recorded yet</div>
+    {% endif %}
     <details style="margin-top:0.4rem;">
       <summary>Approach</summary>
       <div class="rb-approach">{{ rb.approach }}</div>
@@ -83,9 +148,6 @@
       <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
       {% endif %}
       <button class="rb-btn rb-btn-promote" onclick="promoteRunbook('{{ rb.id }}', this)">Promote → seed</button>
-      {% if rb.reviewed_at and not rb.contributed_at %}
-      <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
-      {% endif %}
       <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
       <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
     </div>
@@ -98,35 +160,58 @@
 {% if not report.gaps %}
   <p class="empty">No gap runbooks. Gaps are recorded when an agent session exhausts its budget without a fix.</p>
 {% else %}
-  {% for rb in report.gaps %}
-  <div class="card" id="rb-{{ rb.id }}">
-    <div class="card-header">
-      <span class="badge rb-state-gap">gap</span>
-      <span class="subject">{{ rb.title }}</span>
+  {% if report.gaps_by_signature %}
+    {% for sig, sig_gaps in report.gaps_by_signature %}
+    <div class="gap-sig-header">{{ sig }} ({{ sig_gaps | length }})</div>
+    {% for rb in sig_gaps %}
+    <div class="card" id="rb-{{ rb.id }}">
+      <div class="card-header">
+        <span class="badge rb-state-gap">gap</span>
+        <span class="subject">{{ rb.title }}</span>
+      </div>
+      <div class="rb-meta">
+        Created: {{ rb.created_at[:10] }}
+        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      </div>
+      <details style="margin-top:0.4rem;">
+        <summary>What was tried</summary>
+        <div class="rb-approach">{{ rb.approach }}</div>
+      </details>
+      <div class="rb-actions">
+        {% if not rb.reviewed_at %}
+        <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
+        {% endif %}
+        <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
+        <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
+      </div>
     </div>
-    <div class="rb-meta">
-      Trigger: <code>{{ rb.trigger_pattern or "—" }}</code>
-      &nbsp;·&nbsp; Created: {{ rb.created_at[:10] }}
-      {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
-      {% if rb.contributed_at and not rb.kb_pr_url %}&nbsp;·&nbsp; <span style="color:#0d6efd;">Queued for contribution</span>{% endif %}
-      {% if rb.kb_pr_url %}&nbsp;·&nbsp; <a class="kb-pr-link" href="{{ rb.kb_pr_url.split('|')[-1] if '|' in rb.kb_pr_url else rb.kb_pr_url }}" target="_blank" rel="noopener">PR submitted ↗</a>{% endif %}
+    {% endfor %}
+    {% endfor %}
+  {% else %}
+    {% for rb in report.gaps %}
+    <div class="card" id="rb-{{ rb.id }}">
+      <div class="card-header">
+        <span class="badge rb-state-gap">gap</span>
+        <span class="subject">{{ rb.title }}</span>
+      </div>
+      <div class="rb-meta">
+        Created: {{ rb.created_at[:10] }}
+        {% if rb.reviewed_at %}&nbsp;·&nbsp; Reviewed: {{ rb.reviewed_at[:10] }}{% endif %}
+      </div>
+      <details style="margin-top:0.4rem;">
+        <summary>What was tried</summary>
+        <div class="rb-approach">{{ rb.approach }}</div>
+      </details>
+      <div class="rb-actions">
+        {% if not rb.reviewed_at %}
+        <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
+        {% endif %}
+        <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
+        <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
+      </div>
     </div>
-    <details style="margin-top:0.4rem;">
-      <summary>What was tried</summary>
-      <div class="rb-approach">{{ rb.approach }}</div>
-    </details>
-    <div class="rb-actions">
-      {% if not rb.reviewed_at %}
-      <button class="rb-btn rb-btn-review" onclick="reviewRunbook('{{ rb.id }}', this)">Mark reviewed</button>
-      {% endif %}
-      {% if rb.reviewed_at and not rb.contributed_at %}
-      <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
-      {% endif %}
-      <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
-      <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
-    </div>
-  </div>
-  {% endfor %}
+    {% endfor %}
+  {% endif %}
 {% endif %}
 
 <script>

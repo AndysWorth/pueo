@@ -191,10 +191,16 @@ Every code change follows this procedure in order. Never commit directly to `mai
 `pueo-kb` ([AndysWorth/pueo-kb](https://github.com/AndysWorth/pueo-kb)) is the
 federated runbook library. Pueo pulls from it at every RAG refresh
 (`--mode rag-refresh`) via `utils/knowledge/kb_ingester.py` and contributes
-reviewed runbooks back via `utils/knowledge/kb_contributor.py`.
+validated runbooks and open gaps back via `utils/knowledge/kb_contributor.py`.
+Approach text is anonymized (IPs → `<host_N>`, backup slugs → `<slug_N>`) before
+contribution. Seed runbooks in `prompts/seed_*.md` are the human-curated baseline.
+
+Runbook lifecycle (ADR 038): seed → candidate (distilled post-session) → validated
+(auto after `RUNBOOK_VALIDATE_MIN_SUCCESSES` successes, default 3) → seed (human
+promotes). Gaps move to `knowledge_gaps` (never retrieved). Manage via the
+`/runbooks` dashboard tab (`development_mode: true` required).
 
 Configured via `PUEO_KB_REPO` in `config.yaml` (default `"AndysWorth/pueo-kb"`).
-Seed runbooks in `prompts/seed_*.md` are mirrored there under `runbooks/`.
 
 ## Work Tracking
 

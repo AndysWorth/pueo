@@ -51,7 +51,7 @@ def _run(cmd: list[str], cwd: Optional[str] = None, timeout: int = 60) -> str:
     return output
 
 
-def _runbook_to_markdown(runbook: dict) -> str:
+def _runbook_to_markdown(runbook: dict, approach_text: str) -> str:
     """Serialize a runbook dict to markdown with YAML frontmatter."""
     frontmatter = {
         k: runbook[k]
@@ -63,8 +63,13 @@ def _runbook_to_markdown(runbook: dict) -> str:
     if "integrations" in runbook:
         frontmatter["integrations"] = runbook["integrations"]
     fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
-    approach = runbook.get("approach", "")
-    return f"---\n{fm}---\n\n{approach}\n"
+    return f"---\n{fm}---\n\n{approach_text}\n"
+
+
+def _anonymize_text(text: str) -> str:
+    from utils.repair.anonymizer import Anonymizer
+
+    return Anonymizer().text(text)
 
 
 def prepare_contribution_batch(
@@ -82,7 +87,9 @@ def prepare_contribution_batch(
         rb_id = str(rb.get("id", "unknown"))
         slug = re.sub(r"[^A-Za-z0-9_-]", "_", rb_id)[:48]
         filename = f"runbooks/{slug}.md"
-        content = _runbook_to_markdown(rb)
+        approach_raw = rb.get("approach", "")
+        approach_anon = _anonymize_text(approach_raw)
+        content = _runbook_to_markdown(rb, approach_anon)
         files.append(
             ContributionFile(
                 filename=filename,
@@ -96,8 +103,11 @@ def prepare_contribution_batch(
         gap_id = str(gap.get("id", "unknown"))
         slug = re.sub(r"[^A-Za-z0-9_-]", "_", gap_id)[:48]
         filename = f"gaps/{slug}.yaml"
+        anon_gap = {
+            k: _anonymize_text(v) if isinstance(v, str) else v for k, v in gap.items()
+        }
         content = yaml.dump(
-            gap, default_flow_style=False, sort_keys=False, allow_unicode=True
+            anon_gap, default_flow_style=False, sort_keys=False, allow_unicode=True
         )
         files.append(
             ContributionFile(

@@ -3985,7 +3985,8 @@ async def runbooks_tab(request: Request) -> HTMLResponse:
         )
     from utils.knowledge.kb_meta_analyzer import analyze_local_runbooks
 
-    report = await asyncio.to_thread(analyze_local_runbooks, DB_PATH)
+    store = _get_strategy_store()
+    report = await asyncio.to_thread(analyze_local_runbooks, DB_PATH, store)
     return templates.TemplateResponse(
         request,
         "runbooks.html",
@@ -4105,21 +4106,21 @@ async def discard_runbook(runbook_id: str) -> JSONResponse:
 
 @app.post("/runbooks/{runbook_id}/mark-contribution")
 async def mark_runbook_contribution(runbook_id: str) -> JSONResponse:
-    """Queue a reviewed runbook for KB contribution (sets contributed_at)."""
+    """Queue a validated/seed runbook for KB contribution (sets contributed_at)."""
     if not DEVELOPMENT_MODE:
         raise HTTPException(status_code=404)
 
-    def _check_reviewed() -> bool:
+    def _check_eligible() -> bool:
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute(
-                "SELECT reviewed_at FROM agent_strategies WHERE id=?", (runbook_id,)
+                "SELECT runbook_state FROM agent_strategies WHERE id=?", (runbook_id,)
             ).fetchone()
-            return row is not None and row[0] is not None
+            return row is not None and row[0] in ("validated", "seed")
 
-    if not await asyncio.to_thread(_check_reviewed):
+    if not await asyncio.to_thread(_check_eligible):
         raise HTTPException(
             status_code=400,
-            detail="Runbook must be reviewed before marking for contribution.",
+            detail="Only validated or seed runbooks can be queued for contribution.",
         )
 
     now = datetime.utcnow().isoformat()
@@ -4153,25 +4154,33 @@ async def submit_runbooks_to_kb() -> JSONResponse:
             "Add 'pueo_kb_repo: owner/pueo-kb' under 'agent:' in config.yaml.",
         )
 
-    def _load_queued() -> list[dict]:
+    def _load_queued() -> tuple[list[dict], list[dict]]:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
+            runbook_rows = conn.execute(
                 "SELECT id, title, trigger_pattern, approach, contributed_at"
                 " FROM agent_strategies"
                 " WHERE contributed_at IS NOT NULL AND kb_pr_url IS NULL"
-                " AND runbook_state IN ('candidate', 'seed')"
+                " AND runbook_state IN ('validated', 'seed')"
             ).fetchall()
-        return [dict(r) for r in rows]
+            gap_rows = conn.execute(
+                "SELECT id, title, trigger_pattern, approach,"
+                " COALESCE(signature, '') AS signature,"
+                " created_at"
+                " FROM agent_strategies"
+                " WHERE runbook_state = 'gap'"
+                " ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in runbook_rows], [dict(r) for r in gap_rows]
 
-    queued = await asyncio.to_thread(_load_queued)
-    if not queued:
+    queued, open_gaps = await asyncio.to_thread(_load_queued)
+    if not queued and not open_gaps:
         return JSONResponse(
             {
                 "ok": True,
                 "pr_url": None,
                 "count": 0,
-                "message": "No runbooks queued for contribution.",
+                "message": "No runbooks queued and no open gaps to contribute.",
             }
         )
 
@@ -4182,7 +4191,7 @@ async def submit_runbooks_to_kb() -> JSONResponse:
     )
 
     try:
-        batch = prepare_contribution_batch(queued)
+        batch = prepare_contribution_batch(queued, gap_reports=open_gaps)
         pr_url = await submit_batch(batch, PUEO_KB_REPO)
     except KbContributeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -4191,6 +4200,8 @@ async def submit_runbooks_to_kb() -> JSONResponse:
     ids = [r["id"] for r in queued]
 
     def _mark_submitted() -> None:
+        if not ids:
+            return
         with sqlite3.connect(DB_PATH) as conn:
             placeholders = ",".join("?" for _ in ids)
             conn.execute(
@@ -4200,8 +4211,14 @@ async def submit_runbooks_to_kb() -> JSONResponse:
             conn.commit()
 
     await asyncio.to_thread(_mark_submitted)
-    log.info("runbooks_contributed", count=len(queued), pr_url=pr_url)
-    return JSONResponse({"ok": True, "pr_url": pr_url, "count": len(queued)})
+    total = len(queued) + len(open_gaps)
+    log.info(
+        "runbooks_contributed",
+        runbooks=len(queued),
+        gaps=len(open_gaps),
+        pr_url=pr_url,
+    )
+    return JSONResponse({"ok": True, "pr_url": pr_url, "count": total})
 
 
 def run_dashboard() -> None:

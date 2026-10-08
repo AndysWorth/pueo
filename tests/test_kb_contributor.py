@@ -65,7 +65,7 @@ class TestRunbookToMarkdown:
             "approach": "Check the YAML syntax.",
             "contributed_at": "2026-09-04T12:00:00",
         }
-        md = _runbook_to_markdown(rb)
+        md = _runbook_to_markdown(rb, "Check the YAML syntax.")
         assert md.startswith("---\n")
         assert "---\n\n" in md
         parts = md.split("---\n\n", 1)
@@ -74,6 +74,18 @@ class TestRunbookToMarkdown:
         assert fm["title"] == "Test Runbook"
         body = parts[1]
         assert "Check the YAML syntax." in body
+
+    def test_approach_text_overrides_dict_approach(self):
+        rb = {
+            "id": "rb-002",
+            "title": "T",
+            "trigger_pattern": "p",
+            "approach": "original text",
+            "contributed_at": "2026-09-04",
+        }
+        md = _runbook_to_markdown(rb, "anonymized text")
+        assert "anonymized text" in md
+        assert "original text" not in md
 
     def test_includes_tags_and_integrations(self):
         rb = {
@@ -85,13 +97,13 @@ class TestRunbookToMarkdown:
             "integrations": ["zha"],
             "contributed_at": "2026-09-04",
         }
-        md = _runbook_to_markdown(rb)
+        md = _runbook_to_markdown(rb, "a")
         assert "ha_config" in md
         assert "zha" in md
 
     def test_missing_optional_keys_ok(self):
         rb = {"id": "rb-003", "approach": "fix it"}
-        md = _runbook_to_markdown(rb)
+        md = _runbook_to_markdown(rb, "fix it")
         assert "---" in md
         assert "fix it" in md
 
@@ -138,6 +150,26 @@ class TestPrepareContributionBatch:
         parsed = yaml.safe_load(batch[0].content)
         assert parsed["trigger"] == "ha_log"
         assert "err1" in parsed["symptoms"]
+
+    def test_runbook_approach_anonymized(self):
+        rb = {
+            "id": "rb-anon",
+            "approach": "Check host 192.168.1.10 for issues.",
+        }
+        batch = prepare_contribution_batch([rb])
+        content = batch[0].content
+        assert "192.168.1.10" not in content
+        assert "<host_" in content
+
+    def test_gap_approach_anonymized(self):
+        gap = {
+            "id": "g-anon",
+            "approach": "Tried connecting to 10.0.0.1 but failed.",
+        }
+        batch = prepare_contribution_batch([], gap_reports=[gap])
+        parsed = yaml.safe_load(batch[0].content)
+        assert "10.0.0.1" not in parsed.get("approach", "")
+        assert "<host_" in parsed.get("approach", "")
 
 
 # ── submit_batch ──────────────────────────────────────────────────────────────
