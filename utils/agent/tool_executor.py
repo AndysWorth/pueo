@@ -202,7 +202,7 @@ class ToolExecutor:
         ha_ws_client: Optional["HAWebSocketClientProtocol"] = None,
         ha_rest_client: Optional["HARestClientProtocol"] = None,
         knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
-        db_path: str = DB_PATH,
+        db_path: Optional[str] = None,
         llm_client: Optional["LLMClientProtocol"] = None,
         pending_repair_issue: Optional[Any] = None,
         pending_notification: Optional[dict] = None,
@@ -216,7 +216,9 @@ class ToolExecutor:
         self._ws_client = ha_ws_client
         self._rest_client = ha_rest_client
         self._knowledge_store = knowledge_store
-        self._db_path = db_path
+        # Resolve from module-level DB_PATH (not a cached default arg) so that
+        # monkeypatching tool_executor.DB_PATH in tests takes effect.
+        self._db_path = db_path if db_path is not None else DB_PATH
         self._llm_client = llm_client
         self._apply_fix_used = False
         self._pending_patch: dict[str, str] = {}
@@ -471,7 +473,7 @@ class ToolExecutor:
                     args.get("title", ""),
                     args.get("trigger_pattern", ""),
                     args.get("approach", ""),
-                    args.get("runbook_type", "candidate"),
+                    args.get("runbook_type") or args.get("type") or "candidate",
                 )
             if name == "read_pueo_log":
                 return await self._read_pueo_log(
@@ -794,8 +796,11 @@ class ToolExecutor:
         if collection == "strategies":
             src = metadata.get("source", "")
             runbook_type = metadata.get("runbook_type", "")
-            if runbook_type == "gap":
+            kb_type = metadata.get("kb_type", "")
+            if runbook_type == "gap" or kb_type == "gap":
                 return "[KNOWN GAP – prior attempt unresolved]"
+            if src == "home_profile" or runbook_type == "instance_profile":
+                return "[HA INSTANCE PROFILE]"
             if src == "seed_prompt" or runbook_type == "seed":
                 return "[SEED RUNBOOK]"
             if runbook_type == "candidate":
@@ -859,16 +864,51 @@ class ToolExecutor:
         from config import RAG_MIN_SCORE, RAG_TOP_K
 
         collections = self._QUERY_TYPE_COLLECTIONS.get(query_type or "", None)
-        where = None
+
         if integration_filter:
+            # The `strategies` collection has no `impacted_integration` metadata, so
+            # applying the filter drops every runbook.  Query strategies unfiltered
+            # and merge with the filtered results from the other collections.
+            from utils.knowledge.knowledge_store import COLLECTIONS as _ALL_COLS
+
+            all_target = collections or list(_ALL_COLS)
+            has_strat = "strategies" in all_target
+            other_target = [c for c in all_target if c != "strategies"]
             where = {"impacted_integration": {"$in": integration_filter}}
-        chunks = self._knowledge_store.query(
-            query,
-            top_k=RAG_TOP_K,
-            collections=collections,
-            where=where,
-            min_score=RAG_MIN_SCORE,
-        )
+            chunk_lists: list = []
+            if has_strat:
+                chunk_lists.extend(
+                    await asyncio.to_thread(
+                        self._knowledge_store.query,
+                        query,
+                        top_k=RAG_TOP_K,
+                        collections=["strategies"],
+                        min_score=RAG_MIN_SCORE,
+                    )
+                )
+            if other_target:
+                chunk_lists.extend(
+                    await asyncio.to_thread(
+                        self._knowledge_store.query,
+                        query,
+                        top_k=RAG_TOP_K,
+                        collections=other_target,
+                        where=where,
+                        min_score=RAG_MIN_SCORE,
+                    )
+                )
+            chunk_lists.sort(
+                key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
+            )
+            chunks = chunk_lists[:RAG_TOP_K]
+        else:
+            chunks = await asyncio.to_thread(
+                self._knowledge_store.query,
+                query,
+                top_k=RAG_TOP_K,
+                collections=collections,
+                min_score=RAG_MIN_SCORE,
+            )
 
         # Version-aware score boosting: use explicit ha_version or auto-detect from profile.
         effective_version = ha_version
@@ -3085,7 +3125,7 @@ class ToolExecutor:
                 error="title and approach are required",
             )
         self._save_runbook_called = True
-        _VALID_TYPES = {"candidate", "gap", "seed"}
+        _VALID_TYPES = {"candidate", "gap"}
         rtype = runbook_type if runbook_type in _VALID_TYPES else "candidate"
         strategy_id = str(uuid.uuid4())
         text = f"# {title}\n\nTrigger: {trigger_pattern}\n\nType: {rtype}\n\n{approach}"

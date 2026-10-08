@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Layer 3 — full repair pipeline: content validation, approval gate, backup, sandbox test, atomic swap."""
 
+import asyncio
 import hashlib
 import sqlite3
 import time
