@@ -60,7 +60,7 @@ Agent functions accept these optional injected clients and fall back to real one
 
 ## 5. Prompts (`prompts/`)
 
-A Python package of ~30 `.md` files, loaded via `utils/core/prompts.py::load_prompt()`. `agent_loop.md` is the universal 6-phase cycle; `agent_loop_{lovelace,notification,repair_issue,update_analysis}.md` are mode variants. `seed_*.md` are seed runbooks embedded at RAG refresh by `strategy_seeder.py`. No inline prompt strings in `.py` files (ADR 013).
+A Python package of ~30 `.md` files, loaded via `utils/core/prompts.py::load_prompt()`. `agent_loop.md` is the universal 6-phase cycle; `agent_loop_{lovelace,notification,repair_issue,update_analysis}.md` are mode variants. `seed_*.md` are seed runbooks embedded at RAG refresh by `strategy_seeder.py`. Learning is automatic — post-session distillation (`utils/knowledge/runbook_distiller.py`) creates candidate runbooks without the model calling a tool. No inline prompt strings in `.py` files (ADR 013).
 
 ## 6. Common commands
 
@@ -84,7 +84,8 @@ Decisions are in `docs/decisions/`; `docs/decisions/000-index.md` has a one-line
 - **ADR 001** — config centralization (adding any setting)
 - **ADR 002** — safety invariant (anything that writes to HA)
 - **ADR 017** — chat tool parity (all clients passed identically in chat and automated pipelines)
-- **ADR 018** — unified agent methodology (agent loop, 6-phase cycle, `save_runbook`)
+- **ADR 018** — unified agent methodology (agent loop, 6-phase cycle)
+- **ADR 038** — runbook lifecycle (signature-keyed, post-session distillation, evidence-validated; supersedes save_runbook)
 - **ADR 025** — serialized work queue (anything calling `AgentLoop` or writing to HA in supervisor context)
 - **ADR 026** — no concurrent LLM/HA
 - **ADR 032** — HA capability gaps (native REST/WS extension; MCP adapter rejected)
