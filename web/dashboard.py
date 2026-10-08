@@ -3997,8 +3997,18 @@ async def runbooks_tab(request: Request) -> HTMLResponse:
     )
 
 
-class _RunbookPromoteBody(BaseModel):
-    pass
+def _get_strategy_store() -> Any:
+    """Return the shared knowledge store if available, else None."""
+    from utils.agent.supervisor import get_supervisor_instance
+
+    sv = get_supervisor_instance()
+    if (
+        sv is not None
+        and hasattr(sv, "_tool_executor")
+        and sv._tool_executor is not None
+    ):
+        return getattr(sv._tool_executor, "_knowledge_store", None)
+    return None
 
 
 @app.post("/runbooks/{runbook_id}/promote")
@@ -4026,6 +4036,11 @@ async def promote_runbook(runbook_id: str) -> JSONResponse:
             status_code=404,
             detail=f"Runbook {runbook_id!r} not found or not a candidate.",
         )
+    store = _get_strategy_store()
+    if store is not None:
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        await asyncio.to_thread(sync_strategy_to_chroma, runbook_id, DB_PATH, store)
     return JSONResponse({"ok": True, "promoted_at": now})
 
 
@@ -4051,7 +4066,41 @@ async def review_runbook(runbook_id: str) -> JSONResponse:
         raise HTTPException(
             status_code=404, detail=f"Runbook {runbook_id!r} not found."
         )
+    store = _get_strategy_store()
+    if store is not None:
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        await asyncio.to_thread(sync_strategy_to_chroma, runbook_id, DB_PATH, store)
     return JSONResponse({"ok": True, "reviewed_at": now})
+
+
+@app.post("/runbooks/{runbook_id}/discard")
+async def discard_runbook(runbook_id: str) -> JSONResponse:
+    """Discard a gap or candidate runbook (deletes from SQLite and Chroma)."""
+    if not DEVELOPMENT_MODE:
+        raise HTTPException(status_code=404)
+
+    def _delete() -> bool:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "DELETE FROM agent_strategies"
+                " WHERE id=? AND runbook_state IN ('gap', 'candidate')",
+                (runbook_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    deleted = await asyncio.to_thread(_delete)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Runbook {runbook_id!r} not found or not discardable (seed runbooks cannot be discarded).",
+        )
+    store = _get_strategy_store()
+    if store is not None:
+        await asyncio.to_thread(store.delete_ids, "strategies", [runbook_id])
+    log.info("runbook_discarded", runbook_id=runbook_id)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/runbooks/{runbook_id}/mark-contribution")

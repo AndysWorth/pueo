@@ -15976,6 +15976,8 @@ class TestRunRagRefreshKbSync:
             ),
             ("utils.knowledge.strategy_seeder", "seed_strategies"),
             ("utils.knowledge.strategy_seeder", "seed_home_profile"),
+            ("utils.knowledge.strategy_seeder", "prune_strategies"),
+            ("utils.knowledge.kb_ingester", "load_kb_manifest_ids"),
             ("utils.knowledge.repair_episode_embedder", "embed_repair_episodes"),
             ("utils.knowledge.ha_skills_scraper", "fetch_ha_skills"),
             ("utils.knowledge.ha_skills_scraper", "embed_cached_ha_skills"),
@@ -16003,7 +16005,9 @@ class TestRunRagRefreshKbSync:
 
         calls: list[tuple] = []
 
-        def _fake_run_kb_sync(repo, cache_dir, store, integration_profile=None):
+        def _fake_run_kb_sync(
+            repo, cache_dir, store, integration_profile=None, local_seed_filenames=None
+        ):
             calls.append((repo, cache_dir))
             return 3
 

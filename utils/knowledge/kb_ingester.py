@@ -33,6 +33,7 @@ class ManifestEntry:
     ha_version_max: Optional[str] = None
     quality_score: float = 0.0
     added_at: str = ""
+    source_seed: str = ""  # local seed filename this entry mirrors (if any)
 
 
 def _validate_repo(repo: str) -> None:
@@ -85,6 +86,7 @@ def fetch_manifest(repo: str) -> list[ManifestEntry]:
                 ha_version_max=item.get("ha_version_max"),
                 quality_score=float(item.get("quality_score") or 0.0),
                 added_at=str(item.get("added_at") or ""),
+                source_seed=str(item.get("source_seed") or ""),
             )
         )
     return entries
@@ -94,17 +96,29 @@ def select_relevant_entries(
     entries: list[ManifestEntry],
     integration_profile: list[str],
     ingested_sha256s: set[str],
+    local_seed_filenames: Optional[frozenset[str]] = None,
 ) -> list[ManifestEntry]:
     """Filter entries relevant to this installation.
 
     Keeps entries where integrations == ["all"] or intersects with
     integration_profile, and whose sha256 has not been ingested yet.
+    Skips entries that mirror a local seed prompt (by source_seed match or id-slug match).
     """
     profile_set = {s.lower() for s in integration_profile}
+    seeds = local_seed_filenames or frozenset()
     relevant = []
     for entry in entries:
         if entry.sha256 and entry.sha256 in ingested_sha256s:
             continue
+        # Skip entries that duplicate a local seed prompt
+        if entry.source_seed and entry.source_seed in seeds:
+            continue
+        # Fallback: match by id slug (e.g. entry.id == "seed_update_analysis" matches
+        # local seed filename "seed_update_analysis.md")
+        if not entry.source_seed and seeds:
+            entry_slug = entry.id.replace("-", "_")
+            if any(entry_slug == fn.removesuffix(".md") for fn in seeds):
+                continue
         integrations = [i.lower() for i in entry.integrations]
         if "all" in integrations or bool(set(integrations) & profile_set):
             relevant.append(entry)
@@ -185,32 +199,45 @@ def save_sync_state(cache_dir: str, state: dict) -> None:
     (path / _STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def load_kb_manifest_ids(cache_dir: str) -> set[str]:
+    """Return the set of entry ids from the last successful kb sync (or empty set)."""
+    state = load_sync_state(cache_dir)
+    return set(state.get("all_manifest_ids", []))
+
+
 def run_kb_sync(
     repo: str,
     cache_dir: str,
     knowledge_store: "KnowledgeStoreClientProtocol",
     integration_profile: Optional[list[str]] = None,
+    local_seed_filenames: Optional[frozenset[str]] = None,
 ) -> int:
     """Pull manifest, select relevant new entries, download and embed.
 
     Tracks ingested sha256s in cache_dir/kb_sync_state.json so repeated
-    runs are idempotent. Returns count of newly embedded entries.
+    runs are idempotent. Also saves all_manifest_ids so prune_strategies
+    can exclude valid kb entries. Returns count of newly embedded entries.
     """
     _validate_repo(repo)
     state = load_sync_state(cache_dir)
     ingested_sha256s: set[str] = set(state.get("ingested_sha256s", []))
 
     entries = fetch_manifest(repo)
+    all_manifest_ids = {e.id for e in entries}
     relevant = select_relevant_entries(
         entries,
         integration_profile or [],
         ingested_sha256s,
+        local_seed_filenames,
     )
     if not relevant:
+        state["all_manifest_ids"] = sorted(all_manifest_ids)
+        save_sync_state(cache_dir, state)
         return 0
 
     count, new_sha256s = download_and_embed(relevant, repo, knowledge_store)
     ingested_sha256s |= new_sha256s
     state["ingested_sha256s"] = sorted(ingested_sha256s)
+    state["all_manifest_ids"] = sorted(all_manifest_ids)
     save_sync_state(cache_dir, state)
     return count

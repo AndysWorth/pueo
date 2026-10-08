@@ -152,6 +152,14 @@ class FakeKnowledgeStore:
         self._docs[collection] = [d for d in self._docs[collection] if d[0] in keep_ids]
         return before - len(self._docs[collection])
 
+    def delete_ids(self, collection: str, ids: list[str]) -> None:
+        if collection not in self._docs:
+            return
+        remove = set(ids)
+        self._docs[collection] = [
+            d for d in self._docs[collection] if d[0] not in remove
+        ]
+
     def total_count(self) -> int:
         return sum(len(docs) for docs in self._docs.values())
 
@@ -332,6 +340,11 @@ class ChromaKnowledgeStore:  # pragma: no cover
         if stale:
             col.delete(ids=stale)
         return len(stale)
+
+    def delete_ids(self, collection: str, ids: list[str]) -> None:
+        if collection not in self._cols or not ids:
+            return
+        self._cols[collection].delete(ids=ids)
 
     def total_count(self) -> int:
         return sum(col.count() for col in self._cols.values())

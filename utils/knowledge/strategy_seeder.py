@@ -9,6 +9,7 @@ Called once per RAG refresh cycle.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -125,11 +126,9 @@ def seed_strategies(
 
     Uses the prompt file name as the document ID so repeated calls are
     idempotent (upsert semantics). Also writes seed entries to the
-    agent_strategies SQLite table (INSERT OR IGNORE) so they appear in
-    the dashboard Runbook Review tab. Returns the number of documents upserted.
+    agent_strategies SQLite table, refreshing approach/title/trigger_pattern
+    on each run so stale text is updated. Returns the number of documents upserted.
     """
-    import sqlite3
-
     prompts_dir = Path(__file__).parent.parent.parent / "prompts"
     n = 0
     for filename, title, trigger_pattern in _SEED_PROMPTS:
@@ -160,9 +159,13 @@ def seed_strategies(
             try:
                 with sqlite3.connect(db_path) as conn:
                     conn.execute(
-                        "INSERT OR IGNORE INTO agent_strategies"
+                        "INSERT INTO agent_strategies"
                         " (id, title, trigger_pattern, approach, runbook_state, created_at)"
-                        " VALUES (?, ?, ?, ?, 'seed', datetime('now'))",
+                        " VALUES (?, ?, ?, ?, 'seed', datetime('now'))"
+                        " ON CONFLICT(id) DO UPDATE SET"
+                        "  approach=excluded.approach,"
+                        "  title=excluded.title,"
+                        "  trigger_pattern=excluded.trigger_pattern",
                         (doc_id, title, trigger_pattern, content),
                     )
                     conn.commit()
@@ -258,3 +261,84 @@ def seed_home_profile(
         except Exception:  # nosec B110
             pass
     return 1
+
+
+def sync_strategy_to_chroma(
+    strategy_id: str,
+    db_path: str,
+    store: "KnowledgeStoreClientProtocol",
+) -> bool:
+    """Upsert a strategy row's Chroma entry to reflect its current SQLite state.
+
+    Reads the row from SQLite and upserts into the 'strategies' collection with
+    updated 'runbook_type' metadata so labels and authority scores stay current.
+    Returns True on success, False if the row was not found (caller should
+    handle Chroma deletion separately if needed).
+    """
+    row = None
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT id, title, trigger_pattern, approach, runbook_state"
+                    " FROM agent_strategies WHERE id=?",
+                    (strategy_id,),
+                ).fetchone()
+        except Exception:  # nosec B110
+            pass
+    if row is None:
+        return False
+    try:
+        store.upsert(
+            collection="strategies",
+            ids=[row["id"]],
+            documents=[str(row["approach"] or "")],
+            metadatas=[
+                {
+                    "source": "agent_strategies",
+                    "title": str(row["title"] or ""),
+                    "trigger_pattern": str(row["trigger_pattern"] or ""),
+                    "runbook_type": str(row["runbook_state"] or "candidate"),
+                }
+            ],
+        )
+        return True
+    except Exception:  # nosec B110
+        return False
+
+
+def prune_strategies(
+    store: "KnowledgeStoreClientProtocol",
+    db_path: str,
+    kb_manifest_ids: Optional[set[str]] = None,
+) -> int:
+    """Remove 'strategies' Chroma entries not backed by SQLite, local seeds, or the pueo-kb manifest.
+
+    Returns the number of entries pruned.
+    """
+    keep: set[str] = set()
+
+    # Local seed IDs (seed:{filename}) and the home profile
+    for filename, _, _ in _SEED_PROMPTS:
+        keep.add(f"seed:{filename}")
+    keep.add("ha_instance_profile")
+
+    # All current SQLite strategy IDs
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute("SELECT id FROM agent_strategies").fetchall()
+                keep.update(row[0] for row in rows)
+        except Exception:  # nosec B110
+            pass
+
+    # All pueo-kb manifest IDs the caller already knows
+    if kb_manifest_ids:
+        for kb_id in kb_manifest_ids:
+            keep.add(f"kb_{kb_id}")
+
+    try:
+        return store.prune("strategies", keep)
+    except Exception:  # nosec B110
+        return 0

@@ -12,6 +12,8 @@
   .rb-btn-review:hover  { background:#4f46e5; }
   .rb-btn-contrib { background:#0d6efd;color:#fff; }
   .rb-btn-contrib:hover { background:#0b5ed7; }
+  .rb-btn-discard { background:#dc3545;color:#fff; }
+  .rb-btn-discard:hover { background:#bb2d3b; }
   .rb-btn-submit  { background:#0d6efd;color:#fff;padding:0.4rem 1rem;font-size:0.85rem; }
   .rb-btn-submit:hover  { background:#0b5ed7; }
   .rb-btn:disabled { opacity:0.5;cursor:default; }
@@ -84,6 +86,7 @@
       {% if rb.reviewed_at and not rb.contributed_at %}
       <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
       {% endif %}
+      <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
       <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
     </div>
   </div>
@@ -119,6 +122,7 @@
       {% if rb.reviewed_at and not rb.contributed_at %}
       <button class="rb-btn rb-btn-contrib" onclick="markContribution('{{ rb.id }}', this)">Queue for contribution</button>
       {% endif %}
+      <button class="rb-btn rb-btn-discard" onclick="discardRunbook('{{ rb.id }}', this)">Discard</button>
       <span class="flash" id="flash-{{ rb.id }}">✓ Done</span>
     </div>
   </div>
@@ -160,6 +164,21 @@ function markContribution(id, btn) {
     .then(function(r) {
       if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Error'); btn.disabled = false; }); }
       return r.json().then(function() { flash(id); location.reload(); });
+    })
+    .catch(function() { btn.disabled = false; });
+}
+
+function discardRunbook(id, btn) {
+  if (!confirm('Discard this runbook? It will be permanently deleted from SQLite and the knowledge store.')) return;
+  btn.disabled = true;
+  fetch('/runbooks/' + id + '/discard', {method:'POST'})
+    .then(function(r) {
+      if (!r.ok) { return r.json().then(function(e) { alert(e.detail || 'Error'); btn.disabled = false; }); }
+      return r.json().then(function() {
+        var card = document.getElementById('rb-' + id);
+        if (card) { card.style.opacity = '0.4'; }
+        setTimeout(function() { location.reload(); }, 600);
+      });
     })
     .catch(function() { btn.disabled = false; });
 }
