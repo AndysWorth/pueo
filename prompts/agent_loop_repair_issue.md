@@ -34,7 +34,6 @@ Phase 4 — CONFIRM ROOT CAUSE: State in one sentence what is causing the issue 
 Phase 5 — ACT: Decide:
   - Is user action required? → requires_hitl=true with a clear action field
   - Is the issue benign (cosmetic, already resolving)? → requires_hitl=false
-  - Did you find a novel approach? → call save_runbook before the terminal tool
 
 Phase 6 — REPORT: Call {terminal_tool} with:
   human_explanation: what the issue means in plain English (2–3 sentences)

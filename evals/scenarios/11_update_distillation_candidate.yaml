@@ -1,0 +1,39 @@
+name: update_distillation_candidate
+trigger: investigation
+description: >
+  Home Assistant Core 2026.10 is available. Release notes include a breaking change:
+  the top-level template sensor format is deprecated. The agent should retrieve the
+  release notes, check the config for affected keys, and produce a safe-to-update
+  assessment. With 3+ evidence tool calls this session qualifies for post-session
+  runbook distillation.
+
+mocks:
+  query_knowledge: "No relevant runbooks found for this update signature."
+  get_update_release_notes: |
+    ## Breaking changes in 2026.10
+    - sensor.platform: template top-level format deprecated; migrate to the
+      template: section inside the homeassistant: block.
+    - recorder integration: purge_keep_days renamed to keep_days.
+  check_config_against_breaking_change: |
+    Found 1 affected entry: sensor platform: template (line 14 of configuration.yaml).
+    Recommend migrating before updating.
+  read_config: |
+    homeassistant:
+      name: Home
+    sensor:
+      - platform: template
+        sensors:
+          indoor_temp:
+            value_template: "{{ states('sensor.raw_temp') | float }}"
+            unit_of_measurement: "°C"
+  get_pueo_command_catalog: |
+    ha core restart — restart HA core
+    ha core check — validate configuration
+
+expected_outcome: success
+expected_tools_called:
+  - query_knowledge
+  - get_update_release_notes
+  - check_config_against_breaking_change
+  - finish_update_analysis
+max_tool_calls: 15

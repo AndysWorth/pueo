@@ -1340,8 +1340,7 @@ REQUEST_ESCALATION = ToolDefinition(
     name="request_escalation",
     description=(
         "Request escalation when you have exhausted all reasonable investigative paths "
-        "and cannot make further progress. Call AFTER save_runbook(type='gap') documents "
-        "what was tried. Routes per the escalation_preference config key: "
+        "and cannot make further progress. Routes per the escalation_preference config key: "
         "'hitl' creates an approval card for the user to continue; "
         "'cloud' triggers a cloud LLM escalation; "
         "'cloud_then_hitl' tries cloud first and falls back to HITL if billing is exceeded."
@@ -2079,7 +2078,6 @@ def build_update_analysis_registry() -> ToolRegistry:
         FETCH_HA_DOCS,
         FETCH_URL,
         QUERY_KNOWLEDGE,
-        SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         GET_SPOOK_ISSUES,
         FINISH_UPDATE_ANALYSIS,
@@ -2113,7 +2111,6 @@ def build_ha_tool_registry() -> ToolRegistry:
         FETCH_URL,
         SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
-        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         SUMMARIZE_LOG_WINDOW,
@@ -2178,7 +2175,6 @@ def build_netalertx_tool_registry() -> ToolRegistry:
         FETCH_URL,
         SEARCH_HA_DOCS,
         INVESTIGATE_DEVICE,
-        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         SUMMARIZE_LOG_WINDOW,
@@ -2223,7 +2219,6 @@ def build_chat_tool_registry() -> ToolRegistry:
         INVESTIGATE_DEVICE,
         RESTART_NETALERTX,
         REWRITE_NETALERTX_CONF,
-        SAVE_RUNBOOK,
         READ_PUEO_LOG,
         SEARCH_LOG,
         SUMMARIZE_LOG_WINDOW,
@@ -2271,7 +2266,6 @@ def build_installer_diagnosis_registry() -> ToolRegistry:
         SUMMARIZE_LOG_WINDOW,
         REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
-        SAVE_RUNBOOK,
         FINISH_INSTALLER_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -2293,7 +2287,6 @@ def build_health_diagnosis_registry() -> ToolRegistry:
         SUMMARIZE_LOG_WINDOW,
         REQUEST_ESCALATION,
         LIST_LOG_SOURCES,
-        SAVE_RUNBOOK,
         FINISH_HEALTH_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -2312,7 +2305,6 @@ def build_config_analysis_registry() -> ToolRegistry:
         READ_FILE,
         RUN_HA_COMMAND,
         QUERY_KNOWLEDGE,
-        SAVE_RUNBOOK,
         FINISH_DIAGNOSIS,
     ):
         reg.register(tool)
@@ -2333,7 +2325,6 @@ def build_impact_analysis_registry() -> ToolRegistry:
         RUN_HA_COMMAND,
         FETCH_HA_DOCS,
         QUERY_KNOWLEDGE,
-        SAVE_RUNBOOK,
         FINISH_IMPACT_ANALYSIS,
     ):
         reg.register(tool)
@@ -2363,7 +2354,6 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         GET_LOGBOOK,
         GET_AREA_LAYOUT,
         GET_SPOOK_ISSUES,
-        SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,
         FINISH_LOVELACE_INVESTIGATION,
@@ -2390,7 +2380,6 @@ def build_notification_investigation_registry() -> ToolRegistry:
         GET_DEVICE_INFO,
         GET_SYSTEM_ERROR_LOG,
         DISMISS_NOTIFICATION,
-        SAVE_RUNBOOK,
         REQUEST_ESCALATION,
         FINISH_NOTIFICATION_INVESTIGATION,
     ):

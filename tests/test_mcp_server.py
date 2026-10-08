@@ -57,7 +57,6 @@ class TestMCPToolInventory:
             "resolve_hitl_card",
             "switch_model",
             "request_escalation",
-            "save_runbook",
             "fetch_url",
         }
         assert flow_control.isdisjoint(

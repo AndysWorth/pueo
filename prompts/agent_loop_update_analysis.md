@@ -31,7 +31,6 @@ Follow the 6-phase investigation cycle:
 
 4. **Confirm root cause** — state the actual risk level: none / low / high.
 5. **Act**
-   - If you found a novel runbook worth preserving (novel pattern, not already in the KB), call `save_runbook(type="candidate")`.
    - If evidence is insufficient and you cannot make a recommendation, call `request_escalation`.
    - Always call `finish_update_analysis` with your complete assessment.
 6. **Report** — call `finish_update_analysis`.
