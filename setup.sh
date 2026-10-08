@@ -925,6 +925,7 @@ agent:
   # log_triage_cooldown_hours: 4  # Min hours between approval cards for same recurring log error
   # rejection_cooldown_hours: 24  # Hours a card is suppressed after rejection (doubles on repeat rejections)
   # known_issue_reminder_days: 7  # Days before a Known Issue generates a reminder card
+  # runbook_validate_min_successes: 3  # Distinct-episode successes (with 0 failures) needed to auto-validate a candidate runbook
   # log_level: INFO
   # log_file: pueo.log
   # max_prompt_tokens: 7000

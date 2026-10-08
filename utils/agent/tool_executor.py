@@ -236,6 +236,8 @@ class ToolExecutor:
         # Per-session gap-runbook tracking (reset in reset())
         self._query_knowledge_had_results: bool = False
         self._save_runbook_called: bool = False
+        # Per-session runbook usage tracking: strategy_ids seen in pre-inject or query_knowledge
+        self._injected_strategy_ids: set[str] = set()
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -245,6 +247,7 @@ class ToolExecutor:
         self._sandbox_output = ""
         self._query_knowledge_had_results = False
         self._save_runbook_called = False
+        self._injected_strategy_ids = set()
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -803,6 +806,8 @@ class ToolExecutor:
                 return "[HA INSTANCE PROFILE]"
             if src == "seed_prompt" or runbook_type == "seed":
                 return "[SEED RUNBOOK]"
+            if runbook_type == "validated":
+                return "[VALIDATED RUNBOOK]"
             if runbook_type == "candidate":
                 return "[CANDIDATE RUNBOOK – unreviewed]"
             if src == "pueo_kb":
@@ -925,6 +930,31 @@ class ToolExecutor:
                     key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
                 )
 
+        # Success-rate ranking boost: runbooks with a strong usage record rank higher.
+        # Only applied when the DB is available (unit tests use FakeKnowledgeStore with
+        # no DB, so this path is skipped silently).
+        strategy_sids = [
+            c.metadata.get("strategy_id") or c.chunk_id
+            for c in chunks
+            if c.collection == "strategies"
+        ]
+        if strategy_sids and self._db_path:
+            try:
+                rates = self._get_strategy_success_rates(strategy_sids)
+                for chunk in chunks:
+                    if chunk.collection == "strategies":
+                        sid = chunk.metadata.get("strategy_id") or chunk.chunk_id
+                        rate = rates.get(sid)
+                        if rate is not None:
+                            # Boost score proportionally: a 1.0-rate runbook gets +0.1,
+                            # a 0.0-rate runbook gets -0.05 (small penalty for bad track).
+                            chunk.score = max(0.0, chunk.score + (rate - 0.5) * 0.2)
+                chunks.sort(
+                    key=lambda c: c.authority_score * 0.3 + c.score * 0.7, reverse=True
+                )
+            except Exception as exc:  # nosec B110
+                log.debug("success_rate_boost_failed", error=str(exc))
+
         if not chunks:
             return ToolResult(
                 tool_name="query_knowledge",
@@ -936,6 +966,12 @@ class ToolExecutor:
             )
 
         self._query_knowledge_had_results = True
+        # Collect strategy_ids for usage tracking at session end.
+        for _c in chunks:
+            if _c.collection == "strategies":
+                _sid = _c.metadata.get("strategy_id") or _c.chunk_id
+                if _sid:
+                    self._injected_strategy_ids.add(_sid)
         # Runbook hits (strategies collection) go first so the agent sees the plan before evidence.
         runbook_chunks = [c for c in chunks if c.collection == "strategies"]
         other_chunks = [c for c in chunks if c.collection != "strategies"]
@@ -3165,6 +3201,154 @@ class ToolExecutor:
             success=True,
             output=f"Runbook '{title}' saved as {rtype} (id={strategy_id})",
         )
+
+    def record_runbook_usage(
+        self,
+        strategy_ids: set[str],
+        outcome: str,
+        episode_id: str,
+        signature: str,
+    ) -> None:
+        """Write runbook_usage rows and trigger auto-validate for each strategy seen.
+
+        Called synchronously from asyncio.to_thread at session end.
+        """
+        if not strategy_ids or not self._db_path:
+            return
+        import config as _cfg
+
+        min_successes = _cfg.RUNBOOK_VALIDATE_MIN_SUCCESSES
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                for sid in strategy_ids:
+                    conn.execute(
+                        "INSERT INTO runbook_usage"
+                        " (strategy_id, episode_id, signature, outcome)"
+                        " VALUES (?, ?, ?, ?)",
+                        (sid, episode_id or "", signature, outcome),
+                    )
+                conn.commit()
+                for sid in strategy_ids:
+                    self._auto_validate_if_eligible(conn, sid, min_successes)
+        except Exception as exc:  # nosec B110
+            log.warning("record_runbook_usage_failed", error=str(exc))
+
+    def _auto_validate_if_eligible(
+        self, conn: "sqlite3.Connection", strategy_id: str, min_successes: int
+    ) -> None:
+        """Promote candidate → validated when success threshold is met with no failures.
+
+        Also logs a warning when a runbook accumulates 2+ failures and 0 successes.
+        Syncs the updated runbook_type to Chroma after promotion.
+        """
+        row = conn.execute(
+            "SELECT runbook_state FROM agent_strategies WHERE id = ?",
+            (strategy_id,),
+        ).fetchone()
+        if not row or row[0] != "candidate":
+            return
+
+        success_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE strategy_id = ? AND outcome = 'success' AND episode_id != ''",
+            (strategy_id,),
+        ).fetchone()[0]
+        failure_count = conn.execute(
+            "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+            " WHERE strategy_id = ? AND outcome != 'success' AND episode_id != ''",
+            (strategy_id,),
+        ).fetchone()[0]
+
+        if failure_count >= 2 and success_count == 0:
+            log.warning(
+                "runbook_high_failure_rate",
+                strategy_id=strategy_id,
+                failures=failure_count,
+            )
+            return
+
+        if success_count >= min_successes and failure_count == 0:
+            conn.execute(
+                "UPDATE agent_strategies SET runbook_state = 'validated'"
+                " WHERE id = ?",
+                (strategy_id,),
+            )
+            conn.commit()
+            log.info(
+                "runbook_auto_validated",
+                strategy_id=strategy_id,
+                successes=success_count,
+            )
+            # Sync validated state to Chroma so retrieval gets the updated label/score.
+            _ks = self._knowledge_store
+            if _ks is not None:
+                title_row = conn.execute(
+                    "SELECT title, trigger_pattern, approach FROM agent_strategies"
+                    " WHERE id = ?",
+                    (strategy_id,),
+                ).fetchone()
+                if title_row:
+                    title, trigger_pattern, approach = title_row
+                    text = (
+                        f"# {title}\n\nTrigger: {trigger_pattern}"
+                        f"\n\nType: validated\n\n{approach}"
+                    )
+                    meta = {
+                        "source": "agent_learned",
+                        "title": title,
+                        "trigger_pattern": trigger_pattern or "",
+                        "strategy_id": strategy_id,
+                        "runbook_type": "validated",
+                    }
+                    try:
+                        import asyncio as _asyncio
+
+                        loop = _asyncio.get_event_loop()
+                        if loop.is_running():
+                            loop.call_soon_threadsafe(
+                                lambda: _asyncio.ensure_future(
+                                    _asyncio.to_thread(
+                                        _ks.upsert,
+                                        "strategies",
+                                        [strategy_id],
+                                        [text],
+                                        [meta],
+                                    )
+                                )
+                            )
+                        else:
+                            _ks.upsert("strategies", [strategy_id], [text], [meta])
+                    except Exception as exc:  # nosec B110
+                        log.warning(
+                            "runbook_validate_chroma_sync_failed", error=str(exc)
+                        )
+
+    def _get_strategy_success_rates(self, strategy_ids: list[str]) -> dict[str, float]:
+        """Return {strategy_id: success_rate} for each id that has usage rows.
+
+        success_rate = successes / total. Ids with no rows are omitted.
+        Called synchronously (from asyncio.to_thread or directly in tests).
+        """
+        if not strategy_ids or not self._db_path:
+            return {}
+        placeholders = ",".join("?" * len(strategy_ids))
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT strategy_id, outcome FROM runbook_usage"  # nosec B608
+                    f" WHERE strategy_id IN ({placeholders})",
+                    list(strategy_ids),
+                ).fetchall()
+        except Exception:  # nosec B110
+            return {}
+        counts: dict[str, list[int]] = {}  # {sid: [successes, total]}
+        for sid, outcome in rows:
+            if sid not in counts:
+                counts[sid] = [0, 0]
+            counts[sid][1] += 1
+            if outcome == "success":
+                counts[sid][0] += 1
+        return {sid: (s / t) for sid, (s, t) in counts.items() if t > 0}
 
     def _has_recent_gap_runbook(self, trigger_pattern: str, days: int = 7) -> bool:
         """Return True if a gap runbook with this trigger_pattern exists within `days`."""

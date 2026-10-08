@@ -1633,8 +1633,8 @@ class TestAuthorityScore:
     def test_seed_runbook_score(self):
         from utils.knowledge.knowledge_store import _authority_score
 
-        assert _authority_score("strategies", {"source": "seed_prompt"}) == 0.8
-        assert _authority_score("strategies", {"runbook_type": "seed"}) == 0.8
+        assert _authority_score("strategies", {"source": "seed_prompt"}) == 0.85
+        assert _authority_score("strategies", {"runbook_type": "seed"}) == 0.85
 
     def test_pueo_kb_community_runbook_score(self):
         from utils.knowledge.knowledge_store import _authority_score
@@ -1644,8 +1644,8 @@ class TestAuthorityScore:
     def test_candidate_runbook_score(self):
         from utils.knowledge.knowledge_store import _authority_score
 
-        assert _authority_score("strategies", {"runbook_type": "candidate"}) == 0.6
-        assert _authority_score("strategies", {}) == 0.6  # default
+        assert _authority_score("strategies", {"runbook_type": "candidate"}) == 0.50
+        assert _authority_score("strategies", {}) == 0.50  # default
 
     def test_repair_history_score(self):
         from utils.knowledge.knowledge_store import _authority_score

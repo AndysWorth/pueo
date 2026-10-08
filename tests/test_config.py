@@ -1644,3 +1644,18 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.HA_EVENT_FALLBACK_POLL_MINUTES == 30.0
+
+    def test_runbook_validate_min_successes_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RUNBOOK_VALIDATE_MIN_SUCCESSES == 3
+
+    def test_runbook_validate_min_successes_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump({"agent": {"runbook_validate_min_successes": 5}})
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.RUNBOOK_VALIDATE_MIN_SUCCESSES == 5
