@@ -11,6 +11,7 @@ from utils.knowledge.kb_ingester import (
     KbIngestError,
     ManifestEntry,
     _collection_for_type,
+    _ingest_key,
     download_and_embed,
     fetch_manifest,
     load_kb_manifest_ids,
@@ -31,6 +32,8 @@ class TestManifestEntry:
         assert e.tags == []
         assert e.quality_score == 0.0
         assert e.ha_version_min is None
+        assert e.state == "seed"
+        assert e.community_stats == {}
 
     def test_custom_fields(self):
         e = ManifestEntry(
@@ -45,6 +48,18 @@ class TestManifestEntry:
         assert e.integrations == ["zha", "mqtt"]
         assert e.quality_score == 0.85
 
+    def test_state_and_community_stats(self):
+        e = ManifestEntry(
+            id="x",
+            type="runbook",
+            path="p.md",
+            sha256="s",
+            state="validated",
+            community_stats={"successes": 5, "failures": 0, "instances": 3},
+        )
+        assert e.state == "validated"
+        assert e.community_stats == {"successes": 5, "failures": 0, "instances": 3}
+
     def test_source_seed_defaults_to_empty(self):
         e = ManifestEntry(id="x", type="runbook", path="p.md", sha256="s")
         assert e.source_seed == ""
@@ -58,6 +73,26 @@ class TestManifestEntry:
             source_seed="seed_update_analysis.md",
         )
         assert e.source_seed == "seed_update_analysis.md"
+
+
+# ── _ingest_key ───────────────────────────────────────────────────────────────
+
+
+class TestIngestKey:
+    def test_key_format(self):
+        e = ManifestEntry(
+            id="rb1", type="runbook", path="p.md", sha256="abc", state="candidate"
+        )
+        assert _ingest_key(e) == "rb1:abc:candidate"
+
+    def test_different_states_give_different_keys(self):
+        e1 = ManifestEntry(
+            id="rb1", type="runbook", path="p.md", sha256="abc", state="candidate"
+        )
+        e2 = ManifestEntry(
+            id="rb1", type="runbook", path="p.md", sha256="abc", state="validated"
+        )
+        assert _ingest_key(e1) != _ingest_key(e2)
 
 
 # ── _validate_repo ────────────────────────────────────────────────────────────
@@ -97,6 +132,8 @@ SAMPLE_MANIFEST = [
         "type": "runbook",
         "path": "runbooks/ha_config_error.md",
         "sha256": "abc123",
+        "state": "validated",
+        "community_stats": {"successes": 4, "failures": 0, "instances": 2},
         "tags": ["ha_config", "yaml_error"],
         "integrations": ["all"],
         "quality_score": 0.90,
@@ -107,6 +144,8 @@ SAMPLE_MANIFEST = [
         "type": "case",
         "path": "cases/2026-09/zha_001.yaml",
         "sha256": "def456",
+        "state": "candidate",
+        "community_stats": {"successes": 1, "failures": 0, "instances": 1},
         "tags": ["zha"],
         "integrations": ["zha"],
         "quality_score": 0.75,
@@ -131,8 +170,35 @@ class TestFetchManifest:
         assert entries[0].type == "runbook"
         assert entries[0].sha256 == "abc123"
         assert entries[0].integrations == ["all"]
+        assert entries[0].state == "validated"
+        assert entries[0].community_stats == {
+            "successes": 4,
+            "failures": 0,
+            "instances": 2,
+        }
         assert entries[1].id == "case-zha-pairing-001"
         assert entries[1].integrations == ["zha"]
+        assert entries[1].state == "candidate"
+
+    def test_missing_state_defaults_to_seed(self):
+        manifest = [
+            {
+                "id": "rb",
+                "type": "runbook",
+                "path": "p.md",
+                "sha256": "s",
+                "integrations": ["all"],
+            }
+        ]
+        raw = _make_gh_response(json.dumps(manifest))
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            entries = fetch_manifest("owner/pueo-kb")
+        assert entries[0].state == "seed"
+        assert entries[0].community_stats == {
+            "successes": 0,
+            "failures": 0,
+            "instances": 0,
+        }
 
     def test_invalid_repo_raises(self):
         with pytest.raises(KbIngestError):
@@ -186,12 +252,20 @@ class TestSelectRelevantEntries:
 
     def test_already_ingested_excluded(self):
         e = _entry(integrations=["all"], sha256="s4")
-        result = select_relevant_entries([e], [], {"s4"})
+        key = _ingest_key(e)
+        result = select_relevant_entries([e], [], {key})
         assert result == []
+
+    def test_same_sha256_different_state_not_excluded(self):
+        """Same sha256 but different state → re-ingest (state changed)."""
+        e = _entry(integrations=["all"], sha256="s4", state="validated")
+        old_key = f"x:s4:candidate"  # key from old state
+        result = select_relevant_entries([e], [], {old_key})
+        assert result == [e]
 
     def test_empty_sha256_not_excluded_by_state(self):
         e = _entry(integrations=["all"], sha256="")
-        result = select_relevant_entries([e], [], {"s5"})
+        result = select_relevant_entries([e], [], {"x::seed"})
         assert result == [e]
 
     def test_case_insensitive_integration_match(self):
@@ -206,6 +280,12 @@ class TestSelectRelevantEntries:
 
     def test_empty_profile_with_specific_integration_excluded(self):
         e = _entry(integrations=["zha"], sha256="s8")
+        result = select_relevant_entries([e], [], set())
+        assert result == []
+
+    def test_flagged_entries_skipped(self):
+        """Flagged entries are never ingested regardless of integration match."""
+        e = _entry(integrations=["all"], sha256="s_flag", state="flagged")
         result = select_relevant_entries([e], [], set())
         assert result == []
 
@@ -270,21 +350,68 @@ class TestDownloadAndEmbed:
         store = self._fake_store()
         raw = _make_gh_response("# Runbook content here")
         with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
-            count, sha256s = download_and_embed(entries, "owner/pueo-kb", store)
+            count, new_keys = download_and_embed(entries, "owner/pueo-kb", store)
         assert count == 1
-        assert "h1" in sha256s
+        assert any("h1" in k for k in new_keys)
         store.upsert.assert_called_once()
         call_kwargs = store.upsert.call_args
         assert call_kwargs[0][0] == "strategies"
+
+    def test_kb_state_in_metadata(self):
+        entries = [
+            _entry(
+                id="rb_cand",
+                sha256="hc",
+                type="runbook",
+                integrations=["all"],
+                state="candidate",
+            )
+        ]
+        store = self._fake_store()
+        raw = _make_gh_response("candidate runbook body")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            download_and_embed(entries, "owner/pueo-kb", store)
+        metadata = store.upsert.call_args.kwargs["metadatas"][0]
+        assert metadata["kb_state"] == "candidate"
+
+    def test_community_stats_in_metadata_when_present(self):
+        entry = ManifestEntry(
+            id="rb_stats",
+            type="runbook",
+            path="p.md",
+            sha256="hs",
+            state="validated",
+            community_stats={"successes": 5, "failures": 0, "instances": 3},
+            integrations=["all"],
+        )
+        store = self._fake_store()
+        raw = _make_gh_response("validated runbook body")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            download_and_embed([entry], "owner/pueo-kb", store)
+        metadata = store.upsert.call_args.kwargs["metadatas"][0]
+        assert metadata["community_successes"] == 5
+        assert metadata["community_failures"] == 0
+        assert metadata["community_instances"] == 3
+
+    def test_community_stats_omitted_when_empty(self):
+        entry = _entry(
+            id="rb_nostats", sha256="hns", type="runbook", integrations=["all"]
+        )
+        store = self._fake_store()
+        raw = _make_gh_response("some runbook body")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            download_and_embed([entry], "owner/pueo-kb", store)
+        metadata = store.upsert.call_args.kwargs["metadatas"][0]
+        assert "community_successes" not in metadata
 
     def test_skips_empty_content(self):
         entries = [_entry(id="rb2", sha256="h2", type="runbook", integrations=["all"])]
         store = self._fake_store()
         raw = _make_gh_response("   ")  # whitespace only
         with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
-            count, sha256s = download_and_embed(entries, "owner/pueo-kb", store)
+            count, new_keys = download_and_embed(entries, "owner/pueo-kb", store)
         assert count == 0
-        assert sha256s == set()
+        assert new_keys == set()
 
     def test_skips_on_fetch_failure(self):
         entries = [_entry(id="rb3", sha256="h3", type="runbook", integrations=["all"])]
@@ -293,7 +420,7 @@ class TestDownloadAndEmbed:
             "utils.knowledge.kb_ingester._run_gh",
             side_effect=KbIngestError("network"),
         ):
-            count, sha256s = download_and_embed(entries, "owner/pueo-kb", store)
+            count, _ = download_and_embed(entries, "owner/pueo-kb", store)
         assert count == 0
 
     def test_skips_on_upsert_failure(self):
@@ -302,7 +429,7 @@ class TestDownloadAndEmbed:
         store.upsert.side_effect = RuntimeError("chroma error")
         raw = _make_gh_response("some content")
         with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
-            count, sha256s = download_and_embed(entries, "owner/pueo-kb", store)
+            count, _ = download_and_embed(entries, "owner/pueo-kb", store)
         assert count == 0
 
     def test_gap_goes_to_strategies(self):
@@ -342,6 +469,21 @@ class TestDownloadAndEmbed:
         metadata = call_kwargs.kwargs["metadatas"][0]
         assert "ha_version_min" not in metadata
         assert "ha_version_max" not in metadata
+
+    def test_ingest_key_in_returned_keys(self):
+        """Returned keys encode id:sha256:state for state-change detection."""
+        entry = _entry(
+            id="rb_key",
+            sha256="hkey",
+            type="runbook",
+            integrations=["all"],
+            state="validated",
+        )
+        store = self._fake_store()
+        raw = _make_gh_response("runbook body")
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=raw):
+            _, new_keys = download_and_embed([entry], "owner/pueo-kb", store)
+        assert "rb_key:hkey:validated" in new_keys
 
 
 # ── load/save sync state ──────────────────────────────────────────────────────
@@ -422,7 +564,8 @@ class TestRunKbSync:
 
     def test_already_ingested_skipped(self, tmp_path):
         store = MagicMock()
-        save_sync_state(str(tmp_path), {"ingested_sha256s": ["s2"]})
+        # Pre-save the key in the new format
+        save_sync_state(str(tmp_path), {"ingested_keys": ["rb:s2:seed"]})
         manifest_raw = _make_gh_response(
             json.dumps(
                 [
@@ -431,6 +574,7 @@ class TestRunKbSync:
                         "type": "runbook",
                         "path": "p.md",
                         "sha256": "s2",
+                        "state": "seed",
                         "integrations": ["all"],
                         "tags": [],
                         "quality_score": 0.9,
@@ -445,6 +589,39 @@ class TestRunKbSync:
         assert count == 0
         store.upsert.assert_not_called()
 
+    def test_state_change_triggers_reingest(self, tmp_path):
+        """An entry already ingested as candidate is re-ingested when it becomes validated."""
+        store = MagicMock()
+        save_sync_state(str(tmp_path), {"ingested_keys": ["rb:s_promo:candidate"]})
+        manifest_raw = _make_gh_response(
+            json.dumps(
+                [
+                    {
+                        "id": "rb",
+                        "type": "runbook",
+                        "path": "p.md",
+                        "sha256": "s_promo",
+                        "state": "validated",  # promoted
+                        "integrations": ["all"],
+                        "tags": [],
+                        "quality_score": 0.9,
+                    }
+                ]
+            )
+        )
+        file_raw = _make_gh_response("# Runbook body")
+        call_count: dict[str, int] = {"n": 0}
+
+        def _gh(args: Any, timeout: int = 60) -> str:
+            call_count["n"] += 1
+            return manifest_raw if call_count["n"] == 1 else file_raw
+
+        with patch("utils.knowledge.kb_ingester._run_gh", side_effect=_gh):
+            count = run_kb_sync(
+                "owner/kb", str(tmp_path), store, integration_profile=[]
+            )
+        assert count == 1
+
     def test_successful_sync_saves_state(self, tmp_path):
         store = MagicMock()
         manifest_raw = _make_gh_response(
@@ -455,6 +632,7 @@ class TestRunKbSync:
                         "type": "runbook",
                         "path": "p.md",
                         "sha256": "s3",
+                        "state": "seed",
                         "integrations": ["all"],
                         "tags": [],
                         "quality_score": 0.9,
@@ -475,7 +653,7 @@ class TestRunKbSync:
             )
         assert count == 1
         state = load_sync_state(str(tmp_path))
-        assert "s3" in state["ingested_sha256s"]
+        assert "rb:s3:seed" in state["ingested_keys"]
 
     def test_saves_all_manifest_ids_to_state(self, tmp_path):
         """run_kb_sync saves all manifest entry ids (not just newly ingested) to state."""

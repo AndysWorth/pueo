@@ -27,6 +27,10 @@ class ManifestEntry:
     type: str  # "runbook" | "gap"
     path: str
     sha256: str
+    state: str = "seed"  # seed | candidate | validated | flagged
+    community_stats: dict = field(
+        default_factory=dict
+    )  # {successes, failures, instances}
     tags: list[str] = field(default_factory=list)
     integrations: list[str] = field(default_factory=lambda: ["all"])
     ha_version_min: Optional[str] = None
@@ -34,6 +38,11 @@ class ManifestEntry:
     quality_score: float = 0.0
     added_at: str = ""
     source_seed: str = ""  # local seed filename this entry mirrors (if any)
+
+
+def _ingest_key(entry: ManifestEntry) -> str:
+    """Stable key for tracking whether an entry has been ingested at a given state."""
+    return f"{entry.id}:{entry.sha256}:{entry.state}"
 
 
 def _validate_repo(repo: str) -> None:
@@ -74,12 +83,19 @@ def fetch_manifest(repo: str) -> list[ManifestEntry]:
     for item in entries_raw:
         if not isinstance(item, dict):
             continue
+        raw_stats = item.get("community_stats") or {}
         entries.append(
             ManifestEntry(
                 id=str(item.get("id", "")),
                 type=str(item.get("type", "runbook")),
                 path=str(item.get("path", "")),
                 sha256=str(item.get("sha256", "")),
+                state=str(item.get("state") or "seed"),
+                community_stats={
+                    "successes": int(raw_stats.get("successes") or 0),
+                    "failures": int(raw_stats.get("failures") or 0),
+                    "instances": int(raw_stats.get("instances") or 0),
+                },
                 tags=list(item.get("tags") or []),
                 integrations=list(item.get("integrations") or ["all"]),
                 ha_version_min=item.get("ha_version_min"),
@@ -95,20 +111,23 @@ def fetch_manifest(repo: str) -> list[ManifestEntry]:
 def select_relevant_entries(
     entries: list[ManifestEntry],
     integration_profile: list[str],
-    ingested_sha256s: set[str],
+    ingested_keys: set[str],
     local_seed_filenames: Optional[frozenset[str]] = None,
 ) -> list[ManifestEntry]:
     """Filter entries relevant to this installation.
 
     Keeps entries where integrations == ["all"] or intersects with
-    integration_profile, and whose sha256 has not been ingested yet.
-    Skips entries that mirror a local seed prompt (by source_seed match or id-slug match).
+    integration_profile, and whose ingest key (id:sha256:state) has not been
+    ingested yet.  Skips flagged entries and entries that mirror a local seed
+    prompt (by source_seed match or id-slug match).
     """
     profile_set = {s.lower() for s in integration_profile}
     seeds = local_seed_filenames or frozenset()
     relevant = []
     for entry in entries:
-        if entry.sha256 and entry.sha256 in ingested_sha256s:
+        if entry.state == "flagged":
+            continue
+        if entry.sha256 and _ingest_key(entry) in ingested_keys:
             continue
         # Skip entries that duplicate a local seed prompt
         if entry.source_seed and entry.source_seed in seeds:
@@ -142,10 +161,11 @@ def download_and_embed(
 ) -> tuple[int, set[str]]:
     """Download selected entries and upsert into ChromaDB.
 
-    Returns (count_embedded, new_sha256s_ingested).
+    Returns (count_embedded, new_ingest_keys).  Each key is id:sha256:state so
+    callers can detect future state promotions and re-ingest.
     """
     embedded = 0
-    new_sha256s: set[str] = set()
+    new_keys: set[str] = set()
     for entry in entries:
         try:
             content = _fetch_file_content(repo, entry.path)
@@ -160,10 +180,21 @@ def download_and_embed(
             "source": "pueo_kb",
             "kb_id": entry.id,
             "kb_type": entry.type,
+            "kb_state": entry.state,
             "sha256": entry.sha256,
             "tags": ",".join(entry.tags),
             "collection": collection,
         }
+        if entry.community_stats:
+            metadata["community_successes"] = int(
+                entry.community_stats.get("successes", 0)
+            )
+            metadata["community_failures"] = int(
+                entry.community_stats.get("failures", 0)
+            )
+            metadata["community_instances"] = int(
+                entry.community_stats.get("instances", 0)
+            )
         if entry.ha_version_min:
             metadata["ha_version_min"] = entry.ha_version_min
         if entry.ha_version_max:
@@ -177,10 +208,10 @@ def download_and_embed(
             )
             embedded += 1
             if entry.sha256:
-                new_sha256s.add(entry.sha256)
+                new_keys.add(_ingest_key(entry))
         except Exception:  # nosec B110 — skip embedding failures
             pass
-    return embedded, new_sha256s
+    return embedded, new_keys
 
 
 def load_sync_state(cache_dir: str) -> dict:
@@ -212,22 +243,24 @@ def run_kb_sync(
     integration_profile: Optional[list[str]] = None,
     local_seed_filenames: Optional[frozenset[str]] = None,
 ) -> int:
-    """Pull manifest, select relevant new entries, download and embed.
+    """Pull manifest, select relevant new/updated entries, download and embed.
 
-    Tracks ingested sha256s in cache_dir/kb_sync_state.json so repeated
-    runs are idempotent. Also saves all_manifest_ids so prune_strategies
-    can exclude valid kb entries. Returns count of newly embedded entries.
+    Tracks ingest keys (id:sha256:state) in cache_dir/kb_sync_state.json.
+    An entry is re-ingested when its state changes (e.g. candidate → validated),
+    because the key encodes state.  Also saves all_manifest_ids so
+    prune_strategies can exclude valid kb entries.
+    Returns count of newly embedded entries.
     """
     _validate_repo(repo)
     state = load_sync_state(cache_dir)
-    ingested_sha256s: set[str] = set(state.get("ingested_sha256s", []))
+    ingested_keys: set[str] = set(state.get("ingested_keys", []))
 
     entries = fetch_manifest(repo)
     all_manifest_ids = {e.id for e in entries}
     relevant = select_relevant_entries(
         entries,
         integration_profile or [],
-        ingested_sha256s,
+        ingested_keys,
         local_seed_filenames,
     )
     if not relevant:
@@ -235,9 +268,9 @@ def run_kb_sync(
         save_sync_state(cache_dir, state)
         return 0
 
-    count, new_sha256s = download_and_embed(relevant, repo, knowledge_store)
-    ingested_sha256s |= new_sha256s
-    state["ingested_sha256s"] = sorted(ingested_sha256s)
+    count, new_keys = download_and_embed(relevant, repo, knowledge_store)
+    ingested_keys |= new_keys
+    state["ingested_keys"] = sorted(ingested_keys)
     state["all_manifest_ids"] = sorted(all_manifest_ids)
     save_sync_state(cache_dir, state)
     return count

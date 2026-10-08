@@ -191,14 +191,22 @@ Every code change follows this procedure in order. Never commit directly to `mai
 `pueo-kb` ([AndysWorth/pueo-kb](https://github.com/AndysWorth/pueo-kb)) is the
 federated runbook library. Pueo pulls from it at every RAG refresh
 (`--mode rag-refresh`) via `utils/knowledge/kb_ingester.py` and contributes
-validated runbooks and open gaps back via `utils/knowledge/kb_contributor.py`.
-Approach text is anonymized (IPs → `<host_N>`, backup slugs → `<slug_N>`) before
-contribution. Seed runbooks in `prompts/seed_*.md` are the human-curated baseline.
+validated and candidate runbooks plus open gaps back via
+`utils/knowledge/kb_contributor.py`. Approach text, titles, and trigger patterns
+are anonymized before contribution. Seed runbooks in `prompts/seed_*.md` are the
+human-curated baseline.
 
 Runbook lifecycle (ADR 038): seed → candidate (distilled post-session) → validated
 (auto after `RUNBOOK_VALIDATE_MIN_SUCCESSES` successes, default 3) → seed (human
 promotes). Gaps move to `knowledge_gaps` (never retrieved). Manage via the
 `/runbooks` dashboard tab (`development_mode: true` required).
+
+Federation (ADR 039): contributed runbooks carry a `kb_id` (`rb_` + sha256 of
+signature). The pueo-kb CI (`build-manifest.yml`) aggregates evidence files from
+all instances and sets each entry's `state` in `MANIFEST.json`. Ingester authority:
+pueo-kb validated/seed → 0.70 `[COMMUNITY RUNBOOK]`; pueo-kb candidate → 0.45
+`[COMMUNITY CANDIDATE]`; flagged entries are skipped. The ingester re-embeds an
+entry when its `state` changes (ingest key encodes `id:sha256:state`).
 
 Configured via `PUEO_KB_REPO` in `config.yaml` (default `"AndysWorth/pueo-kb"`).
 

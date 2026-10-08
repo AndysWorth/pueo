@@ -802,6 +802,8 @@ class ToolExecutor:
             if runbook_type == "candidate":
                 return "[CANDIDATE RUNBOOK – unreviewed]"
             if src == "pueo_kb":
+                if metadata.get("kb_state") == "candidate":
+                    return "[COMMUNITY CANDIDATE]"
                 return "[COMMUNITY RUNBOOK]"
             return "[CANDIDATE RUNBOOK – unreviewed]"
         if collection == "repair_history":

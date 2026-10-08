@@ -290,3 +290,9 @@ every new candidate.
 - [ADR 031 — Repair episode embedding](031-repair-episode-embedding.md): distillation
   uses `episode_data.json` tool-call traces as primary input, not the episode prose
   summary.
+- [ADR 039 — Federated runbook validation](039-federated-validation.md): extends
+  local auto-validation across instances via pueo-kb evidence files.  Candidates from
+  pueo-kb ingest at authority 0.45 (`[COMMUNITY CANDIDATE]`); promoted entries at 0.70
+  (`[COMMUNITY RUNBOOK]`).  The ingester re-ingests on state change (ingest key encodes
+  `id:sha256:state`).  Local auto-validation (`_auto_validate_if_eligible`) and local
+  authority tiers are unchanged.
