@@ -460,6 +460,24 @@ def _migrate_v34(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE llm_calls ADD COLUMN thinking_text TEXT")
 
 
+def _migrate_v35(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN signature TEXT")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN version INTEGER DEFAULT 1")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN episode_refs TEXT")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN resolved_at TEXT")
+    cursor.execute("ALTER TABLE agent_strategies ADD COLUMN resolved_by TEXT")
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS runbook_usage ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "strategy_id TEXT NOT NULL, "
+        "episode_id TEXT, "
+        "signature TEXT, "
+        "outcome TEXT NOT NULL, "
+        "created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+        ")"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -495,6 +513,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (32, _migrate_v32),
     (33, _migrate_v33),
     (34, _migrate_v34),
+    (35, _migrate_v35),
 ]
 
 

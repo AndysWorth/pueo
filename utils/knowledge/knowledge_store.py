@@ -185,6 +185,9 @@ class ChromaKnowledgeStore:  # pragma: no cover
         self._cols = {
             name: self._get_cosine_collection(name, ef) for name in COLLECTIONS
         }
+        # knowledge_gaps is created at startup but NOT in COLLECTIONS — gaps are
+        # never returned by query() and are used only for dashboard display.
+        self._cols["knowledge_gaps"] = self._get_cosine_collection("knowledge_gaps", ef)
         # BM25 hybrid retrieval: in-memory index per collection.
         # Each entry is (corpus, id_list) rebuilt lazily on upsert.
         self._hybrid_weight: float = max(0.0, min(1.0, hybrid_weight))

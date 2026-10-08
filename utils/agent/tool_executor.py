@@ -3137,10 +3137,12 @@ class ToolExecutor:
             "runbook_type": rtype,
         }
         if self._knowledge_store is not None:
+            # Gaps go to knowledge_gaps (never retrieved); runbooks go to strategies.
+            chroma_col = "knowledge_gaps" if rtype == "gap" else "strategies"
             try:
                 await asyncio.to_thread(
                     self._knowledge_store.upsert,
-                    "strategies",
+                    chroma_col,
                     [strategy_id],
                     [text],
                     [meta],
