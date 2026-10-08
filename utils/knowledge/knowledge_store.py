@@ -42,6 +42,7 @@ class KnowledgeChunk:
     score: float = 0.0
     metadata: dict = field(default_factory=dict)
     authority_score: float = 0.0
+    chunk_id: str = ""  # Chroma doc id; used to look up strategy_id for usage tracking
 
 
 def _authority_score(collection: str, metadata: dict) -> float:
@@ -63,11 +64,13 @@ def _authority_score(collection: str, metadata: dict) -> float:
         if runbook_type == "gap":
             return 0.3
         if src == "seed_prompt" or runbook_type == "seed":
-            return 0.8
+            return 0.85
+        if runbook_type == "validated":
+            return 0.75
         # pueo_kb runbooks that have been reviewed are community-grade
         if src == "pueo_kb":
-            return 0.7
-        return 0.6  # candidate / agent_learned
+            return 0.70
+        return 0.50  # candidate / agent_learned
     if collection == "repair_history":
         return 0.5
     if collection == "ha_best_practices":
@@ -124,7 +127,7 @@ class FakeKnowledgeStore:
         for col in target_cols:
             if col not in self._docs:
                 continue
-            for _, doc, meta in self._docs[col]:
+            for doc_id, doc, meta in self._docs[col]:
                 if not _matches_where(meta, where):
                     continue
                 if query_text.lower() in doc.lower():
@@ -137,6 +140,7 @@ class FakeKnowledgeStore:
                             score=1.0,
                             metadata=meta,
                             authority_score=auth,
+                            chunk_id=doc_id,
                         )
                     )
         results.sort(
@@ -326,6 +330,7 @@ class ChromaKnowledgeStore:  # pragma: no cover
                         score=blended,
                         metadata=meta,  # type: ignore[arg-type]
                         authority_score=auth,
+                        chunk_id=doc_id,
                     )
                 )
         results.sort(

@@ -169,6 +169,7 @@ agent:
   # rag_refresh_interval_hours: 168               # How often to re-run the RAG scraper in monitor mode (default: weekly)
   # rag_hybrid_weight: 0.3       # BM25 keyword weight in hybrid retrieval (0.0=cosine-only, 1.0=BM25-only; default 0.3)
   # rag_min_score: 0.35          # Minimum relevance score for query_knowledge results (0.0–1.0; default 0.35)
+  # runbook_validate_min_successes: 3  # Distinct-episode successes (with 0 failures) needed to auto-validate a candidate runbook (default 3)
   # allow_diagnostic_wan: true       # Allow fetch_url tool to make outbound HTTP GET requests for diagnostic verification
   # diagnostic_wan_timeout_seconds: 60  # Timeout for fetch_url calls (seconds)
   # pueo_kb_repo: "AndysWorth/pueo-kb"  # GitHub repo for federated knowledge base; enables manifest-based selective ingestion and runbook contribution (requires development_mode: true)

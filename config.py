@@ -164,6 +164,9 @@ HA_SKILLS_CACHE_DIR: str = _agent.get(
 RAG_REFRESH_INTERVAL_HOURS: int = int(_agent.get("rag_refresh_interval_hours", 168))
 RAG_HYBRID_WEIGHT: float = float(_agent.get("rag_hybrid_weight", 0.3))
 RAG_MIN_SCORE: float = float(_agent.get("rag_min_score", 0.35))
+RUNBOOK_VALIDATE_MIN_SUCCESSES: int = int(
+    _agent.get("runbook_validate_min_successes", 3)
+)
 
 # Tool-calling agent loop
 AGENT_MAX_TOOL_CALLS: int = int(_agent.get("agent_max_tool_calls", 30))

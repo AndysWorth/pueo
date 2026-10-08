@@ -401,6 +401,14 @@ class AgentLoop:
         # Signal to the executor so the auto-gap logic knows KB had results.
         if self._executor is not None:
             self._executor._query_knowledge_had_results = True
+            # Collect strategy_ids for usage tracking at session end.
+            for _c in chunks:
+                if getattr(_c, "collection", "") == "strategies":
+                    _sid = getattr(_c, "metadata", {}).get("strategy_id") or getattr(
+                        _c, "chunk_id", ""
+                    )
+                    if _sid:
+                        self._executor._injected_strategy_ids.add(_sid)
         repair_chunks = [
             c for c in chunks if getattr(c, "collection", "") == "repair_history"
         ]
@@ -672,6 +680,24 @@ class AgentLoop:
                 )
             except Exception as exc:  # nosec B110
                 log.error("repair_episode_record_failed", error=str(exc))
+
+        # Record runbook usage for every strategy seen during this session.
+        if (
+            self._db_path is not None
+            and self._executor is not None
+            and self._executor._injected_strategy_ids
+        ):
+            _signature = self._trigger
+            try:
+                await asyncio.to_thread(
+                    self._executor.record_runbook_usage,
+                    set(self._executor._injected_strategy_ids),
+                    outcome,
+                    self._episode_id,
+                    _signature,
+                )
+            except Exception as exc:  # nosec B110
+                log.warning("runbook_usage_record_failed", error=str(exc))
 
         _duration = round(time.monotonic() - start_time, 2)
         self._messages = None  # loop finished; disable inject_context

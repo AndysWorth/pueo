@@ -4642,3 +4642,243 @@ class TestProposeAutomation:
         assert not result.success
         assert result.awaiting_approval is True
         assert "queued for approval" in (result.output or "")
+
+
+class TestRunbookUsageTracking:
+    """Tests for record_runbook_usage, _get_strategy_success_rates, and auto-validate."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT, "
+                "approach TEXT, runbook_state TEXT DEFAULT 'candidate', "
+                "created_at TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE runbook_usage ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "strategy_id TEXT NOT NULL, episode_id TEXT, "
+                "signature TEXT, outcome TEXT NOT NULL, "
+                "created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))"
+            )
+            conn.commit()
+        return db_path
+
+    def _make_executor(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = self._make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}, command_results={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        return executor, store, db_path
+
+    def _insert_strategy(self, db_path, sid, state="candidate"):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach, runbook_state, created_at)"
+                " VALUES (?, 'T', 'trig', 'approach', ?, datetime('now'))",
+                (sid, state),
+            )
+            conn.commit()
+
+    def test_record_runbook_usage_writes_rows(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        executor.record_runbook_usage({"s1"}, "success", "ep1", "update:core:x")
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT strategy_id, outcome, episode_id, signature"
+                " FROM runbook_usage WHERE strategy_id='s1'"
+            ).fetchone()
+        assert row == ("s1", "success", "ep1", "update:core:x")
+
+    def test_record_runbook_usage_no_rows_on_empty_ids(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        executor.record_runbook_usage(set(), "success", "ep1", "sig")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM runbook_usage").fetchone()[0]
+        assert count == 0
+
+    def test_get_strategy_success_rates_empty(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        rates = executor._get_strategy_success_rates(["nonexistent"])
+        assert rates == {}
+
+    def test_get_strategy_success_rates_with_data(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO runbook_usage (strategy_id, episode_id, outcome)"
+                " VALUES ('s1', 'e1', 'success'), ('s1', 'e2', 'success'),"
+                " ('s1', 'e3', 'failed')"
+            )
+            conn.commit()
+        rates = executor._get_strategy_success_rates(["s1"])
+        assert abs(rates["s1"] - 2 / 3) < 0.01
+
+    def test_auto_validate_promotes_candidate_after_threshold(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        # 3 successes on distinct episodes, 0 failures → should auto-validate
+        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
+        with sqlite3.connect(db_path) as conn:
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
+            ).fetchone()[0]
+        assert state == "validated"
+
+    def test_auto_validate_does_not_promote_with_mixed_outcomes(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        # Insert the failure first so it's already present when successes arrive.
+        executor.record_runbook_usage({"s1"}, "failed", "ep0", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
+        with sqlite3.connect(db_path) as conn:
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
+            ).fetchone()[0]
+        assert state == "candidate"
+
+    def test_auto_validate_skips_seed_runbooks(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1", state="seed")
+        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
+        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
+        with sqlite3.connect(db_path) as conn:
+            state = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
+            ).fetchone()[0]
+        assert state == "seed"  # not promoted; auto-validate is candidate-only
+
+    def test_injected_strategy_ids_reset_on_reset(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        executor._injected_strategy_ids.add("s1")
+        executor.reset()
+        assert executor._injected_strategy_ids == set()
+
+    def test_query_knowledge_collects_strategy_ids(self, tmp_path):
+        executor, store, _ = self._make_executor(tmp_path)
+        store.upsert(
+            "strategies",
+            ids=["sid-abc"],
+            documents=["runbook about disk space"],
+            metadatas=[
+                {
+                    "source": "agent_learned",
+                    "runbook_type": "candidate",
+                    "strategy_id": "sid-abc",
+                }
+            ],
+        )
+        asyncio.run(executor._query_knowledge("disk space"))
+        assert "sid-abc" in executor._injected_strategy_ids
+
+
+class TestRunbookAuthorityScores:
+    """Tests for updated authority scores in knowledge_store._authority_score."""
+
+    def test_validated_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"runbook_type": "validated"}) == 0.75
+
+    def test_seed_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"source": "seed_prompt"}) == 0.85
+
+    def test_candidate_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"runbook_type": "candidate"}) == 0.50
+
+    def test_pueo_kb_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert _authority_score("strategies", {"source": "pueo_kb"}) == 0.70
+
+    def test_validated_label_in_output(self, tmp_path):
+        import sqlite3
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory "
+                "(key TEXT, content TEXT, source TEXT, ts REAL)"
+            )
+            conn.commit()
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["val-1"],
+            documents=["validated runbook for disk space"],
+            metadatas=[
+                {
+                    "source": "agent_learned",
+                    "runbook_type": "validated",
+                    "strategy_id": "val-1",
+                }
+            ],
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(file_contents={}, command_results={}),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=FakeNotifier(),
+            knowledge_store=store,
+            db_path=db_path,
+        )
+        result = asyncio.run(executor._query_knowledge("disk space"))
+        assert result.success is True
+        assert "[VALIDATED RUNBOOK]" in result.output
+
+    def test_authority_label_method_validated(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label(
+                "strategies", {"runbook_type": "validated"}
+            )
+            == "[VALIDATED RUNBOOK]"
+        )
