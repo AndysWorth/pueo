@@ -145,6 +145,24 @@ def _isolate_data_dir(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_agent_db(monkeypatch, tmp_path):
+    """Patch tool_executor.DB_PATH to a per-test temp file.
+
+    ToolExecutor resolves its default db_path from the module-level DB_PATH at
+    __init__ time.  Patching only tool_executor.DB_PATH (not config.DB_PATH)
+    prevents any test that creates ToolExecutor or AgentLoop without an explicit
+    db_path from writing gap runbooks or repair episodes to the production DB,
+    while leaving config.DB_PATH untouched so lazily-imported modules like
+    ha_notification_manager pick up the real production path rather than a
+    tableless temp file.  (#818)
+    """
+    import utils.agent.tool_executor as _te_mod
+
+    tmp_db = str(tmp_path / "test_agent.db")
+    monkeypatch.setattr(_te_mod, "DB_PATH", tmp_db)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_log_file(monkeypatch, tmp_path):
     """Redirect LOG_FILE and PUEO_LOG_DIR to tmp_path so tests never write to pueo.log.
 

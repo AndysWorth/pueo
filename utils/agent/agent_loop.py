@@ -371,19 +371,24 @@ class AgentLoop:
             log.warning("ha_profile_injection_failed", error=str(exc))
             return initial_context
 
-    def _pre_inject_knowledge(self, initial_context: str, query_text: str = "") -> str:
+    async def _pre_inject_knowledge(
+        self, initial_context: str, query_text: str = ""
+    ) -> str:
         """Query the knowledge store and append results to the initial context.
 
         Best-effort — any failure returns the original context unchanged.
         Capped at 1,000 tokens via truncate_to_budget.
         The query_text parameter should be the original user question so
         ChromaDB searches user intent rather than the injected HA profile.
+        Sets executor._query_knowledge_had_results when chunks are found so that
+        sessions benefiting from pre-injected context don't trigger the auto-gap.
         """
         from utils.core.context import truncate_to_budget
 
         effective_query = (query_text or initial_context)[:500]
         try:
-            chunks = self._knowledge_store.query(  # type: ignore[union-attr]
+            chunks = await asyncio.to_thread(
+                self._knowledge_store.query,  # type: ignore[union-attr]
                 query_text=effective_query,
                 top_k=3,
                 min_score=0.35,
@@ -393,6 +398,9 @@ class AgentLoop:
             return initial_context
         if not chunks:
             return initial_context
+        # Signal to the executor so the auto-gap logic knows KB had results.
+        if self._executor is not None:
+            self._executor._query_knowledge_had_results = True
         repair_chunks = [
             c for c in chunks if getattr(c, "collection", "") == "repair_history"
         ]
@@ -568,7 +576,7 @@ class AgentLoop:
         _effective_knowledge_query = knowledge_query or initial_context[:500]
 
         if self._knowledge_store is not None:
-            enriched = self._pre_inject_knowledge(
+            enriched = await self._pre_inject_knowledge(
                 initial_context, query_text=_effective_knowledge_query
             )
             if (

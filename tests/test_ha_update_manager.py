@@ -2204,3 +2204,87 @@ class TestFakeWSClientReleaseNotes:
         fake = FakeHAWebSocketClient()
         result = asyncio.run(fake.get_update_release_notes("update.unknown"))
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# knowledge_store wiring — _run_update_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestRunUpdateAnalysisKnowledgeStoreWiring:
+    """_run_update_analysis must forward knowledge_store to the ToolExecutor it builds.
+
+    Guards against the regression where an update_poll session hit
+    "Knowledge store not configured" because the executor was constructed
+    without the store (debug episode 2cafc120, 2026-10-06 23:06 UTC).
+    """
+
+    def test_knowledge_store_forwarded_to_executor(self, tmp_path, pueo_dirs):
+        """knowledge_store passed to _run_update_analysis reaches ToolExecutor."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success")
+        store = FakeKnowledgeStore()
+        captured_ks: list = []
+
+        class _FakeUpdate:
+            entity_id = "update.home_assistant_core_update"
+            component = "Home Assistant Core"
+            installed_version = "2026.9.0"
+            latest_version = "2026.9.1"
+            release_url = None
+            release_summary = None
+
+        def _capture_te(*args, **kwargs):
+            captured_ks.append(kwargs.get("knowledge_store"))
+            m = MagicMock()
+            m.set_update_status = MagicMock()
+            m.set_ws_client = MagicMock()
+            m.set_ha_profile = MagicMock()
+            m._pending_auto_apply = False
+            return m
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch(
+                "utils.agent.tool_executor.ToolExecutor", side_effect=_capture_te
+            ),
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_update_manager import _run_update_analysis
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_update_analysis(
+                    update=_FakeUpdate(),
+                    notifier=FakeNotifier(),
+                    knowledge_store=store,
+                )
+            )
+
+        assert len(captured_ks) == 1, "ToolExecutor must be constructed exactly once"
+        assert (
+            captured_ks[0] is store
+        ), "knowledge_store must be forwarded to ToolExecutor"

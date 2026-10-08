@@ -121,6 +121,8 @@ class TestAgentLoopPreInject:
         )
 
     def test_injects_knowledge_when_store_returns_chunks(self):
+        import asyncio as _asyncio
+
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -131,37 +133,45 @@ class TestAgentLoopPreInject:
             metadatas=[{"source": "s1"}],
         )
         loop = self._make_loop(knowledge_store=store)
-        result = loop._pre_inject_knowledge("ZHA error")
+        result = _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
         assert "Relevant context" in result
         assert "ZHA error: fix by restarting" in result
         assert "ZHA error" in result  # original context preserved
 
     def test_returns_original_when_store_is_none(self):
+        import asyncio as _asyncio
+
         loop = self._make_loop(knowledge_store=None)
         loop._knowledge_store = None
-        result = loop._pre_inject_knowledge("some context")
+        result = _asyncio.run(loop._pre_inject_knowledge("some context"))
         assert result == "some context"
 
     def test_returns_original_when_store_raises(self):
+        import asyncio as _asyncio
+
         class BrokenStore:
             def query(self, *a, **k):
                 raise RuntimeError("ChromaDB unavailable")
 
         loop = self._make_loop()
         loop._knowledge_store = BrokenStore()  # type: ignore[assignment]
-        result = loop._pre_inject_knowledge("some context")
+        result = _asyncio.run(loop._pre_inject_knowledge("some context"))
         assert result == "some context"
 
     def test_returns_original_when_no_chunks(self):
+        import asyncio as _asyncio
+
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()  # empty store → no chunks
         loop = self._make_loop(knowledge_store=store)
-        result = loop._pre_inject_knowledge("unrelated query")
+        result = _asyncio.run(loop._pre_inject_knowledge("unrelated query"))
         assert result == "unrelated query"
 
     def test_pre_inject_includes_authority_label(self):
         """Authority labels are prepended to each injected chunk."""
+        import asyncio as _asyncio
+
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -172,11 +182,13 @@ class TestAgentLoopPreInject:
             metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
         )
         loop = self._make_loop(knowledge_store=store)
-        result = loop._pre_inject_knowledge("ZHA error")
+        result = _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
         assert "[SEED RUNBOOK]" in result
 
     def test_pre_inject_official_label_for_ha_docs(self):
         """ha_integration_docs chunks are labelled [OFFICIAL]."""
+        import asyncio as _asyncio
+
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()
@@ -187,8 +199,38 @@ class TestAgentLoopPreInject:
             metadatas=[{"source": "ha_docs/zha"}],
         )
         loop = self._make_loop(knowledge_store=store)
-        result = loop._pre_inject_knowledge("ZHA integration")
+        result = _asyncio.run(loop._pre_inject_knowledge("ZHA integration"))
         assert "[OFFICIAL]" in result
+
+    def test_pre_inject_sets_had_results_flag(self):
+        """Pre-inject sets executor._query_knowledge_had_results when chunks are found."""
+        import asyncio as _asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["rb1"],
+            # Document must contain "ZHA error" so FakeKnowledgeStore's substring match fires.
+            documents=["ZHA error: runbook — restart the integration"],
+            metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
+        )
+        loop = self._make_loop(knowledge_store=store)
+        assert loop._executor._query_knowledge_had_results is False
+        _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
+        assert loop._executor._query_knowledge_had_results is True
+
+    def test_pre_inject_does_not_set_flag_when_no_chunks(self):
+        """Pre-inject leaves _query_knowledge_had_results False when no chunks match."""
+        import asyncio as _asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()  # empty
+        loop = self._make_loop(knowledge_store=store)
+        _asyncio.run(loop._pre_inject_knowledge("unrelated query"))
+        assert loop._executor._query_knowledge_had_results is False
 
     def test_run_accepts_knowledge_query_kwarg(self):
         """AgentLoop.run() accepts knowledge_query without raising."""
@@ -9842,6 +9884,67 @@ class TestToolExecutor:
         assert "zha" in result.output
         assert "mqtt" not in result.output
 
+    def test_query_knowledge_strategies_unfiltered_when_integration_filter_set(self):
+        """integration_filter must not drop strategies runbooks — they have no impacted_integration."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["seed-update-1"],
+            # FakeKnowledgeStore uses substring match: document must contain the query.
+            documents=[
+                "HA update breaking changes: check release notes before installing"
+            ],
+            metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
+        )
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+            knowledge_store=store,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="query_knowledge",
+                    arguments={
+                        "query": "HA update breaking changes",
+                        "integration_filter": ["openthread_border_router"],
+                    },
+                )
+            )
+        )
+        assert result.success
+        # The seed runbook in strategies must appear despite the integration filter.
+        assert "HA update breaking changes" in result.output
+        assert "[SEED RUNBOOK]" in result.output
+
+    def test_knowledge_authority_label_home_profile(self):
+        """home_profile documents must be labelled [HA INSTANCE PROFILE], not [CANDIDATE RUNBOOK]."""
+        from utils.agent.tool_executor import ToolExecutor
+
+        label = ToolExecutor._knowledge_authority_label(
+            "strategies",
+            {"source": "home_profile", "runbook_type": "instance_profile"},
+        )
+        assert label == "[HA INSTANCE PROFILE]"
+
+    def test_knowledge_authority_label_pueo_kb_gap(self):
+        """pueo-kb entries with kb_type='gap' must be labelled as KNOWN GAP, not COMMUNITY RUNBOOK."""
+        from utils.agent.tool_executor import ToolExecutor
+
+        label = ToolExecutor._knowledge_authority_label(
+            "strategies",
+            {"source": "pueo_kb", "kb_type": "gap"},
+        )
+        assert label == "[KNOWN GAP – prior attempt unresolved]"
+
     def test_get_ha_profile_tool_returns_profile(self):
         from utils.agent.autonomy import FakeAutonomyGate
         from utils.ha.ha_environment import HAEnvironmentProfile
@@ -16210,3 +16313,91 @@ class TestGapRunbookAutoSave:
         # New row was added (total 2)
         rows = self._gap_rows(db, "test_trigger")
         assert len(rows) == 2
+
+    def test_save_runbook_type_alias_accepted(self, tmp_path, monkeypatch):
+        """save_runbook accepts 'type' as an alias for 'runbook_type'."""
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = str(tmp_path / "test.db")
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=__import__(
+                "utils.agent.autonomy", fromlist=["FakeAutonomyGate"]
+            ).FakeAutonomyGate(),
+            notifier=__import__(
+                "utils.hitl.notify", fromlist=["FakeNotifier"]
+            ).FakeNotifier(),
+            knowledge_store=FakeKnowledgeStore(),
+            db_path=db,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="save_runbook",
+                    arguments={
+                        "title": "test runbook",
+                        "trigger_pattern": "zha error",
+                        "approach": "restart integration",
+                        "type": "candidate",
+                    },
+                )
+            )
+        )
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE trigger_pattern='zha error'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "candidate"
+
+    def test_save_runbook_seed_type_demoted_to_candidate(self, tmp_path):
+        """LLM cannot write seed runbooks — 'seed' is demoted to 'candidate'."""
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.agent.tool_registry import ToolCall
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = str(tmp_path / "test.db")
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.DB_PATH = db
+        ha_agent_advanced.init_local_database()
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=__import__(
+                "utils.agent.autonomy", fromlist=["FakeAutonomyGate"]
+            ).FakeAutonomyGate(),
+            notifier=__import__(
+                "utils.hitl.notify", fromlist=["FakeNotifier"]
+            ).FakeNotifier(),
+            knowledge_store=FakeKnowledgeStore(),
+            db_path=db,
+        )
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="save_runbook",
+                    arguments={
+                        "title": "sneaky seed",
+                        "trigger_pattern": "some pattern",
+                        "approach": "do something",
+                        "runbook_type": "seed",
+                    },
+                )
+            )
+        )
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE trigger_pattern='some pattern'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "candidate", "seed runbook_type must be demoted to candidate"
