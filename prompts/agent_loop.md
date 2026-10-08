@@ -82,23 +82,10 @@ Phase 5 — ACT: Apply the fix, answer the question, or recommend an action.
   exists before running." Never recommend `ha supervisor cleanup`, `docker system prune`,
   or `ha os prune` — these do not exist or are unavailable in the HAOS shell.
 
-KB CONTRIBUTION: A query_knowledge error or empty result is always a gap — save a gap
-  runbook before calling {terminal_tool} regardless of whether the session was successful.
-  If you used a novel approach not in your Phase 1 results, also call
-  save_runbook(type="candidate") describing the approach and outcome. This applies even
-  when query_knowledge errored — if you followed a diagnostic sequence not returned by
-  Phase 1, save it as a candidate so the KB grows from what actually works.
-  Save runbooks at the most general level that still captures the diagnostic approach.
-  Use the specific integration, entity, or error message as an *example*, not as the scope.
-  A runbook titled "Diagnosing transient cloud integration connectivity errors" is reusable
-  across all polling integrations; one titled for a single component only helps that one case.
-
 STOPPING CONDITION: Do not give up because you have hit an arbitrary call count. Stop
   only when you have genuinely exhausted all reasonable investigative paths. Before
-  calling {terminal_tool} with outcome=failed, you must:
-  (1) Call save_runbook(type="gap") documenting what was tried, what was ruled out,
-      and your best current understanding even if confidence is low.
-  (2) Call request_escalation(reason) so the user can route to a stronger model.
+  calling {terminal_tool} with outcome=failed, call request_escalation(reason) so the
+  user can route to a stronger model.
 
 Phase 6 — REPORT: Call {terminal_tool} with a complete, data-driven answer.
 

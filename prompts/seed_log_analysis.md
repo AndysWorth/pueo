@@ -36,7 +36,3 @@ Provide:
 - For each warning: same
 - Overall assessment: normal operation / degraded / error state
 
-## Gaps to note
-
-If errors are found that Pueo cannot explain from its knowledge base, call
-`save_runbook(type="gap")` describing the error and what investigation was attempted.

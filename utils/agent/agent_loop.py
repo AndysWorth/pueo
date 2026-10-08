@@ -757,7 +757,7 @@ class AgentLoop:
             except Exception as exc:  # nosec B110
                 log.warning("episode_html_write_failed", error=str(exc))
 
-        await self._maybe_auto_save_gap_runbook(outcome, steps)
+        await self._enqueue_distillation(outcome, steps)
 
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
@@ -773,78 +773,88 @@ class AgentLoop:
             debug_log_path=debug_log_path,
         )
 
-    async def _maybe_auto_save_gap_runbook(
-        self, outcome: str, steps: list[AgentStep]
-    ) -> None:
-        """Auto-save a gap runbook when the model failed to save one itself.
+    async def _enqueue_distillation(self, outcome: str, steps: list[AgentStep]) -> None:
+        """Enqueue a post-session distillation WorkItem via the supervisor queue.
 
-        Fires when:
-        - A knowledge store is configured (no store = no KB gap to record)
-        - outcome != "success", OR every query_knowledge call returned empty
-        - AND the model did not call save_runbook during the session
-        - AND no gap runbook with the same trigger_pattern exists from the last 7 days
+        In supervisor mode the distiller runs as a low-priority WorkItem, honouring
+        the no-concurrent-LLM rule.  Outside the supervisor (standalone runs, tests)
+        the queue is absent and distillation is skipped — gaps are written only when
+        an LLM call is not required (non-success, thin evidence).
         """
-        if self._knowledge_store is None:
-            return
-        ex = self._executor
-        should_save = (
-            outcome != "success" or not ex._query_knowledge_had_results
-        ) and not ex._save_runbook_called
-        if not should_save:
+        if self._knowledge_store is None or self._db_path is None:
             return
 
-        trigger_pattern = self._trigger
-        # Dedup: skip if we already have a recent gap for this trigger.
-        try:
-            already_exists = await asyncio.to_thread(
-                ex._has_recent_gap_runbook, trigger_pattern
-            )
-        except Exception:  # nosec B110
-            already_exists = False
-        if already_exists:
-            log.debug("gap_runbook_dedup_skip", trigger=trigger_pattern)
-            return
-
-        # Build a concise approach description from what was tried.
-        tool_names_used = sorted({s.tool_call.name for s in steps})
-        queries_tried = [
-            s.tool_call.arguments.get("query", "")
-            for s in steps
-            if s.tool_call.name == "query_knowledge"
-        ]
-        query_summary = "; ".join(q for q in queries_tried if q) or "none"
-        approach = (
-            f"Outcome: {outcome}\n"
-            f"KB queries tried: {query_summary}\n"
-            f"Tools used: {', '.join(tool_names_used) or 'none'}\n"
-            f"KB returned results: {ex._query_knowledge_had_results}"
+        from utils.knowledge.runbook_distiller import (
+            distill_and_persist,
+            qualifies_for_distillation,
+            write_gap,
         )
-        title = f"Gap: {trigger_pattern} ({outcome})"
-        try:
-            await ex._save_strategy(title, trigger_pattern, approach, "gap")
-            log.info(
-                "gap_runbook_auto_saved",
-                trigger=trigger_pattern,
-                outcome=outcome,
-                kb_had_results=ex._query_knowledge_had_results,
-            )
-            try:
-                from utils.core.timeline import write_timeline_event
+        from utils.agent.work_queue import (
+            PRIORITY_LOW,
+            WorkItem,
+            get_work_queue_or_none,
+        )
 
-                write_timeline_event(
-                    "WARN",
-                    "agent_loop",
-                    f"Gap runbook auto-saved — {trigger_pattern}",
-                    detail={
-                        "trigger": trigger_pattern,
-                        "outcome": outcome,
-                        "episode_id": self._episode_id,
-                    },
+        queue = get_work_queue_or_none()
+        sig = self._trigger
+        _db = self._db_path
+        _store = self._knowledge_store
+        _model = self._model
+        _ep = self._episode_id
+
+        if queue is not None:
+            # Supervisor mode: full distillation (may include LLM call).
+            _steps_snap = list(steps)
+            _outcome = outcome
+
+            async def _run_distillation() -> None:
+                await distill_and_persist(
+                    trigger=sig,
+                    signature=sig,
+                    steps=_steps_snap,
+                    outcome=_outcome,
+                    episode_id=_ep,
+                    db_path=_db,
+                    knowledge_store=_store,
+                    model=_model,
                 )
-            except Exception:  # nosec B110
-                pass
-        except Exception as exc:  # nosec B110
-            log.warning("gap_runbook_auto_save_failed", error=str(exc))
+
+            submitted = await queue.submit(
+                WorkItem(
+                    priority=PRIORITY_LOW,
+                    activity_type="runbook_distillation",
+                    description=f"Distill {sig}",
+                    dedup_key=f"distill_{sig}",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_run_distillation,
+                )
+            )
+            log.debug("distillation_enqueued", signature=sig, submitted=submitted)
+        else:
+            # Standalone / test mode: write gap directly when no LLM is needed.
+            if outcome != "success" or (
+                not qualifies_for_distillation(outcome, steps)
+                and self._executor is not None
+                and not self._executor._query_knowledge_had_results
+            ):
+                try:
+                    await asyncio.to_thread(
+                        write_gap,
+                        _db,
+                        _store,
+                        sig,
+                        sig,
+                        list(steps),
+                        outcome,
+                        _ep,
+                    )
+                    log.info(
+                        "distillation_gap_written_standalone",
+                        trigger=sig,
+                        outcome=outcome,
+                    )
+                except Exception as exc:  # nosec B110
+                    log.warning("distillation_gap_write_failed", error=str(exc))
 
     async def _maybe_extend_budget(
         self,

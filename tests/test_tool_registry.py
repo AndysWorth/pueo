@@ -97,7 +97,8 @@ class TestRegistryMembership:
         reg = build_ha_tool_registry()
         assert "query_netalertx" not in reg
 
-    def test_all_registries_include_save_runbook(self):
+    def test_no_registry_includes_save_runbook(self):
+        """save_runbook is removed — distillation is automated, not model-invoked."""
         from utils.agent.tool_registry import build_netalertx_tool_registry
 
         for reg in (
@@ -105,7 +106,7 @@ class TestRegistryMembership:
             build_netalertx_tool_registry(),
             build_chat_tool_registry(),
         ):
-            assert "save_runbook" in reg
+            assert "save_runbook" not in reg
 
     def test_all_registries_include_log_reading_tools(self):
         from utils.agent.tool_registry import build_netalertx_tool_registry
@@ -126,7 +127,6 @@ class TestRegistryMembership:
             "read_file",
             "run_ha_command",
             "query_knowledge",
-            "save_runbook",
             "finish_diagnosis",
         ):
             assert name in reg, f"expected {name!r} in config_analysis registry"
@@ -140,7 +140,6 @@ class TestRegistryMembership:
             "get_pueo_command_catalog",
             "check_config_against_breaking_change",
             "query_knowledge",
-            "save_runbook",
             "finish_update_analysis",
         ):
             assert name in reg, f"expected {name!r} in update_analysis registry"

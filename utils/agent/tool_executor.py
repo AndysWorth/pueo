@@ -233,9 +233,8 @@ class ToolExecutor:
         self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
         self._event_subscriber: Optional[Any] = None
-        # Per-session gap-runbook tracking (reset in reset())
+        # Per-session KB tracking (reset in reset())
         self._query_knowledge_had_results: bool = False
-        self._save_runbook_called: bool = False
         # Per-session runbook usage tracking: strategy_ids seen in pre-inject or query_knowledge
         self._injected_strategy_ids: set[str] = set()
 
@@ -246,7 +245,6 @@ class ToolExecutor:
         self._sandbox_passed = False
         self._sandbox_output = ""
         self._query_knowledge_had_results = False
-        self._save_runbook_called = False
         self._injected_strategy_ids = set()
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
@@ -471,13 +469,6 @@ class ToolExecutor:
                 return await self._restart_netalertx()
             if name == "rewrite_netalertx_conf":
                 return await self._rewrite_netalertx_conf(args.get("overrides", {}))
-            if name == "save_runbook":
-                return await self._save_strategy(
-                    args.get("title", ""),
-                    args.get("trigger_pattern", ""),
-                    args.get("approach", ""),
-                    args.get("runbook_type") or args.get("type") or "candidate",
-                )
             if name == "read_pueo_log":
                 return await self._read_pueo_log(
                     int(args.get("lines", 100)),
@@ -3146,62 +3137,6 @@ class ToolExecutor:
                 error=str(exc),
             )
 
-    async def _save_strategy(
-        self,
-        title: str,
-        trigger_pattern: str,
-        approach: str,
-        runbook_type: str = "candidate",
-    ) -> ToolResult:
-        if not title or not approach:
-            return ToolResult(
-                tool_name="save_runbook",
-                success=False,
-                output="",
-                error="title and approach are required",
-            )
-        self._save_runbook_called = True
-        _VALID_TYPES = {"candidate", "gap"}
-        rtype = runbook_type if runbook_type in _VALID_TYPES else "candidate"
-        strategy_id = str(uuid.uuid4())
-        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\nType: {rtype}\n\n{approach}"
-        meta = {
-            "source": "agent_learned",
-            "title": title,
-            "trigger_pattern": trigger_pattern,
-            "strategy_id": strategy_id,
-            "runbook_type": rtype,
-        }
-        if self._knowledge_store is not None:
-            # Gaps go to knowledge_gaps (never retrieved); runbooks go to strategies.
-            chroma_col = "knowledge_gaps" if rtype == "gap" else "strategies"
-            try:
-                await asyncio.to_thread(
-                    self._knowledge_store.upsert,
-                    chroma_col,
-                    [strategy_id],
-                    [text],
-                    [meta],
-                )
-            except Exception as exc:
-                log.warning("save_runbook_chroma_failed", error=str(exc))
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO agent_strategies"
-                    " (id, title, trigger_pattern, approach, runbook_state, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, datetime('now'))",
-                    (strategy_id, title, trigger_pattern, approach, rtype),
-                )
-                conn.commit()
-        except Exception as exc:
-            log.warning("save_runbook_sqlite_failed", error=str(exc))
-        return ToolResult(
-            tool_name="save_runbook",
-            success=True,
-            output=f"Runbook '{title}' saved as {rtype} (id={strategy_id})",
-        )
-
     def record_runbook_usage(
         self,
         strategy_ids: set[str],
@@ -3349,22 +3284,6 @@ class ToolExecutor:
             if outcome == "success":
                 counts[sid][0] += 1
         return {sid: (s / t) for sid, (s, t) in counts.items() if t > 0}
-
-    def _has_recent_gap_runbook(self, trigger_pattern: str, days: int = 7) -> bool:
-        """Return True if a gap runbook with this trigger_pattern exists within `days`."""
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM agent_strategies"
-                    " WHERE runbook_state = 'gap'"
-                    " AND trigger_pattern = ?"
-                    " AND created_at >= datetime('now', ?)"
-                    " LIMIT 1",
-                    (trigger_pattern, f"-{days} days"),
-                ).fetchone()
-            return row is not None
-        except Exception:  # nosec B110
-            return False
 
     async def _read_pueo_log(
         self,
