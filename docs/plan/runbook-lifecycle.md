@@ -17,18 +17,18 @@ Signatures are computed by pure functions in `utils/knowledge/runbook_signature.
 
 ### Per session type
 
-| Session source | Function | Signature example |
-|---|---|---|
-| Repair issue | `sig_repair(domain, translation_key)` | `repair:recorder:backup_not_available` |
-| HA Core update | `sig_update("core", "homeassistant")` | `update:core:homeassistant` |
-| HAOS update | `sig_update("os", "homeassistant")` | `update:os:homeassistant` |
-| Add-on update | `sig_update("addon", slug)` | `update:addon:mosquitto` |
-| HACS update | `sig_update("hacs", slug)` | `update:hacs:lovelace-mushroom` |
-| Live log error | `sig_log(logger, exception_class)` | `log:homeassistant.components.recorder:DatabaseError` |
-| Lovelace entity | `sig_lovelace(entity_domain, failure_kind)` | `lovelace:sensor:unavailable` |
-| Persistent notification | `sig_notification(id_prefix)` | `notification:update_all_package` |
-| Chat (runbook retrieved) | `sig_chat(top_sig)` | `chat:repair:recorder:backup_not_available` |
-| Chat (nothing retrieved) | `sig_chat(None)` | `chat:unclassified` |
+| Session source           | Function                                    | Signature example                                     |
+| ------------------------ | ------------------------------------------- | ----------------------------------------------------- |
+| Repair issue             | `sig_repair(domain, translation_key)`       | `repair:recorder:backup_not_available`                |
+| HA Core update           | `sig_update("core", "homeassistant")`       | `update:core:homeassistant`                           |
+| HAOS update              | `sig_update("os", "homeassistant")`         | `update:os:homeassistant`                             |
+| Add-on update            | `sig_update("addon", slug)`                 | `update:addon:mosquitto`                              |
+| HACS update              | `sig_update("hacs", slug)`                  | `update:hacs:lovelace-mushroom`                       |
+| Live log error           | `sig_log(logger, exception_class)`          | `log:homeassistant.components.recorder:DatabaseError` |
+| Lovelace entity          | `sig_lovelace(entity_domain, failure_kind)` | `lovelace:sensor:unavailable`                         |
+| Persistent notification  | `sig_notification(id_prefix)`               | `notification:update_all_package`                     |
+| Chat (runbook retrieved) | `sig_chat(top_sig)`                         | `chat:repair:recorder:backup_not_available`           |
+| Chat (nothing retrieved) | `sig_chat(None)`                            | `chat:unclassified`                                   |
 
 **Sanitisation rules** (applied in `_sanitize(s: str) -> str`):
 
@@ -104,6 +104,26 @@ Known failure modes for this approach, with remediation notes.
 
 All sections are required for distilled runbooks. Seed prose runbooks that lack the
 frontmatter are seeded with `signature: seed:<filename>` and `state: seed`.
+
+### 2.1 How signatures are used in retrieval
+
+The `signature` field is stored as Chroma metadata on every `strategies` embedding.
+`_pre_inject_knowledge` runs two lookups before the session's first LLM call:
+
+1. **Exact signature lookup** — `collection.query(where={"signature": sig}, n_results=1)`.
+   If a hit is found, that runbook is injected regardless of its cosine score. This
+   guarantees the canonical recipe for this exact symptom always surfaces.
+
+2. **Semantic search** — the existing BM25+cosine hybrid over the full `strategies`
+   collection, using the session's natural-language trigger as the query. This finds
+   related but non-identical runbooks (e.g. other `repair:recorder:*` entries when the
+   current signature is `repair:recorder:migration_failed`).
+
+Results from both lookups are merged and deduplicated by Chroma id before injection.
+The exact-match hit is always placed first so it is read before broader context.
+
+`query_knowledge` calls made by the model during the session continue to use semantic
+search only — the model frames questions in natural language, not signatures.
 
 ---
 
