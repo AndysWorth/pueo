@@ -13,6 +13,7 @@ from utils.knowledge.kb_ingester import (
     _collection_for_type,
     download_and_embed,
     fetch_manifest,
+    load_kb_manifest_ids,
     load_sync_state,
     run_kb_sync,
     save_sync_state,
@@ -43,6 +44,20 @@ class TestManifestEntry:
         )
         assert e.integrations == ["zha", "mqtt"]
         assert e.quality_score == 0.85
+
+    def test_source_seed_defaults_to_empty(self):
+        e = ManifestEntry(id="x", type="runbook", path="p.md", sha256="s")
+        assert e.source_seed == ""
+
+    def test_source_seed_custom(self):
+        e = ManifestEntry(
+            id="x",
+            type="runbook",
+            path="p.md",
+            sha256="s",
+            source_seed="seed_update_analysis.md",
+        )
+        assert e.source_seed == "seed_update_analysis.md"
 
 
 # ── _validate_repo ────────────────────────────────────────────────────────────
@@ -194,6 +209,38 @@ class TestSelectRelevantEntries:
         result = select_relevant_entries([e], [], set())
         assert result == []
 
+    def test_source_seed_mirror_excluded(self):
+        """Entry with source_seed matching a local seed filename is skipped."""
+        e = _entry(
+            integrations=["all"],
+            sha256="s9",
+            source_seed="seed_update_analysis.md",
+        )
+        seeds = frozenset({"seed_update_analysis.md"})
+        result = select_relevant_entries([e], [], set(), local_seed_filenames=seeds)
+        assert result == []
+
+    def test_source_seed_not_in_local_seeds_kept(self):
+        e = _entry(integrations=["all"], sha256="s10", source_seed="some_other_file.md")
+        seeds = frozenset({"seed_update_analysis.md"})
+        result = select_relevant_entries([e], [], set(), local_seed_filenames=seeds)
+        assert result == [e]
+
+    def test_slug_mirror_excluded_without_source_seed(self):
+        """Entry with id matching a local seed filename stem is skipped via slug fallback."""
+        e = _entry(id="seed_update_analysis", integrations=["all"], sha256="s11")
+        seeds = frozenset({"seed_update_analysis.md"})
+        result = select_relevant_entries([e], [], set(), local_seed_filenames=seeds)
+        assert result == []
+
+    def test_no_seed_filter_without_local_seeds(self):
+        """Without local_seed_filenames, source_seed is ignored."""
+        e = _entry(
+            integrations=["all"], sha256="s12", source_seed="seed_update_analysis.md"
+        )
+        result = select_relevant_entries([e], [], set())
+        assert result == [e]
+
 
 # ── _collection_for_type ──────────────────────────────────────────────────────
 
@@ -322,6 +369,23 @@ class TestSyncState:
         assert (nested / "kb_sync_state.json").exists()
 
 
+# ── load_kb_manifest_ids ──────────────────────────────────────────────────────
+
+
+class TestLoadKbManifestIds:
+    def test_empty_cache_returns_empty_set(self, tmp_path):
+        assert load_kb_manifest_ids(str(tmp_path)) == set()
+
+    def test_returns_saved_ids(self, tmp_path):
+        save_sync_state(str(tmp_path), {"all_manifest_ids": ["a", "b"]})
+        ids = load_kb_manifest_ids(str(tmp_path))
+        assert ids == {"a", "b"}
+
+    def test_missing_key_returns_empty_set(self, tmp_path):
+        save_sync_state(str(tmp_path), {"ingested_sha256s": ["x"]})
+        assert load_kb_manifest_ids(str(tmp_path)) == set()
+
+
 # ── run_kb_sync ───────────────────────────────────────────────────────────────
 
 
@@ -412,3 +476,74 @@ class TestRunKbSync:
         assert count == 1
         state = load_sync_state(str(tmp_path))
         assert "s3" in state["ingested_sha256s"]
+
+    def test_saves_all_manifest_ids_to_state(self, tmp_path):
+        """run_kb_sync saves all manifest entry ids (not just newly ingested) to state."""
+        store = MagicMock()
+        manifest_raw = _make_gh_response(
+            json.dumps(
+                [
+                    {
+                        "id": "rb1",
+                        "type": "runbook",
+                        "path": "p.md",
+                        "sha256": "s10",
+                        "integrations": ["all"],
+                        "tags": [],
+                        "quality_score": 0.9,
+                    },
+                    {
+                        "id": "rb2",
+                        "type": "runbook",
+                        "path": "q.md",
+                        "sha256": "s11",
+                        "integrations": ["zha"],  # filtered by empty profile
+                        "tags": [],
+                        "quality_score": 0.9,
+                    },
+                ]
+            )
+        )
+        file_raw = _make_gh_response("# Body")
+        call_count: dict[str, int] = {"n": 0}
+
+        def _gh(args: Any, timeout: int = 60) -> str:
+            call_count["n"] += 1
+            return manifest_raw if call_count["n"] == 1 else file_raw
+
+        with patch("utils.knowledge.kb_ingester._run_gh", side_effect=_gh):
+            run_kb_sync("owner/kb", str(tmp_path), store, integration_profile=[])
+
+        state = load_sync_state(str(tmp_path))
+        # Both ids should be saved even though rb2 was filtered out
+        assert set(state["all_manifest_ids"]) == {"rb1", "rb2"}
+
+    def test_local_seed_mirror_skipped(self, tmp_path):
+        """Entry with source_seed matching a local seed is not embedded."""
+        store = MagicMock()
+        manifest_raw = _make_gh_response(
+            json.dumps(
+                [
+                    {
+                        "id": "seed_update_analysis",
+                        "type": "runbook",
+                        "path": "runbooks/seed_update_analysis.md",
+                        "sha256": "sM",
+                        "integrations": ["all"],
+                        "tags": [],
+                        "quality_score": 0.9,
+                        "source_seed": "seed_update_analysis.md",
+                    }
+                ]
+            )
+        )
+        with patch("utils.knowledge.kb_ingester._run_gh", return_value=manifest_raw):
+            count = run_kb_sync(
+                "owner/kb",
+                str(tmp_path),
+                store,
+                integration_profile=[],
+                local_seed_filenames=frozenset({"seed_update_analysis.md"}),
+            )
+        assert count == 0
+        store.upsert.assert_not_called()

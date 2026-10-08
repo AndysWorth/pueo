@@ -400,6 +400,10 @@ def run_rag_refresh(
     _log.info("rag_refresh_step_done", step="parse_deprecated_keys", count=n_deprecated)
 
     # ── 9. pueo-kb sync ─────────────────────────────────────────────────────
+    from utils.knowledge.strategy_seeder import _SEED_PROMPTS as _seed_prompts
+
+    _local_seed_filenames: frozenset[str] = frozenset(fn for fn, _, _ in _seed_prompts)
+
     n_kb_sync = 0
     if config.PUEO_KB_REPO:
         from utils.knowledge.kb_ingester import KbIngestError, run_kb_sync
@@ -415,6 +419,7 @@ def run_rag_refresh(
                 config.KB_SYNC_CACHE_DIR,
                 store,
                 _integration_profile,
+                _local_seed_filenames,
             )
             _log.info("rag_refresh_step_done", step="kb_sync", embedded=n_kb_sync)
         except KbIngestError as exc:
@@ -423,6 +428,16 @@ def run_rag_refresh(
             _log.warning("kb_sync_error", error=str(exc))
     else:
         _log.info("rag_refresh_step_skipped", step="kb_sync", reason="not_configured")
+
+    # ── 9.5. Prune orphaned strategies ──────────────────────────────────────
+    from utils.knowledge.kb_ingester import load_kb_manifest_ids
+    from utils.knowledge.strategy_seeder import prune_strategies
+
+    _cb("Pruning orphaned strategy runbooks")
+    _log.info("rag_refresh_step", step="prune_strategies")
+    _kb_manifest_ids = load_kb_manifest_ids(config.KB_SYNC_CACHE_DIR)
+    n_pruned = prune_strategies(store, config.DB_PATH, _kb_manifest_ids)
+    _log.info("rag_refresh_step_done", step="prune_strategies", pruned=n_pruned)
 
     from utils.knowledge.knowledge_store import COLLECTIONS
 

@@ -1903,6 +1903,36 @@ class TestFakeKnowledgeStorePrune:
         assert removed == 0
 
 
+class TestFakeKnowledgeStoreDeleteIds:
+    def test_delete_removes_matching_ids(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["a", "b", "c"],
+            documents=["doc a", "doc b", "doc c"],
+            metadatas=[{}, {}, {}],
+        )
+        store.delete_ids("strategies", ["a", "c"])
+        assert len(store._docs["strategies"]) == 1
+        assert store._docs["strategies"][0][0] == "b"
+
+    def test_delete_empty_list_is_noop(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert("strategies", ["x"], ["text"], [{}])
+        store.delete_ids("strategies", [])
+        assert len(store._docs["strategies"]) == 1
+
+    def test_delete_missing_collection_is_noop(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.delete_ids("nonexistent", ["any"])  # must not raise
+
+
 class TestFakeKnowledgeStoreTotalCount:
     def test_empty_store_returns_zero(self):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
@@ -8368,3 +8398,165 @@ class TestHaSourceCache:
         fetched, skipped = preload_domains(["hue"], tmp_path, ttl_seconds=3600)
         assert fetched == len(_PRELOAD_FILES)
         assert skipped == 0
+
+
+# ── TestSyncStrategyToChroma ──────────────────────────────────────────────────
+
+
+class TestSyncStrategyToChroma:
+    """Tests for strategy_seeder.sync_strategy_to_chroma."""
+
+    def _make_db(self, tmp_path, state: str = "candidate") -> str:
+        import sqlite3
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies"
+                " (id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT,"
+                "  approach TEXT, runbook_state TEXT, created_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies VALUES (?,?,?,?,?,datetime('now'))",
+                ("rb-1", "My runbook", "some trigger", "do this", state),
+            )
+            conn.commit()
+        return str(db)
+
+    def test_upserts_chroma_with_runbook_type(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        store = FakeKnowledgeStore()
+        db = self._make_db(tmp_path, "candidate")
+        result = sync_strategy_to_chroma("rb-1", db, store)
+
+        assert result is True
+        chunks = store.query("do this", top_k=5, collections=["strategies"])
+        assert len(chunks) == 1
+        assert chunks[0].metadata["runbook_type"] == "candidate"
+
+    def test_updates_runbook_type_after_promotion(self, tmp_path):
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        store = FakeKnowledgeStore()
+        db = self._make_db(tmp_path, "candidate")
+        sync_strategy_to_chroma("rb-1", db, store)
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE agent_strategies SET runbook_state='seed' WHERE id='rb-1'"
+            )
+            conn.commit()
+
+        sync_strategy_to_chroma("rb-1", db, store)
+        chunks = store.query("do this", top_k=5, collections=["strategies"])
+        assert chunks[0].metadata["runbook_type"] == "seed"
+
+    def test_returns_false_when_row_missing(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import sync_strategy_to_chroma
+
+        store = FakeKnowledgeStore()
+        result = sync_strategy_to_chroma("no-such-id", str(tmp_path / "no.db"), store)
+        assert result is False
+
+
+# ── TestPruneStrategies ───────────────────────────────────────────────────────
+
+
+class TestPruneStrategies:
+    """Tests for strategy_seeder.prune_strategies."""
+
+    def _make_db(self, tmp_path) -> str:
+        import sqlite3
+
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies"
+                " (id TEXT PRIMARY KEY, runbook_state TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies VALUES ('candidate-1','candidate')"
+            )
+            conn.commit()
+        return str(db)
+
+    def test_removes_orphaned_entry(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import prune_strategies
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ["orphan-id"],
+            ["orphan text"],
+            [{"source": "agent_strategies"}],
+        )
+        db = self._make_db(tmp_path)
+        removed = prune_strategies(store, db)
+        assert removed == 1
+        assert store.collection_count("strategies") == 0
+
+    def test_keeps_sqlite_backed_entry(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import prune_strategies
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ["candidate-1"],
+            ["candidate text"],
+            [{"source": "agent_strategies"}],
+        )
+        db = self._make_db(tmp_path)
+        removed = prune_strategies(store, db)
+        assert removed == 0
+        assert store.collection_count("strategies") == 1
+
+    def test_keeps_local_seed_ids(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, prune_strategies
+
+        store = FakeKnowledgeStore()
+        seed_id = f"seed:{_SEED_PROMPTS[0][0]}"
+        store.upsert(
+            "strategies", [seed_id], ["seed text"], [{"source": "seed_prompt"}]
+        )
+        db = self._make_db(tmp_path)  # db has candidate-1, not seed_id
+        removed = prune_strategies(store, db)
+        assert removed == 0  # seed is kept even though not in db
+
+    def test_keeps_kb_manifest_ids(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import prune_strategies
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ["kb_some-kb-runbook"],
+            ["kb text"],
+            [{"source": "pueo_kb"}],
+        )
+        db = self._make_db(tmp_path)
+        removed = prune_strategies(store, db, kb_manifest_ids={"some-kb-runbook"})
+        assert removed == 0
+
+    def test_removes_kb_entry_not_in_manifest(self, tmp_path):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import prune_strategies
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ["kb_old-removed-runbook"],
+            ["old text"],
+            [{"source": "pueo_kb"}],
+        )
+        db = self._make_db(tmp_path)
+        # manifest_ids is empty → kb entry is stale
+        removed = prune_strategies(store, db, kb_manifest_ids=set())
+        assert removed == 1

@@ -7865,3 +7865,131 @@ class TestExecuteAutomationCreate:
         import web.dashboard as dashboard
 
         assert CARD_TYPE_AUTOMATION_CREATE in dashboard._CARD_DISPATCH
+
+
+# ── TestRunbookDiscardRoute ───────────────────────────────────────────────────
+
+
+class TestRunbookDiscardRoute:
+    """Tests for POST /runbooks/{id}/discard."""
+
+    def _make_db(self, tmp_path: Path, state: str = "gap") -> Path:
+        db = tmp_path / "state.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies"
+                " (id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT,"
+                "  approach TEXT, runbook_state TEXT, created_at TEXT,"
+                "  reviewed_at TEXT, promoted_at TEXT, contributed_at TEXT, kb_pr_url TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies VALUES (?,?,?,?,?,datetime('now'),NULL,NULL,NULL,NULL)",
+                ("gap-1", "A gap", "some trigger", "tried this", state),
+            )
+            conn.commit()
+        return db
+
+    def test_discard_gap_returns_200(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "gap")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/runbooks/gap-1/discard")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_discard_deletes_from_sqlite(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "gap")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/runbooks/gap-1/discard")
+
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute(
+                "SELECT id FROM agent_strategies WHERE id='gap-1'"
+            ).fetchone()
+        assert row is None
+
+    def test_discard_candidate_succeeds(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "candidate")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/runbooks/gap-1/discard")
+        assert resp.status_code == 200
+
+    def test_discard_seed_returns_404(self, tmp_path, monkeypatch):
+        """Seed runbooks cannot be discarded via this route."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "seed")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/runbooks/gap-1/discard")
+        assert resp.status_code == 404
+
+    def test_discard_missing_id_returns_404(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "gap")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: None)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/runbooks/nonexistent/discard")
+        assert resp.status_code == 404
+
+    def test_discard_calls_delete_ids_on_store(self, tmp_path, monkeypatch):
+        """When a store is available, delete_ids is called to remove from Chroma."""
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = self._make_db(tmp_path, "gap")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", True)
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies", ["gap-1"], ["text"], [{"source": "agent_strategies"}]
+        )
+        monkeypatch.setattr(dashboard, "_get_strategy_store", lambda: store)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/runbooks/gap-1/discard")
+
+        assert store.collection_count("strategies") == 0
+
+    def test_discard_disabled_outside_dev_mode(self, tmp_path, monkeypatch):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        db = self._make_db(tmp_path, "gap")
+        monkeypatch.setattr(dashboard, "DB_PATH", str(db))
+        monkeypatch.setattr(dashboard, "DEVELOPMENT_MODE", False)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/runbooks/gap-1/discard")
+        assert resp.status_code == 404
