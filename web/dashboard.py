@@ -4154,14 +4154,21 @@ async def submit_runbooks_to_kb() -> JSONResponse:
             "Add 'pueo_kb_repo: owner/pueo-kb' under 'agent:' in config.yaml.",
         )
 
-    def _load_queued() -> tuple[list[dict], list[dict]]:
+    def _load_queued() -> tuple[list[dict], list[dict], list[dict]]:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             runbook_rows = conn.execute(
-                "SELECT id, title, trigger_pattern, approach, contributed_at"
+                "SELECT id, title, trigger_pattern, approach, contributed_at,"
+                " COALESCE(signature, '') AS signature, runbook_state"
                 " FROM agent_strategies"
                 " WHERE contributed_at IS NOT NULL AND kb_pr_url IS NULL"
                 " AND runbook_state IN ('validated', 'seed')"
+            ).fetchall()
+            candidate_rows = conn.execute(
+                "SELECT id, title, trigger_pattern, approach,"
+                " COALESCE(signature, '') AS signature, runbook_state"
+                " FROM agent_strategies"
+                " WHERE runbook_state = 'candidate'"
             ).fetchall()
             gap_rows = conn.execute(
                 "SELECT id, title, trigger_pattern, approach,"
@@ -4171,10 +4178,14 @@ async def submit_runbooks_to_kb() -> JSONResponse:
                 " WHERE runbook_state = 'gap'"
                 " ORDER BY created_at DESC"
             ).fetchall()
-        return [dict(r) for r in runbook_rows], [dict(r) for r in gap_rows]
+        return (
+            [dict(r) for r in runbook_rows],
+            [dict(r) for r in candidate_rows],
+            [dict(r) for r in gap_rows],
+        )
 
-    queued, open_gaps = await asyncio.to_thread(_load_queued)
-    if not queued and not open_gaps:
+    queued, candidate_runbooks, open_gaps = await asyncio.to_thread(_load_queued)
+    if not queued and not candidate_runbooks and not open_gaps:
         return JSONResponse(
             {
                 "ok": True,
@@ -4186,12 +4197,48 @@ async def submit_runbooks_to_kb() -> JSONResponse:
 
     from utils.knowledge.kb_contributor import (
         KbContributeError,
+        build_evidence,
+        compute_kb_id,
         prepare_contribution_batch,
         submit_batch,
     )
+    from utils.instance import get_instance_id
+    from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
     try:
-        batch = prepare_contribution_batch(queued, gap_reports=open_gaps)
+        pueo_version = _pkg_version("pueo")
+    except PackageNotFoundError:
+        pueo_version = "dev"
+
+    try:
+        batch = prepare_contribution_batch(
+            queued,
+            gap_reports=open_gaps,
+            candidates=candidate_runbooks,
+        )
+    except KbContributeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    def _build_ev():  # type: ignore[return]
+        instance_id = get_instance_id(_get_dirs().state_dir)
+        with sqlite3.connect(DB_PATH) as conn:
+            return build_evidence(conn, instance_id, pueo_version, batch)
+
+    evidence_file = await asyncio.to_thread(_build_ev)
+    if evidence_file is not None:
+        batch.append(evidence_file)
+
+    if not batch:
+        return JSONResponse(
+            {
+                "ok": True,
+                "pr_url": None,
+                "count": 0,
+                "message": "No federatable runbooks (all signatures are chat: or missing).",
+            }
+        )
+
+    try:
         pr_url = await submit_batch(batch, PUEO_KB_REPO)
     except KbContributeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -4211,10 +4258,11 @@ async def submit_runbooks_to_kb() -> JSONResponse:
             conn.commit()
 
     await asyncio.to_thread(_mark_submitted)
-    total = len(queued) + len(open_gaps)
+    total = len(queued) + len(candidate_runbooks) + len(open_gaps)
     log.info(
         "runbooks_contributed",
         runbooks=len(queued),
+        candidates=len(candidate_runbooks),
         gaps=len(open_gaps),
         pr_url=pr_url,
     )
