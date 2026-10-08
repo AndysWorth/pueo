@@ -67,8 +67,10 @@ def _authority_score(collection: str, metadata: dict) -> float:
             return 0.85
         if runbook_type == "validated":
             return 0.75
-        # pueo_kb runbooks that have been reviewed are community-grade
         if src == "pueo_kb":
+            # candidates federate at lower authority until promoted
+            if metadata.get("kb_state") == "candidate":
+                return 0.45
             return 0.70
         return 0.50  # candidate / agent_learned
     if collection == "repair_history":

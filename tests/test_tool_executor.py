@@ -1918,6 +1918,26 @@ class TestQueryKnowledgeAuthorityLabels:
             == "[KNOWN GAP – prior attempt unresolved]"
         )
 
+    def test_authority_label_pueo_kb_validated(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label(
+                "strategies", {"source": "pueo_kb", "kb_state": "validated"}
+            )
+            == "[COMMUNITY RUNBOOK]"
+        )
+
+    def test_authority_label_pueo_kb_candidate(self):
+        from utils.agent.tool_executor import ToolExecutor
+
+        assert (
+            ToolExecutor._knowledge_authority_label(
+                "strategies", {"source": "pueo_kb", "kb_state": "candidate"}
+            )
+            == "[COMMUNITY CANDIDATE]"
+        )
+
     def test_min_score_floor_filters_low_chunks(self, tmp_path):
         """Chunks with score below RAG_MIN_SCORE are excluded from output."""
         import asyncio
@@ -4687,6 +4707,26 @@ class TestRunbookAuthorityScores:
         from utils.knowledge.knowledge_store import _authority_score
 
         assert _authority_score("strategies", {"source": "pueo_kb"}) == 0.70
+
+    def test_pueo_kb_validated_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert (
+            _authority_score(
+                "strategies", {"source": "pueo_kb", "kb_state": "validated"}
+            )
+            == 0.70
+        )
+
+    def test_pueo_kb_candidate_runbook_score(self):
+        from utils.knowledge.knowledge_store import _authority_score
+
+        assert (
+            _authority_score(
+                "strategies", {"source": "pueo_kb", "kb_state": "candidate"}
+            )
+            == 0.45
+        )
 
     def test_validated_label_in_output(self, tmp_path):
         import sqlite3
