@@ -600,7 +600,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 34
+        assert version == 35
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -610,7 +610,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 34
+        assert rows[0][0] == 35
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -639,7 +639,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 34
+        assert version == 35
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -704,6 +704,56 @@ class TestHAEnvironmentProfile:
                 ).fetchall()
             ]
         assert "agent_strategies" in tables
+
+    def test_migration_v35_adds_signature_columns(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(agent_strategies)").fetchall()
+            ]
+        for col in (
+            "signature",
+            "version",
+            "episode_refs",
+            "resolved_at",
+            "resolved_by",
+        ):
+            assert col in cols, f"column '{col}' missing from agent_strategies"
+
+    def test_migration_v35_creates_runbook_usage(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "runbook_usage" in tables
+
+    def test_migration_v35_runbook_usage_columns(self, db_path):
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(runbook_usage)").fetchall()
+            ]
+        for col in (
+            "id",
+            "strategy_id",
+            "episode_id",
+            "signature",
+            "outcome",
+            "created_at",
+        ):
+            assert col in cols, f"column '{col}' missing from runbook_usage"
 
     def test_save_load_round_trip(self, db_path):
         from utils.ha.ha_environment import (
@@ -1527,7 +1577,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 34
+        assert version == 35
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1537,7 +1587,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 34
+        assert rows[0][0] == 35
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1565,7 +1615,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 34
+        assert version == 35
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1579,6 +1629,56 @@ class TestSandboxDB:
                 ).fetchall()
             ]
         assert "agent_strategies" in tables
+
+    def test_migration_v35_adds_signature_columns(self, db_path):
+        from agents import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(agent_strategies)").fetchall()
+            ]
+        for col in (
+            "signature",
+            "version",
+            "episode_refs",
+            "resolved_at",
+            "resolved_by",
+        ):
+            assert col in cols, f"column '{col}' missing from agent_strategies"
+
+    def test_migration_v35_creates_runbook_usage(self, db_path):
+        from agents import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+        assert "runbook_usage" in tables
+
+    def test_migration_v35_runbook_usage_columns(self, db_path):
+        from agents import ha_agent_sandbox_engine
+
+        ha_agent_sandbox_engine.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            cols = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(runbook_usage)").fetchall()
+            ]
+        for col in (
+            "id",
+            "strategy_id",
+            "episode_id",
+            "signature",
+            "outcome",
+            "created_at",
+        ):
+            assert col in cols, f"column '{col}' missing from runbook_usage"
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_sandbox_engine
