@@ -8560,3 +8560,48 @@ class TestPruneStrategies:
         # manifest_ids is empty → kb entry is stale
         removed = prune_strategies(store, db, kb_manifest_ids=set())
         assert removed == 1
+
+
+# ── utils/instance.py ──────────────────────────────────────────────────────────
+
+
+class TestGetInstanceId:
+    def test_creates_file_on_first_call(self, tmp_path):
+        from utils.instance import get_instance_id
+
+        result = get_instance_id(tmp_path)
+        assert (tmp_path / "instance_id").exists()
+        assert len(result) == 36  # UUID4 string length
+
+    def test_returns_same_id_on_repeat_calls(self, tmp_path):
+        from utils.instance import get_instance_id
+
+        id1 = get_instance_id(tmp_path)
+        id2 = get_instance_id(tmp_path)
+        assert id1 == id2
+
+    def test_reads_existing_file(self, tmp_path):
+        from utils.instance import get_instance_id
+
+        id_file = tmp_path / "instance_id"
+        id_file.write_text("my-fixed-uuid")
+        result = get_instance_id(tmp_path)
+        assert result == "my-fixed-uuid"
+
+    def test_creates_parent_dirs(self, tmp_path):
+        from utils.instance import get_instance_id
+
+        nested = tmp_path / "a" / "b"
+        result = get_instance_id(nested)
+        assert (nested / "instance_id").exists()
+        assert result
+
+    def test_returns_uuid4_format(self, tmp_path):
+        import re
+        from utils.instance import get_instance_id
+
+        result = get_instance_id(tmp_path)
+        assert re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            result,
+        ), f"Not a valid UUID4: {result}"
