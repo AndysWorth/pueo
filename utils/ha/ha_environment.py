@@ -34,6 +34,9 @@ class HAEnvironmentProfile:
     spook_installed: bool = False
     upgrade_advisor_installed: bool = False
     ai_agent_ha_installed: bool = False
+    mqtt_configured: bool = False
+    sentinel_installed: bool = False
+    battery_notes_installed: bool = False
 
 
 async def build_environment_profile(
@@ -114,6 +117,9 @@ async def build_environment_profile(
         "upgrade_advisor" in profile.installed_integrations
     )
     profile.ai_agent_ha_installed = "ai_agent_ha" in profile.installed_integrations
+    profile.mqtt_configured = "mqtt" in profile.installed_integrations
+    profile.sentinel_installed = "ha_sentinel" in profile.installed_integrations
+    profile.battery_notes_installed = "battery_notes" in profile.installed_integrations
 
     # 5. config_yaml_top_keys from remote configuration.yaml
     # Use regex instead of yaml.safe_load: HA config files use !include tags that
@@ -163,6 +169,27 @@ def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
         lines.append("  ha-upgrade-advisor: installed")
     if profile.ai_agent_ha_installed:
         lines.append("  ai_agent_ha: installed")
+    if profile.mqtt_configured:
+        lines.append("  MQTT: configured")
+    if profile.sentinel_installed:
+        lines.append("  HA Sentinel: installed")
+    if profile.battery_notes_installed:
+        lines.append("  Battery Notes: installed")
+
+    _RECOMMENDED = [
+        (profile.spook_installed, "Spook", "entity registry health"),
+        (
+            profile.upgrade_advisor_installed,
+            "ha-upgrade-advisor",
+            "breaking-change analysis",
+        ),
+        (profile.sentinel_installed, "HA Sentinel", "integration health monitoring"),
+    ]
+    absent = [
+        f"{name} ({desc})" for installed, name, desc in _RECOMMENDED if not installed
+    ]
+    if absent:
+        lines.append(f"  Recommended (not installed): {', '.join(absent)}")
     return "\n".join(lines)
 
 

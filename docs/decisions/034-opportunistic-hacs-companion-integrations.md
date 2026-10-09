@@ -40,11 +40,22 @@ exist on the real sensor entities. This ADR formalises the pattern that replaces
 
 ### 1. Detection via `HAEnvironmentProfile`
 
-`HAEnvironmentProfile` (`utils/ha/ha_environment.py`) gains three boolean fields:
-`spook_installed: bool`, `upgrade_advisor_installed: bool`, and `ai_agent_ha_installed: bool`.
+`HAEnvironmentProfile` (`utils/ha/ha_environment.py`) gains six boolean fields:
+`spook_installed: bool`, `upgrade_advisor_installed: bool`, `ai_agent_ha_installed: bool`,
+`mqtt_configured: bool`, `sentinel_installed: bool`, and `battery_notes_installed: bool`.
 Detection checks `installed_integrations` for the component domain (`"spook"`,
-`"upgrade_advisor"`, `"ai_agent_ha"`). Detection is best-effort: a missing HA API token or a
-REST/WS failure causes each field to default to `False` rather than raising.
+`"upgrade_advisor"`, `"ai_agent_ha"`, `"mqtt"`, `"ha_sentinel"`, `"battery_notes"`).
+Detection is best-effort: a missing HA API token or a REST/WS failure causes each field
+to default to `False` rather than raising.
+
+| Field | Detection slug | What it enables |
+|---|---|---|
+| `spook_installed` | `"spook"` | `get_spook_issues` — dead entity / registry repair analysis |
+| `upgrade_advisor_installed` | `"upgrade_advisor"` | Breaking-change pre-upgrade analysis |
+| `ai_agent_ha_installed` | `"ai_agent_ha"` | Runbook guidance for ai_agent_ha automation/state anomalies |
+| `mqtt_configured` | `"mqtt"` | Context for MQTT-driven device unavailability investigation |
+| `sentinel_installed` | `"ha_sentinel"` | `get_sentinel_issues` — integration/device health monitoring |
+| `battery_notes_installed` | `"battery_notes"` | Future: battery health awareness |
 
 Callers check the profile field before making companion-specific API calls. When the field is
 `False`, the call is skipped entirely — no `unknown_command` errors, no confusing empty results.
@@ -95,6 +106,17 @@ risk level, breaking-change count, and truncated report text into the initial co
 **"Third-party upgrade-advisor report (unverified — treat as advisory only)"**. The label is
 mandatory: it reminds the agent that this is not Pueo's own conclusion and should be treated as
 supporting evidence.
+
+### 3b. HA Sentinel: `get_sentinel_issues` via binary_sensor entities
+
+`get_sentinel_issues` queries `binary_sensor.sentinel_*` entities via the HA REST API
+(`get_states`). Each `binary_sensor.sentinel_*` entity represents one monitored item
+(a config entry, physical device, or HAOS app); `state="on"` means an issue is active.
+Results are grouped by `provider` attribute (integrations / devices / apps) and truncated
+via `truncate_to_budget`.
+
+The tool is registered in the HA repair, lovelace, chat, and update-analysis registries
+(read-only). It is also included in `_MCP_TOOL_NAMES`.
 
 ### 4. Third-party output is supporting evidence, never a decision trigger
 
@@ -154,9 +176,17 @@ reliable than relying on the agent to reason about whether each call is safe.
 
 ## Consequences
 
-- `HAEnvironmentProfile` gains `spook_installed`, `upgrade_advisor_installed`, and
-  `ai_agent_ha_installed` boolean fields. All default `False` when detection fails.
-  All existing callers are unaffected.
+- `HAEnvironmentProfile` gains six boolean fields: `spook_installed`,
+  `upgrade_advisor_installed`, `ai_agent_ha_installed`, `mqtt_configured`,
+  `sentinel_installed`, `battery_notes_installed`. All default `False` when detection
+  fails. All existing callers are unaffected.
+- The Settings tab gains a **Companion Integrations** card showing all seven companions
+  (six HA-detected + NetAlertX config-gated) with dot+badge status. Status is derived
+  from `HAEnvironmentProfile` flags; when the profile is not yet built a note is shown.
+- `get_sentinel_issues` is available in all registries where `get_spook_issues` appears,
+  plus `_MCP_TOOL_NAMES`.
+- `format_profile_summary()` appends a "Recommended (not installed):" nudge line for
+  absent Spook, ha-upgrade-advisor, and HA Sentinel.
 - `get_spook_issues` replaces the dead `get_spook_entity_issues` in `ha_ws_client.py` and
   `interfaces.HAWebSocketClientProtocol`. `FakeHAWebSocketClient` grows a corresponding method.
 - `utils/ha/upgrade_advisor.py` exposes `read_advisor_report`, `request_advisor_analysis`, and

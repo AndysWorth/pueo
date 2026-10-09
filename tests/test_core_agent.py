@@ -12095,6 +12095,137 @@ class TestGetSpookIssues:
         assert "not installed" in result.output.lower()
 
 
+class TestGetSentinelIssues:
+    def _make_executor(self, rest_client=None, ha_profile=None, ws_client=None):
+        import asyncio as _asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            ha_rest_client=rest_client,
+            ha_ws_client=ws_client,
+        )
+        if ha_profile is not None:
+            ex.set_ha_profile(ha_profile)
+        return ex
+
+    def _run(self, ex):
+        import asyncio as _asyncio
+
+        from utils.agent.tool_registry import ToolCall
+
+        return _asyncio.run(
+            ex.execute(ToolCall(name="get_sentinel_issues", arguments={}))
+        )
+
+    def test_no_rest_client_returns_error(self):
+        ex = self._make_executor(rest_client=None)
+        result = self._run(ex)
+        assert result.success is False
+        assert "REST client not available" in (result.error or "")
+
+    def test_sentinel_not_installed_returns_info_message(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        profile = HAEnvironmentProfile(sentinel_installed=False)
+        ex = self._make_executor(rest_client=FakeHARestClient(), ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "not installed" in result.output.lower()
+        assert "ha-sentinel" in result.output
+
+    def test_returns_sentinel_sensors(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        states = [
+            {
+                "entity_id": "binary_sensor.sentinel_zha",
+                "state": "on",
+                "attributes": {
+                    "provider": "integrations",
+                    "friendly_name": "ZHA health",
+                },
+            },
+            {
+                "entity_id": "binary_sensor.sentinel_hue",
+                "state": "off",
+                "attributes": {
+                    "provider": "integrations",
+                    "friendly_name": "Hue health",
+                },
+            },
+            {
+                "entity_id": "sensor.other",
+                "state": "active",
+                "attributes": {},
+            },
+        ]
+        profile = HAEnvironmentProfile(sentinel_installed=True)
+        ex = self._make_executor(
+            rest_client=FakeHARestClient(states=states), ha_profile=profile
+        )
+        result = self._run(ex)
+        assert result.success is True
+        assert "ZHA health" in result.output
+        assert "Hue health" in result.output
+        assert "sensor.other" not in result.output
+
+    def test_no_sentinel_sensors_returns_info(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        profile = HAEnvironmentProfile(sentinel_installed=True)
+        ex = self._make_executor(
+            rest_client=FakeHARestClient(states=[]), ha_profile=profile
+        )
+        result = self._run(ex)
+        assert result.success is True
+        assert "no sentinel binary_sensor" in result.output.lower()
+
+    def test_no_profile_uses_ws_component_check(self):
+        """When no profile is set, get_ha_components is used to detect Sentinel."""
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        states = [
+            {
+                "entity_id": "binary_sensor.sentinel_zha",
+                "state": "off",
+                "attributes": {"provider": "integrations", "friendly_name": "ZHA"},
+            },
+        ]
+        ws = FakeHAWebSocketClient(ha_components=["ha_sentinel", "mqtt"])
+        ex = self._make_executor(
+            rest_client=FakeHARestClient(states=states),
+            ha_profile=None,
+            ws_client=ws,
+        )
+        result = self._run(ex)
+        assert result.success is True
+        assert "ZHA" in result.output
+
+    def test_rest_error_returns_failure(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        class _ErrorRestClient:
+            async def get_states(self, prefix=None):
+                raise RuntimeError("connection refused")
+
+        profile = HAEnvironmentProfile(sentinel_installed=True)
+        ex = self._make_executor(rest_client=_ErrorRestClient(), ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is False
+        assert "connection refused" in (result.error or "")
+
+
 class TestHARepairDB:
     @pytest.fixture
     def db_path(self, tmp_path, monkeypatch):

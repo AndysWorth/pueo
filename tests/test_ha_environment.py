@@ -412,10 +412,10 @@ class TestFormatProfileSummary:
         profile.spook_installed = True
         assert "Spook: installed" in format_profile_summary(profile)
 
-    def test_no_spook_line_when_not_installed(self):
+    def test_no_spook_installed_line_when_not_installed(self):
         profile = self._make_profile()
         profile.spook_installed = False
-        assert "Spook" not in format_profile_summary(profile)
+        assert "Spook: installed" not in format_profile_summary(profile)
 
 
 # ---------------------------------------------------------------------------
@@ -540,9 +540,9 @@ class TestFormatProfileSummaryUpgradeAdvisor:
         profile = self._make_profile(upgrade_advisor_installed=True)
         assert "ha-upgrade-advisor: installed" in format_profile_summary(profile)
 
-    def test_no_advisor_line_when_not_installed(self):
+    def test_no_advisor_installed_line_when_not_installed(self):
         profile = self._make_profile(upgrade_advisor_installed=False)
-        assert "upgrade-advisor" not in format_profile_summary(profile)
+        assert "ha-upgrade-advisor: installed" not in format_profile_summary(profile)
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +604,199 @@ class TestFormatProfileSummaryAiAgentHa:
     def test_no_ai_agent_ha_line_when_not_installed(self):
         profile = self._make_profile(ai_agent_ha_installed=False)
         assert "ai_agent_ha: installed" not in format_profile_summary(profile)
+
+
+# ---------------------------------------------------------------------------
+# mqtt_configured detection
+# ---------------------------------------------------------------------------
+
+
+class TestMqttConfiguredDetection:
+    def _run(self, integrations):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient as FakeWsClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: integrations,
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_mqtt_configured_when_in_integrations(self):
+        profile = self._run(["zha", "mqtt"])
+        assert profile.mqtt_configured is True
+
+    def test_mqtt_not_configured_when_absent(self):
+        profile = self._run(["zha", "spook"])
+        assert profile.mqtt_configured is False
+
+    def test_mqtt_false_when_integrations_empty(self):
+        profile = self._run([])
+        assert profile.mqtt_configured is False
+
+
+# ---------------------------------------------------------------------------
+# sentinel_installed detection
+# ---------------------------------------------------------------------------
+
+
+class TestSentinelInstalledDetection:
+    def _run(self, integrations):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient as FakeWsClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: integrations,
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_sentinel_installed_when_in_integrations(self):
+        profile = self._run(["zha", "ha_sentinel"])
+        assert profile.sentinel_installed is True
+
+    def test_sentinel_not_installed_when_absent(self):
+        profile = self._run(["zha", "mqtt"])
+        assert profile.sentinel_installed is False
+
+    def test_sentinel_false_when_integrations_empty(self):
+        profile = self._run([])
+        assert profile.sentinel_installed is False
+
+
+# ---------------------------------------------------------------------------
+# battery_notes_installed detection
+# ---------------------------------------------------------------------------
+
+
+class TestBatteryNotesDetection:
+    def _run(self, integrations):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient as FakeWsClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info": (0, "version: 14.1\n", ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: integrations,
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_battery_notes_installed_when_in_integrations(self):
+        profile = self._run(["zha", "battery_notes"])
+        assert profile.battery_notes_installed is True
+
+    def test_battery_notes_not_installed_when_absent(self):
+        profile = self._run(["zha", "mqtt"])
+        assert profile.battery_notes_installed is False
+
+    def test_battery_notes_false_when_integrations_empty(self):
+        profile = self._run([])
+        assert profile.battery_notes_installed is False
+
+
+# ---------------------------------------------------------------------------
+# format_profile_summary — new companion lines + nudge line
+# ---------------------------------------------------------------------------
+
+
+class TestFormatProfileSummaryNewCompanions:
+    def _make_profile(self, **kwargs) -> HAEnvironmentProfile:
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+            **kwargs,
+        )
+
+    def test_mqtt_configured_line_shown_when_active(self):
+        profile = self._make_profile(mqtt_configured=True)
+        assert "MQTT: configured" in format_profile_summary(profile)
+
+    def test_mqtt_line_absent_when_not_configured(self):
+        profile = self._make_profile(mqtt_configured=False)
+        assert "MQTT" not in format_profile_summary(profile)
+
+    def test_sentinel_line_shown_when_installed(self):
+        profile = self._make_profile(sentinel_installed=True)
+        assert "HA Sentinel: installed" in format_profile_summary(profile)
+
+    def test_sentinel_installed_line_absent_when_not_installed(self):
+        profile = self._make_profile(sentinel_installed=False)
+        assert "HA Sentinel: installed" not in format_profile_summary(profile)
+
+    def test_battery_notes_line_shown_when_installed(self):
+        profile = self._make_profile(battery_notes_installed=True)
+        assert "Battery Notes: installed" in format_profile_summary(profile)
+
+    def test_nudge_line_shown_when_companions_absent(self):
+        profile = self._make_profile(
+            spook_installed=False,
+            upgrade_advisor_installed=False,
+            sentinel_installed=False,
+        )
+        summary = format_profile_summary(profile)
+        assert "Recommended (not installed):" in summary
+        assert "Spook" in summary
+        assert "HA Sentinel" in summary
+
+    def test_nudge_line_omitted_when_all_recommended_installed(self):
+        profile = self._make_profile(
+            spook_installed=True,
+            upgrade_advisor_installed=True,
+            sentinel_installed=True,
+        )
+        assert "Recommended (not installed):" not in format_profile_summary(profile)
+
+    def test_nudge_line_partial_when_some_absent(self):
+        profile = self._make_profile(
+            spook_installed=True,
+            upgrade_advisor_installed=False,
+            sentinel_installed=True,
+        )
+        summary = format_profile_summary(profile)
+        assert "Recommended (not installed):" in summary
+        assert "ha-upgrade-advisor" in summary
+        # Spook is installed so it should not appear in the nudge line
+        nudge_line = [l for l in summary.splitlines() if "Recommended" in l][0]
+        assert "Spook" not in nudge_line
