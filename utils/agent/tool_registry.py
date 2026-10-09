@@ -1697,6 +1697,19 @@ GET_SPOOK_ISSUES = ToolDefinition(
     parameters={"type": "object", "properties": {}, "required": []},
 )
 
+GET_SENTINEL_ISSUES = ToolDefinition(
+    name="get_sentinel_issues",
+    description=(
+        "Return integration and device health issues detected by HA Sentinel "
+        "(https://github.com/GuiPoM/ha-sentinel, install via HACS). "
+        "Sentinel monitors config entries, physical devices, and HA OS apps in real time, "
+        "surfacing broken integrations as binary_sensor entities. "
+        "Returns an informational message if Sentinel is not installed. "
+        "Use during any investigation involving a broken integration or unavailable device."
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
 FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
     name="finish_lovelace_investigation",
     description=(
@@ -2080,6 +2093,7 @@ def build_update_analysis_registry() -> ToolRegistry:
         QUERY_KNOWLEDGE,
         REQUEST_ESCALATION,
         GET_SPOOK_ISSUES,
+        GET_SENTINEL_ISSUES,
         FINISH_UPDATE_ANALYSIS,
     ):
         reg.register(tool)
@@ -2130,6 +2144,7 @@ def build_ha_tool_registry() -> ToolRegistry:
         GET_RECENT_EVENTS,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
+        GET_SENTINEL_ISSUES,
         GET_STATISTICS,
         DISCARD_RESULT,
     ):
@@ -2242,6 +2257,7 @@ def build_chat_tool_registry() -> ToolRegistry:
         FINISH_CHAT,
         GET_OLLAMA_STATUS,
         GET_SPOOK_ISSUES,
+        GET_SENTINEL_ISSUES,
         GET_STATISTICS,
         RESOLVE_HITL_CARD,
         DISCARD_RESULT,
@@ -2354,6 +2370,7 @@ def build_lovelace_investigation_registry() -> ToolRegistry:
         GET_LOGBOOK,
         GET_AREA_LAYOUT,
         GET_SPOOK_ISSUES,
+        GET_SENTINEL_ISSUES,
         REQUEST_ESCALATION,
         RESOLVE_HITL_CARD,
         FINISH_LOVELACE_INVESTIGATION,

@@ -2755,6 +2755,78 @@ async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
     )
 
 
+def _build_companion_status(profile: Any, cfg: Any) -> list[Any]:
+    """Return a list of companion dicts for the Settings UI companion card."""
+    unknown = profile is None
+
+    def _flag(attr: str) -> str:
+        if unknown:
+            return "unknown"
+        return "active" if getattr(profile, attr, False) else "not_installed"
+
+    companions = [
+        {
+            "name": "Spook",
+            "slug": "spook",
+            "status": _flag("spook_installed"),
+            "description": "Entity registry health — dead entity detection and automation health checks",
+            "install_url": "https://spook.boo",
+            "install_hint": "Install via HACS",
+        },
+        {
+            "name": "ha-upgrade-advisor",
+            "slug": "upgrade_advisor",
+            "status": _flag("upgrade_advisor_installed"),
+            "description": "Breaking-change analysis before HA Core updates",
+            "install_url": "https://github.com/brianegge/ha-upgrade-advisor",
+            "install_hint": "Install via HACS",
+        },
+        {
+            "name": "ai_agent_ha",
+            "slug": "ai_agent_ha",
+            "status": _flag("ai_agent_ha_installed"),
+            "description": "LLM sidebar chat for HA; Pueo detects automations and state changes from it",
+            "install_url": "https://github.com/sbenodiz/ai_agent_ha",
+            "install_hint": "Install via HACS",
+        },
+        {
+            "name": "HA Sentinel",
+            "slug": "ha_sentinel",
+            "status": _flag("sentinel_installed"),
+            "description": "Real-time integration and device health monitoring via binary_sensor entities",
+            "install_url": "https://github.com/GuiPoM/ha-sentinel",
+            "install_hint": "Install via HACS",
+        },
+        {
+            "name": "Battery Notes",
+            "slug": "battery_notes",
+            "status": _flag("battery_notes_installed"),
+            "description": "Battery health tracking for HA devices",
+            "install_url": "https://github.com/andrew-codechimp/HA-Battery-Notes",
+            "install_hint": "Install via HACS",
+        },
+        {
+            "name": "MQTT",
+            "slug": "mqtt",
+            "status": _flag("mqtt_configured"),
+            "description": "MQTT broker integration — enables MQTT-driven device investigation",
+            "install_url": None,
+            "install_hint": "Settings → Apps → Mosquitto Broker",
+        },
+        {
+            "name": "NetAlertX",
+            "slug": "netalertx",
+            "status": (
+                "active" if getattr(cfg, "NETALERTX_ENABLED", False) else "disabled"
+            ),
+            "description": "Network device monitoring and ARP scanning",
+            "install_url": None,
+            "install_hint": "Enable netalertx.enabled in config.yaml",
+        },
+    ]
+    return companions
+
+
 def _build_settings_groups() -> list[dict]:
     """Return params grouped for rendering, with current config values attached."""
     import config as _config
@@ -2784,12 +2856,14 @@ async def settings_tab(request: Request) -> HTMLResponse:
         list_ollama_models,
         recommend_model,
     )
+    from utils.ha.ha_environment import load_environment_profile
     from utils.system.service import PLIST_TARGET, service_status
 
-    profile, available, svc = await asyncio.gather(
+    profile, available, svc, ha_env_profile = await asyncio.gather(
         asyncio.to_thread(detect_local_hardware),
         asyncio.to_thread(list_ollama_models),
         asyncio.to_thread(service_status),
+        asyncio.to_thread(load_environment_profile, _config.DB_PATH),
     )
     svc["plist_exists"] = PLIST_TARGET.exists()
     # Expose the current PID so the template can warn when Pueo is running outside
@@ -2803,6 +2877,8 @@ async def settings_tab(request: Request) -> HTMLResponse:
         "settings.html",
         {
             "groups": _build_settings_groups(),
+            "companions": _build_companion_status(ha_env_profile, _config),
+            "profile_available": ha_env_profile is not None,
             "service": svc,
             "api_key_set": bool(_config.ANTHROPIC_API_KEY),
             "model_info": {

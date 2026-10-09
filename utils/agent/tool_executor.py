@@ -528,6 +528,8 @@ class ToolExecutor:
                 return await self._get_ha_components()
             if name == "get_spook_issues":
                 return await self._get_spook_issues()
+            if name == "get_sentinel_issues":
+                return await self._get_sentinel_issues()
             if name == "get_statistics":
                 return await self._get_statistics(
                     statistic_ids=args.get("statistic_ids", []),
@@ -3884,6 +3886,105 @@ class ToolExecutor:
         output = truncate_to_budget("\n".join(parts), max_tokens=1000, strategy="head")
         return ToolResult(
             tool_name="get_spook_issues",
+            success=True,
+            output=output,
+        )
+
+    async def _get_sentinel_issues(self) -> ToolResult:
+        """Return HA Sentinel binary_sensor-based integration/device health issues."""
+        from utils.core.context import truncate_to_budget
+
+        if not self._rest_client:
+            return ToolResult(
+                tool_name="get_sentinel_issues",
+                success=False,
+                output="",
+                error="REST client not available",
+            )
+
+        sentinel_installed: Optional[bool] = None
+        if self._ha_profile is not None:
+            sentinel_installed = self._ha_profile.sentinel_installed
+        else:
+            try:
+                components = (
+                    await self._ws_client.get_ha_components()
+                    if self._ws_client
+                    else None
+                )
+                if components is not None:
+                    sentinel_installed = "ha_sentinel" in components
+            except Exception as exc:  # nosec B110
+                log.warning("sentinel_component_check_failed", error=str(exc))
+
+        if sentinel_installed is False:
+            return ToolResult(
+                tool_name="get_sentinel_issues",
+                success=True,
+                output=(
+                    "HA Sentinel is not installed on this HA instance. "
+                    "Install it via HACS to get real-time integration and device health monitoring: "
+                    "https://github.com/GuiPoM/ha-sentinel"
+                ),
+            )
+
+        try:
+            all_states = await self._rest_client.get_states()
+        except Exception as exc:
+            return ToolResult(
+                tool_name="get_sentinel_issues",
+                success=False,
+                output="",
+                error=f"Failed to fetch entity states: {exc}",
+            )
+
+        sentinel_sensors = [
+            s
+            for s in all_states
+            if str(s.get("entity_id", "")).startswith("binary_sensor.sentinel_")
+        ]
+
+        if not sentinel_sensors:
+            return ToolResult(
+                tool_name="get_sentinel_issues",
+                success=True,
+                output="HA Sentinel is installed but no sentinel binary_sensor entities found.",
+            )
+
+        by_provider: dict = {}
+        issues: list[str] = []
+        for sensor in sentinel_sensors:
+            entity_id = sensor.get("entity_id", "")
+            state = sensor.get("state", "off")
+            attrs = sensor.get("attributes", {})
+            provider = attrs.get("provider", "unknown")
+            friendly = attrs.get("friendly_name", entity_id)
+            by_provider.setdefault(provider, []).append(
+                {
+                    "entity_id": entity_id,
+                    "state": state,
+                    "friendly_name": friendly,
+                    "attributes": attrs,
+                }
+            )
+            if state == "on":
+                issues.append(entity_id)
+
+        parts: list[str] = [
+            f"HA Sentinel ({len(sentinel_sensors)} sensors, {len(issues)} active issues):"
+        ]
+        for provider, sensors in sorted(by_provider.items()):
+            active = [s for s in sensors if s["state"] == "on"]
+            parts.append(f"  {provider} ({len(active)}/{len(sensors)} active):")
+            for s in sensors[:10]:
+                flag = "⚠" if s["state"] == "on" else "✓"
+                parts.append(f"    {flag} {s['friendly_name']} [{s['entity_id']}]")
+            if len(sensors) > 10:
+                parts.append(f"    ... and {len(sensors) - 10} more")
+
+        output = truncate_to_budget("\n".join(parts), max_tokens=1000, strategy="head")
+        return ToolResult(
+            tool_name="get_sentinel_issues",
             success=True,
             output=output,
         )

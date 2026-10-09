@@ -611,3 +611,44 @@ class TestRegistryMembership:
         from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
 
         assert "propose_automation" not in _MCP_TOOL_NAMES
+
+
+class TestGetSentinelIssues:
+    def test_sentinel_in_ha_registry(self):
+        reg = build_ha_tool_registry()
+        assert "get_sentinel_issues" in reg
+
+    def test_sentinel_in_chat_registry(self):
+        reg = build_chat_tool_registry()
+        assert "get_sentinel_issues" in reg
+
+    def test_sentinel_in_lovelace_registry(self):
+        from utils.agent.tool_registry import build_lovelace_investigation_registry
+
+        reg = build_lovelace_investigation_registry()
+        assert "get_sentinel_issues" in reg
+
+    def test_sentinel_in_update_analysis_registry(self):
+        from utils.agent.tool_registry import build_update_analysis_registry
+
+        reg = build_update_analysis_registry()
+        assert "get_sentinel_issues" in reg
+
+    def test_sentinel_in_mcp_tool_names(self):
+        from utils.mcp.pueo_mcp_server import _MCP_TOOL_NAMES
+
+        assert "get_sentinel_issues" in _MCP_TOOL_NAMES
+
+    def test_sentinel_not_in_netalertx_registry(self):
+        reg = build_netalertx_tool_registry()
+        assert "get_sentinel_issues" not in reg
+
+    def test_sentinel_schema(self):
+        from utils.agent.tool_registry import GET_SENTINEL_ISSUES
+
+        assert GET_SENTINEL_ISSUES.name == "get_sentinel_issues"
+        assert GET_SENTINEL_ISSUES.parameters == {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
