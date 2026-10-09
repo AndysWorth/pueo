@@ -11436,6 +11436,31 @@ class TestAgentLoop:
         ), "decision must not fire on timeout"
         assert "limit_review_failed" in events, "warning must fire on exception"
 
+    def test_tool_call_debug_logging_no_keyerror(self, monkeypatch):
+        """DEBUG_LEVEL >= 1 must not crash with KeyError on reserved 'name' field."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "DEBUG_LEVEL", 3)
+        loop = self._make_loop(
+            call_sequence=[
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair",
+                                "arguments": {
+                                    "summary": "ok",
+                                    "action_taken": "no_fix_needed",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        result = asyncio.run(loop.run("Check config"))
+        assert result.outcome == "success"
+
 
 class TestRunRagRefresh:
     """Tests for run_rag_refresh() — all network-dependent functions are mocked."""

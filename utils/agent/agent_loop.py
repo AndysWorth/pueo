@@ -1283,14 +1283,14 @@ class AgentLoop:
                 if _al_cfg.DEBUG_LEVEL >= 1:
                     log.debug(
                         "tool_call",
-                        name=tool_call.name,
+                        tool_name=tool_call.name,
                         args_preview=str(tool_call.arguments)[:200],
                         result_preview=(result_text or "")[:200],
                     )
                 if _al_cfg.DEBUG_LEVEL >= 2:
                     log.debug(
                         "tool_call_full",
-                        name=tool_call.name,
+                        tool_name=tool_call.name,
                         args=str(tool_call.arguments),
                         result=(result_text or ""),
                     )
