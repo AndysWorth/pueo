@@ -933,6 +933,9 @@ agent:
   # ha_disk_warn_gb: 5.0
   # ha_disk_critical_gb: 3.0  # keep above 1.0 (HA Supervisor hard-blocks backups below 1 GB); 3.0 leaves a 2 GB write buffer
   # ha_mem_warn_mb: 256
+  # host_swap_warn_pct: 80.0
+  # host_disk_life_warn_pct: 80.0
+  # host_health_investigation_enabled: true
   # backup_offload_enabled: true
   # backup_local_dir: ""     # default: data_dir/backups
   # backup_retain_on_ha: 2

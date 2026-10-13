@@ -2089,6 +2089,67 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
 )
 
 
+FINISH_HOST_HEALTH = ToolDefinition(
+    name="finish_host_health",
+    description=(
+        "Report findings and close the host-health investigation. "
+        "Call exactly once after completing all evidence gathering. "
+        "The result is sent as a notification card for the user."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Plain-English summary of what was found and what (if anything) was done (2–4 sentences).",
+            },
+            "root_cause": {
+                "type": "string",
+                "description": "One-sentence root cause or explanation of the condition.",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["resolved", "monitoring", "needs_action", "escalated"],
+                "description": "resolved: auto-fixed; monitoring: benign, watch; needs_action: user must act; escalated: sent to human.",
+            },
+            "recommended_actions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Concrete steps the user should take (empty if resolved or monitoring).",
+            },
+        },
+        "required": ["summary", "root_cause", "outcome", "recommended_actions"],
+    },
+)
+
+
+def build_host_health_tool_registry() -> ToolRegistry:
+    """Narrow registry for host-health LLM investigations.
+
+    Read-only tools + run_ha_command + call_service (already gated by
+    service_policy) + request_escalation.  No write_config or patch tools —
+    all state-changing fixes go through the gated command/service path.
+    """
+    reg = ToolRegistry()
+    for tool in (
+        GET_DISK_USAGE,
+        READ_LOGS,
+        READ_PUEO_LOG,
+        SEARCH_LOG,
+        RUN_HA_COMMAND,
+        QUERY_KNOWLEDGE,
+        REMEMBER,
+        RECALL,
+        GET_HA_PROFILE,
+        CALL_SERVICE,
+        REQUEST_ESCALATION,
+        DISCARD_RESULT,
+        FINISH_HOST_HEALTH,
+    ):
+        reg.register(tool)
+    return reg
+
+
 def build_update_analysis_registry() -> ToolRegistry:
     """Registry for HA update breaking-change analysis.
 

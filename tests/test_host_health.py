@@ -6,6 +6,50 @@ import time
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_status(
+    mem_available_mb: float = 600.0,
+    mem_total_mb: float = 1800.0,
+    mem_warn: bool = False,
+):
+    from utils.disk.resource import ResourceStatus
+
+    return ResourceStatus(
+        disk_free_gb=5.0,
+        disk_total_gb=13.0,
+        disk_used_gb=8.0,
+        mem_available_mb=mem_available_mb,
+        mem_total_mb=mem_total_mb,
+        disk_warn=False,
+        disk_critical=False,
+        mem_warn=mem_warn,
+    )
+
+
+def _make_health(
+    swap_total_mb: float = 1024.0,
+    swap_used_mb: float = 200.0,
+    disk_life_used_pct=None,
+    boot_ts: float = 1_700_000_000.0,
+    uptime_seconds: float = 3600.0,
+    resolution=None,
+):
+    from utils.disk.host_health import HostHealth
+
+    return HostHealth(
+        swap_total_mb=swap_total_mb,
+        swap_used_mb=swap_used_mb,
+        disk_life_used_pct=disk_life_used_pct,
+        boot_ts=boot_ts,
+        uptime_seconds=uptime_seconds,
+        resolution=resolution,
+        fetched_at=time.time(),
+    )
+
 
 def _meminfo(swap_total_kb: int = 1048576, swap_free_kb: int = 630000) -> str:
     return (
@@ -295,3 +339,473 @@ class TestHostHealthCache:
         )
         mod.update_host_health(hh)
         assert mod.get_host_health() is hh
+
+
+# ---------------------------------------------------------------------------
+# HostHealthFinding
+# ---------------------------------------------------------------------------
+
+
+class TestHostHealthFinding:
+    def test_construction(self):
+        from utils.disk.host_health import HostHealthFinding
+
+        f = HostHealthFinding(
+            key="swap_pressure", kind="swap_pressure", severity="WARN"
+        )
+        assert f.key == "swap_pressure"
+        assert f.kind == "swap_pressure"
+        assert f.severity == "WARN"
+        assert f.evidence == {}
+
+    def test_construction_with_evidence(self):
+        from utils.disk.host_health import HostHealthFinding
+
+        f = HostHealthFinding(
+            key="disk_wear",
+            kind="disk_wear",
+            severity="CRITICAL",
+            evidence={"disk_life_used_pct": 95.0},
+        )
+        assert f.evidence["disk_life_used_pct"] == 95.0
+
+
+# ---------------------------------------------------------------------------
+# evaluate_host_health
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateHostHealth:
+    def _eval(
+        self,
+        health=None,
+        status=None,
+        last_boot_ts=1_700_000_000.0,
+        pueo_reboot_recent=False,
+        known_repair_uuids=None,
+        swap_warn_pct=80.0,
+        disk_life_warn_pct=80.0,
+        mem_warn_mb=256.0,
+    ):
+        from utils.disk.host_health import evaluate_host_health
+
+        return evaluate_host_health(
+            health=health or _make_health(),
+            status=status or _make_status(),
+            last_boot_ts=last_boot_ts,
+            pueo_reboot_recent=pueo_reboot_recent,
+            known_repair_uuids=known_repair_uuids or set(),
+            swap_warn_pct=swap_warn_pct,
+            disk_life_warn_pct=disk_life_warn_pct,
+            mem_warn_mb=mem_warn_mb,
+        )
+
+    def test_no_findings_all_clear(self):
+        findings = self._eval()
+        assert findings == []
+
+    def test_memory_low(self):
+        findings = self._eval(
+            status=_make_status(mem_warn=True, mem_available_mb=100.0)
+        )
+        keys = [f.key for f in findings]
+        assert "memory_low" in keys
+        mf = next(f for f in findings if f.key == "memory_low")
+        assert mf.severity == "WARN"
+        assert mf.evidence["mem_available_mb"] == 100
+
+    def test_swap_pressure_both_conditions(self):
+        # swap > 80% AND mem_available < 2 * mem_warn_mb(256) = 512
+        h = _make_health(swap_total_mb=1024.0, swap_used_mb=820.0)
+        s = _make_status(mem_available_mb=400.0, mem_warn=False)
+        findings = self._eval(health=h, status=s)
+        keys = [f.key for f in findings]
+        assert "swap_pressure" in keys
+        sp = next(f for f in findings if f.key == "swap_pressure")
+        assert sp.evidence["swap_pct"] == pytest.approx(80.078, abs=0.1)
+
+    def test_swap_pressure_only_swap_high(self):
+        # swap > 80% but mem_available is fine — no finding
+        h = _make_health(swap_total_mb=1024.0, swap_used_mb=820.0)
+        s = _make_status(mem_available_mb=1000.0)
+        findings = self._eval(health=h, status=s)
+        assert not any(f.kind == "swap_pressure" for f in findings)
+
+    def test_swap_pressure_only_mem_low(self):
+        # mem low but swap not high — no swap_pressure finding (still fires memory_low if mem_warn)
+        h = _make_health(swap_total_mb=1024.0, swap_used_mb=200.0)
+        s = _make_status(mem_available_mb=400.0, mem_warn=True)
+        findings = self._eval(health=h, status=s)
+        assert not any(f.kind == "swap_pressure" for f in findings)
+        assert any(f.kind == "memory_low" for f in findings)
+
+    def test_disk_wear_warn(self):
+        h = _make_health(disk_life_used_pct=85.0)
+        findings = self._eval(health=h)
+        assert any(f.key == "disk_wear" for f in findings)
+        dw = next(f for f in findings if f.key == "disk_wear")
+        assert dw.severity == "WARN"
+
+    def test_disk_wear_critical_at_90(self):
+        h = _make_health(disk_life_used_pct=92.0)
+        findings = self._eval(health=h)
+        dw = next(f for f in findings if f.key == "disk_wear")
+        assert dw.severity == "CRITICAL"
+
+    def test_disk_wear_none_skipped(self):
+        h = _make_health(disk_life_used_pct=None)
+        findings = self._eval(health=h)
+        assert not any(f.kind == "disk_wear" for f in findings)
+
+    def test_disk_wear_below_threshold(self):
+        h = _make_health(disk_life_used_pct=40.0)
+        findings = self._eval(health=h)
+        assert not any(f.kind == "disk_wear" for f in findings)
+
+    def test_unexpected_reboot_detected(self):
+        # boot_ts changed significantly from stored value
+        h = _make_health(boot_ts=1_700_100_000.0)
+        findings = self._eval(
+            health=h,
+            last_boot_ts=1_700_000_000.0,
+            pueo_reboot_recent=False,
+        )
+        assert any(f.key == "unexpected_reboot" for f in findings)
+
+    def test_unexpected_reboot_suppressed_when_pueo_recent(self):
+        h = _make_health(boot_ts=1_700_100_000.0)
+        findings = self._eval(
+            health=h,
+            last_boot_ts=1_700_000_000.0,
+            pueo_reboot_recent=True,
+        )
+        assert not any(f.kind == "unexpected_reboot" for f in findings)
+
+    def test_unexpected_reboot_no_stored_ts(self):
+        # If no stored boot_ts, can't detect unexpected reboot
+        h = _make_health(boot_ts=1_700_100_000.0)
+        findings = self._eval(health=h, last_boot_ts=None)
+        assert not any(f.kind == "unexpected_reboot" for f in findings)
+
+    def test_unexpected_reboot_within_tolerance(self):
+        # Clock drift < 30 s should not fire
+        h = _make_health(boot_ts=1_700_000_010.0)
+        findings = self._eval(health=h, last_boot_ts=1_700_000_000.0)
+        assert not any(f.kind == "unexpected_reboot" for f in findings)
+
+    def test_supervisor_unhealthy(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        h = _make_health(resolution=ResolutionInfo(unhealthy=["watchdog_failed"]))
+        findings = self._eval(health=h)
+        uf = [f for f in findings if f.kind == "supervisor_unhealthy"]
+        assert len(uf) == 1
+        assert "watchdog_failed" in uf[0].key
+        assert uf[0].severity == "HIGH"
+
+    def test_supervisor_unsupported(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        h = _make_health(resolution=ResolutionInfo(unsupported=["unsupported_os"]))
+        findings = self._eval(health=h)
+        uf = [f for f in findings if f.kind == "supervisor_unsupported"]
+        assert len(uf) == 1
+        assert uf[0].severity == "WARN"
+
+    def test_resolution_issue(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        uuid = "abc123def456abc123def456abc12345"
+        h = _make_health(
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "rpi_firmware_update_blocked"}]
+            )
+        )
+        findings = self._eval(health=h)
+        rf = [f for f in findings if f.kind == "resolution_issue"]
+        assert len(rf) == 1
+        assert rf[0].key == f"resolution_issue:{uuid}"
+        assert rf[0].evidence["type"] == "rpi_firmware_update_blocked"
+
+    def test_resolution_issue_deduped_by_repair(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        uuid = "abc123def456abc123def456abc12345"
+        h = _make_health(
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "rpi_firmware_update_blocked"}]
+            )
+        )
+        findings = self._eval(health=h, known_repair_uuids={uuid})
+        assert not any(f.kind == "resolution_issue" for f in findings)
+
+    def test_resolution_issue_missing_uuid_skipped(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        h = _make_health(resolution=ResolutionInfo(issues=[{"type": "some_issue"}]))
+        findings = self._eval(health=h)
+        assert not any(f.kind == "resolution_issue" for f in findings)
+
+    def test_multiple_findings(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        h = _make_health(
+            disk_life_used_pct=85.0,
+            swap_total_mb=1024.0,
+            swap_used_mb=850.0,
+            resolution=ResolutionInfo(unhealthy=["something_bad"]),
+        )
+        s = _make_status(mem_available_mb=400.0, mem_warn=True)
+        findings = self._eval(health=h, status=s)
+        kinds = [f.kind for f in findings]
+        assert "memory_low" in kinds
+        assert "swap_pressure" in kinds
+        assert "disk_wear" in kinds
+        assert "supervisor_unhealthy" in kinds
+
+
+# ---------------------------------------------------------------------------
+# ResourcePoller._check_host_health helpers
+# ---------------------------------------------------------------------------
+
+
+class TestResourcePollerHostHealthHelpers:
+    def _make_poller(self, tmp_path):
+        import sqlite3
+
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+
+        db = str(tmp_path / "state.db")
+        # Create required tables
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS timeline_events"
+                " (id INTEGER PRIMARY KEY, timestamp REAL, event_type TEXT,"
+                " event_category TEXT, message TEXT, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ha_repair_history"
+                " (issue_key TEXT PRIMARY KEY, first_seen_at REAL,"
+                " hitl_sent_at REAL, resolved_at REAL)"
+            )
+        return ResourcePoller(
+            ssh_client=object(),
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=256.0,
+            db_path=db,
+        )
+
+    def test_read_write_last_boot_ts(self, tmp_path):
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        assert poller._read_last_boot_ts(db) is None
+        poller._write_last_boot_ts(db, 1_700_000_000.0)
+        assert poller._read_last_boot_ts(db) == pytest.approx(1_700_000_000.0)
+        # Update
+        poller._write_last_boot_ts(db, 1_700_100_000.0)
+        assert poller._read_last_boot_ts(db) == pytest.approx(1_700_100_000.0)
+
+    def test_check_pueo_reboot_recent_false_no_events(self, tmp_path):
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        assert not poller._check_pueo_reboot_recent(db)
+
+    def test_check_pueo_reboot_recent_true(self, tmp_path):
+        import sqlite3
+        import time
+
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO timeline_events (timestamp, event_type, event_category, message, data)"
+                " VALUES (?, 'INFO', 'resource', 'HA Core restart triggered', '{}')",
+                (time.time() - 60,),
+            )
+        assert poller._check_pueo_reboot_recent(db)
+
+    def test_check_pueo_reboot_recent_old_event(self, tmp_path):
+        import sqlite3
+        import time
+
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO timeline_events (timestamp, event_type, event_category, message, data)"
+                " VALUES (?, 'INFO', 'resource', 'HA Core restart triggered', '{}')",
+                (time.time() - 3000,),
+            )
+        assert not poller._check_pueo_reboot_recent(db)
+
+    def test_load_known_repair_uuids(self, tmp_path):
+        import sqlite3
+
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        uuid = "deadbeef" * 4
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at) VALUES (?, ?)",
+                (f"hassio/{uuid}", 1.0),
+            )
+        uuids = poller._load_known_repair_uuids(db)
+        assert uuid in uuids
+
+    def test_load_known_repair_uuids_resolved_excluded(self, tmp_path):
+        import sqlite3
+        import time
+
+        poller = self._make_poller(tmp_path)
+        db = str(tmp_path / "state.db")
+        uuid = "deadbeef" * 4
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at, resolved_at) VALUES (?, ?, ?)",
+                (f"hassio/{uuid}", 1.0, time.time()),
+            )
+        uuids = poller._load_known_repair_uuids(db)
+        assert uuid not in uuids
+
+
+# ---------------------------------------------------------------------------
+# ResourcePoller._check_host_health integration
+# ---------------------------------------------------------------------------
+
+
+class TestResourcePollerCheckHostHealth:
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS timeline_events"
+                " (id INTEGER PRIMARY KEY, timestamp REAL, event_type TEXT,"
+                " event_category TEXT, message TEXT, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ha_repair_history"
+                " (issue_key TEXT PRIMARY KEY, first_seen_at REAL,"
+                " hitl_sent_at REAL, resolved_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT,"
+                " first_sent_at REAL, last_sent_at REAL, send_count INTEGER DEFAULT 0,"
+                " known_issue INTEGER DEFAULT 0, next_allowed_at REAL,"
+                " resolved_at REAL, last_action TEXT, rejection_count INTEGER DEFAULT 0)"
+            )
+        return db
+
+    def _make_poller(self, tmp_path, notifier=None, llm_client=None):
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.notify import FakeNotifier
+
+        db = self._make_db(tmp_path)
+        return (
+            ResourcePoller(
+                ssh_client=object(),
+                notifier=notifier or FakeNotifier(),
+                interval_seconds=300,
+                disk_warn_gb=5.0,
+                disk_critical_gb=3.0,
+                mem_warn_mb=256.0,
+                llm_client=llm_client,
+                db_path=db,
+            ),
+            db,
+        )
+
+    def test_no_health_cached_does_nothing(self, tmp_path, monkeypatch):
+        import utils.disk.host_health as hh_mod
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", None)
+        poller, _ = self._make_poller(tmp_path)
+        status = _make_status()
+        import asyncio
+
+        asyncio.run(poller._check_host_health(status))
+        # Should complete without error
+
+    def test_fallback_notification_when_investigation_disabled(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        asyncio.run(poller._check_host_health(_make_status()))
+        assert len(notifier.sent) == 1
+        assert "disk_wear" in notifier.sent[0]["payload"]["kind"]
+
+    def test_dedup_prevents_second_notification(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        asyncio.run(poller._check_host_health(_make_status()))
+        asyncio.run(poller._check_host_health(_make_status()))
+        assert len(notifier.sent) == 1  # second poll deduped via _alerted_host
+
+    def test_clear_resolved_finding(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        # Fire finding
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+        assert "disk_wear" in poller._alerted_host
+
+        # Finding clears
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=40.0)
+        )
+        asyncio.run(poller._check_host_health(_make_status()))
+        assert "disk_wear" not in poller._alerted_host

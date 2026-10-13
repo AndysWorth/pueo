@@ -3,10 +3,13 @@
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from interfaces import SSHClientProtocol
 from utils.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from utils.disk.resource import ResourceStatus
 
 log = get_logger("host_health")
 
@@ -179,3 +182,156 @@ def update_host_health(health: HostHealth) -> None:
 def get_host_health() -> Optional[HostHealth]:
     """Return the last cached host health, or None if not yet fetched."""
     return _last_host_health
+
+
+# ---------------------------------------------------------------------------
+# Host-health finding detection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HostHealthFinding:
+    """A detected host-health condition that may warrant an LLM investigation."""
+
+    key: str  # unique dedup key within a poll, e.g. "swap_pressure"
+    kind: str  # finding type: "swap_pressure", "memory_low", "disk_wear", etc.
+    severity: str  # "WARN", "HIGH", "CRITICAL"
+    evidence: dict = field(default_factory=dict)
+
+
+def evaluate_host_health(
+    health: HostHealth,
+    status: "ResourceStatus",
+    last_boot_ts: Optional[float],
+    pueo_reboot_recent: bool,
+    known_repair_uuids: "set[str]",
+    swap_warn_pct: float,
+    disk_life_warn_pct: float,
+    mem_warn_mb: float,
+) -> "list[HostHealthFinding]":
+    """Pure function: derive the list of current host-health findings.
+
+    All threshold comparisons happen here; no I/O.  The caller supplies
+    the in-memory state (cached health + status) and the DB-derived
+    context (last_boot_ts, pueo_reboot_recent, known_repair_uuids).
+    """
+    findings: list[HostHealthFinding] = []
+
+    # memory_low — mirrors the existing mem_warn flag
+    if status.mem_warn:
+        findings.append(
+            HostHealthFinding(
+                key="memory_low",
+                kind="memory_low",
+                severity="WARN",
+                evidence={
+                    "mem_available_mb": round(status.mem_available_mb),
+                    "mem_total_mb": round(status.mem_total_mb),
+                    "threshold_mb": mem_warn_mb,
+                },
+            )
+        )
+
+    # swap_pressure — high swap AND low available memory (both conditions required)
+    if health.swap_total_mb > 0:
+        swap_pct = 100.0 * health.swap_used_mb / health.swap_total_mb
+        if swap_pct >= swap_warn_pct and status.mem_available_mb < 2.0 * mem_warn_mb:
+            findings.append(
+                HostHealthFinding(
+                    key="swap_pressure",
+                    kind="swap_pressure",
+                    severity="WARN",
+                    evidence={
+                        "swap_used_mb": round(health.swap_used_mb, 1),
+                        "swap_total_mb": round(health.swap_total_mb, 1),
+                        "swap_pct": round(swap_pct, 1),
+                        "mem_available_mb": round(status.mem_available_mb),
+                        "threshold_swap_pct": swap_warn_pct,
+                    },
+                )
+            )
+
+    # disk_wear — eMMC life approaching end of life
+    if (
+        health.disk_life_used_pct is not None
+        and health.disk_life_used_pct >= disk_life_warn_pct
+    ):
+        severity = "CRITICAL" if health.disk_life_used_pct >= 90.0 else "WARN"
+        findings.append(
+            HostHealthFinding(
+                key="disk_wear",
+                kind="disk_wear",
+                severity=severity,
+                evidence={
+                    "disk_life_used_pct": health.disk_life_used_pct,
+                    "threshold_pct": disk_life_warn_pct,
+                },
+            )
+        )
+
+    # unexpected_reboot — boot_ts changed vs stored value without a Pueo-initiated restart
+    if (
+        health.boot_ts is not None
+        and last_boot_ts is not None
+        and abs(health.boot_ts - last_boot_ts) > 30.0  # 30 s tolerance for clock drift
+        and not pueo_reboot_recent
+    ):
+        findings.append(
+            HostHealthFinding(
+                key="unexpected_reboot",
+                kind="unexpected_reboot",
+                severity="WARN",
+                evidence={
+                    "boot_ts": health.boot_ts,
+                    "prev_boot_ts": last_boot_ts,
+                    "uptime_seconds": health.uptime_seconds,
+                },
+            )
+        )
+
+    # supervisor_unhealthy / supervisor_unsupported
+    if health.resolution is not None:
+        for reason in health.resolution.unhealthy:
+            reason_key = str(reason)[:64]
+            findings.append(
+                HostHealthFinding(
+                    key=f"supervisor_unhealthy:{reason_key}",
+                    kind="supervisor_unhealthy",
+                    severity="HIGH",
+                    evidence={"reason": reason_key},
+                )
+            )
+        for reason in health.resolution.unsupported:
+            reason_key = str(reason)[:64]
+            findings.append(
+                HostHealthFinding(
+                    key=f"supervisor_unsupported:{reason_key}",
+                    kind="supervisor_unsupported",
+                    severity="WARN",
+                    evidence={"reason": reason_key},
+                )
+            )
+
+        # resolution_issue — skip any UUID already mirrored as a hassio HA Repair
+        for issue in health.resolution.issues:
+            uuid = str(issue.get("uuid", ""))
+            if not uuid:
+                continue
+            if uuid in known_repair_uuids:
+                continue
+            issue_type = str(issue.get("type", ""))
+            findings.append(
+                HostHealthFinding(
+                    key=f"resolution_issue:{uuid}",
+                    kind="resolution_issue",
+                    severity="WARN",
+                    evidence={
+                        "uuid": uuid,
+                        "type": issue_type,
+                        "context": issue.get("context"),
+                        "reference": issue.get("reference"),
+                    },
+                )
+            )
+
+    return findings

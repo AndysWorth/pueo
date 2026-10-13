@@ -1317,15 +1317,16 @@ class TestResourcePollerAlerts:
         assert "WARNING" in notifier.sent[0]["subject"]
         assert "disk" in notifier.sent[0]["subject"].lower()
 
-    def test_sends_mem_warn_alert_when_mem_low(self):
+    def test_no_mem_warn_in_check_and_alert(self):
+        # mem_warn moved to _check_host_health; _check_and_alert must not send it
         from utils.hitl.notify import FakeNotifier
 
         notifier = FakeNotifier()
         poller = self._make_poller(notifier)
         status = self._make_status(mem_available_mb=100.0, mem_warn=True)
         asyncio.run(poller._check_and_alert(status))
-        assert len(notifier.sent) == 1
-        assert "memory" in notifier.sent[0]["subject"].lower()
+        subjects = [n["subject"] for n in notifier.sent]
+        assert not any("memory" in s.lower() for s in subjects)
 
     def test_no_alert_when_all_thresholds_ok(self):
         from utils.hitl.notify import FakeNotifier
