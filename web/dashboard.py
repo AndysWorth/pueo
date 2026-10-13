@@ -2551,15 +2551,17 @@ async def sync_backup_inventory() -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@app.get("/disk", response_class=HTMLResponse)
-async def disk_tab(request: Request) -> HTMLResponse:
+@app.get("/resources", response_class=HTMLResponse)
+async def resources_tab(request: Request) -> HTMLResponse:
     import time as _time
 
     import utils.disk.disk_usage as _du
+    import utils.disk.memory_usage as _mu
     from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB, PUEO_LOCAL_MAX_GB
     from utils.disk.pueo_storage import measure_pueo_footprint
 
     breakdown = _du.get_disk_breakdown()
+    mem_breakdown = _mu.get_memory_breakdown()
     age_seconds = None
     disk_warn = False
     disk_critical = False
@@ -2575,9 +2577,10 @@ async def disk_tab(request: Request) -> HTMLResponse:
 
     return templates.TemplateResponse(
         request,
-        "disk.html",
+        "resources.html",
         {
             "breakdown": breakdown,
+            "mem_breakdown": mem_breakdown,
             "age_seconds": age_seconds,
             "disk_warn": disk_warn,
             "disk_critical": disk_critical,
@@ -2587,8 +2590,15 @@ async def disk_tab(request: Request) -> HTMLResponse:
     )
 
 
-@app.post("/disk/queue-orphan-cleanup")
-async def disk_queue_orphan_cleanup() -> JSONResponse:
+@app.get("/disk", response_class=HTMLResponse)
+async def disk_redirect(request: Request) -> Response:
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/resources", status_code=301)
+
+
+@app.post("/resources/queue-orphan-cleanup")
+async def resources_queue_orphan_cleanup() -> JSONResponse:
     """Queue an approval card to clean up orphaned add-on data directories."""
     import config as _config
     from utils.hitl.card_types import CARD_TYPE_DISK_RECOVERY
@@ -2648,20 +2658,32 @@ async def disk_queue_orphan_cleanup() -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/disk/refresh")
-async def disk_refresh() -> JSONResponse:
+@app.post("/resources/refresh")
+async def resources_refresh() -> JSONResponse:
     import utils.disk.disk_usage as _du
+    import utils.disk.memory_usage as _mu
     from utils.ha.ssh_client import AsyncSSHClient
 
     import config as _config
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
     try:
-        breakdown = await _du.fetch_disk_breakdown(ssh)
-        _du.update_disk_breakdown(breakdown)
+        disk_bd, mem_bd = await asyncio.gather(
+            _du.fetch_disk_breakdown(ssh),
+            _mu.fetch_memory_breakdown(ssh),
+        )
+        _du.update_disk_breakdown(disk_bd)
+        _mu.update_memory_breakdown(mem_bd)
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/disk/refresh")
+async def disk_refresh_redirect() -> Response:
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/resources/refresh", status_code=308)
 
 
 def _load_notification_dashboard_data(
