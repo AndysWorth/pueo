@@ -327,6 +327,8 @@ class ResourcePoller:
                                     llm_client=_self._llm_client,
                                     knowledge_store=_self._knowledge_store,
                                     initial_context=inv_ctx,
+                                    notifier=_self._notifier,
+                                    db_path=_self._db_path or _cfg.DB_PATH,
                                 )
                                 if not _result_future.done():
                                     _result_future.set_result(_s)
@@ -362,6 +364,8 @@ class ResourcePoller:
                                 llm_client=self._llm_client,
                                 knowledge_store=self._knowledge_store,
                                 initial_context=_inv_ctx,
+                                notifier=self._notifier,
+                                db_path=self._db_path or _cfg.DB_PATH,
                             )
                         # Offload pending backups and enforce retention with force_critical
                         try:

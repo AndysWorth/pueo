@@ -74,6 +74,7 @@ class InvestigationReport:
     manual_only: list[str] = field(default_factory=list)
     knowledge_sources: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    outcome: str = "success"
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +238,10 @@ async def run_investigation(
     from utils.agent.tool_executor import ToolExecutor
 
     if gate is None:
+        import config as _cfg
         from utils.agent.autonomy import AutonomyGate
 
-        gate = AutonomyGate(level=3)  # AUTONOMOUS — investigation registry is read-only
+        gate = AutonomyGate(_cfg.AUTONOMY_LEVEL)
 
     system_prompt = _investigation_system_prompt(
         topic=topic,
@@ -320,6 +322,7 @@ async def run_investigation(
         manual_only=finish_args.get("manual_only", []),
         knowledge_sources=finish_args.get("knowledge_sources", []),
         confidence=float(finish_args.get("confidence", 0.0)),
+        outcome=result.outcome,
     )
 
     log.info(

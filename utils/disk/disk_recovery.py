@@ -36,6 +36,9 @@ DISK_AUTO_ACTION_KEYS: frozenset[str] = frozenset(
     {"truncate_ha_log", "vacuum_journal", "purge_recorder"}
 )
 
+# Suppression key used for investigation backoff — mirrors the stuck-loop pattern.
+_BACKOFF_KEY = "disk_recovery_backoff:disk_critical"
+
 
 @dataclass
 class RecoveryAction:
@@ -452,6 +455,8 @@ async def run_safe_disk_recovery(
     llm_client: Optional[Any] = None,
     knowledge_store: Optional[Any] = None,
     initial_context: str = "",
+    notifier: Optional[Any] = None,
+    db_path: Optional[str] = None,
 ) -> RecoverySummary:
     """Run disk recovery, optionally guided by an LLM investigation.
 
@@ -466,6 +471,8 @@ async def run_safe_disk_recovery(
       3. Purge recorder history (keep last N days, no repack)
 
     rest_client may be None if HA_API_TOKEN is not configured; recorder purge is skipped.
+    notifier is forwarded to run_investigation so autonomy-gated commands can queue cards.
+    db_path enables backoff tracking: a non-success or exception writes a 30-min deferral.
     Returns a RecoverySummary with per-step outcomes and the investigation report (if run).
     """
 
@@ -482,7 +489,36 @@ async def run_safe_disk_recovery(
 
     # --- LLM-guided path ---
     if llm_client is not None:
+        import sqlite3 as _sqlite3
+
         from utils.agent.investigation_loop import run_investigation
+        from utils.hitl.hitl_tracker import (
+            mark_investigation_backoff,
+            should_send_card,
+        )
+
+        # Skip the investigation if a recent non-success left a backoff row.
+        if db_path is not None:
+            with _sqlite3.connect(db_path) as _pre_conn:
+                backoff_active = not should_send_card(_pre_conn, _BACKOFF_KEY)
+            if backoff_active:
+                log.info("disk_recovery_investigation_backoff_active")
+                summary = RecoverySummary()
+                summary.actions.append(await truncate_ha_log(ssh_client))
+                summary.actions.append(
+                    await vacuum_journal(ssh_client, max_mb=journal_max_mb)
+                )
+                if rest_client is not None:
+                    summary.actions.append(
+                        await purge_recorder(
+                            rest_client,
+                            keep_days=recorder_keep_days,
+                            repack=False,
+                        )
+                    )
+                else:
+                    log.info("disk_recovery_recorder_skipped", reason="no_rest_client")
+                return summary
 
         keys_doc = ", ".join(sorted(DISK_AUTO_ACTION_KEYS))
         inv_context = (
@@ -502,6 +538,7 @@ async def run_safe_disk_recovery(
                 llm_client=llm_client,
                 ha_ssh_client=ssh_client,
                 knowledge_store=knowledge_store,
+                notifier=notifier,
                 max_wall_seconds=60.0,
             )
             is_fallback = False
@@ -510,7 +547,19 @@ async def run_safe_disk_recovery(
             report = None
             is_fallback = True
 
+        def _write_backoff(reason: str) -> None:
+            with _sqlite3.connect(db_path) as _conn:  # type: ignore[arg-type]
+                mark_investigation_backoff(_conn, _BACKOFF_KEY)
+            log.info("disk_recovery_investigation_backoff", reason=reason)
+
+        if is_fallback:
+            if db_path is not None:
+                _write_backoff("exception")
+
         if not is_fallback and report is not None:
+            if report.outcome != "success" and db_path is not None:
+                _write_backoff(report.outcome)
+
             summary = RecoverySummary(
                 investigation_report=report,
                 used_investigation=True,

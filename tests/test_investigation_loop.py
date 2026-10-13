@@ -1,35 +1,113 @@
 """Tests for utils/investigation_loop.py — run_investigation gate defaulting."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from dataclasses import dataclass, field
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
+@dataclass
+class _FakeLoopResult:
+    outcome: str = "success"
+    steps: list = field(default_factory=list)
+
+
 class TestRunInvestigationGateDefault:
-    """run_investigation() should create an AUTONOMOUS gate when gate=None."""
+    """run_investigation() should use AUTONOMY_LEVEL gate when gate=None."""
 
-    def test_gate_defaults_to_autonomous_level(self):
-        from utils.agent.autonomy import AutonomyGate, RiskLevel
-        from utils.agent.investigation_loop import run_investigation
+    def _run(self, autonomy_level: int, explicit_gate=None):
+        """Run run_investigation with a captured gate; return the captured gate."""
+        fake_executor_class = MagicMock()
+        fake_executor_instance = MagicMock()
+        fake_executor_class.return_value = fake_executor_instance
 
-        captured = {}
+        fake_loop_instance = MagicMock()
+        fake_loop_instance.run = AsyncMock(return_value=_FakeLoopResult())
+        fake_loop_class = MagicMock(return_value=fake_loop_instance)
 
-        async def _fake_loop_run(**_):
-            return None
+        with (
+            patch("utils.agent.tool_executor.ToolExecutor", fake_executor_class),
+            patch("utils.agent.agent_loop.AgentLoop", fake_loop_class),
+            patch("config.AUTONOMY_LEVEL", autonomy_level),
+            patch("utils.agent.supervisor.increment_active_agent", return_value=None),
+            patch("utils.agent.supervisor.decrement_active_agent", return_value=None),
+            patch("utils.agent.supervisor.publish_activity_done", return_value=None),
+            patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+        ):
+            from utils.agent.investigation_loop import run_investigation
 
-        import utils.agent.investigation_loop as il
+            asyncio.run(
+                run_investigation(
+                    topic="disk full",
+                    investigation_goal="find cause",
+                    context="2 GB free",
+                    llm_client=MagicMock(),
+                    ha_ssh_client=MagicMock(),
+                    gate=explicit_gate,
+                )
+            )
 
-        original = il.run_investigation
+        _, kwargs = fake_executor_class.call_args
+        return kwargs.get("gate")
 
-        async def _intercept(**kwargs):
-            # Spy on the gate that gets created inside run_investigation
-            pass
+    def test_gate_uses_autonomy_level_when_none(self):
+        from utils.agent.autonomy import AutonomyGate
 
-        # Just verify AutonomyGate(level=4) auto-executes LOW risk
-        gate = AutonomyGate(level=4)
-        assert gate.should_auto_execute(RiskLevel.LOW) is True
-        assert gate.should_auto_execute(RiskLevel.HIGH) is True
+        gate = self._run(autonomy_level=1)
+        assert isinstance(gate, AutonomyGate)
+        assert gate.level == 1
+
+    def test_gate_level_reflects_config(self):
+        from utils.agent.autonomy import AutonomyGate
+
+        gate = self._run(autonomy_level=2)
+        assert isinstance(gate, AutonomyGate)
+        assert gate.level == 2
+
+    def test_explicit_gate_passed_through_unchanged(self):
+        from utils.agent.autonomy import AutonomyGate
+
+        explicit = AutonomyGate(level=0)
+        gate = self._run(autonomy_level=3, explicit_gate=explicit)
+        assert gate is explicit
+
+    def test_outcome_mirrored_from_result(self):
+        """report.outcome should reflect the AgentLoop result.outcome."""
+        fake_loop_instance = MagicMock()
+        fake_loop_instance.run = AsyncMock(
+            return_value=_FakeLoopResult(outcome="stuck")
+        )
+        fake_loop_class = MagicMock(return_value=fake_loop_instance)
+
+        with (
+            patch("utils.agent.tool_executor.ToolExecutor", MagicMock()),
+            patch("utils.agent.agent_loop.AgentLoop", fake_loop_class),
+            patch("config.AUTONOMY_LEVEL", 3),
+            patch("utils.agent.supervisor.increment_active_agent", return_value=None),
+            patch("utils.agent.supervisor.decrement_active_agent", return_value=None),
+            patch("utils.agent.supervisor.publish_activity_done", return_value=None),
+            patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+        ):
+            from utils.agent.investigation_loop import run_investigation
+
+            report = asyncio.run(
+                run_investigation(
+                    topic="disk",
+                    investigation_goal="find",
+                    context="",
+                    llm_client=MagicMock(),
+                    ha_ssh_client=MagicMock(),
+                )
+            )
+
+        assert report.outcome == "stuck"
 
 
 class TestSerializeAnalysis:
@@ -325,6 +403,60 @@ class TestResourcePollerInvestigationIntegration:
         assert len(notifier.sent) == 1
         da = notifier.sent[0]["payload"]["disk_analysis"]
         assert da.get("source") == "heuristic"
+
+    def test_critical_recovery_passes_notifier_and_db_path(self, tmp_path):
+        """ResourcePoller passes notifier and db_path to run_safe_disk_recovery."""
+        import sqlite3
+
+        from utils.hitl.notify import FakeNotifier
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+
+        db = str(tmp_path / "rp_test.db")
+        with sqlite3.connect(db) as conn:
+            conn.executescript(self._HITL_DDL)
+
+        notifier = FakeNotifier()
+        llm = object()
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=notifier,
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=256.0,
+            llm_client=llm,
+            db_path=db,
+        )
+
+        captured_kwargs = {}
+
+        async def _fake_recovery(**kwargs):
+            captured_kwargs.update(kwargs)
+            from utils.disk.disk_recovery import RecoverySummary
+
+            return RecoverySummary()
+
+        with (
+            patch(
+                "utils.disk.disk_recovery.run_safe_disk_recovery",
+                side_effect=_fake_recovery,
+            ),
+            patch(
+                "utils.agent.work_queue.get_work_queue_or_none",
+                return_value=None,
+            ),
+            patch(
+                "utils.disk.resource.poll_host_resources",
+                new=AsyncMock(return_value=self._make_status()),
+            ),
+            patch("utils.disk.resource.update_resource_status"),
+            patch("utils.core.timeline.write_timeline_event"),
+        ):
+            asyncio.run(poller._check_and_alert(self._make_status()))
+
+        assert captured_kwargs.get("notifier") is notifier
+        assert captured_kwargs.get("db_path") == db
 
 
 class TestInvestigationPromptFile:
