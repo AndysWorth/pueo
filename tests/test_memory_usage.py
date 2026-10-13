@@ -41,6 +41,46 @@ def _batch_output(sections: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+class TestSplitMarkerSections:
+    def test_well_formed_output(self):
+        from utils.disk.memory_usage import split_marker_sections
+
+        out = "@@sys:core\n{json1}\n@@app:slug\n{json2}\n"
+        sections = split_marker_sections(out)
+        assert sections == {"sys:core": "{json1}", "app:slug": "{json2}"}
+
+    def test_glued_marker_no_trailing_newline(self):
+        # ha --raw-json emits no trailing newline, so @@key is appended to JSON
+        from utils.disk.memory_usage import split_marker_sections
+
+        out = '{"data": {}}@@sys:core\n{"data": {"memory_usage": 1}}'
+        sections = split_marker_sections(out)
+        assert "sys:core" in sections
+        assert '{"data": {"memory_usage": 1}}' in sections["sys:core"]
+
+    def test_multiple_glued_markers(self):
+        from utils.disk.memory_usage import split_marker_sections
+
+        body_a = '{"result":"ok","data":{"memory_usage":100}}'
+        body_b = '{"result":"ok","data":{"memory_usage":200}}'
+        out = f"@@sys:core\n{body_a}@@sys:supervisor\n{body_b}"
+        sections = split_marker_sections(out)
+        assert "sys:core" in sections
+        assert "sys:supervisor" in sections
+        assert body_a in sections["sys:core"]
+        assert body_b == sections["sys:supervisor"]
+
+    def test_empty_input(self):
+        from utils.disk.memory_usage import split_marker_sections
+
+        assert split_marker_sections("") == {}
+
+    def test_no_markers(self):
+        from utils.disk.memory_usage import split_marker_sections
+
+        assert split_marker_sections("some random text") == {}
+
+
 class TestMemoryConsumer:
     def test_valid_construction(self):
         from utils.disk.memory_usage import MemoryConsumer
@@ -247,6 +287,33 @@ class TestParseBatchOutput:
         consumers, _ = _parse_batch_output(batch, started_apps=[], total_mb=8192.0)
         assert consumers[0].name == "Supervisor"
 
+    def test_glued_markers_parse_all_sections(self):
+        # ha --raw-json emits no trailing newline; next @@marker is glued to JSON line
+        from utils.disk.memory_usage import _parse_batch_output
+
+        body_core = _make_stats_json(512 * 1024 * 1024)
+        body_sup = _make_stats_json(100 * 1024 * 1024)
+        # Simulate glued output: no newline between JSON and next marker
+        glued = f"@@sys:core\n{body_core}@@sys:supervisor\n{body_sup}"
+        consumers, errors = _parse_batch_output(glued, started_apps=[], total_mb=8192.0)
+        ids = [c.id for c in consumers]
+        assert "core" in ids
+        assert "supervisor" in ids
+        assert errors == []
+
+    def test_missing_expected_key_adds_to_errors(self):
+        from utils.disk.memory_usage import _parse_batch_output
+
+        batch = _batch_output([("sys:core", _make_stats_json(512 * 1024 * 1024))])
+        _, errors = _parse_batch_output(
+            batch,
+            started_apps=[],
+            total_mb=8192.0,
+            expected_keys={"sys:core", "sys:supervisor"},
+        )
+        assert "supervisor" in errors
+        assert "core" not in errors
+
 
 class TestFetchMemoryBreakdown:
     def _make_ssh(self, batch_sections: list[tuple[str, str]], started_apps=None):
@@ -330,6 +397,28 @@ class TestFetchMemoryBreakdown:
         bd = asyncio.run(fetch_memory_breakdown(ssh))
         assert bd.total_mb == round(_TOTAL_MB, 1)
         assert bd.consumers == []
+
+    def test_glued_markers_produce_consumers(self):
+        # Regression: ha --raw-json emits no trailing newline, so @@key is appended
+        # to the previous JSON line. Both sys:core and sys:supervisor must be parsed.
+        from utils.disk.memory_usage import fetch_memory_breakdown
+        from utils.ha.ssh_client import FakeSSHClient
+
+        core_json = _make_stats_json(500 * 1024 * 1024)
+        sup_json = _make_stats_json(80 * 1024 * 1024)
+        # Glued: no newline between end of core JSON and @@sys:supervisor marker
+        glued_batch = f"@@sys:core\n{core_json}@@sys:supervisor\n{sup_json}"
+        ssh = FakeSSHClient(
+            command_results={
+                "cat /proc/meminfo": (0, _MEMINFO, ""),
+                "ha apps list": (0, _make_apps_list_json([]), ""),
+                "@@": (0, glued_batch, ""),
+            }
+        )
+        bd = asyncio.run(fetch_memory_breakdown(ssh))
+        ids = [c.id for c in bd.consumers]
+        assert "core" in ids
+        assert "supervisor" in ids
 
 
 class TestMemoryBreakdownCache:

@@ -96,15 +96,27 @@ def _batch_ssh(
     host_raw: str = "",
     res_raw: str = "",
     mem_raw: str = "",
+    glued: bool = False,
 ):
     from utils.ha.ssh_client import FakeSSHClient
 
     parts = [
-        "echo '@@host'; ha host info --raw-json 2>/dev/null",
-        "echo '@@res'; ha resolution info --raw-json 2>/dev/null",
-        "echo '@@mem'; cat /proc/meminfo",
+        "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
+        "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
+        "echo; echo '@@mem'; cat /proc/meminfo",
     ]
     batch_cmd = "; ".join(parts)
+    if glued:
+        # Simulate ha --raw-json with no trailing newline: marker glued to end of JSON
+        output = ""
+        if host_raw:
+            output += f"@@host\n{host_raw}@@res\n"
+            if res_raw:
+                output += f"{res_raw}@@mem\n"
+                if mem_raw:
+                    output += mem_raw
+            return FakeSSHClient(command_results={batch_cmd: (0, output, "")})
+        # Fall through to normal builder for partial glued tests
     output = ""
     if host_raw:
         output += f"@@host\n{host_raw}\n"
@@ -195,11 +207,12 @@ class TestParseHostInfoJson:
     def test_disk_life_and_boot_ts(self):
         from utils.disk.host_health import _parse_host_info_json
 
-        life, boot = _parse_host_info_json(
+        life, boot, ok = _parse_host_info_json(
             _host_info_json(disk_life=40.0, boot_ts_us=1_700_000_000_000_000)
         )
         assert life == pytest.approx(40.0)
         assert boot == pytest.approx(1_700_000_000.0)
+        assert ok is True
 
     def test_missing_disk_life_returns_none(self):
         from utils.disk.host_health import _parse_host_info_json
@@ -207,23 +220,26 @@ class TestParseHostInfoJson:
         raw = json.dumps(
             {"result": "ok", "data": {"boot_timestamp": 1_700_000_000_000_000}}
         )
-        life, boot = _parse_host_info_json(raw)
+        life, boot, ok = _parse_host_info_json(raw)
         assert life is None
         assert boot == pytest.approx(1_700_000_000.0)
+        assert ok is True
 
-    def test_invalid_json_returns_none_none(self):
+    def test_invalid_json_returns_false_ok(self):
         from utils.disk.host_health import _parse_host_info_json
 
-        life, boot = _parse_host_info_json("not json")
+        life, boot, ok = _parse_host_info_json("not json")
         assert life is None
         assert boot is None
+        assert ok is False
 
-    def test_empty_string_returns_none_none(self):
+    def test_empty_string_returns_false_ok(self):
         from utils.disk.host_health import _parse_host_info_json
 
-        life, boot = _parse_host_info_json("")
+        life, boot, ok = _parse_host_info_json("")
         assert life is None
         assert boot is None
+        assert ok is False
 
 
 class TestParseResolutionJson:
@@ -263,8 +279,11 @@ class TestFetchHostHealth:
         host_raw: str = "",
         res_raw: str = "",
         mem_raw: str = "",
+        glued: bool = False,
     ):
-        return _batch_ssh(host_raw=host_raw, res_raw=res_raw, mem_raw=mem_raw)
+        return _batch_ssh(
+            host_raw=host_raw, res_raw=res_raw, mem_raw=mem_raw, glued=glued
+        )
 
     def test_full_fetch(self):
         from utils.disk.host_health import fetch_host_health
@@ -317,6 +336,49 @@ class TestFetchHostHealth:
         hh = asyncio.run(fetch_host_health(ssh))
         assert hh.swap_total_mb == 0.0
         assert hh.swap_used_mb == 0.0
+
+    def test_glued_markers_parse_all_sections(self):
+        # Regression: ha --raw-json emits no trailing newline, so @@marker is glued
+        # to the end of the JSON line. split_marker_sections() must still find all keys.
+        from utils.disk.host_health import fetch_host_health
+
+        ssh = self._ssh(
+            host_raw=_host_info_json(disk_life=55.0, boot_ts_us=1_700_000_000_000_000),
+            res_raw=_resolution_json(),
+            mem_raw=_meminfo(swap_total_kb=1048576, swap_free_kb=600000),
+            glued=True,
+        )
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert hh.disk_life_used_pct == pytest.approx(55.0)
+        assert hh.boot_ts == pytest.approx(1_700_000_000.0)
+        assert hh.resolution is not None
+        assert hh.swap_total_mb == pytest.approx(1024.0, abs=0.1)
+        assert hh.errors == []
+
+    def test_host_parse_failure_adds_host_to_errors(self):
+        # Non-empty host section that is not valid JSON should add "host" to errors
+        from utils.disk.host_health import fetch_host_health
+        from utils.ha.ssh_client import FakeSSHClient
+
+        # Build output with host section containing truncated/invalid JSON
+        parts = [
+            "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
+            "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
+            "echo; echo '@@mem'; cat /proc/meminfo",
+        ]
+        batch_cmd = "; ".join(parts)
+        output = (
+            f"@@host\nnot valid json here\n"
+            f"@@res\n{_resolution_json()}\n"
+            f"@@mem\n{_meminfo()}\n"
+        )
+        ssh = FakeSSHClient(command_results={batch_cmd: (0, output, "")})
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert "host" in hh.errors
+        assert hh.disk_life_used_pct is None
+        assert hh.resolution is not None
+        assert "mem" not in hh.errors
+        assert "res" not in hh.errors
 
 
 class TestHostHealthCache:

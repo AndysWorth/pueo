@@ -12,6 +12,7 @@ from utils.core.logging import get_logger
 log = get_logger("memory_usage")
 
 _SLUG_RE = re.compile(r"^[a-z0-9_\-]+$")
+_MARKER_RE = re.compile(r"@@([A-Za-z0-9_:.\-]+)\n?")
 
 _SYSTEM_COMPONENTS = [
     ("sys", "core"),
@@ -79,6 +80,25 @@ async def _fetch_started_apps(
     return started, stopped
 
 
+def split_marker_sections(out: str) -> dict[str, str]:
+    """Split @@-marker-delimited SSH output into a {key: content} dict.
+
+    Uses a regex split so markers that are not preceded by a newline (because
+    ``ha … --raw-json`` emits no trailing newline) are still found.
+    """
+    parts = _MARKER_RE.split(out)
+    # parts[0]  — text before the first marker (discard)
+    # then alternating: key, content, key, content, ...
+    sections: dict[str, str] = {}
+    i = 1
+    while i < len(parts):
+        key = parts[i]
+        content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        sections[key] = content
+        i += 2
+    return sections
+
+
 def _parse_stats_json(raw: str) -> Optional[dict]:
     """Parse 'ha * stats --raw-json' output; return the inner data dict or None."""
     raw = raw.strip()
@@ -120,27 +140,15 @@ def _parse_batch_output(
     batch_out: str,
     started_apps: list[tuple[str, str]],
     total_mb: float,
+    expected_keys: "set[str] | None" = None,
 ) -> tuple[list[MemoryConsumer], list[str]]:
     """Parse the @@ marker-delimited stats output into consumers and error ids."""
     app_name_map = {slug: name for slug, name in started_apps}
-
-    # Split into sections by @@ headers
-    sections: dict[str, str] = {}
-    current_key: Optional[str] = None
-    current_lines: list[str] = []
-    for line in batch_out.splitlines():
-        if line.startswith("@@"):
-            if current_key is not None:
-                sections[current_key] = "\n".join(current_lines).strip()
-            current_key = line[2:]
-            current_lines = []
-        else:
-            current_lines.append(line)
-    if current_key is not None:
-        sections[current_key] = "\n".join(current_lines).strip()
+    sections = split_marker_sections(batch_out)
 
     consumers: list[MemoryConsumer] = []
     errors: list[str] = []
+
     for key, raw in sections.items():
         if ":" not in key:
             continue
@@ -162,6 +170,15 @@ def _parse_batch_output(
             errors.append(cid)
             continue
         consumers.append(consumer)
+
+    # Report any requested component that produced no section at all
+    if expected_keys:
+        found = set(sections.keys())
+        for key in expected_keys:
+            if key not in found:
+                _, cid = key.split(":", 1) if ":" in key else ("", key)
+                errors.append(cid)
+
     return consumers, errors
 
 
@@ -175,11 +192,16 @@ async def fetch_memory_breakdown(ssh: SSHClientProtocol) -> MemoryBreakdown:
     started_apps, stopped_apps = await _fetch_started_apps(ssh)
 
     parts: list[str] = []
+    expected_keys: set[str] = set()
     for kind, cid in _SYSTEM_COMPONENTS:
-        parts.append(f"echo '@@{kind}:{cid}'; ha {cid} stats --raw-json 2>/dev/null")
+        key = f"{kind}:{cid}"
+        expected_keys.add(key)
+        parts.append(f"echo; echo '@@{key}'; ha {cid} stats --raw-json 2>/dev/null")
     for slug, _ in started_apps:
+        key = f"app:{slug}"
+        expected_keys.add(key)
         parts.append(
-            f"echo '@@app:{slug}'; ha apps stats {slug} --raw-json 2>/dev/null"
+            f"echo; echo '@@{key}'; ha apps stats {slug} --raw-json 2>/dev/null"
         )
 
     if not parts:
@@ -191,7 +213,9 @@ async def fetch_memory_breakdown(ssh: SSHClientProtocol) -> MemoryBreakdown:
         )
 
     _, batch_out, _ = await ssh.run("; ".join(parts), check=False)
-    consumers, errors = _parse_batch_output(batch_out, started_apps, total_mb)
+    consumers, errors = _parse_batch_output(
+        batch_out, started_apps, total_mb, expected_keys
+    )
 
     used_mb = total_mb - available_mb
     sum_containers = sum(c.used_mb for c in consumers)

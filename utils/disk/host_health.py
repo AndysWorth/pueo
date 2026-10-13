@@ -54,8 +54,10 @@ def _parse_swap(meminfo: str) -> tuple[float, float]:
     return swap_used_mb, swap_total_mb
 
 
-def _parse_host_info_json(raw: str) -> tuple[Optional[float], Optional[float]]:
-    """Return (disk_life_used_pct, boot_ts_seconds) from 'ha host info --raw-json' output."""
+def _parse_host_info_json(
+    raw: str,
+) -> tuple[Optional[float], Optional[float], bool]:
+    """Return (disk_life_used_pct, boot_ts_seconds, ok) from 'ha host info --raw-json'."""
     disk_life: Optional[float] = None
     boot_ts: Optional[float] = None
     try:
@@ -79,7 +81,8 @@ def _parse_host_info_json(raw: str) -> tuple[Optional[float], Optional[float]]:
 
     except Exception as exc:
         log.warning("host_health_host_info_parse_failed", error=str(exc)[:200])
-    return disk_life, boot_ts
+        return disk_life, boot_ts, False
+    return disk_life, boot_ts, True
 
 
 def _parse_resolution_json(raw: str) -> Optional[ResolutionInfo]:
@@ -100,30 +103,16 @@ def _parse_resolution_json(raw: str) -> Optional[ResolutionInfo]:
 
 async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
     """Fetch host health indicators in one batched SSH call."""
-    from utils.disk.resource import _parse_meminfo
+    from utils.disk.memory_usage import split_marker_sections
 
     parts = [
-        "echo '@@host'; ha host info --raw-json 2>/dev/null",
-        "echo '@@res'; ha resolution info --raw-json 2>/dev/null",
-        "echo '@@mem'; cat /proc/meminfo",
+        "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
+        "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
+        "echo; echo '@@mem'; cat /proc/meminfo",
     ]
     _, batch_out, _ = await ssh.run("; ".join(parts), check=False)
 
-    # Split output by @@ markers
-    sections: dict[str, str] = {}
-    current_key: Optional[str] = None
-    current_lines: list[str] = []
-    for line in batch_out.splitlines():
-        if line.startswith("@@"):
-            if current_key is not None:
-                sections[current_key] = "\n".join(current_lines).strip()
-            current_key = line[2:]
-            current_lines = []
-        else:
-            current_lines.append(line)
-    if current_key is not None:
-        sections[current_key] = "\n".join(current_lines).strip()
-
+    sections = split_marker_sections(batch_out)
     errors: list[str] = []
 
     # Parse swap from /proc/meminfo
@@ -137,7 +126,9 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
     # Parse host info
     host_raw = sections.get("host", "")
     if host_raw:
-        disk_life_used_pct, boot_ts = _parse_host_info_json(host_raw)
+        disk_life_used_pct, boot_ts, host_ok = _parse_host_info_json(host_raw)
+        if not host_ok:
+            errors.append("host")
     else:
         disk_life_used_pct, boot_ts = None, None
         errors.append("host")
