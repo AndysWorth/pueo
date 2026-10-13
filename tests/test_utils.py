@@ -1515,6 +1515,79 @@ class TestResourcePollerAlerts:
 
         assert len(slept) == 1  # sleep ran despite the poll error
 
+    def test_run_caches_memory_breakdown_on_success(self, monkeypatch):
+        import utils.disk.resource as resource_mod
+        import utils.disk.memory_usage as mem_mod
+        from utils.disk.memory_usage import MemoryBreakdown
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        poll_status = self._make_status(disk_free=6.0)
+        fake_breakdown = MemoryBreakdown(total_mb=8192.0, available_mb=4096.0)
+
+        async def fake_poll(*_args, **_kwargs):
+            return poll_status
+
+        async def fake_fetch_mem(*_args, **_kwargs):
+            return fake_breakdown
+
+        async def fake_sleep(_secs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(resource_mod, "poll_host_resources", fake_poll)
+        monkeypatch.setattr(mem_mod, "fetch_memory_breakdown", fake_fetch_mem)
+        monkeypatch.setattr(mem_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+
+        assert mem_mod.get_memory_breakdown() is fake_breakdown
+
+    def test_run_memory_breakdown_failure_does_not_block_disk_alerts(self, monkeypatch):
+        """A fetch_memory_breakdown error must never propagate to the outer run() loop."""
+        import utils.disk.resource as resource_mod
+        import utils.disk.memory_usage as mem_mod
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        poll_status = self._make_status(disk_free=6.0)
+
+        async def fake_poll(*_args, **_kwargs):
+            return poll_status
+
+        async def failing_fetch_mem(*_args, **_kwargs):
+            raise RuntimeError("stats unreachable")
+
+        async def fake_sleep(_secs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(resource_mod, "poll_host_resources", fake_poll)
+        monkeypatch.setattr(mem_mod, "fetch_memory_breakdown", failing_fetch_mem)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        poller = ResourcePoller(
+            ssh_client=FakeSSHClient(),
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+        # Should raise CancelledError from fake_sleep, not RuntimeError from fetch_memory_breakdown
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+
 
 class TestExecuteRemoteBackupDiskCheck:
     @pytest.fixture

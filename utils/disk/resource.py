@@ -188,6 +188,16 @@ class ResourcePoller:
                 try:
                     from utils.agent.supervisor import publish_event
 
+                    _mem_used_pct = (
+                        round(
+                            100
+                            * (status.mem_total_mb - status.mem_available_mb)
+                            / status.mem_total_mb,
+                            1,
+                        )
+                        if status.mem_total_mb
+                        else 0
+                    )
                     publish_event(
                         {
                             "event_type": "resource",
@@ -200,12 +210,23 @@ class ResourcePoller:
                                 else 0
                             ),
                             "mem_free_gb": round(status.mem_available_mb / 1024, 2),
+                            "mem_used_pct": _mem_used_pct,
                             "disk_critical": status.disk_critical,
                             "disk_warn": status.disk_warn,
                         }
                     )
                 except Exception:  # nosec B110 — SSE publish is best-effort
                     pass
+                try:
+                    from utils.disk.memory_usage import (
+                        fetch_memory_breakdown,
+                        update_memory_breakdown,
+                    )
+
+                    _mem_breakdown = await fetch_memory_breakdown(self._ssh)
+                    update_memory_breakdown(_mem_breakdown)
+                except Exception as _me:  # nosec B110 — never block disk alerts
+                    log.warning("memory_breakdown_poll_failed", error=str(_me))
                 log.info(
                     "resource_poll",
                     disk_free_gb=status.disk_free_gb,

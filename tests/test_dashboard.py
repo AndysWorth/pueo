@@ -3988,8 +3988,8 @@ class TestExecuteDiskRecovery:
         assert not any("netalertx_fa" in p for p in deleted_paths)
 
 
-class TestDiskQueueOrphanCleanup:
-    """Tests for the POST /disk/queue-orphan-cleanup endpoint."""
+class TestResourcesQueueOrphanCleanup:
+    """Tests for the POST /resources/queue-orphan-cleanup endpoint."""
 
     def test_returns_ok_with_card_queued(self, monkeypatch, tmp_path):
         from fastapi.testclient import TestClient
@@ -4027,7 +4027,7 @@ class TestDiskQueueOrphanCleanup:
         )
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.post("/disk/queue-orphan-cleanup")
+        response = client.post("/resources/queue-orphan-cleanup")
         assert response.status_code == 200
         assert response.json()["ok"] is True
         assert len(send_calls) == 1
@@ -4049,7 +4049,7 @@ class TestDiskQueueOrphanCleanup:
         monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: object())
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.post("/disk/queue-orphan-cleanup")
+        response = client.post("/resources/queue-orphan-cleanup")
         assert response.status_code == 200
         assert response.json()["ok"] is True
         assert "No orphaned" in response.json()["message"]
@@ -6468,20 +6468,23 @@ class TestPostRebootRepairScan:
 # ── Disk usage routes ─────────────────────────────────────────────────────────────
 
 
-class TestDiskRoutes:
-    def test_disk_get_no_data_returns_200(self, monkeypatch):
+class TestResourcesRoutes:
+    def test_resources_get_no_data_returns_200(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/disk")
+        response = client.get("/resources")
         assert response.status_code == 200
         assert "No disk usage data" in response.text
 
-    def test_disk_get_with_data_shows_sections(self, monkeypatch):
+    def test_resources_get_with_data_shows_sections(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
         from utils.disk.disk_usage import DiskBreakdown, DiskSection
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
@@ -6503,8 +6506,9 @@ class TestDiskRoutes:
             fetched_at=time.time(),
         )
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", bd)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/disk")
+        response = client.get("/resources")
         assert response.status_code == 200
         assert (
             "HA Config &amp; Database" in response.text
@@ -6512,8 +6516,9 @@ class TestDiskRoutes:
         )
         assert "79.4" in response.text
 
-    def test_disk_get_shows_age_seconds(self, monkeypatch):
+    def test_resources_get_shows_age_seconds(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
         from utils.disk.disk_usage import DiskBreakdown
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
@@ -6521,40 +6526,93 @@ class TestDiskRoutes:
 
         bd = DiskBreakdown(fetched_at=time.time() - 30)
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", bd)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.get("/disk")
+        response = client.get("/resources")
         assert response.status_code == 200
         assert "ago" in response.text
 
-    def test_disk_refresh_calls_fetch(self, monkeypatch):
+    def test_resources_get_shows_memory_breakdown(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
-        from utils.disk.disk_usage import DiskBreakdown
+        import utils.disk.memory_usage as mu_mod
+        from utils.disk.memory_usage import MemoryBreakdown, MemoryConsumer
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import time
+
+        consumer = MemoryConsumer(
+            kind="sys",
+            id="core",
+            name="HA Core",
+            used_mb=512.0,
+            limit_mb=None,
+            pct_host=12.5,
+        )
+        mem_bd = MemoryBreakdown(
+            total_mb=4096.0,
+            available_mb=2048.0,
+            consumers=[consumer],
+            other_mb=64.0,
+            fetched_at=time.time(),
+        )
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", mem_bd)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/resources")
+        assert response.status_code == 200
+        assert "HA Core" in response.text
+        assert "512" in response.text
+
+    def test_disk_get_redirects_to_resources(self, monkeypatch):
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
-        fetch_calls = []
+        client = TestClient(
+            dashboard.app, raise_server_exceptions=True, follow_redirects=False
+        )
+        response = client.get("/disk")
+        assert response.status_code == 301
+        assert response.headers["location"] == "/resources"
 
-        async def _fake_fetch(ssh):
-            fetch_calls.append(True)
+    def test_resources_refresh_calls_fetch(self, monkeypatch):
+        import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
+        from utils.disk.disk_usage import DiskBreakdown
+        from utils.disk.memory_usage import MemoryBreakdown
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        disk_calls = []
+        mem_calls = []
+
+        async def _fake_disk_fetch(ssh):
+            disk_calls.append(True)
             return DiskBreakdown(fetched_at=1.0)
 
-        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _fake_fetch)
-        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        async def _fake_mem_fetch(ssh):
+            mem_calls.append(True)
+            return MemoryBreakdown(total_mb=4096.0, available_mb=2048.0, fetched_at=1.0)
 
-        # Patch AsyncSSHClient to avoid real SSH
+        monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _fake_disk_fetch)
+        monkeypatch.setattr(mu_mod, "fetch_memory_breakdown", _fake_mem_fetch)
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+
         import utils.ha.ssh_client as _sc
         from utils.ha.ssh_client import FakeSSHClient
 
         monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        response = client.post("/disk/refresh")
+        response = client.post("/resources/refresh")
         assert response.status_code == 200
         assert response.json()["ok"] is True
-        assert len(fetch_calls) == 1
+        assert len(disk_calls) == 1
+        assert len(mem_calls) == 1
 
-    def test_disk_refresh_error_returns_not_ok(self, monkeypatch):
+    def test_resources_refresh_error_returns_not_ok(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
 
@@ -6562,6 +6620,7 @@ class TestDiskRoutes:
             raise OSError("SSH connection refused")
 
         monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _failing_fetch)
+        monkeypatch.setattr(mu_mod, "fetch_memory_breakdown", _failing_fetch)
 
         import utils.ha.ssh_client as _sc
         from utils.ha.ssh_client import FakeSSHClient
@@ -6569,7 +6628,7 @@ class TestDiskRoutes:
         monkeypatch.setattr(_sc, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
 
         client = TestClient(dashboard.app, raise_server_exceptions=False)
-        response = client.post("/disk/refresh")
+        response = client.post("/resources/refresh")
         assert response.status_code == 500
         assert response.json()["ok"] is False
         assert "SSH connection refused" in response.json()["error"]
@@ -6604,8 +6663,8 @@ class TestAsyncThreadOffloading:
         assert resp.status_code == 200
         assert calls, "_load_requests was never called"
 
-    def test_disk_tab_measure_success(self, monkeypatch):
-        """measure_pueo_footprint result appears in the disk tab response."""
+    def test_resources_tab_measure_success(self, monkeypatch):
+        """measure_pueo_footprint result appears in the resources tab response."""
         from fastapi.testclient import TestClient
 
         import utils.disk.pueo_storage as pueo_storage_mod
@@ -6625,11 +6684,11 @@ class TestAsyncThreadOffloading:
         monkeypatch.setattr(pueo_storage_mod, "measure_pueo_footprint", lambda: stub)
 
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.get("/disk")
+        resp = client.get("/resources")
         assert resp.status_code == 200
 
-    def test_disk_tab_measure_exception_swallowed(self, monkeypatch):
-        """If measure_pueo_footprint raises, disk tab still renders (pueo_footprint=None)."""
+    def test_resources_tab_measure_exception_swallowed(self, monkeypatch):
+        """If measure_pueo_footprint raises, resources tab still renders (pueo_footprint=None)."""
         import utils.disk.pueo_storage as pueo_storage_mod
         from fastapi.testclient import TestClient
 
@@ -6640,7 +6699,7 @@ class TestAsyncThreadOffloading:
 
         monkeypatch.setattr(pueo_storage_mod, "measure_pueo_footprint", _raise)
         client = TestClient(dashboard.app, raise_server_exceptions=True)
-        resp = client.get("/disk")
+        resp = client.get("/resources")
         assert resp.status_code == 200
 
     def test_settings_tab_service_status_called(self, tmp_path, monkeypatch):

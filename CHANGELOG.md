@@ -7,6 +7,17 @@ Pre-1.0: the minor version is the breaking-change signal (0.1 → 0.2 = breaking
 
 ## [Unreleased]
 
+### Added
+
+- **Resources tab** — the Disk tab has been renamed to Resources and now includes a
+  per-container RAM breakdown at the top. Pueo fetches memory usage from
+  `ha {core,supervisor,dns,audio,multicast,observer,cli} stats --raw-json` and
+  `ha apps stats <slug> --raw-json` over SSH, then renders a stacked bar and a table
+  sorted by used MB (columns: Name, Type, Used, % host, Limit). The existing disk
+  content moves under a "Disk" heading. The old `/disk` URL now redirects to `/resources`.
+  The `ha * stats` commands are also added to the `run_ha_command` allowlist so agents
+  can query per-container RAM during investigations.
+
 ### Removed
 
 - **Control tab** — the `/control` page and its "Run a Mode" buttons have been removed.
@@ -31,5 +42,6 @@ Pre-1.0: the minor version is the breaking-change signal (0.1 → 0.2 = breaking
   next major release (0.2.0). Its checks are covered live by the Overview tab (pending
   actions, loop health, resources), the Disk tab, and the Backups tab.
   A deprecation warning and a stderr line are now emitted when `--mode audit` is invoked.
+  (The "Disk tab" referenced in this entry has since been renamed to "Resources tab".)
 
 ## [0.1.0] — initial release

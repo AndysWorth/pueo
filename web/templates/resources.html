@@ -39,17 +39,44 @@
   .db-mini-bar { height: 4px; background: #94a3b8; border-radius: 2px; }
   details > summary { cursor: pointer; }
   details > summary::-webkit-details-marker { color: #888; }
+  /* memory stacked bar */
+  .mem-stacked-bar {
+    display: flex; height: 12px; border-radius: 6px; overflow: hidden;
+    background: #e9ecef; margin-bottom: 0.75rem;
+  }
+  .mem-table-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.25rem 0; border-bottom: 1px solid #f0f0f0; font-size: 0.83rem;
+  }
+  .mem-table-row:last-child { border-bottom: none; }
+  .mem-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .mem-name { flex: 1; color: #333; min-width: 0; word-break: break-all; }
+  .mem-type { font-size: 0.72rem; color: #aaa; white-space: nowrap; }
+  .mem-used {
+    white-space: nowrap; color: #555; font-variant-numeric: tabular-nums;
+    min-width: 4.5rem; text-align: right; flex-shrink: 0;
+  }
+  .mem-pct {
+    white-space: nowrap; color: #888; font-size: 0.78rem;
+    min-width: 3.5rem; text-align: right; flex-shrink: 0;
+  }
+  .mem-limit {
+    white-space: nowrap; color: #bbb; font-size: 0.75rem;
+    min-width: 4rem; text-align: right; flex-shrink: 0;
+  }
 </style>
 
 <!-- Header -->
 <div style="display:flex;align-items:center;justify-content:space-between;
   margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
-  <h2 style="font-size:1rem;color:#555;margin:0;">Home Assistant Disk Usage</h2>
+  <h2 style="font-size:1rem;color:#555;margin:0;">Home Assistant Resources</h2>
   <div style="display:flex;align-items:center;gap:0.75rem;">
     {% if age_seconds is not none %}
     <span style="font-size:0.8rem;color:#aaa;">Updated {{ age_seconds }}s ago</span>
     {% endif %}
-    <button id="refresh-btn" onclick="refreshDisk()"
+    <button id="refresh-btn" onclick="refreshResources()"
       class="btn" style="background:#6c757d;color:#fff;padding:0.35rem 1rem;">
       Refresh
     </button>
@@ -57,6 +84,122 @@
 </div>
 <div id="refresh-result" style="display:none;margin-bottom:0.75rem;
   padding:0.5rem 0.75rem;border-radius:4px;font-size:0.85rem;"></div>
+
+<!-- ═══════════════════════ MEMORY SECTION ═══════════════════════ -->
+<h3 style="font-size:0.8rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:0.06em;color:#6366f1;margin:0 0 0.5rem;">Memory</h3>
+
+{% if mem_breakdown %}
+{% set mem_used_mb = mem_breakdown.total_mb - mem_breakdown.available_mb %}
+{% set mem_used_pct = (mem_used_mb / mem_breakdown.total_mb * 100)|round(1) if mem_breakdown.total_mb else 0 %}
+
+<!-- Stacked bar -->
+{% set seg_colors = {
+  "core": "#6366f1",
+  "supervisor": "#3b82f6",
+  "dns": "#06b6d4",
+  "audio": "#14b8a6",
+  "multicast": "#84cc16",
+  "observer": "#a78bfa",
+  "cli": "#c084fc"
+} %}
+{# app segments use a warm orange family; other/available use grey/green #}
+<div class="mem-stacked-bar" title="{{ mem_used_pct }}% used">
+  {% for c in mem_breakdown.consumers %}
+  {% set seg_pct = (c.used_mb / mem_breakdown.total_mb * 100)|round(2) if mem_breakdown.total_mb else 0 %}
+  {% if c.kind == "sys" %}
+    {% set seg_col = seg_colors.get(c.id, "#a3a3a3") %}
+  {% else %}
+    {% set seg_col = "#f97316" %}
+  {% endif %}
+  <div style="width:{{ seg_pct }}%;background:{{ seg_col }};flex-shrink:0;" title="{{ c.name }}: {{ c.used_mb }} MB"></div>
+  {% endfor %}
+  <!-- other -->
+  {% if mem_breakdown.other_mb > 0 %}
+  {% set other_pct = (mem_breakdown.other_mb / mem_breakdown.total_mb * 100)|round(2) if mem_breakdown.total_mb else 0 %}
+  <div style="width:{{ other_pct }}%;background:#d1d5db;flex-shrink:0;" title="Other: {{ mem_breakdown.other_mb }} MB"></div>
+  {% endif %}
+  <!-- available (remainder) -->
+  {% set avail_pct = (mem_breakdown.available_mb / mem_breakdown.total_mb * 100)|round(2) if mem_breakdown.total_mb else 100 %}
+  <div style="width:{{ avail_pct }}%;background:#e9ecef;flex-grow:1;" title="Available: {{ (mem_breakdown.available_mb / 1024)|round(1) }} GB"></div>
+</div>
+
+<!-- Summary line -->
+<div style="display:flex;justify-content:space-between;font-size:0.78rem;
+  color:#888;margin-bottom:0.75rem;">
+  <span>{{ "%.1f"|format(mem_used_mb / 1024) }} GB used of {{ "%.1f"|format(mem_breakdown.total_mb / 1024) }} GB ({{ mem_used_pct }}%)</span>
+  <span>{{ "%.1f"|format(mem_breakdown.available_mb / 1024) }} GB free</span>
+</div>
+
+<!-- Consumer table -->
+<div class="card" style="margin-bottom:1rem;">
+  <!-- Table header -->
+  <div class="mem-table-row" style="border-bottom:1px solid #e9ecef;padding-bottom:0.3rem;margin-bottom:0.1rem;">
+    <div style="width:10px;flex-shrink:0;"></div>
+    <span class="mem-name" style="color:#aaa;font-size:0.72rem;font-weight:700;text-transform:uppercase;">Name</span>
+    <span class="mem-type" style="font-size:0.72rem;font-weight:700;text-transform:uppercase;min-width:3.5rem;text-align:right;">Type</span>
+    <span class="mem-used" style="color:#aaa;font-size:0.72rem;font-weight:700;text-transform:uppercase;">Used</span>
+    <span class="mem-pct" style="color:#aaa;font-size:0.72rem;font-weight:700;text-transform:uppercase;">% Host</span>
+    <span class="mem-limit" style="color:#aaa;font-size:0.72rem;font-weight:700;text-transform:uppercase;">Limit</span>
+  </div>
+  {% for c in mem_breakdown.consumers | sort(attribute='used_mb', reverse=True) %}
+  {% if c.kind == "sys" %}
+    {% set dot_col = seg_colors.get(c.id, "#a3a3a3") %}
+    {% set type_label = "System" %}
+  {% else %}
+    {% set dot_col = "#f97316" %}
+    {% set type_label = "App" %}
+  {% endif %}
+  <div class="mem-table-row">
+    <div class="mem-dot" style="background:{{ dot_col }};"></div>
+    <span class="mem-name">{{ c.name }}</span>
+    <span class="mem-type" style="min-width:3.5rem;text-align:right;">{{ type_label }}</span>
+    <span class="mem-used">{{ "%.0f"|format(c.used_mb) }} MB</span>
+    <span class="mem-pct">{{ c.pct_host }}%</span>
+    <span class="mem-limit">
+      {% if c.limit_mb and c.limit_mb < mem_breakdown.total_mb %}
+        {{ "%.0f"|format(c.limit_mb) }} MB
+      {% else %}—{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+  {% if mem_breakdown.other_mb > 0 %}
+  <div class="mem-table-row">
+    <div class="mem-dot" style="background:#d1d5db;"></div>
+    <span class="mem-name" style="color:#aaa;">Other (kernel / non-container)</span>
+    <span class="mem-type" style="min-width:3.5rem;text-align:right;"></span>
+    <span class="mem-used">{{ "%.0f"|format(mem_breakdown.other_mb) }} MB</span>
+    <span class="mem-pct">{{ (mem_breakdown.other_mb / mem_breakdown.total_mb * 100)|round(1) if mem_breakdown.total_mb else 0 }}%</span>
+    <span class="mem-limit">—</span>
+  </div>
+  {% endif %}
+  {% if not mem_breakdown.consumers %}
+  <p class="disk-empty-note">No container stats available — waiting for first poll or HA not reachable.</p>
+  {% endif %}
+  {% if mem_breakdown.stopped_apps %}
+  <p style="font-size:0.75rem;color:#bbb;margin-top:0.5rem;">
+    Stopped apps (no stats): {{ mem_breakdown.stopped_apps | join(", ") }}
+  </p>
+  {% endif %}
+  {% if mem_breakdown.errors %}
+  <p style="font-size:0.75rem;color:#fd7e14;margin-top:0.5rem;">
+    &#x26A0; Stats unavailable for: {{ mem_breakdown.errors | join(", ") }}
+  </p>
+  {% endif %}
+  {% set mem_age = (mem_breakdown.fetched_at) %}
+</div>
+
+{% else %}
+<div class="card" style="margin-bottom:1rem;">
+  <p class="empty">No memory data yet — waiting for first background poll.<br>
+    <span style="font-size:0.85rem;">Click <strong>Refresh</strong> above for an immediate scan.</span>
+  </p>
+</div>
+{% endif %}
+
+<!-- ═══════════════════════ DISK SECTION ═══════════════════════ -->
+<h3 style="font-size:0.8rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:0.06em;color:#28a745;margin:1.5rem 0 0.5rem;">Disk</h3>
 
 {% if breakdown %}
 
@@ -307,7 +450,7 @@ async function requestOrphanCleanup() {
   btn.disabled = true;
   btn.textContent = 'Queuing…';
   try {
-    var resp = await fetch('/disk/queue-orphan-cleanup', {method: 'POST'});
+    var resp = await fetch('/resources/queue-orphan-cleanup', {method: 'POST'});
     var data = await resp.json();
     result.style.display = 'block';
     if (data.ok) {
@@ -332,14 +475,14 @@ async function requestOrphanCleanup() {
   }
 }
 
-async function refreshDisk() {
+async function refreshResources() {
   var btn = document.getElementById('refresh-btn');
   var result = document.getElementById('refresh-result');
   btn.disabled = true;
   btn.textContent = 'Refreshing…';
   result.style.display = 'none';
   try {
-    var resp = await fetch('/disk/refresh', {method: 'POST'});
+    var resp = await fetch('/resources/refresh', {method: 'POST'});
     var data = await resp.json();
     if (data.ok) {
       result.textContent = 'Refreshed successfully.';
