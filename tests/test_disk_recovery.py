@@ -762,6 +762,212 @@ class TestRunSafeDiskRecoveryLLMGuided:
         assert summary.used_investigation is False
         assert len(summary.actions) == 3
 
+    def test_notifier_forwarded_to_run_investigation(self):
+        """notifier kwarg is passed through to run_investigation."""
+        from utils.disk.disk_recovery import _BACKOFF_KEY
+
+        report = self._make_investigation_report(["truncate_ha_log"])
+        ssh = self._make_ssh()
+        notifier = MagicMock()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
+            ) as mock_inv,
+            patch("utils.hitl.hitl_tracker.should_send_card", return_value=True),
+            patch("sqlite3.connect"),
+        ):
+            asyncio.run(
+                run_safe_disk_recovery(
+                    ssh, None, llm_client=MagicMock(), notifier=notifier
+                )
+            )
+
+        _, kwargs = mock_inv.call_args
+        assert kwargs.get("notifier") is notifier
+
+    # --- Backoff tests ---
+
+    _HITL_DDL = (
+        "CREATE TABLE IF NOT EXISTS hitl_suppression ("
+        "card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '', "
+        "description TEXT NOT NULL DEFAULT '', "
+        "first_sent_at REAL NOT NULL DEFAULT 0, "
+        "last_sent_at REAL NOT NULL DEFAULT 0, "
+        "send_count INTEGER NOT NULL DEFAULT 1, "
+        "last_action TEXT, last_action_at REAL, "
+        "rejection_count INTEGER NOT NULL DEFAULT 0, "
+        "next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0, "
+        "known_issue_note TEXT, resolved_at REAL)"
+    )
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.executescript(self._HITL_DDL)
+        return db
+
+    def _make_investigation_report_with_outcome(self, outcome: str):
+        from utils.agent.investigation_loop import InvestigationReport
+
+        r = self._make_investigation_report(["truncate_ha_log"])
+        r.outcome = outcome
+        return r
+
+    def test_backoff_written_on_non_success_outcome(self, tmp_path):
+        """Non-success outcome + db_path → backoff row written."""
+        import sqlite3
+        import time
+
+        from utils.disk.disk_recovery import _BACKOFF_KEY
+
+        db = self._make_db(tmp_path)
+        report = self._make_investigation_report_with_outcome("stuck")
+        ssh = self._make_ssh()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            asyncio.run(
+                run_safe_disk_recovery(ssh, None, llm_client=MagicMock(), db_path=db)
+            )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT last_action, next_allowed_at FROM hitl_suppression WHERE card_key=?",
+                (_BACKOFF_KEY,),
+            ).fetchone()
+        assert row is not None, "Backoff row must be written for non-success outcome"
+        assert row[0] == "deferred"
+        assert row[1] is not None and row[1] > time.time()
+
+    def test_no_backoff_on_success_outcome(self, tmp_path):
+        """Success outcome → no backoff row written."""
+        import sqlite3
+
+        from utils.disk.disk_recovery import _BACKOFF_KEY
+
+        db = self._make_db(tmp_path)
+        report = self._make_investigation_report_with_outcome("success")
+        ssh = self._make_ssh()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            asyncio.run(
+                run_safe_disk_recovery(ssh, None, llm_client=MagicMock(), db_path=db)
+            )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT * FROM hitl_suppression WHERE card_key=?",
+                (_BACKOFF_KEY,),
+            ).fetchone()
+        assert row is None, "No backoff row should be written for success outcome"
+
+    def test_backoff_written_on_exception(self, tmp_path):
+        """run_investigation raising → backoff row written."""
+        import sqlite3
+        import time
+
+        from utils.disk.disk_recovery import _BACKOFF_KEY
+
+        db = self._make_db(tmp_path)
+        ssh = self._make_ssh()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(side_effect=RuntimeError("ollama down")),
+            ),
+        ):
+            asyncio.run(
+                run_safe_disk_recovery(ssh, None, llm_client=MagicMock(), db_path=db)
+            )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT last_action, next_allowed_at FROM hitl_suppression WHERE card_key=?",
+                (_BACKOFF_KEY,),
+            ).fetchone()
+        assert (
+            row is not None
+        ), "Backoff row must be written after investigation exception"
+        assert row[0] == "deferred"
+        assert row[1] is not None and row[1] > time.time()
+
+    def test_backoff_active_skips_investigation_runs_heuristic(self, tmp_path):
+        """Active backoff → run_investigation not called; all 3 heuristic steps run."""
+        import sqlite3
+        import time
+
+        from utils.disk.disk_recovery import _BACKOFF_KEY
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+        db = self._make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            mark_investigation_backoff(conn, _BACKOFF_KEY)
+
+        ssh = self._make_ssh()
+        rest = MagicMock()
+        rest.call_service = AsyncMock(return_value=None)
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(),
+            ) as mock_inv,
+        ):
+            summary = asyncio.run(
+                run_safe_disk_recovery(ssh, rest, llm_client=MagicMock(), db_path=db)
+            )
+
+        mock_inv.assert_not_called()
+        names = {a.name for a in summary.actions}
+        assert "truncate_ha_log" in names
+        assert "vacuum_journal" in names
+        assert "purge_recorder" in names
+
+    def test_db_path_none_no_db_touched(self):
+        """db_path=None → no sqlite3.connect calls; behavior unchanged."""
+        report = self._make_investigation_report(["truncate_ha_log"])
+        ssh = self._make_ssh()
+
+        with (
+            patch("config.ARCHIVE_HA_LOG_ENABLED", False),
+            patch("config.ARCHIVE_JOURNAL_ENABLED", False),
+            patch(
+                "utils.agent.investigation_loop.run_investigation",
+                new=AsyncMock(return_value=report),
+            ),
+            patch("sqlite3.connect") as mock_connect,
+        ):
+            summary = asyncio.run(
+                run_safe_disk_recovery(ssh, None, llm_client=MagicMock(), db_path=None)
+            )
+
+        mock_connect.assert_not_called()
+        assert summary.used_investigation is True
+
 
 # ---------------------------------------------------------------------------
 # WARN disk recovery routes through work queue (ADR 026, Issue 4a)
