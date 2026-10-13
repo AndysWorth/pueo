@@ -53,6 +53,20 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha core stop",
         "ha core info",
         "ha core info --raw-json",
+        "ha core stats",
+        "ha core stats --raw-json",
+        "ha supervisor stats",
+        "ha supervisor stats --raw-json",
+        "ha dns stats",
+        "ha dns stats --raw-json",
+        "ha audio stats",
+        "ha audio stats --raw-json",
+        "ha multicast stats",
+        "ha multicast stats --raw-json",
+        "ha observer stats",
+        "ha observer stats --raw-json",
+        "ha cli stats",
+        "ha cli stats --raw-json",
         "ha host info",
         "ha backups list",
         "ha apps list",
@@ -725,10 +739,25 @@ class ToolExecutor:
 
     async def _run_ha_command(self, command: str, reason: str = "") -> ToolResult:
         normalized = command.strip()
-        # Allow parameterized read-only commands via prefix-match: ha apps info <slug>
-        _allowed = normalized in _HA_COMMAND_ALLOWLIST or (
-            normalized.startswith("ha apps info ")
-            and len(normalized.split()) == 4  # ha + apps + info + slug
+        # Allow parameterized read-only commands via prefix-match
+        _allowed = (
+            normalized in _HA_COMMAND_ALLOWLIST
+            or (
+                normalized.startswith("ha apps info ")
+                and len(normalized.split()) == 4  # ha + apps + info + slug
+            )
+            or (
+                normalized.startswith("ha apps stats ")
+                and (
+                    len(normalized.split()) == 4  # ha apps stats <slug>
+                    or (
+                        len(normalized.split()) == 5
+                        and normalized.endswith(
+                            " --raw-json"
+                        )  # ha apps stats <slug> --raw-json
+                    )
+                )
+            )
         )
         if not _allowed:
             log.warning("run_ha_command_rejected", command=normalized)

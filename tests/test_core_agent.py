@@ -9171,6 +9171,87 @@ class TestToolExecutor:
         assert result.success
         assert "not in allowlist" not in (result.error or "")
 
+    def test_run_ha_command_core_stats_raw_json_allowed(self):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core stats --raw-json": (0, '{"memory_usage":104857600}', "")
+            }
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha core stats --raw-json"},
+                )
+            )
+        )
+        assert result.success
+        assert "not in allowlist" not in (result.error or "")
+
+    def test_run_ha_command_apps_stats_slug_allowed(self):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps stats mosquitto": (0, '{"memory_usage":52428800}', "")
+            }
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha apps stats mosquitto"},
+                )
+            )
+        )
+        assert result.success
+
+    def test_run_ha_command_apps_stats_slug_raw_json_allowed(self):
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps stats mosquitto --raw-json": (
+                    0,
+                    '{"memory_usage":52428800}',
+                    "",
+                )
+            }
+        )
+        executor = self._make_executor(ssh=ssh)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha apps stats mosquitto --raw-json"},
+                )
+            )
+        )
+        assert result.success
+
+    def test_run_ha_command_apps_stats_multi_word_slug_rejected(self):
+        """ha apps stats with extra words beyond slug is not allowed (injection risk)."""
+        from utils.agent.tool_registry import ToolCall
+
+        executor = self._make_executor()
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha apps stats foo bar baz"},
+                )
+            )
+        )
+        assert not result.success
+        assert "not in allowlist" in result.error
+
     def test_read_file_allowed_path(self):
         from utils.ha.ssh_client import FakeSSHClient
         from utils.agent.tool_registry import ToolCall
