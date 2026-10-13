@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,19 +46,29 @@ if TYPE_CHECKING:
 log = get_logger("ha_update_manager")
 
 # ── Auto-reboot flag ──────────────────────────────────────────────────────────
-# Set to True after an OS or Supervisor update succeeds so the next
-# `reboot_required` repair issue auto-executes the reboot without a second
-# approval card (the pre-update backup already covers recovery).
-_reboot_pending_after_update: bool = False
+# Set after an OS or Supervisor update succeeds so the next `reboot_required`
+# repair issue auto-executes the reboot without a second approval card (the
+# pre-update backup already covers recovery). Stored as a monotonic set-time and
+# expires after _POST_UPDATE_FLAG_TTL_SECONDS so a flag left over from an old
+# update can never trigger an unrelated reboot/restart days later (#846).
+_POST_UPDATE_FLAG_TTL_SECONDS = 30 * 60
+_reboot_pending_after_update: Optional[float] = None
+
+
+def _flag_is_fresh(set_at: Optional[float]) -> bool:
+    return (
+        set_at is not None
+        and (time.monotonic() - set_at) < _POST_UPDATE_FLAG_TTL_SECONDS
+    )
 
 
 def set_reboot_pending_after_update(val: bool) -> None:
     global _reboot_pending_after_update
-    _reboot_pending_after_update = val
+    _reboot_pending_after_update = time.monotonic() if val else None
 
 
 def is_reboot_pending_after_update() -> bool:
-    return _reboot_pending_after_update
+    return _flag_is_fresh(_reboot_pending_after_update)
 
 
 async def _post_update_repair_scan(settle_seconds: int = 5) -> None:
@@ -76,19 +87,19 @@ async def _post_update_repair_scan(settle_seconds: int = 5) -> None:
 
 
 # ── Auto-restart flag ─────────────────────────────────────────────────────────
-# Set to True after an integration/add-on update succeeds so the next
-# `restart_required` repair issue auto-executes ha core restart without a second
-# approval card (the pre-update backup already covers recovery).
-_restart_pending_after_update: bool = False
+# Set after an integration/add-on update succeeds so the next `restart_required`
+# repair issue auto-executes ha core restart without a second approval card (the
+# pre-update backup already covers recovery). Same TTL as the reboot flag.
+_restart_pending_after_update: Optional[float] = None
 
 
 def set_restart_pending_after_update(val: bool) -> None:
     global _restart_pending_after_update
-    _restart_pending_after_update = val
+    _restart_pending_after_update = time.monotonic() if val else None
 
 
 def is_restart_pending_after_update() -> bool:
-    return _restart_pending_after_update
+    return _flag_is_fresh(_restart_pending_after_update)
 
 
 # ── Loop pause/resume during reboot ──────────────────────────────────────────
@@ -1707,9 +1718,10 @@ async def execute_ha_core_restart(
     ssh_client: SSHClientProtocol,
     notifier: "NotifierProtocol",
     _api_poll: Optional[Callable] = None,
+    _down_poll: Optional[Callable] = None,
     skip_backup: bool = False,
 ) -> bool:
-    """Restart HA Core: (backup) → ha core restart → wait → API ready → result card.
+    """Restart HA Core: (backup) → ha core restart → wait for down → API ready → card.
 
     When skip_backup=True the pre-restart backup is skipped because a backup was
     already taken immediately before the triggering integration update.
@@ -1740,16 +1752,27 @@ async def execute_ha_core_restart(
     _pause_loops_for_reboot()
     success = False
     try:
-        # Wait for HA Core to begin shutdown before polling the API.
+        # Confirm HA Core actually went down before polling the API — otherwise a
+        # restart command that never ran is indistinguishable from a fast restart
+        # (the still-running instance answers /api/ immediately) (#846).
         _emit_step("Waiting for HA Core to restart…", activity="restart_execution")
-        await asyncio.sleep(5)
-        api_fn = _api_poll or _poll_ha_api_ready
-        success = await api_fn(HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout_seconds=120)
-        if not success:
+        down_fn = _down_poll or _wait_for_ha_down
+        went_down = await down_fn(HA_HOST, HA_API_PORT, timeout_seconds=60)
+        if not went_down:
             log.warning(
-                "ha_core_restart_api_not_ready",
-                detail="HA Core did not respond within timeout",
+                "ha_core_restart_never_went_down",
+                detail="HA Core kept accepting connections — restart did not happen",
             )
+        else:
+            api_fn = _api_poll or _poll_ha_api_ready
+            success = await api_fn(
+                HA_HOST, HA_API_PORT, HA_API_TOKEN, timeout_seconds=120
+            )
+            if not success:
+                log.warning(
+                    "ha_core_restart_api_not_ready",
+                    detail="HA Core did not respond within timeout",
+                )
     finally:
         _resume_loops_after_reboot()
 

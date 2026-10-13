@@ -206,8 +206,13 @@ class ToolExecutor:
         llm_client: Optional["LLMClientProtocol"] = None,
         pending_repair_issue: Optional[Any] = None,
         pending_notification: Optional[dict] = None,
+        post_update_ssh_client: Optional["SSHClientProtocol"] = None,
     ) -> None:
         self._ha_ssh = ha_ssh_client
+        # Used only by finish_repair_issue's post-update auto-reboot/restart.
+        # Lets a repair investigation keep an inert ha_ssh_client for its general
+        # tools while still being able to execute the pre-approved restart (#846).
+        self._post_update_ssh = post_update_ssh_client or ha_ssh_client
         self._nax_ssh = nax_ssh_client
         self._gate = gate
         self._notifier = notifier
@@ -4178,7 +4183,7 @@ class ToolExecutor:
 
                 try:
                     success = await execute_ha_reboot(
-                        self._ha_ssh,  # type: ignore[arg-type]
+                        self._post_update_ssh,  # type: ignore[arg-type]
                         self._notifier,
                         skip_backup=True,
                     )
@@ -4221,7 +4226,7 @@ class ToolExecutor:
 
                 try:
                     success = await execute_ha_core_restart(
-                        self._ha_ssh,  # type: ignore[arg-type]
+                        self._post_update_ssh,  # type: ignore[arg-type]
                         self._notifier,
                         skip_backup=True,
                     )

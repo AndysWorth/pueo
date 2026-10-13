@@ -313,6 +313,65 @@ class TestRepairIssueStuckBackoff:
 # ---------------------------------------------------------------------------
 
 
+class TestRepairIssuePostUpdateSSH:
+    """Repair investigation keeps an inert ha_ssh but gets a real post-update SSH (#846)."""
+
+    def test_ssh_client_wired_only_to_post_update_path(self, tmp_path):
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.ha.ssh_client import FakeSSHClient
+
+        db_path = _make_repair_db(tmp_path)
+
+        class _FakeIssue:
+            issue_key = "hacs/restart_required_1"
+            issue_id = "restart_required_1"
+            domain = "hacs"
+            severity = "warning"
+            translation_key = "restart_required"
+            breaks_in_ha_version = None
+            data: dict = {}
+
+        ssh = FakeSSHClient()
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(
+                return_value=AgentLoopResult(outcome="success")
+            )
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_log_monitor import _run_repair_issue_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_repair_issue_investigation(
+                    issue=_FakeIssue(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                    ssh_client=ssh,
+                )
+            )
+
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._post_update_ssh is ssh
+        assert executor._ha_ssh is not ssh
+
+
 class TestRepairIssueExecutorHaProfile:
     """_run_repair_issue_investigation injects ha_profile from DB into executor."""
 
