@@ -167,6 +167,64 @@
     {% else %}
     <p class="no-loops">Waiting for first resource poll…</p>
     {% endif %}
+    {% if host_health %}
+    <div style="margin-top:0.6rem;border-top:1px solid #e9ecef;padding-top:0.5rem;">
+      {# Uptime #}
+      {% if host_health.uptime_seconds is not none %}
+      {% set up_days = (host_health.uptime_seconds / 86400)|int %}
+      {% set up_hours = ((host_health.uptime_seconds % 86400) / 3600)|int %}
+      {% set up_mins = ((host_health.uptime_seconds % 3600) / 60)|int %}
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">Uptime</span>
+        <span class="stat-value">{% if up_days > 0 %}{{ up_days }}d {% endif %}{{ up_hours }}h {{ up_mins }}m</span>
+      </div>
+      {% endif %}
+      {# Swap #}
+      {% if host_health.swap_total_mb > 0 %}
+      {% set swap_pct = (host_health.swap_used_mb / host_health.swap_total_mb * 100)|round(1) %}
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">Swap</span>
+        <span class="stat-value">
+          {{ swap_pct }}%
+          {% if swap_pct >= 80 %}<span style="color:#fd7e14;font-size:0.75rem;font-weight:700;">HIGH</span>{% endif %}
+        </span>
+      </div>
+      {% endif %}
+      {# eMMC life #}
+      {% if host_health.disk_life_used_pct is not none %}
+      {% set life_pct = host_health.disk_life_used_pct %}
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">eMMC life used</span>
+        <span class="stat-value">
+          {{ "%.0f"|format(life_pct) }}%
+          {% if life_pct >= 90 %}<span style="color:#dc3545;font-size:0.75rem;font-weight:700;">CRITICAL</span>
+          {% elif life_pct >= 80 %}<span style="color:#fd7e14;font-size:0.75rem;font-weight:700;">HIGH</span>{% endif %}
+        </span>
+      </div>
+      {% endif %}
+      {# Supervisor resolution issues #}
+      {% if host_health.resolution %}
+      {% set res = host_health.resolution %}
+      {% set n_probs = res.unhealthy|length + res.unsupported|length %}
+      {% if n_probs > 0 %}
+      <div class="stat-row" style="margin-bottom:2px;">
+        <span class="stat-label">Supervisor</span>
+        <span class="stat-value" style="color:#856404;">&#x26A0; {{ n_probs }} issue{{ "s" if n_probs != 1 }} — <a href="/resources" style="color:#856404;">details</a></span>
+      </div>
+      {% endif %}
+      {% endif %}
+      {# Error link #}
+      {% set hh_errors = host_health.errors if host_health else [] %}
+      {% set mb_errors = mem_breakdown.errors if mem_breakdown else [] %}
+      {% if hh_errors or mb_errors %}
+      <p style="font-size:0.78rem;color:#fd7e14;margin:0.4rem 0 0;">
+        &#x26A0; Some data unavailable
+        ({% if hh_errors %}host: {{ hh_errors|join(", ") }}{% endif %}{% if hh_errors and mb_errors %}; {% endif %}{% if mb_errors %}mem: {{ mb_errors|join(", ") }}{% endif %})
+        — <a href="/resources" style="color:#fd7e14;">see Resources</a>
+      </p>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 
   <!-- Active Streams (streaming loops with sparklines) -->
