@@ -612,6 +612,22 @@ class TestRegistryMembership:
 
         assert "propose_automation" not in _MCP_TOOL_NAMES
 
+    def test_run_ha_command_description_covers_allowlist(self):
+        """Every allowlisted command and the ha apps info prefix rule appear in the
+        RUN_HA_COMMAND description so the model knows they exist."""
+        from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST
+        from utils.agent.tool_registry import RUN_HA_COMMAND
+
+        desc = RUN_HA_COMMAND.description
+        for cmd in _HA_COMMAND_ALLOWLIST:
+            assert (
+                cmd in desc
+            ), f"Allowlisted command {cmd!r} missing from RUN_HA_COMMAND description"
+        # Prefix rule: ha apps info <slug> (not in frozenset, matched at runtime)
+        assert (
+            "ha apps info" in desc
+        ), "Prefix rule 'ha apps info <slug>' missing from description"
+
 
 class TestGetSentinelIssues:
     def test_sentinel_in_ha_registry(self):
