@@ -169,9 +169,15 @@ RUN_HA_COMMAND = ToolDefinition(
     name="run_ha_command",
     description=(
         "Run an allowlisted HA CLI subcommand and return stdout. "
-        "Allowed commands: ha core check (takes 45-60s — use only when necessary), "
-        "ha core restart, ha core stop, ha host info, ha backups list, "
-        "ha apps list, ha os info. "
+        "Read-only commands (run directly): "
+        "ha core check (config validation, takes 45-60s — use only when necessary), "
+        "ha core info, ha core info --raw-json, "
+        "ha host info, ha backups list, ha apps list, "
+        "ha apps info <slug> (info for a specific installed app), "
+        "ha os info. "
+        "State-changing commands (require approval at non-autonomous levels): "
+        "ha core restart, ha core stop, "
+        "ha supervisor repair (alias: ha su repair). "
         "To create a backup use trigger_backup instead."
     ),
     parameters={
