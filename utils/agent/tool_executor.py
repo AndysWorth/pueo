@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import sqlite3
 import subprocess  # nosec B404 — commands are fixed CI tools (black, flake8, mypy, pytest), no user input
@@ -71,6 +72,7 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha host info --raw-json",
         "ha resolution info",
         "ha resolution info --raw-json",
+        "ha resolution healthcheck",
         "ha backups list",
         "ha apps list",
         "ha os info",
@@ -79,14 +81,76 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
-# Maps allowlisted HA commands that change system state to their risk tier.
+# Maps static allowlisted HA commands that change system state to their risk tier.
 # Commands absent from this map are read-only and execute directly.
+# Parameterized state-changing commands are handled by _ha_command_risk().
 _HA_COMMAND_RISK: dict[str, str] = {
     "ha core restart": "MEDIUM",
     "ha core stop": "HIGH",
     "ha supervisor repair": "MEDIUM",
     "ha su repair": "MEDIUM",
+    "ha resolution healthcheck": "LOW",
 }
+
+# Validates HA app slugs (e.g. "mosquitto", "z-wave-js", "code_server").
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]*$")
+# Validates Supervisor UUIDs: compact 32-char hex or standard dashed UUID4.
+_UUID_RE = re.compile(
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+
+
+def _is_ha_command_allowed(normalized: str) -> bool:
+    """Return True if a normalized command is in the static allowlist or matches a
+    validated parameterized pattern.
+
+    This is the single source of truth for both _run_ha_command and the dashboard
+    _execute_ha_command defense-in-depth check.
+    """
+    if normalized in _HA_COMMAND_ALLOWLIST:
+        return True
+    parts = normalized.split()
+    # ha apps info <slug>
+    if len(parts) == 4 and parts[:3] == ["ha", "apps", "info"]:
+        return bool(_SLUG_RE.match(parts[3]))
+    # ha apps stats <slug> [--raw-json]
+    if len(parts) in (4, 5) and parts[:3] == ["ha", "apps", "stats"]:
+        return bool(_SLUG_RE.match(parts[3])) and (
+            len(parts) == 4 or parts[4] == "--raw-json"
+        )
+    # ha resolution suggestion apply <uuid>  →  MEDIUM
+    if len(parts) == 5 and parts[:4] == ["ha", "resolution", "suggestion", "apply"]:
+        return bool(_UUID_RE.match(parts[4]))
+    # ha resolution issue dismiss <uuid>  →  LOW
+    if len(parts) == 5 and parts[:4] == ["ha", "resolution", "issue", "dismiss"]:
+        return bool(_UUID_RE.match(parts[4]))
+    # ha apps restart <slug>  →  MEDIUM
+    if len(parts) == 4 and parts[:3] == ["ha", "apps", "restart"]:
+        return bool(_SLUG_RE.match(parts[3]))
+    return False
+
+
+def _ha_command_risk(normalized: str) -> str | None:
+    """Return the risk tier for a command, or None if the command is read-only.
+
+    Handles both static exact matches (_HA_COMMAND_RISK) and parameterized
+    state-changing commands validated by _UUID_RE / _SLUG_RE.
+    """
+    risk = _HA_COMMAND_RISK.get(normalized)
+    if risk is not None:
+        return risk
+    parts = normalized.split()
+    if len(parts) == 5 and parts[:4] == ["ha", "resolution", "suggestion", "apply"]:
+        if _UUID_RE.match(parts[4]):
+            return "MEDIUM"
+    if len(parts) == 5 and parts[:4] == ["ha", "resolution", "issue", "dismiss"]:
+        if _UUID_RE.match(parts[4]):
+            return "LOW"
+    if len(parts) == 4 and parts[:3] == ["ha", "apps", "restart"]:
+        if _SLUG_RE.match(parts[3]):
+            return "MEDIUM"
+    return None
+
 
 _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
@@ -753,28 +817,10 @@ class ToolExecutor:
         )
 
     async def _run_ha_command(self, command: str, reason: str = "") -> ToolResult:
-        normalized = command.strip()
-        # Allow parameterized read-only commands via prefix-match
-        _allowed = (
-            normalized in _HA_COMMAND_ALLOWLIST
-            or (
-                normalized.startswith("ha apps info ")
-                and len(normalized.split()) == 4  # ha + apps + info + slug
-            )
-            or (
-                normalized.startswith("ha apps stats ")
-                and (
-                    len(normalized.split()) == 4  # ha apps stats <slug>
-                    or (
-                        len(normalized.split()) == 5
-                        and normalized.endswith(
-                            " --raw-json"
-                        )  # ha apps stats <slug> --raw-json
-                    )
-                )
-            )
-        )
-        if not _allowed:
+        # Collapse all internal whitespace (including \n/\t) so the string validated
+        # by split() is identical to the string executed over SSH.
+        normalized = " ".join(command.split())
+        if not _is_ha_command_allowed(normalized):
             log.warning("run_ha_command_rejected", command=normalized)
             return ToolResult(
                 tool_name="run_ha_command",
@@ -783,7 +829,7 @@ class ToolExecutor:
                 error=f"Command not in allowlist: {normalized!r}",
             )
 
-        risk_name = _HA_COMMAND_RISK.get(normalized)
+        risk_name = _ha_command_risk(normalized)
         if risk_name is not None:
             from utils.agent.autonomy import RiskLevel
             from utils.hitl.card_types import CARD_TYPE_HA_COMMAND
