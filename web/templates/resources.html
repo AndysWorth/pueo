@@ -66,6 +66,26 @@
     white-space: nowrap; color: #bbb; font-size: 0.75rem;
     min-width: 4rem; text-align: right; flex-shrink: 0;
   }
+  /* host-health strip */
+  .hh-row {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.3rem 0; border-bottom: 1px solid #f0f0f0; font-size: 0.84rem;
+  }
+  .hh-row:last-child { border-bottom: none; }
+  .hh-label { flex: 1; color: #555; min-width: 0; }
+  .hh-value { white-space: nowrap; color: #333; font-variant-numeric: tabular-nums; }
+  .hh-bar-bg {
+    width: 80px; height: 6px; background: #e9ecef; border-radius: 3px;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .hh-bar { height: 6px; border-radius: 3px; }
+  .hh-badge {
+    display: inline-block; font-size: 0.7rem; font-weight: 700;
+    padding: 0.1rem 0.4rem; border-radius: 3px; margin-left: 0.3rem;
+  }
+  .hh-badge-warn  { background: #fff3cd; color: #856404; }
+  .hh-badge-error { background: #f8d7da; color: #842029; }
+  .hh-badge-ok    { background: #d1e7dd; color: #0f5132; }
 </style>
 
 <!-- Header -->
@@ -192,6 +212,139 @@
 {% else %}
 <div class="card" style="margin-bottom:1rem;">
   <p class="empty">No memory data yet — waiting for first background poll.<br>
+    <span style="font-size:0.85rem;">Click <strong>Refresh</strong> above for an immediate scan.</span>
+  </p>
+</div>
+{% endif %}
+
+<!-- ═══════════════════════ HOST HEALTH STRIP ═══════════════════════ -->
+<h3 style="font-size:0.8rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:0.06em;color:#0d6efd;margin:1.5rem 0 0.5rem;">Host</h3>
+
+{% if host_health %}
+<div class="card" style="margin-bottom:1rem;">
+
+  {# — Swap — #}
+  {% if host_health.swap_total_mb > 0 %}
+  {% set swap_pct = (host_health.swap_used_mb / host_health.swap_total_mb * 100)|round(1) %}
+  <div class="hh-row">
+    <span class="hh-label">Swap</span>
+    <div class="hh-bar-bg">
+      <div class="hh-bar" style="width:{{ [swap_pct, 100]|min }}%;
+        background:{% if swap_pct >= 80 %}#fd7e14{% else %}#0d6efd{% endif %};"></div>
+    </div>
+    <span class="hh-value">
+      {{ "%.0f"|format(host_health.swap_used_mb) }} /
+      {{ "%.0f"|format(host_health.swap_total_mb) }} MB
+      ({{ swap_pct }}%)
+      {% if swap_pct >= 80 %}
+        <span class="hh-badge hh-badge-warn">HIGH</span>
+      {% endif %}
+    </span>
+  </div>
+  {% endif %}
+
+  {# — eMMC wear — #}
+  {% if host_health.disk_life_used_pct is not none %}
+  {% set life_pct = host_health.disk_life_used_pct %}
+  <div class="hh-row">
+    <span class="hh-label">eMMC life used</span>
+    <div class="hh-bar-bg">
+      <div class="hh-bar" style="width:{{ [life_pct, 100]|min }}%;
+        background:{% if life_pct >= 90 %}#dc3545{% elif life_pct >= 80 %}#fd7e14{% else %}#0d6efd{% endif %};"></div>
+    </div>
+    <span class="hh-value">
+      {{ "%.0f"|format(life_pct) }}%
+      {% if life_pct >= 90 %}
+        <span class="hh-badge hh-badge-error">CRITICAL</span>
+      {% elif life_pct >= 80 %}
+        <span class="hh-badge hh-badge-warn">HIGH</span>
+      {% endif %}
+    </span>
+  </div>
+  {% endif %}
+
+  {# — Uptime — #}
+  {% if host_health.uptime_seconds is not none %}
+  {% set up_days = (host_health.uptime_seconds / 86400)|int %}
+  {% set up_hours = ((host_health.uptime_seconds % 86400) / 3600)|int %}
+  {% set up_mins = ((host_health.uptime_seconds % 3600) / 60)|int %}
+  <div class="hh-row">
+    <span class="hh-label">Uptime</span>
+    <span class="hh-value"
+      {% if boot_ts_str %}title="Booted {{ boot_ts_str }}"{% endif %}>
+      {% if up_days > 0 %}{{ up_days }}d {% endif %}{{ up_hours }}h {{ up_mins }}m
+    </span>
+  </div>
+  {% endif %}
+
+  {# — Supervisor resolution — #}
+  {% if host_health.resolution %}
+  {% set res = host_health.resolution %}
+  {% set n_issues = res.issues|length %}
+  {% set n_unhealthy = res.unhealthy|length %}
+  {% set n_unsupported = res.unsupported|length %}
+  {% set any_problems = (n_issues > 0) or (n_unhealthy > 0) or (n_unsupported > 0) %}
+  <div class="hh-row" style="align-items:flex-start;">
+    <span class="hh-label">Supervisor health</span>
+    <div style="flex:2;">
+      {% if any_problems %}
+      <details>
+        <summary style="cursor:pointer;font-size:0.84rem;color:#856404;">
+          &#x26A0;
+          {% if n_unhealthy > 0 %}{{ n_unhealthy }} unhealthy{% endif %}
+          {% if n_unsupported > 0 %}{% if n_unhealthy > 0 %}, {% endif %}{{ n_unsupported }} unsupported{% endif %}
+          {% if n_issues > 0 %}{% if n_unhealthy > 0 or n_unsupported > 0 %}, {% endif %}{{ n_issues }} issue{{ "s" if n_issues != 1 }}{% endif %}
+        </summary>
+        {% if res.unhealthy %}
+        <p style="margin:0.4rem 0 0.2rem;font-size:0.78rem;font-weight:600;color:#555;">Unhealthy</p>
+        <ul style="margin:0 0 0.4rem 1.2rem;padding:0;font-size:0.78rem;color:#555;">
+          {% for u in res.unhealthy %}<li>{{ u }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% if res.unsupported %}
+        <p style="margin:0.4rem 0 0.2rem;font-size:0.78rem;font-weight:600;color:#555;">Unsupported</p>
+        <ul style="margin:0 0 0.4rem 1.2rem;padding:0;font-size:0.78rem;color:#555;">
+          {% for u in res.unsupported %}<li>{{ u }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        {% if res.issues %}
+        <p style="margin:0.4rem 0 0.2rem;font-size:0.78rem;font-weight:600;color:#555;">Issues</p>
+        <ul style="margin:0 0 0.4rem 1.2rem;padding:0;font-size:0.78rem;color:#555;">
+          {% for issue in res.issues %}
+          <li>{{ issue.get("type", "?") }}
+            {% if issue.get("context") %} — {{ issue.get("context") }}{% endif %}
+            {% if issue.get("reference") %} ({{ issue.get("reference") }}){% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if res.suggestions %}
+        <p style="margin:0.4rem 0 0.2rem;font-size:0.78rem;font-weight:600;color:#555;">Suggestions</p>
+        <ul style="margin:0 0 0.4rem 1.2rem;padding:0;font-size:0.78rem;color:#555;">
+          {% for s in res.suggestions %}
+          <li>{{ s.get("type", s) }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </details>
+      {% else %}
+      <span style="color:#0f5132;font-size:0.84rem;">&#x2713; Healthy</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if host_health.errors %}
+  <p style="font-size:0.75rem;color:#fd7e14;margin-top:0.5rem;">
+    &#x26A0; Some host health data unavailable: {{ host_health.errors | join(", ") }}
+  </p>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="card" style="margin-bottom:1rem;">
+  <p class="empty">No host health data yet — waiting for first background poll.<br>
     <span style="font-size:0.85rem;">Click <strong>Refresh</strong> above for an immediate scan.</span>
   </p>
 </div>
