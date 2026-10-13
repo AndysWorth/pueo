@@ -13528,6 +13528,182 @@ class TestFinishRepairIssueAutoRestart:
         assert notifier.sent[0]["payload"]["action"] == "restart"
         assert _um.is_restart_pending_after_update() is False
 
+    def test_auto_restart_uses_post_update_ssh_client(self, monkeypatch):
+        """Auto-restart must use post_update_ssh_client, not the inert ha_ssh (#846)."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        import agents.ha_update_manager as _um
+
+        inert, real = FakeSSHClient(), FakeSSHClient()
+        executor = ToolExecutor(
+            ha_ssh_client=inert,
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+            post_update_ssh_client=real,
+        )
+        executor._pending_repair_issue = self._make_issue()
+        _um.set_restart_pending_after_update(True)
+
+        used = []
+
+        async def fake_restart(ssh, notif, **kwargs):
+            used.append(ssh)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="x",
+                recommended_action="Restart",
+                requires_hitl=True,
+                action="restart",
+            )
+        )
+
+        assert used == [real]
+
+    def test_auto_reboot_uses_post_update_ssh_client(self, monkeypatch):
+        """Auto-reboot must use post_update_ssh_client, not the inert ha_ssh (#846)."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+        import agents.ha_update_manager as _um
+
+        inert, real = FakeSSHClient(), FakeSSHClient()
+        executor = ToolExecutor(
+            ha_ssh_client=inert,
+            gate=FakeAutonomyGate(auto_execute_result=True),
+            notifier=FakeNotifier(),
+            post_update_ssh_client=real,
+        )
+        executor._pending_repair_issue = self._make_issue("reboot_required")
+        _um.set_reboot_pending_after_update(True)
+
+        used = []
+
+        async def fake_reboot(ssh, notif, **kwargs):
+            used.append(ssh)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_reboot", fake_reboot)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+
+        asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="x",
+                recommended_action="Reboot",
+                requires_hitl=True,
+                action="reboot",
+            )
+        )
+
+        assert used == [real]
+        assert _um.is_reboot_pending_after_update() is False
+
+    def test_post_update_ssh_defaults_to_ha_ssh(self):
+        """Without post_update_ssh_client, the executor falls back to ha_ssh_client."""
+        ssh = __import__("utils.ha.ssh_client", fromlist=["x"]).FakeSSHClient()
+        executor = self._make_executor(ssh=ssh)
+        assert executor._post_update_ssh is ssh
+
+
+class TestPostUpdateFlagTTL:
+    """Post-update reboot/restart flags expire so a stale flag can't fire later (#846)."""
+
+    @pytest.mark.parametrize("kind", ["restart", "reboot"])
+    def test_flag_set_then_cleared(self, kind):
+        import agents.ha_update_manager as _um
+
+        setter = getattr(_um, f"set_{kind}_pending_after_update")
+        getter = getattr(_um, f"is_{kind}_pending_after_update")
+        setter(True)
+        assert getter() is True
+        setter(False)
+        assert getter() is False
+
+    @pytest.mark.parametrize("kind", ["restart", "reboot"])
+    def test_flag_expires_after_ttl(self, kind, monkeypatch):
+        import agents.ha_update_manager as _um
+
+        setter = getattr(_um, f"set_{kind}_pending_after_update")
+        getter = getattr(_um, f"is_{kind}_pending_after_update")
+        now = [1000.0]
+        monkeypatch.setattr(_um.time, "monotonic", lambda: now[0])
+        setter(True)
+        now[0] += _um._POST_UPDATE_FLAG_TTL_SECONDS - 1
+        assert getter() is True
+        now[0] += 2
+        assert getter() is False
+        setter(False)
+
+
+class TestExecuteHaCoreRestartDownCheck:
+    """execute_ha_core_restart must confirm HA went down before reporting success (#846)."""
+
+    def _run(self, monkeypatch, went_down: bool, api_ok: bool = True):
+        import agents.ha_update_manager as _um
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(_um, "_pause_loops_for_reboot", lambda: None)
+        monkeypatch.setattr(_um, "_resume_loops_after_reboot", lambda: None)
+        monkeypatch.setattr(_um, "_emit_step", lambda *a, **k: None)
+        cards = []
+
+        async def fake_card(update, notifier, success, *a):
+            cards.append(success)
+
+        monkeypatch.setattr(_um, "_send_post_update_card", fake_card)
+        api_calls = []
+
+        async def fake_down(host, port, timeout_seconds):
+            return went_down
+
+        async def fake_api(host, port, token, timeout_seconds):
+            api_calls.append(1)
+            return api_ok
+
+        ssh = FakeSSHClient()
+        result = asyncio.run(
+            _um.execute_ha_core_restart(
+                ssh,
+                FakeNotifier(),
+                _api_poll=fake_api,
+                _down_poll=fake_down,
+                skip_backup=True,
+            )
+        )
+        return result, ssh, api_calls, cards
+
+    def test_success_when_down_then_api_ready(self, monkeypatch):
+        result, ssh, api_calls, cards = self._run(monkeypatch, went_down=True)
+        assert result is True
+        assert "ha core restart" in ssh.commands_run
+        assert api_calls == [1]
+        assert cards == [True]
+
+    def test_failure_when_ha_never_goes_down(self, monkeypatch):
+        result, _ssh, api_calls, cards = self._run(monkeypatch, went_down=False)
+        assert result is False
+        assert api_calls == []
+        assert cards == [False]
+
+    def test_failure_when_api_not_ready(self, monkeypatch):
+        result, _ssh, api_calls, cards = self._run(
+            monkeypatch, went_down=True, api_ok=False
+        )
+        assert result is False
+        assert api_calls == [1]
+
 
 # ── UpdatePreflight ───────────────────────────────────────────────────────────────
 

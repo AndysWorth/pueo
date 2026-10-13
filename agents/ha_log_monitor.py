@@ -554,8 +554,14 @@ async def _run_repair_issue_investigation(
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
+    ssh_client: Optional[SSHClientProtocol] = None,
 ) -> None:
-    """Run an AgentLoop to investigate an HA repair issue and create a HITL card."""
+    """Run an AgentLoop to investigate an HA repair issue and create a HITL card.
+
+    The investigation's own tools get an inert SSH client (it runs under an
+    auto-approving gate). ``ssh_client`` is used only for the post-update
+    auto-reboot/restart in ``finish_repair_issue``.
+    """
     from utils.agent.agent_loop import AgentLoop
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_ha_tool_registry
@@ -590,6 +596,8 @@ async def _run_repair_issue_investigation(
         knowledge_store=knowledge_store,
         db_path=db_path,
         pending_repair_issue=issue,
+        post_update_ssh_client=ssh_client
+        or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH),
     )
     try:
         from utils.ha.ha_environment import load_environment_profile as _lep
