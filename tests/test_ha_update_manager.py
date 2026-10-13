@@ -772,6 +772,80 @@ class TestAutoApplyBlock:
         ]
         assert block_msgs, "Core update auto-apply must be blocked with a notification"
 
+    def test_addon_auto_apply_success_marks_auto_applied(self, tmp_path, pueo_dirs):
+        """Successful add-on auto-apply records 'auto_applied', not a sent card (#843)."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        import utils.agent.tool_executor as _te_mod
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_db(tmp_path)
+
+        class _FakeUpdate:
+            entity_id = "update.gazpar2mqtt_update"
+            component = "gazpar2mqtt"
+            installed_version = "0.2.5"
+            latest_version = "0.2.5.1"
+            release_url = None
+            release_summary = None
+
+        captured_executor = []
+
+        class _SpyToolExecutor(_te_mod.ToolExecutor):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                captured_executor.append(self)
+
+        def _make_loop(*a, **kw):
+            executor_ref = captured_executor[-1]
+
+            async def _fake_run(initial_context, **kwargs):
+                executor_ref._pending_auto_apply = True
+                return AgentLoopResult(outcome="success")
+
+            m = MagicMock()
+            m.run = _fake_run
+            return m
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop", side_effect=_make_loop),
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+            mock.patch("agents.ha_update_manager.DB_PATH", db_path),
+            mock.patch(
+                "utils.agent.work_queue.get_work_queue_or_none", return_value=None
+            ),
+            mock.patch("utils.agent.tool_executor.ToolExecutor", _SpyToolExecutor),
+            mock.patch(
+                "agents.ha_update_manager.execute_update", new=AsyncMock()
+            ) as mock_exec,
+            mock.patch("agents.ha_log_monitor._update_mark_auto_applied") as mark_auto,
+            mock.patch("agents.ha_log_monitor._update_mark_card_sent") as mark_sent,
+        ):
+            from agents.ha_update_manager import _run_update_analysis
+
+            asyncio.run(_run_update_analysis(update=_FakeUpdate(), notifier=notifier))
+
+        mock_exec.assert_awaited_once()
+        mark_auto.assert_called_once_with(
+            "update:update.gazpar2mqtt_update",
+            "update",
+            "Auto-applied: gazpar2mqtt 0.2.5.1",
+        )
+        mark_sent.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Phase 2: sanitize + device_context_summary + upgrade_advisor wiring

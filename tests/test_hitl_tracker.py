@@ -11,6 +11,7 @@ from utils.hitl.hitl_tracker import (
     get_rejection_count,
     mark_card_acknowledged,
     mark_card_approved,
+    mark_card_auto_applied,
     mark_card_deferred,
     mark_card_rejected,
     mark_card_resolved,
@@ -357,6 +358,47 @@ def test_stable_nid_length():
 def test_stable_nid_is_hex():
     nid = stable_nid("log_triage:abc123")
     assert all(c in "0123456789abcdef" for c in nid)
+
+
+# ---------------------------------------------------------------------------
+# mark_card_auto_applied (#843)
+# ---------------------------------------------------------------------------
+
+
+def test_mark_card_auto_applied_inserts_new_row(conn):
+    mark_card_auto_applied(conn, "update:foo", "update", "Auto-applied: foo 1.1")
+    row = conn.execute(
+        "SELECT card_type, description, send_count, last_action, last_action_at,"
+        " resolved_at FROM hitl_suppression WHERE card_key = 'update:foo'"
+    ).fetchone()
+    assert row[0] == "update"
+    assert row[1] == "Auto-applied: foo 1.1"
+    assert row[2] == 1
+    assert row[3] == "auto_applied"
+    assert row[4] is not None
+    assert row[5] is None
+
+
+def test_mark_card_auto_applied_upserts_over_sent_row(conn):
+    mark_card_sent(conn, "update:foo", "update", "card")
+    mark_card_resolved(conn, "update:foo")
+    mark_card_auto_applied(conn, "update:foo", "update", "Auto-applied: foo 1.1")
+    row = conn.execute(
+        "SELECT description, send_count, last_action, resolved_at"
+        " FROM hitl_suppression WHERE card_key = 'update:foo'"
+    ).fetchone()
+    assert row == ("Auto-applied: foo 1.1", 2, "auto_applied", None)
+
+
+def test_mark_card_auto_applied_suppresses_next_send(conn):
+    mark_card_auto_applied(conn, "update:foo", "update", "desc")
+    assert should_send_card(conn, "update:foo") is False
+
+
+def test_mark_card_auto_applied_then_resolved_allows_send(conn):
+    mark_card_auto_applied(conn, "update:foo", "update", "desc")
+    mark_card_resolved(conn, "update:foo")
+    assert should_send_card(conn, "update:foo") is True
 
 
 # ---------------------------------------------------------------------------

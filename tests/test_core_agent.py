@@ -14176,6 +14176,106 @@ class TestExternalUpdateResolution:
         assert detail.get("to_version") == "9.2.0"
         assert detail.get("component") == "matter_server"
 
+    def test_auto_applied_update_gone_resolves_silently(self, monkeypatch, tmp_path):
+        """An update Pueo auto-applied must not be reported as applied outside Pueo (#843)."""
+        import asyncio as asyncio_mod
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.hitl_tracker import mark_card_auto_applied
+
+        suppression_key = "update:update.gazpar2mqtt_update"
+        mark_card_auto_applied(
+            self._mem, suppression_key, "update", "Auto-applied: gazpar2mqtt 0.2.5.1"
+        )
+
+        timeline_calls: list[dict] = []
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event",
+            lambda level, source, message, detail=None: timeline_calls.append(
+                {"source": source, "message": message}
+            ),
+        )
+        external = []
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._resolve_externally_applied_update",
+            lambda *a, **kw: external.append(a),
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        entity = {
+            "entity_id": "update.gazpar2mqtt_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "0.2.5.1",
+                "latest_version": "0.2.5.1",
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+        client = FakeHARestClient(states=[entity])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        assert external == []
+        assert not any("outside Pueo" in c["message"] for c in timeline_calls)
+        row = self._mem.execute(
+            "SELECT last_action, resolved_at FROM hitl_suppression WHERE card_key = ?",
+            (suppression_key,),
+        ).fetchone()
+        assert row[0] == "auto_applied"
+        assert row[1] is not None
+
+    def test_update_mark_auto_applied_wrapper_writes_row(self):
+        """_update_mark_auto_applied delegates to mark_card_auto_applied (#843)."""
+        from agents.ha_log_monitor import (
+            _update_check_pending,
+            _update_mark_auto_applied,
+        )
+
+        _update_mark_auto_applied(
+            "update:update.x_update", "update", "Auto-applied: x 2"
+        )
+        row = self._mem.execute(
+            "SELECT last_action, description FROM hitl_suppression WHERE card_key = ?",
+            ("update:update.x_update",),
+        ).fetchone()
+        assert row == ("auto_applied", "Auto-applied: x 2")
+        assert _update_check_pending("update:update.x_update") is False
+
+    def test_auto_applied_update_entity_absent_not_swept(self, monkeypatch, tmp_path):
+        """Auto-applied rows are skipped by the absent-entity sweep (#843)."""
+        import asyncio as asyncio_mod
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.hitl.hitl_tracker import mark_card_auto_applied
+
+        mark_card_auto_applied(
+            self._mem, "update:update.gazpar2mqtt_update", "update", "desc"
+        )
+        external = []
+        monkeypatch.setattr(
+            "agents.ha_log_monitor._resolve_externally_applied_update",
+            lambda *a, **kw: external.append(a),
+        )
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        client = FakeHARestClient(states=[])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        assert external == []
+
 
 class TestRepairReconcileTimeline:
     """poll_for_repairs reconcile sweep writes a timeline event when an issue resolves."""

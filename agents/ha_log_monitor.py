@@ -179,6 +179,16 @@ def _update_mark_card_sent(
         mark_card_sent(_conn, suppression_key, card_type, description)
 
 
+def _update_mark_auto_applied(
+    suppression_key: str, card_type: str, description: str
+) -> None:
+    """Mark an update as auto-applied by Pueo in hitl_suppression."""
+    from utils.hitl.hitl_tracker import mark_card_auto_applied
+
+    with sqlite3.connect(_config.DB_PATH) as _conn:
+        mark_card_auto_applied(_conn, suppression_key, card_type, description)
+
+
 def _update_already_analyzed(analyzed_key: str) -> bool:
     """Return True if this specific version was already analyzed with no card needed."""
     with sqlite3.connect(_config.DB_PATH) as _conn:

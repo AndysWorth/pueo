@@ -176,6 +176,37 @@ def mark_card_approved(conn: sqlite3.Connection, card_key: str) -> None:
     conn.commit()
 
 
+def mark_card_auto_applied(
+    conn: sqlite3.Connection, card_key: str, card_type: str, description: str
+) -> None:
+    """Record that Pueo applied this action itself without an approval card.
+
+    The row is suppressed (should_send_card returns False) but never "pending",
+    so when the condition clears the poll resolves it silently instead of
+    attributing the change to something outside Pueo (#843).
+    """
+    now = time.time()
+    conn.execute(
+        """
+        INSERT INTO hitl_suppression
+            (card_key, card_type, description, first_sent_at, last_sent_at,
+             last_action, last_action_at)
+        VALUES (?, ?, ?, ?, ?, 'auto_applied', ?)
+        ON CONFLICT(card_key) DO UPDATE SET
+            last_sent_at = excluded.last_sent_at,
+            send_count = send_count + 1,
+            card_type = excluded.card_type,
+            description = excluded.description,
+            last_action = 'auto_applied',
+            last_action_at = excluded.last_action_at,
+            resolved_at = NULL,
+            next_allowed_at = NULL
+        """,
+        (card_key, card_type, description, now, now, now),
+    )
+    conn.commit()
+
+
 def mark_card_resolved(conn: sqlite3.Connection, card_key: str) -> None:
     """Mark condition as resolved; next occurrence starts fresh."""
     now = time.time()

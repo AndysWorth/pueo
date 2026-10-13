@@ -817,13 +817,12 @@ async def _run_update_analysis(
                     )
                     try:
                         await execute_update(update, _ssh, _notifier, gate)
-                        import sqlite3 as _sqlite3
-                        from agents.ha_log_monitor import _update_mark_card_sent
+                        from agents.ha_log_monitor import _update_mark_auto_applied
                         from utils.hitl.card_types import CARD_TYPE_UPDATE
 
                         suppression_key = f"update:{update.entity_id}"
                         await asyncio.to_thread(
-                            _update_mark_card_sent,
+                            _update_mark_auto_applied,
                             suppression_key,
                             CARD_TYPE_UPDATE,
                             f"Auto-applied: {update.component} {update.latest_version}",
