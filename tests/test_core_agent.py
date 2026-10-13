@@ -9327,6 +9327,119 @@ class TestToolExecutor:
         assert not result.success
         assert "connection dropped" in result.error
 
+    # -- run_ha_command gating ---------------------------------------------------
+
+    def test_run_ha_command_gated_queues_when_denied(self):
+        """State-changing command routes through the gate; denied → awaiting_approval."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=False)
+        notifier = FakeNotifier(approve=False)
+        ssh = FakeSSHClient()
+        executor = self._make_executor(ssh=ssh, gate=gate, notifier=notifier)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={
+                        "command": "ha core restart",
+                        "reason": "integration updated",
+                    },
+                )
+            )
+        )
+        assert result.awaiting_approval
+        assert not result.success
+        assert len(gate.require_approval_calls) == 1
+        assert gate.require_approval_calls[0]["subject"].endswith("ha core restart")
+        # SSH must NOT have been called
+        assert "ha core restart" not in ssh.commands_run
+
+    def test_run_ha_command_gated_executes_when_approved(self):
+        """State-changing command executes inline when gate auto-approves."""
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = FakeSSHClient(
+            command_results={"ha core restart": (0, "Restarting...", "")}
+        )
+        executor = self._make_executor(ssh=ssh, gate=gate)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={
+                        "command": "ha core restart",
+                        "reason": "integration updated",
+                    },
+                )
+            )
+        )
+        assert result.success
+        assert len(gate.require_approval_calls) == 1
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.MEDIUM
+        assert "ha core restart" in ssh.commands_run
+
+    def test_run_ha_command_high_risk_on_stop(self):
+        """ha core stop uses HIGH risk."""
+        from utils.agent.autonomy import FakeAutonomyGate, RiskLevel
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        gate = FakeAutonomyGate(auto_execute_result=False, approval_result=True)
+        ssh = FakeSSHClient(command_results={"ha core stop": (0, "Stopping...", "")})
+        executor = self._make_executor(ssh=ssh, gate=gate)
+        asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha core stop"},
+                )
+            )
+        )
+        assert gate.require_approval_calls[0]["risk"] == RiskLevel.HIGH
+
+    def test_run_ha_command_readonly_skips_gate(self):
+        """Read-only commands never call the gate."""
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_registry import ToolCall
+
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = FakeSSHClient()
+        executor = self._make_executor(ssh=ssh, gate=gate)
+        result = asyncio.run(
+            executor.execute(
+                ToolCall(
+                    name="run_ha_command",
+                    arguments={"command": "ha core check"},
+                )
+            )
+        )
+        assert result.tool_name == "run_ha_command"
+        assert gate.require_approval_calls == []
+
+    def test_ha_command_risk_map_covers_all_state_changing_commands(self):
+        """Every state-changing command in the allowlist must appear in _HA_COMMAND_RISK."""
+        from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST, _HA_COMMAND_RISK
+
+        # Explicitly enumerated state-changing commands — update this set if allowlist grows
+        state_changing = {
+            "ha core restart",
+            "ha core stop",
+            "ha supervisor repair",
+            "ha su repair",
+        }
+        assert state_changing <= set(_HA_COMMAND_ALLOWLIST)
+        for cmd in state_changing:
+            assert cmd in _HA_COMMAND_RISK, f"{cmd!r} missing from _HA_COMMAND_RISK"
+
     # -- read_file exception path ------------------------------------------------
 
     def test_read_file_ssh_exception(self):

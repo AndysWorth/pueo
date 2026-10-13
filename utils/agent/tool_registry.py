@@ -186,7 +186,11 @@ RUN_HA_COMMAND = ToolDefinition(
             "command": {
                 "type": "string",
                 "description": "The full ha CLI command to run",
-            }
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief justification (required for state-changing commands)",
+            },
         },
         "required": ["command"],
     },

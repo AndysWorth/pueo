@@ -62,6 +62,15 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
+# Maps allowlisted HA commands that change system state to their risk tier.
+# Commands absent from this map are read-only and execute directly.
+_HA_COMMAND_RISK: dict[str, str] = {
+    "ha core restart": "MEDIUM",
+    "ha core stop": "HIGH",
+    "ha supervisor repair": "MEDIUM",
+    "ha su repair": "MEDIUM",
+}
+
 _READ_FILE_ALLOWED_PREFIXES: tuple[str, ...] = ("/config/", "/backup/")
 
 _MAX_HA_DOC_FETCH_CHARS: int = 16_000
@@ -317,7 +326,9 @@ class ToolExecutor:
             if name == "list_log_sources":
                 return await self._list_log_sources()
             if name == "run_ha_command":
-                return await self._run_ha_command(args.get("command", ""))
+                return await self._run_ha_command(
+                    args.get("command", ""), args.get("reason", "")
+                )
             if name == "trigger_backup":
                 return await self._trigger_backup()
             if name == "read_file":
@@ -712,7 +723,7 @@ class ToolExecutor:
             output=json.dumps(output, indent=2),
         )
 
-    async def _run_ha_command(self, command: str) -> ToolResult:
+    async def _run_ha_command(self, command: str, reason: str = "") -> ToolResult:
         normalized = command.strip()
         # Allow parameterized read-only commands via prefix-match: ha apps info <slug>
         _allowed = normalized in _HA_COMMAND_ALLOWLIST or (
@@ -727,6 +738,39 @@ class ToolExecutor:
                 output="",
                 error=f"Command not in allowlist: {normalized!r}",
             )
+
+        risk_name = _HA_COMMAND_RISK.get(normalized)
+        if risk_name is not None:
+            from utils.agent.autonomy import RiskLevel
+            from utils.hitl.card_types import CARD_TYPE_HA_COMMAND
+
+            risk = RiskLevel[risk_name]
+            nid = get_correlation_id() or str(uuid.uuid4())
+            approved = await self._gate.queue_for_approval(
+                subject=f"Pueo: run_ha_command — {normalized}",
+                body=(
+                    f"Command: {normalized}\n"
+                    f"Risk: {risk_name}\n" + (f"Reason: {reason}" if reason else "")
+                ),
+                payload={
+                    "notification_id": nid,
+                    "card_type": CARD_TYPE_HA_COMMAND,
+                    "command": normalized,
+                    "risk": risk_name,
+                    "reason": reason,
+                },
+                notifier=self._notifier,
+                risk=risk,
+            )
+            if not approved:
+                log.info("run_ha_command_queued_for_hitl", nid=nid, command=normalized)
+                return ToolResult(
+                    tool_name="run_ha_command",
+                    success=False,
+                    output=f"Command queued for approval (id={nid}); agent loop exiting",
+                    awaiting_approval=True,
+                )
+
         try:
             exit_code, stdout, stderr = await self._ha_ssh.run(normalized, check=False)
             return ToolResult(

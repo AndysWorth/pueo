@@ -7993,3 +7993,108 @@ class TestRunbookDiscardRoute:
         client = TestClient(dashboard.app, raise_server_exceptions=True)
         resp = client.post("/runbooks/gap-1/discard")
         assert resp.status_code == 404
+
+
+# ── _execute_ha_command ────────────────────────────────────────────────────────
+
+
+def _make_ha_command_data(command: str = "ha core restart", reason: str = "") -> dict:
+    return {
+        "payload": {
+            "card_type": "ha_command",
+            "command": command,
+            "risk": "MEDIUM",
+            "reason": reason,
+        }
+    }
+
+
+class TestExecuteHaCommand:
+    """Tests for _execute_ha_command() — approved path, blocked command, SSH failure."""
+
+    def _run(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        command: str = "ha core restart",
+        reason: str = "",
+        ssh_exit_code: int = 0,
+        ssh_stdout: str = "",
+        ssh_stderr: str = "",
+    ):
+        import asyncio as _asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ssh_client import FakeSSHClient
+
+        fake_ssh = FakeSSHClient(
+            command_results={command: (ssh_exit_code, ssh_stdout, ssh_stderr)}
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: fake_ssh)
+
+        # Stub out timeline writes so the test doesn't need a real DB.
+        import utils.core.timeline as tl_mod
+
+        monkeypatch.setattr(tl_mod, "write_timeline_event", lambda *a, **kw: None)
+
+        nid = "hcmd-1"
+        json_path = tmp_path / f"{nid}.json"
+        data = _make_ha_command_data(command=command, reason=reason)
+        json_path.write_text(_json.dumps(data))
+
+        _asyncio.run(dashboard._execute_ha_command(nid, data, json_path, tmp_path))
+        return fake_ssh, nid, json_path
+
+    def test_approved_path_runs_command_and_writes_approved(
+        self, tmp_path, monkeypatch
+    ):
+        """Command in allowlist+risk map succeeds → .approved written, fix_applied=True."""
+        import json as _json
+
+        fake_ssh, nid, json_path = self._run(tmp_path, monkeypatch)
+
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert saved["fix_applied"] is True
+        assert "ha core restart" in fake_ssh.commands_run
+
+    def test_blocked_command_not_in_risk_map_writes_rejected(
+        self, tmp_path, monkeypatch
+    ):
+        """A read-only command (not in risk map) in the payload → .rejected, no SSH call."""
+        import json as _json
+
+        # ha core check is allowlisted but is read-only — not in _HA_COMMAND_RISK.
+        fake_ssh, nid, json_path = self._run(
+            tmp_path, monkeypatch, command="ha core check"
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "not in risk map" in saved["fix_error"]
+        # SSH must NOT have been called (defense-in-depth gate fires before run).
+        assert "ha core check" not in fake_ssh.commands_run
+
+    def test_ssh_failure_writes_rejected_with_error(self, tmp_path, monkeypatch):
+        """SSH returns non-zero exit → .rejected written with error message."""
+        import json as _json
+
+        fake_ssh, nid, json_path = self._run(
+            tmp_path,
+            monkeypatch,
+            ssh_exit_code=1,
+            ssh_stderr="connection refused",
+        )
+
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+        saved = _json.loads(json_path.read_text())
+        assert "failed" in saved["fix_error"].lower()

@@ -32,6 +32,8 @@ Each function opens its own `asyncssh.connect()` context. `known_hosts=None` is 
 ## Autonomy gate
 `AutonomyGate` in `utils/agent/autonomy.py` is the single approval decision point imported by all Pueo modules. Every action that touches remote state must call `gate.require_approval()` or `gate.should_auto_execute()` — no module may hard-code its own ask/skip logic. `FakeAutonomyGate` is the test double.
 
+State-changing HA CLI commands follow the same gate. `_HA_COMMAND_RISK` in `utils/agent/tool_executor.py` maps each command to its `RiskLevel`; `_run_ha_command` routes commands present in the map through `gate.queue_for_approval → CARD_TYPE_HA_COMMAND`. Read-only commands (absent from the map) execute directly. `_execute_ha_command` in `web/dashboard.py` is the corresponding card executor. See ADR 040.
+
 ## Rate limiter / debouncer
 `Debouncer` and `RateLimiter` in `utils/core/rate_limiter.py` govern repair frequency. `DEBOUNCE_WINDOW_SECONDS` collapses rapid identical triggers; `MAX_REPAIRS_PER_HOUR` caps total actions in a rolling window. Both are enforced before any repair pipeline call.
 
