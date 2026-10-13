@@ -4,7 +4,10 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from utils.disk.host_health import HostHealthFinding
 
 import yaml as _yaml
 
@@ -159,6 +162,9 @@ class ResourcePoller:
         self._knowledge_store = knowledge_store
         self._db_path = db_path
         self._alerted: set[str] = set()
+        self._alerted_host: set[str] = (
+            set()
+        )  # bare finding keys from _check_host_health
         self._last_recovery_at: float = 0.0
 
     async def run(self) -> None:
@@ -248,6 +254,7 @@ class ResourcePoller:
                     fd_limit=_fd_limit,
                 )
                 await self._check_and_alert(status)
+                await self._check_host_health(status)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -843,30 +850,250 @@ class ResourcePoller:
                         pass
                 self._alerted.discard("disk_warn")
 
-        if status.mem_warn:
-            if "mem_warn" not in self._alerted:
-                log.warning(
-                    "mem_warn",
-                    mem_available_mb=round(status.mem_available_mb),
-                    threshold_mb=self._mem_warn_mb,
+    # ------------------------------------------------------------------
+    # Host-health detection and investigation dispatch
+    # ------------------------------------------------------------------
+
+    def _read_last_boot_ts(self, db_path: str) -> Optional[float]:
+        """Read the stored boot timestamp from user_prefs, or None if absent."""
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                row = _conn.execute(
+                    "SELECT value FROM user_prefs WHERE key = 'host_health:last_boot_ts'"
+                ).fetchone()
+                return float(row[0]) if row else None
+        except Exception:  # nosec B110 — table may not exist yet
+            return None
+
+    def _write_last_boot_ts(self, db_path: str, boot_ts: float) -> None:
+        """Persist the current boot timestamp into user_prefs."""
+        import sqlite3 as _sqlite3
+
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                _conn.execute(
+                    "INSERT INTO user_prefs (key, value) VALUES ('host_health:last_boot_ts', ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(boot_ts),),
                 )
-                await self._notifier.send(
-                    subject="Pueo WARNING: HA memory low",
-                    body=(
-                        f"Memory available: {status.mem_available_mb:.0f} MB — below warning "
-                        f"threshold {self._mem_warn_mb} MB."
-                    ),
-                    payload={
-                        "suppression_key": "resource:mem_warn",
-                        "type": "resource_alert",
-                        "severity": "WARN",
-                        "mem_available_mb": round(status.mem_available_mb),
-                        "mem_total_mb": round(status.mem_total_mb),
-                    },
+                _conn.commit()
+        except Exception as _e:  # nosec B110
+            log.warning("host_health_boot_ts_write_failed", error=str(_e))
+
+    def _check_pueo_reboot_recent(
+        self, db_path: str, window_seconds: float = 1200.0
+    ) -> bool:
+        """True if a Pueo-initiated restart or reboot timeline event exists in the last window."""
+        import sqlite3 as _sqlite3
+        import time as _time
+
+        try:
+            since = _time.time() - window_seconds
+            with _sqlite3.connect(db_path) as _conn:
+                row = _conn.execute(
+                    "SELECT 1 FROM timeline_events"
+                    " WHERE event_category = 'resource'"
+                    " AND (message LIKE '%restart%' OR message LIKE '%reboot%')"
+                    " AND timestamp > ?"
+                    " LIMIT 1",
+                    (since,),
+                ).fetchone()
+                return row is not None
+        except Exception:  # nosec B110 — table may not exist yet
+            return False
+
+    def _load_known_repair_uuids(self, db_path: str) -> "set[str]":
+        """Return the set of issue_ids stored for hassio domain in ha_repair_history."""
+        import sqlite3 as _sqlite3
+
+        uuids: set = set()
+        try:
+            with _sqlite3.connect(db_path) as _conn:
+                rows = _conn.execute(
+                    "SELECT issue_key FROM ha_repair_history"
+                    " WHERE issue_key LIKE 'hassio/%' AND resolved_at IS NULL"
+                ).fetchall()
+                for (key,) in rows:
+                    parts = key.split("/", 1)
+                    if len(parts) == 2:
+                        uuids.add(parts[1])
+        except Exception:  # nosec B110 — table may not exist yet
+            pass
+        return uuids
+
+    async def _check_host_health(self, status: ResourceStatus) -> None:
+        """Evaluate host-health findings and dispatch investigations for new ones."""
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            evaluate_host_health,
+            get_host_health,
+        )
+
+        health = get_host_health()
+        if health is None:
+            return
+
+        import config as _cfg
+
+        _db = self._db_path or _cfg.DB_PATH
+
+        last_boot_ts = await asyncio.to_thread(self._read_last_boot_ts, _db)
+        pueo_reboot_recent = await asyncio.to_thread(
+            self._check_pueo_reboot_recent, _db
+        )
+        known_repair_uuids = await asyncio.to_thread(self._load_known_repair_uuids, _db)
+
+        findings = evaluate_host_health(
+            health=health,
+            status=status,
+            last_boot_ts=last_boot_ts,
+            pueo_reboot_recent=pueo_reboot_recent,
+            known_repair_uuids=known_repair_uuids,
+            swap_warn_pct=_cfg.HOST_SWAP_WARN_PCT,
+            disk_life_warn_pct=_cfg.HOST_DISK_LIFE_WARN_PCT,
+            mem_warn_mb=self._mem_warn_mb,
+        )
+
+        # Persist current boot_ts so future polls can detect changes
+        if health.boot_ts is not None:
+            await asyncio.to_thread(self._write_last_boot_ts, _db, health.boot_ts)
+
+        active_keys = {f.key for f in findings}
+
+        # Fire for each new finding
+        for finding in findings:
+            if finding.key in self._alerted_host:
+                continue
+            import sqlite3 as _sqlite3
+
+            from utils.hitl.hitl_tracker import should_send_card as _ssc
+
+            with _sqlite3.connect(_db) as _ssc_conn:
+                allowed = _ssc(_ssc_conn, f"host_health:{finding.key}")
+            if not allowed:
+                self._alerted_host.add(finding.key)
+                continue
+
+            if _cfg.HOST_HEALTH_INVESTIGATION_ENABLED and self._llm_client is not None:
+                await self._submit_host_health_investigation(finding, _db, _cfg)
+            else:
+                await self._send_host_health_notification_fallback(finding, _db)
+
+            self._alerted_host.add(finding.key)
+
+        # Resolve cleared findings
+        for key in list(self._alerted_host):
+            if key not in active_keys:
+                import sqlite3 as _sqlite3
+
+                from utils.hitl.hitl_tracker import mark_card_resolved as _mcr
+
+                with _sqlite3.connect(_db) as _mc_conn:
+                    _mcr(_mc_conn, f"host_health:{key}")
+                try:
+                    from utils.core.timeline import write_timeline_event
+
+                    write_timeline_event(
+                        "INFO",
+                        "resource",
+                        f"Host health alert cleared: {key}",
+                        {"key": key, "resolution": "cleared"},
+                    )
+                except Exception:  # nosec B110
+                    pass
+                self._alerted_host.discard(key)
+
+    async def _submit_host_health_investigation(
+        self,
+        finding: "HostHealthFinding",
+        db_path: str,
+        cfg: Any,
+    ) -> None:
+        """Queue a WorkItem that calls run_host_health_investigation for this finding."""
+        from utils.agent.work_queue import (
+            PRIORITY_NORMAL,
+            WorkItem,
+            get_work_queue_or_none,
+        )
+        from utils.disk.host_health_investigation import run_host_health_investigation
+
+        _self = self
+        _finding = finding
+        _db = db_path
+
+        async def _coro() -> None:
+            await run_host_health_investigation(
+                finding=_finding,
+                notifier=_self._notifier,
+                db_path=_db,
+                llm_client=_self._llm_client,
+                knowledge_store=_self._knowledge_store,
+                ha_rest_client=_self._rest_client,
+                ssh_client=None,
+            )
+
+        _wq = get_work_queue_or_none()
+        if _wq is not None:
+            await _wq.submit(
+                WorkItem(
+                    priority=PRIORITY_NORMAL,
+                    activity_type="host_health",
+                    description=f"Host health investigation: {finding.kind}",
+                    dedup_key=f"host_health:{finding.key}",
+                    suppress_while_running=frozenset(),
+                    coro_factory=_coro,
                 )
-                self._alerted.add("mem_warn")
+            )
         else:
-            self._alerted.discard("mem_warn")
+            await _coro()
+
+    async def _send_host_health_notification_fallback(
+        self,
+        finding: "HostHealthFinding",
+        db_path: str,
+    ) -> None:
+        """Send a plain notification when investigation is disabled or no LLM is available."""
+        import sqlite3 as _sqlite3
+
+        import config as _cfg
+        from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+        from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
+
+        card_key = f"host_health:{finding.key}"
+        evidence_text = "; ".join(
+            f"{k}={v}" for k, v in finding.evidence.items() if v is not None
+        )
+        body = (
+            f"Host health issue detected: {finding.kind} ({finding.severity}).\n"
+            f"Evidence: {evidence_text}"
+        )
+        with _sqlite3.connect(db_path) as _conn:
+            mark_card_sent(
+                _conn,
+                card_key,
+                CARD_TYPE_HOST_HEALTH,
+                f"Host health: {finding.kind}",
+            )
+        await self._notifier.send(
+            subject=f"Pueo WARNING: Host health — {finding.kind}",
+            body=body,
+            payload={
+                "notification_id": stable_nid(card_key),
+                "card_type": CARD_TYPE_HOST_HEALTH,
+                "suppression_key": card_key,
+                "type": "host_health",
+                "severity": finding.severity,
+                "kind": finding.kind,
+                "evidence": finding.evidence,
+            },
+        )
+        log.warning(
+            "host_health_notification_fallback",
+            kind=finding.kind,
+            severity=finding.severity,
+        )
 
     async def _maybe_send_migrate_card(self) -> None:
         """Send CARD_TYPE_NETALERTX_MIGRATE if NAX is on HA and disk is CRITICAL.

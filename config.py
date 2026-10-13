@@ -84,6 +84,13 @@ BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", str(_dirs.data_dir / "bac
 BACKUP_RETAIN_ON_HA: int = int(_agent.get("backup_retain_on_ha", 2))
 BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
 
+# Host-health detection and LLM investigation
+HOST_SWAP_WARN_PCT: float = float(_agent.get("host_swap_warn_pct", 80.0))
+HOST_DISK_LIFE_WARN_PCT: float = float(_agent.get("host_disk_life_warn_pct", 80.0))
+HOST_HEALTH_INVESTIGATION_ENABLED: bool = bool(
+    _agent.get("host_health_investigation_enabled", True)
+)
+
 # Disk recovery — safe auto-steps on disk critical
 DISK_RECOVERY_AUTO_ENABLED: bool = bool(_agent.get("disk_recovery_auto_enabled", True))
 DISK_RECOVERY_RECORDER_KEEP_DAYS: int = int(

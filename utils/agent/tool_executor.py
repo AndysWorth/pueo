@@ -260,6 +260,7 @@ class ToolExecutor:
         self._pending_repair_issue = pending_repair_issue
         self._pending_notification = pending_notification
         self._pending_update_status: Optional[Any] = None
+        self._host_health_finding: Optional[Any] = None
         self._pending_auto_apply: bool = False
         self._release_notes_obtained: bool = False
         self._lovelace_suspicious: list[str] = []
@@ -321,6 +322,10 @@ class ToolExecutor:
         """Store entity IDs under investigation so _finish_lovelace_investigation can
         write benign suppression records when findings is empty."""
         self._lovelace_suspicious = list(entity_ids)
+
+    def set_host_health_finding(self, finding: Any) -> None:
+        """Store the HostHealthFinding so _finish_host_health can build the card."""
+        self._host_health_finding = finding
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -618,6 +623,13 @@ class ToolExecutor:
                     instance_impact=args.get("instance_impact", "none"),
                     proposed_config_fixes=args.get("proposed_config_fixes", []),
                     create_hitl_card=bool(args.get("create_hitl_card", True)),
+                )
+            if name == "finish_host_health":
+                return await self._finish_host_health(
+                    summary=args.get("summary", ""),
+                    root_cause=args.get("root_cause", ""),
+                    outcome=args.get("outcome", "needs_action"),
+                    recommended_actions=args.get("recommended_actions", []),
                 )
             if name == "discard_result":
                 reason = args.get("reason", "")
@@ -4947,4 +4959,70 @@ class ToolExecutor:
             tool_name="finish_update_analysis",
             success=True,
             output=f"Update approval card sent for {update.component} {update.latest_version}.",
+        )
+
+    async def _finish_host_health(
+        self,
+        summary: str,
+        root_cause: str,
+        outcome: str,
+        recommended_actions: list,
+    ) -> ToolResult:
+        """Send a host-health investigation card and mark it as sent."""
+        import sqlite3 as _sqlite3
+
+        import config as _cfg
+        from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+        from utils.hitl.hitl_tracker import mark_card_sent, stable_nid
+
+        finding = self._host_health_finding
+        if finding is None:
+            return ToolResult(
+                tool_name="finish_host_health",
+                success=True,
+                output=summary or "Host health investigation complete.",
+            )
+
+        card_key = f"host_health:{finding.key}"
+        _db = self._db_path
+        with _sqlite3.connect(_db) as _conn:
+            mark_card_sent(
+                _conn,
+                card_key,
+                CARD_TYPE_HOST_HEALTH,
+                f"Host health: {finding.kind}",
+            )
+
+        await self._notifier.send(
+            subject=f"Pueo: Host health — {finding.kind}",
+            body=summary,
+            payload={
+                "notification_id": stable_nid(card_key),
+                "card_type": CARD_TYPE_HOST_HEALTH,
+                "suppression_key": card_key,
+                "type": "host_health",
+                "severity": finding.severity,
+                "kind": finding.kind,
+                "root_cause": root_cause,
+                "outcome": outcome,
+                "recommended_actions": recommended_actions,
+                "evidence": finding.evidence,
+            },
+        )
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                finding.severity,
+                "resource",
+                f"Host health: {finding.kind} — {summary}",
+                {"kind": finding.kind, "outcome": outcome},
+            )
+        except Exception:  # nosec B110
+            pass
+        return ToolResult(
+            tool_name="finish_host_health",
+            success=True,
+            output=summary,
         )

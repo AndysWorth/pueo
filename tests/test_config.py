@@ -1659,3 +1659,40 @@ class TestFederatedCasesRepoConfig:
         import config
 
         assert config.RUNBOOK_VALIDATE_MIN_SUCCESSES == 5
+
+    def test_host_swap_warn_pct_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_SWAP_WARN_PCT == 80.0
+
+    def test_host_disk_life_warn_pct_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_DISK_LIFE_WARN_PCT == 80.0
+
+    def test_host_health_investigation_enabled_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_HEALTH_INVESTIGATION_ENABLED is True
+
+    def test_host_health_keys_from_yaml(self, isolated_config):
+        isolated_config.write_text(
+            yaml.dump(
+                {
+                    "agent": {
+                        "host_swap_warn_pct": 70.0,
+                        "host_disk_life_warn_pct": 75.0,
+                        "host_health_investigation_enabled": False,
+                    }
+                }
+            )
+        )
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.HOST_SWAP_WARN_PCT == 70.0
+        assert config.HOST_DISK_LIFE_WARN_PCT == 75.0
+        assert config.HOST_HEALTH_INVESTIGATION_ENABLED is False

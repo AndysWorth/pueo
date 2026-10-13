@@ -112,6 +112,9 @@ agent:
                                      # complete without hitting the Supervisor's block. Raise this value if your
                                      # HA backups are consistently larger than 2 GB.
   ha_mem_warn_mb: 256                # Send an approval card when HA memory available drops below this value (MB)
+  host_swap_warn_pct: 80.0           # Fire host-health investigation when swap use exceeds this % (and mem is also low)
+  host_disk_life_warn_pct: 80.0      # Fire host-health investigation when eMMC life used exceeds this %
+  host_health_investigation_enabled: true  # Start an LLM investigation on host-health findings; false = notification only
   backup_offload_enabled: true       # SFTP-pull each backup .tar to Pueo's local machine after creation
   # backup_local_dir: ""            # Offloaded backup dir; default: ~/Library/Application Support/Pueo/backups (macOS)
   backup_retain_on_ha: 2             # Maximum backups to keep on HA; oldest confirmed-local ones are deleted
