@@ -115,6 +115,11 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "Automation authoring via propose_automation",
         "create automation, add automation, write automation, build automation, automate lights, automate when, turn on when, notify me when, schedule automation",
     ),
+    (
+        "seed_host_health.md",
+        "Host health investigation",
+        "swap pressure, memory low, eMMC disk wear, unexpected reboot, supervisor unhealthy, supervisor unsupported, resolution issue",
+    ),
 ]
 
 
