@@ -6753,6 +6753,24 @@ class TestStrategySeeder:
         chunks = store.query("phantom state", top_k=10, collections=["strategies"])
         assert any("ai_agent" in (c.text or "").lower() for c in chunks)
 
+    def test_host_health_seed_is_included(self):
+        """seed_host_health.md is registered in _SEED_PROMPTS, loads via load_prompt, and upserts."""
+        from utils.core.prompts import load_prompt
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, seed_strategies
+
+        filenames = [f for f, _, _ in _SEED_PROMPTS]
+        assert "seed_host_health.md" in filenames
+
+        # Confirm the prompt file is loadable
+        text = load_prompt("seed_host_health")
+        assert "swap" in text.lower()
+
+        store = FakeKnowledgeStore()
+        seed_strategies(store)
+        chunks = store.query("swap pressure", top_k=10, collections=["strategies"])
+        assert any("host" in (c.text or "").lower() for c in chunks)
+
 
 class TestSeedHomeProfile:
     def test_returns_one_on_success(self):

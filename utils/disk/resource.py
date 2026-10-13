@@ -976,8 +976,11 @@ class ResourcePoller:
 
             with _sqlite3.connect(_db) as _ssc_conn:
                 allowed = _ssc(_ssc_conn, f"host_health:{finding.key}")
+                in_backoff = not _ssc(_ssc_conn, f"host_health_backoff:{finding.key}")
             if not allowed:
                 self._alerted_host.add(finding.key)
+                continue
+            if in_backoff:
                 continue
 
             if _cfg.HOST_HEALTH_INVESTIGATION_ENABLED and self._llm_client is not None:

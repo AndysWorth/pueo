@@ -701,10 +701,15 @@ class TestResourcePollerCheckHostHealth:
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS hitl_suppression"
-                " (card_key TEXT PRIMARY KEY, card_type TEXT, description TEXT,"
-                " first_sent_at REAL, last_sent_at REAL, send_count INTEGER DEFAULT 0,"
-                " known_issue INTEGER DEFAULT 0, next_allowed_at REAL,"
-                " resolved_at REAL, last_action TEXT, rejection_count INTEGER DEFAULT 0)"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+                " description TEXT NOT NULL DEFAULT '',"
+                " first_sent_at REAL NOT NULL DEFAULT 0,"
+                " last_sent_at REAL NOT NULL DEFAULT 0,"
+                " send_count INTEGER NOT NULL DEFAULT 1,"
+                " last_action TEXT, last_action_at REAL,"
+                " rejection_count INTEGER NOT NULL DEFAULT 0,"
+                " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+                " known_issue_note TEXT, resolved_at REAL)"
             )
         return db
 
@@ -809,3 +814,57 @@ class TestResourcePollerCheckHostHealth:
         )
         asyncio.run(poller._check_host_health(_make_status()))
         assert "disk_wear" not in poller._alerted_host
+
+    def test_backoff_blocks_submission_without_alerted(self, tmp_path, monkeypatch):
+        """Investigation backoff row suppresses submission; key stays out of _alerted_host."""
+        import asyncio
+        import sqlite3
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.hitl_tracker import mark_investigation_backoff
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+
+        notifier = FakeNotifier()
+        poller, db = self._make_poller(tmp_path, notifier=notifier)
+
+        # Pre-insert a 30-min backoff for the disk_wear finding
+        with sqlite3.connect(db) as conn:
+            mark_investigation_backoff(conn, "host_health_backoff:disk_wear")
+
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        # Backoff blocked the submission
+        assert len(notifier.sent) == 0
+        # Key is NOT added to _alerted_host so next poll can retry once backoff expires
+        assert "disk_wear" not in poller._alerted_host
+
+    def test_no_backoff_allows_submission(self, tmp_path, monkeypatch):
+        """Without a backoff row the finding proceeds to notification."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.disk.host_health as hh_mod
+        from utils.hitl.notify import FakeNotifier
+
+        monkeypatch.setattr(cfg_mod, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(cfg_mod, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(cfg_mod, "HOST_DISK_LIFE_WARN_PCT", 80.0)
+        monkeypatch.setattr(
+            hh_mod, "_last_host_health", _make_health(disk_life_used_pct=85.0)
+        )
+
+        notifier = FakeNotifier()
+        poller, _ = self._make_poller(tmp_path, notifier=notifier)
+
+        asyncio.run(poller._check_host_health(_make_status()))
+
+        assert len(notifier.sent) == 1
+        assert "disk_wear" in poller._alerted_host
