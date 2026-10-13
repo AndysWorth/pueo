@@ -227,6 +227,16 @@ class ResourcePoller:
                     update_memory_breakdown(_mem_breakdown)
                 except Exception as _me:  # nosec B110 — never block disk alerts
                     log.warning("memory_breakdown_poll_failed", error=str(_me))
+                try:
+                    from utils.disk.host_health import (
+                        fetch_host_health,
+                        update_host_health,
+                    )
+
+                    _host_health = await fetch_host_health(self._ssh)
+                    update_host_health(_host_health)
+                except Exception as _he:  # nosec B110 — never block disk alerts
+                    log.warning("host_health_poll_failed", error=str(_he))
                 log.info(
                     "resource_poll",
                     disk_free_gb=status.disk_free_gb,

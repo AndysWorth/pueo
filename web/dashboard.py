@@ -2555,13 +2555,16 @@ async def sync_backup_inventory() -> JSONResponse:
 async def resources_tab(request: Request) -> HTMLResponse:
     import time as _time
 
+    import datetime as _dt
     import utils.disk.disk_usage as _du
     import utils.disk.memory_usage as _mu
+    import utils.disk.host_health as _hh
     from config import HA_DISK_CRITICAL_GB, HA_DISK_WARN_GB, PUEO_LOCAL_MAX_GB
     from utils.disk.pueo_storage import measure_pueo_footprint
 
     breakdown = _du.get_disk_breakdown()
     mem_breakdown = _mu.get_memory_breakdown()
+    host_health = _hh.get_host_health()
     age_seconds = None
     disk_warn = False
     disk_critical = False
@@ -2569,6 +2572,15 @@ async def resources_tab(request: Request) -> HTMLResponse:
         age_seconds = int(_time.time() - breakdown.fetched_at)
         disk_warn = breakdown.disk_free_gb < HA_DISK_WARN_GB
         disk_critical = breakdown.disk_free_gb < HA_DISK_CRITICAL_GB
+
+    boot_ts_str = ""
+    if host_health is not None and host_health.boot_ts is not None:
+        try:
+            boot_ts_str = _dt.datetime.fromtimestamp(host_health.boot_ts).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except Exception:
+            boot_ts_str = ""
 
     try:
         pueo_footprint = await asyncio.to_thread(measure_pueo_footprint)
@@ -2581,6 +2593,8 @@ async def resources_tab(request: Request) -> HTMLResponse:
         {
             "breakdown": breakdown,
             "mem_breakdown": mem_breakdown,
+            "host_health": host_health,
+            "boot_ts_str": boot_ts_str,
             "age_seconds": age_seconds,
             "disk_warn": disk_warn,
             "disk_critical": disk_critical,
@@ -2662,18 +2676,21 @@ async def resources_queue_orphan_cleanup() -> JSONResponse:
 async def resources_refresh() -> JSONResponse:
     import utils.disk.disk_usage as _du
     import utils.disk.memory_usage as _mu
+    import utils.disk.host_health as _hh
     from utils.ha.ssh_client import AsyncSSHClient
 
     import config as _config
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
     try:
-        disk_bd, mem_bd = await asyncio.gather(
+        disk_bd, mem_bd, host_hth = await asyncio.gather(
             _du.fetch_disk_breakdown(ssh),
             _mu.fetch_memory_breakdown(ssh),
+            _hh.fetch_host_health(ssh),
         )
         _du.update_disk_breakdown(disk_bd)
         _mu.update_memory_breakdown(mem_bd)
+        _hh.update_host_health(host_hth)
         return JSONResponse({"ok": True})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)

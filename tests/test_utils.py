@@ -1588,6 +1588,57 @@ class TestResourcePollerAlerts:
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(poller.run())
 
+    def test_host_health_fetch_error_does_not_block_poller(self, monkeypatch):
+        """A failing host_health fetch must not prevent disk/memory polling from completing."""
+        import utils.disk.host_health as hh_mod
+        import utils.agent.supervisor as sup_mod
+        from utils.disk.resource import ResourcePoller
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        async def _raise(ssh):
+            raise OSError("SSH error in host_health")
+
+        monkeypatch.setattr(hh_mod, "fetch_host_health", _raise)
+
+        cancel_calls = []
+
+        async def _fake_sleep(name, interval):
+            cancel_calls.append(name)
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(sup_mod, "supervised_sleep", _fake_sleep)
+        import utils.disk.memory_usage as mu_mod
+
+        async def _fake_mem(ssh):
+            from utils.disk.memory_usage import MemoryBreakdown
+
+            return MemoryBreakdown(total_mb=4096.0, available_mb=2048.0, fetched_at=1.0)
+
+        monkeypatch.setattr(mu_mod, "fetch_memory_breakdown", _fake_mem)
+
+        # Use ha_host_info and /proc/meminfo responses so poll_host_resources succeeds
+        host_info = "disk_free: 6.0\ndisk_total: 13.6\ndisk_used: 7.6\nhostname: ha\n"
+        meminfo = "MemTotal: 1931384 kB\nMemFree: 22100 kB\nMemAvailable: 563200 kB\n"
+        ssh = FakeSSHClient(
+            command_results={
+                "ha host info": (0, host_info, ""),
+                "cat /proc/meminfo": (0, meminfo, ""),
+            }
+        )
+        poller = ResourcePoller(
+            ssh_client=ssh,
+            notifier=FakeNotifier(),
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=2.0,
+            mem_warn_mb=256.0,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poller.run())
+        # Poller reached supervised_sleep, meaning it didn't crash on the host_health error
+        assert len(cancel_calls) == 1
+
 
 class TestExecuteRemoteBackupDiskCheck:
     @pytest.fixture

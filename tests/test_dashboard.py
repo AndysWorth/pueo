@@ -6577,13 +6577,17 @@ class TestResourcesRoutes:
     def test_resources_refresh_calls_fetch(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
         import utils.disk.memory_usage as mu_mod
+        import utils.disk.host_health as hh_mod
         from utils.disk.disk_usage import DiskBreakdown
         from utils.disk.memory_usage import MemoryBreakdown
+        from utils.disk.host_health import HostHealth
         from fastapi.testclient import TestClient
         import web.dashboard as dashboard
+        import time
 
         disk_calls = []
         mem_calls = []
+        hh_calls = []
 
         async def _fake_disk_fetch(ssh):
             disk_calls.append(True)
@@ -6593,10 +6597,24 @@ class TestResourcesRoutes:
             mem_calls.append(True)
             return MemoryBreakdown(total_mb=4096.0, available_mb=2048.0, fetched_at=1.0)
 
+        async def _fake_hh_fetch(ssh):
+            hh_calls.append(True)
+            return HostHealth(
+                swap_total_mb=1024.0,
+                swap_used_mb=200.0,
+                disk_life_used_pct=40.0,
+                boot_ts=None,
+                uptime_seconds=None,
+                resolution=None,
+                fetched_at=time.time(),
+            )
+
         monkeypatch.setattr(du_mod, "fetch_disk_breakdown", _fake_disk_fetch)
         monkeypatch.setattr(mu_mod, "fetch_memory_breakdown", _fake_mem_fetch)
+        monkeypatch.setattr(hh_mod, "fetch_host_health", _fake_hh_fetch)
         monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
         monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(hh_mod, "_last_host_health", None)
 
         import utils.ha.ssh_client as _sc
         from utils.ha.ssh_client import FakeSSHClient
@@ -6609,6 +6627,89 @@ class TestResourcesRoutes:
         assert response.json()["ok"] is True
         assert len(disk_calls) == 1
         assert len(mem_calls) == 1
+        assert len(hh_calls) == 1
+
+    def test_resources_get_shows_host_health_strip(self, monkeypatch):
+        import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
+        import utils.disk.host_health as hh_mod
+        from utils.disk.host_health import HostHealth, ResolutionInfo
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import time
+
+        hh = HostHealth(
+            swap_total_mb=1024.0,
+            swap_used_mb=400.0,
+            disk_life_used_pct=40.0,
+            boot_ts=1_700_000_000.0,
+            uptime_seconds=90061.0,
+            resolution=ResolutionInfo(
+                unsupported=[],
+                unhealthy=[],
+                issues=[
+                    {
+                        "type": "rpi_firmware_update_blocked",
+                        "context": {},
+                        "reference": None,
+                        "uuid": "abc",
+                    }
+                ],
+                suggestions=[],
+            ),
+            fetched_at=time.time(),
+        )
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(hh_mod, "_last_host_health", hh)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/resources")
+        assert response.status_code == 200
+        assert "Swap" in response.text
+        assert "eMMC life used" in response.text
+        assert "Uptime" in response.text
+        assert "rpi_firmware_update_blocked" in response.text
+
+    def test_resources_get_no_host_health_shows_placeholder(self, monkeypatch):
+        import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
+        import utils.disk.host_health as hh_mod
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(hh_mod, "_last_host_health", None)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/resources")
+        assert response.status_code == 200
+        assert "No host health data" in response.text
+
+    def test_resources_get_omits_emmc_row_when_none(self, monkeypatch):
+        import utils.disk.disk_usage as du_mod
+        import utils.disk.memory_usage as mu_mod
+        import utils.disk.host_health as hh_mod
+        from utils.disk.host_health import HostHealth
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import time
+
+        hh = HostHealth(
+            swap_total_mb=1024.0,
+            swap_used_mb=200.0,
+            disk_life_used_pct=None,  # board without eMMC
+            boot_ts=None,
+            uptime_seconds=None,
+            resolution=None,
+            fetched_at=time.time(),
+        )
+        monkeypatch.setattr(du_mod, "_last_disk_breakdown", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(hh_mod, "_last_host_health", hh)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.get("/resources")
+        assert response.status_code == 200
+        assert "eMMC life used" not in response.text
 
     def test_resources_refresh_error_returns_not_ok(self, monkeypatch):
         import utils.disk.disk_usage as du_mod
