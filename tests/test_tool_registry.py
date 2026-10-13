@@ -628,6 +628,13 @@ class TestRegistryMembership:
         # Prefix rules: parameterized forms not in the frozenset
         assert "ha apps info" in desc, "Prefix rule 'ha apps info <slug>' missing"
         assert "ha apps stats" in desc, "Prefix rule 'ha apps stats <slug>' missing"
+        assert "ha apps restart" in desc, "Prefix rule 'ha apps restart <slug>' missing"
+        assert (
+            "ha resolution suggestion apply" in desc
+        ), "Prefix rule 'ha resolution suggestion apply <uuid>' missing"
+        assert (
+            "ha resolution issue dismiss" in desc
+        ), "Prefix rule 'ha resolution issue dismiss <uuid>' missing"
 
 
 class TestGetSentinelIssues:

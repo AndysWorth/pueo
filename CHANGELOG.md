@@ -9,6 +9,23 @@ Pre-1.0: the minor version is the breaking-change signal (0.1 → 0.2 = breaking
 
 ### Added
 
+- **Parameterized gated HA commands** — four new commands are now available to agent
+  loops and subject to the same autonomy-gate / HITL flow as `ha core restart`:
+  `ha resolution suggestion apply <uuid>` (MEDIUM), `ha resolution issue dismiss <uuid>`
+  (LOW), `ha apps restart <slug>` (MEDIUM), and `ha resolution healthcheck` (LOW).
+  UUID and slug arguments are validated against strict regexes (`_UUID_RE`, `_SLUG_RE`)
+  to prevent command injection. Used by the host-health investigation pipeline when the
+  agent needs to apply a Supervisor fix or restart an app. (ADR 041, #858)
+
+- **Host-health investigation pipeline** — `ResourcePoller` now evaluates host metrics
+  (swap pressure, memory pressure, eMMC disk wear, unexpected reboot, Supervisor
+  unhealthy/unsupported, resolution issues) and fires an `AgentLoop` investigation when
+  a threshold is exceeded. The loop uses `build_host_health_tool_registry()` (read-only
+  tools + the four new gated commands + `call_service` + `request_escalation`), a real
+  `AutonomyGate(AUTONOMY_LEVEL)`, and backoff-on-non-success. Configurable via
+  `HOST_SWAP_WARN_PCT`, `HOST_DISK_LIFE_WARN_PCT`, `HOST_HEALTH_INVESTIGATION_ENABLED`.
+  (#853, #856)
+
 - **Resources tab** — the Disk tab has been renamed to Resources and now includes a
   per-container RAM breakdown at the top. Pueo fetches memory usage from
   `ha {core,supervisor,dns,audio,multicast,observer,cli} stats --raw-json` and

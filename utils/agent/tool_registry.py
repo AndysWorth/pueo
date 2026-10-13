@@ -184,7 +184,11 @@ RUN_HA_COMMAND = ToolDefinition(
         "ha os info. "
         "State-changing commands (require approval at non-autonomous levels): "
         "ha core restart, ha core stop, "
-        "ha supervisor repair (alias: ha su repair). "
+        "ha supervisor repair (alias: ha su repair), "
+        "ha resolution healthcheck (re-run Supervisor health checks, LOW risk), "
+        "ha resolution suggestion apply <uuid> (apply a Supervisor suggestion, MEDIUM), "
+        "ha resolution issue dismiss <uuid> (dismiss a known-benign Supervisor issue, LOW), "
+        "ha apps restart <slug> (restart a specific app, MEDIUM). "
         "To create a backup use trigger_backup instead."
     ),
     parameters={

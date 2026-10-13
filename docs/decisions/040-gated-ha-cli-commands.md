@@ -15,6 +15,11 @@ commands are read-only diagnostic queries (`ha core check`, `ha core info`,
 | `ha core stop` | Stops HA Core entirely |
 | `ha supervisor repair` / `ha su repair` | Removes unused container image layers; reboot recommended |
 
+ADR 041 extends this with four additional gated commands needed by the host-health
+investigation pipeline — including parameterized forms (with UUID / slug arguments)
+that require a `_ha_command_risk()` function rather than a plain dict lookup.
+See ADR 041 for the full command table and validation regex design.
+
 These state-changing commands were executing directly over SSH with no gate, violating
 the autonomy-gate invariant in `docs/key-patterns.md` ("Every action that touches remote
 state must call `gate.require_approval()`").

@@ -1211,20 +1211,21 @@ async def _execute_ha_command(
     watch_dir: Path,
 ) -> None:
     """Run an approved state-changing HA CLI command over SSH."""
-    from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST, _HA_COMMAND_RISK
+    from utils.agent.tool_executor import _ha_command_risk, _is_ha_command_allowed
     from utils.ha.ssh_client import AsyncSSHClient
 
     payload = data.get("payload", {})
-    command = payload.get("command", "").strip()
+    # Collapse internal whitespace (\n, \t) to prevent split()/exec mismatch.
+    command = " ".join(payload.get("command", "").split())
     reason = payload.get("reason", "")
 
     (watch_dir / f"{nid}.in_progress").touch()
     try:
         # Defense-in-depth: re-validate at execution time against both the allowlist
         # and the risk map (card payload written to disk could be tampered with).
-        if command not in _HA_COMMAND_ALLOWLIST:
+        if not _is_ha_command_allowed(command):
             raise RuntimeError(f"Command not in allowlist: {command!r}")
-        if command not in _HA_COMMAND_RISK:
+        if _ha_command_risk(command) is None:
             raise RuntimeError(
                 f"Command not in risk map (not a state-changing command): {command!r}"
             )
