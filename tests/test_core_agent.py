@@ -14276,6 +14276,187 @@ class TestExternalUpdateResolution:
 
         assert external == []
 
+    # -- #843: details never "unknown" ------------------------------------
+
+    def _capture_timeline(self, monkeypatch) -> list:
+        calls: list = []
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event",
+            lambda level, source, message, detail=None: calls.append(
+                {"message": message, "detail": detail or {}}
+            ),
+        )
+        return calls
+
+    @staticmethod
+    def _status(**kw):
+        from utils.ha.ha_rest_client import UpdateStatus
+
+        base = dict(
+            component="gazpar2mqtt",
+            entity_id="update.gazpar2mqtt_update",
+            installed_version="0.2.5.1",
+            latest_version="0.2.5.1",
+            update_available=False,
+            release_url=None,
+            release_summary=None,
+            in_progress=False,
+        )
+        base.update(kw)
+        return UpdateStatus(**base)
+
+    def test_resolve_external_card_present_keeps_card_details(
+        self, monkeypatch, tmp_path
+    ):
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.matter_server_update"
+        self._insert_pending_card(key)
+        (tmp_path / f"{stable_nid(key)}.json").write_text(
+            '{"payload": {"component": "matter_server",'
+            ' "installed_version": "9.1.1", "latest_version": "9.2.0"}}'
+        )
+        calls = self._capture_timeline(monkeypatch)
+
+        _resolve_externally_applied_update(
+            key, str(tmp_path), self._status(component="other", installed_version="X")
+        )
+
+        assert calls[0]["message"].startswith(
+            "matter_server updated 9.1.1 → 9.2.0 outside Pueo"
+        )
+
+    def test_resolve_external_no_card_uses_update_status(self, monkeypatch, tmp_path):
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+
+        key = "update:update.gazpar2mqtt_update"
+        self._insert_pending_card(key)
+        calls = self._capture_timeline(monkeypatch)
+
+        _resolve_externally_applied_update(key, str(tmp_path), self._status())
+
+        msg = calls[0]["message"]
+        assert msg.startswith("gazpar2mqtt updated to 0.2.5.1 outside Pueo")
+        assert "unknown" not in msg
+        detail = calls[0]["detail"]
+        assert detail["component"] == "gazpar2mqtt"
+        assert detail["from_version"] is None
+        assert detail["to_version"] == "0.2.5.1"
+        assert "unknown" not in detail["explanation"]
+
+    def test_resolve_external_partial_card_filled_from_update_status(
+        self, monkeypatch, tmp_path
+    ):
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.gazpar2mqtt_update"
+        self._insert_pending_card(key)
+        (tmp_path / f"{stable_nid(key)}.json").write_text(
+            '{"payload": {"component": "Gazpar", "installed_version": "0.2.5"}}'
+        )
+        calls = self._capture_timeline(monkeypatch)
+
+        _resolve_externally_applied_update(key, str(tmp_path), self._status())
+
+        assert calls[0]["message"].startswith(
+            "Gazpar updated 0.2.5 → 0.2.5.1 outside Pueo"
+        )
+
+    def test_resolve_external_nothing_known_uses_entity_name(
+        self, monkeypatch, tmp_path
+    ):
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+
+        key = "update:update.gazpar2mqtt_update"
+        self._insert_pending_card(key)
+        calls = self._capture_timeline(monkeypatch)
+
+        _resolve_externally_applied_update(key, str(tmp_path))
+
+        msg = calls[0]["message"]
+        assert msg.startswith("gazpar2mqtt update cleared outside Pueo")
+        assert "unknown" not in msg
+        assert calls[0]["detail"]["to_version"] is None
+
+    def test_resolve_external_corrupt_card_falls_back(self, monkeypatch, tmp_path):
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+        from utils.hitl.hitl_tracker import stable_nid
+
+        key = "update:update.gazpar2mqtt_update"
+        self._insert_pending_card(key)
+        (tmp_path / f"{stable_nid(key)}.json").write_text("{not json")
+        calls = self._capture_timeline(monkeypatch)
+
+        _resolve_externally_applied_update(key, str(tmp_path))
+
+        assert "unknown" not in calls[0]["message"]
+
+    @pytest.mark.parametrize(
+        "key, expected",
+        [
+            ("update:update.gazpar2mqtt_update", "gazpar2mqtt"),
+            ("update:update.home_assistant_core", "home_assistant_core"),
+            ("update:update._update", "_update"),
+        ],
+    )
+    def test_component_from_update_key(self, key, expected):
+        from agents.ha_log_monitor import _component_from_update_key
+
+        assert _component_from_update_key(key) == expected
+
+    @pytest.mark.parametrize(
+        "frm, to, expected",
+        [
+            ("1", "2", "c updated 1 → 2 outside Pueo"),
+            (None, "2", "c updated to 2 outside Pueo"),
+            ("1", None, "c update cleared outside Pueo"),
+            (None, None, "c update cleared outside Pueo"),
+        ],
+    )
+    def test_external_update_message(self, frm, to, expected):
+        from agents.ha_log_monitor import _external_update_message
+
+        assert _external_update_message("c", frm, to) == expected
+
+    def test_poll_passes_update_status_to_external_resolution(
+        self, monkeypatch, tmp_path
+    ):
+        """Per-entity two-poll path fills to_version from the live entity (#843)."""
+        import asyncio as asyncio_mod
+
+        from agents.ha_log_monitor import poll_for_updates
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        self._insert_pending_card("update:update.gazpar2mqtt_update")
+        calls = self._capture_timeline(monkeypatch)
+        monkeypatch.setattr("agents.ha_log_monitor.NOTIFY_WATCH_DIR", str(tmp_path))
+        entity = {
+            "entity_id": "update.gazpar2mqtt_update",
+            "state": "off",
+            "attributes": {
+                "installed_version": "0.2.5.1",
+                "latest_version": "0.2.5.1",
+                "release_url": None,
+                "release_summary": None,
+                "in_progress": False,
+            },
+        }
+        client = FakeHARestClient(states=[entity])
+        monkeypatch.setattr(asyncio_mod, "sleep", self._n_shot_sleep(3))
+        monkeypatch.setattr(
+            "agents.ha_log_monitor.HA_UPDATE_NOTIFY_ON_AVAILABLE", False
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(poll_for_updates(ha_rest_client=client))
+
+        external = [c for c in calls if "outside Pueo" in c["message"]]
+        assert len(external) == 1
+        assert "updated to 0.2.5.1" in external[0]["message"]
+        assert "unknown" not in external[0]["message"]
+
 
 class TestRepairReconcileTimeline:
     """poll_for_repairs reconcile sweep writes a timeline event when an issue resolves."""

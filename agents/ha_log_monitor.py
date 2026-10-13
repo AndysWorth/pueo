@@ -64,7 +64,12 @@ from utils.core.prompts import load_prompt, repeat_query
 from utils.agent.autonomy import AutonomyGate, RiskLevel
 from utils.hitl.notify import NotifierProtocol, get_notifier
 from utils.core.rate_limiter import Debouncer, RateLimiter, RateLimitExceeded
-from utils.ha.ha_rest_client import HARepairIssue, HARestClient, get_update_status
+from utils.ha.ha_rest_client import (
+    HARepairIssue,
+    HARestClient,
+    UpdateStatus,
+    get_update_status,
+)
 from utils.disk.resource import ResourcePoller
 from utils.core.retry import async_retry
 from utils.ha.ssh_client import AsyncSSHClient
@@ -876,25 +881,57 @@ async def tail_remote_log_stream(
         raise
 
 
-def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> None:
-    """Retire a pending update approval card that HA resolved without Pueo's involvement."""
+def _component_from_update_key(suppression_key: str) -> str:
+    """Derive a readable component name from an update suppression key.
+
+    "update:update.gazpar2mqtt_update" → "gazpar2mqtt".
+    """
+    name = suppression_key.removeprefix("update:").removeprefix("update.")
+    return name.removesuffix("_update") or name
+
+
+def _external_update_message(
+    component: str, from_version: Optional[str], to_version: Optional[str]
+) -> str:
+    """Build the external-resolution timeline text from whichever parts are known."""
+    if from_version and to_version:
+        return f"{component} updated {from_version} → {to_version} outside Pueo"
+    if to_version:
+        return f"{component} updated to {to_version} outside Pueo"
+    return f"{component} update cleared outside Pueo"
+
+
+def _resolve_externally_applied_update(
+    suppression_key: str, watch_dir: str, update: Optional[UpdateStatus] = None
+) -> None:
+    """Retire a pending update approval card that HA resolved without Pueo's involvement.
+
+    Details come from the approval-card JSON when present; otherwise from the
+    current poll's UpdateStatus, then the entity id, so the message never shows
+    "unknown" (#843).
+    """
     from utils.hitl.hitl_tracker import mark_card_resolved, stable_nid
 
     nid = stable_nid(suppression_key)
-    component = "unknown"
-    from_version = "unknown"
-    to_version = "unknown"
+    component: Optional[str] = None
+    from_version: Optional[str] = None
+    to_version: Optional[str] = None
 
     card_path = Path(watch_dir) / f"{nid}.json"
     try:
         if card_path.exists():
             data = json.loads(card_path.read_text())
             payload = data.get("payload", data)
-            component = payload.get("component", "unknown")
-            from_version = payload.get("installed_version", "unknown")
-            to_version = payload.get("latest_version", "unknown")
+            component = payload.get("component")
+            from_version = payload.get("installed_version")
+            to_version = payload.get("latest_version")
     except Exception:  # nosec B110
         pass
+
+    if update is not None:
+        component = component or update.component
+        to_version = to_version or update.installed_version
+    component = component or _component_from_update_key(suppression_key)
 
     entity_id = suppression_key.removeprefix("update:")
     with sqlite3.connect(DB_PATH) as _conn:
@@ -911,7 +948,7 @@ def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> 
         write_timeline_event(
             "INFO",
             "update_check",
-            f"{component} updated {from_version} → {to_version} outside Pueo"
+            f"{_external_update_message(component, from_version, to_version)}"
             " (HA auto-update or manual action in HA UI)",
             {
                 "component": component,
@@ -919,7 +956,7 @@ def _resolve_externally_applied_update(suppression_key: str, watch_dir: str) -> 
                 "to_version": to_version,
                 "resolution": "external",
                 "explanation": (
-                    f"{component} moved from {from_version} to {to_version}"
+                    f"{_external_update_message(component, from_version, to_version)}"
                     " without Pueo approval."
                 ),
             },
@@ -1065,6 +1102,7 @@ async def poll_for_updates(
                             _resolve_externally_applied_update,
                             suppression_key,
                             NOTIFY_WATCH_DIR,
+                            u,
                         )
                         _update_gone.pop(suppression_key, None)
 
