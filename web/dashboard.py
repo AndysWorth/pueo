@@ -39,6 +39,7 @@ from utils.hitl.card_types import (
     CARD_TYPE_CONFIG_ENTRY_RELOAD,
     CARD_TYPE_DASHBOARD_ENTITY,
     CARD_TYPE_DISK_RECOVERY,
+    CARD_TYPE_HA_COMMAND,
     CARD_TYPE_HA_REPAIR,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_NETALERTX_MIGRATE,
@@ -1203,6 +1204,57 @@ async def _execute_config_entry_reload(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_ha_command(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Run an approved state-changing HA CLI command over SSH."""
+    from utils.agent.tool_executor import _HA_COMMAND_ALLOWLIST, _HA_COMMAND_RISK
+    from utils.ha.ssh_client import AsyncSSHClient
+
+    payload = data.get("payload", {})
+    command = payload.get("command", "").strip()
+    reason = payload.get("reason", "")
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        # Defense-in-depth: re-validate at execution time against both the allowlist
+        # and the risk map (card payload written to disk could be tampered with).
+        if command not in _HA_COMMAND_ALLOWLIST:
+            raise RuntimeError(f"Command not in allowlist: {command!r}")
+        if command not in _HA_COMMAND_RISK:
+            raise RuntimeError(
+                f"Command not in risk map (not a state-changing command): {command!r}"
+            )
+        ssh = AsyncSSHClient()
+        exit_code, stdout, stderr = await ssh.run(command, check=False)
+        if exit_code != 0:
+            raise RuntimeError(f"Command failed (exit {exit_code}): {stderr or stdout}")
+        data["fix_applied"] = True
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.approved").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "INFO",
+                "ha_command",
+                f"HA command executed: {command}" + (f" — {reason}" if reason else ""),
+                {"command": command, "reason": reason},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 async def _execute_service_call(
     nid: str,
     data: dict,
@@ -1925,6 +1977,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
     CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
+    CARD_TYPE_HA_COMMAND: _execute_ha_command,
     CARD_TYPE_SERVICE_CALL: _execute_service_call,
     CARD_TYPE_AUTOMATION_CREATE: _execute_automation_create,
 }

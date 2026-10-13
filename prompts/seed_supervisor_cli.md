@@ -12,10 +12,11 @@ the `ha` CLI provided by the Home Assistant Supervisor.
 
 ```
 ha core check          # Validate configuration.yaml (returns errors; exit 0 = valid)
-ha core restart        # Restart Home Assistant Core (brief outage, keeps add-ons running)
+ha core restart        # Restart HA Core — REQUIRES APPROVAL (MEDIUM risk; brief outage)
 ha core update         # Update HA Core to the latest available version
 ha core logs           # Show recent Core log lines (use --follow for live tail)
-ha core info           # Show current Core version, state, and boot count
+ha core info           # Show current Core version, state, and boot count (read-only)
+ha core stop           # Stop HA Core entirely — REQUIRES APPROVAL (HIGH risk)
 ```
 
 ## OS Commands
@@ -59,8 +60,15 @@ ha supervisor logs     # Show Supervisor log lines
 ha supervisor reload   # Reload Supervisor configuration (rarely needed)
 ha supervisor update   # Update the Supervisor itself
 ha supervisor info     # Show Supervisor version and state
-ha supervisor repair   # Remove unused container image layers (safe; reboot recommended)
+ha supervisor repair   # Remove unused container image layers — REQUIRES APPROVAL (MEDIUM risk)
+ha su repair           # Alias for ha supervisor repair — also REQUIRES APPROVAL
 ```
+
+**Approval note:** `ha core restart`, `ha core stop`, `ha supervisor repair`, and
+`ha su repair` are state-changing. Calling `run_ha_command` with any of these queues an
+approval card (HITL) at non-autonomous autonomy levels. At FULL_AUTONOMOUS (level 4)
+they execute directly. Read-only commands (`ha core check`, `ha core info`, etc.) never
+require approval.
 
 ## Network
 
