@@ -868,3 +868,338 @@ class TestResourcePollerCheckHostHealth:
 
         assert len(notifier.sent) == 1
         assert "disk_wear" in poller._alerted_host
+
+
+# ---------------------------------------------------------------------------
+# build_host_health_tool_registry
+# ---------------------------------------------------------------------------
+
+
+class TestBuildHostHealthToolRegistry:
+    def test_expected_tools_registered(self):
+        from utils.agent.tool_registry import build_host_health_tool_registry
+
+        reg = build_host_health_tool_registry()
+        names = set(reg.names())
+        expected = {
+            "get_disk_usage",
+            "read_logs",
+            "read_pueo_log",
+            "search_log",
+            "run_ha_command",
+            "query_knowledge",
+            "remember",
+            "recall",
+            "get_ha_profile",
+            "call_service",
+            "request_escalation",
+            "discard_result",
+            "finish_host_health",
+        }
+        assert names == expected
+
+    def test_no_write_or_patch_tools(self):
+        from utils.agent.tool_registry import build_host_health_tool_registry
+
+        reg = build_host_health_tool_registry()
+        names = set(reg.names())
+        assert "write_config" not in names
+        assert "propose_patch" not in names
+        assert "sandbox_code" not in names
+
+
+# ---------------------------------------------------------------------------
+# _finish_host_health (ToolExecutor method)
+# ---------------------------------------------------------------------------
+
+
+def _make_hitl_db(tmp_path):
+    """Create a minimal SQLite DB with hitl_suppression for finish_host_health tests."""
+    import sqlite3
+
+    db = str(tmp_path / "state.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE hitl_suppression"
+            " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+            " description TEXT NOT NULL DEFAULT '',"
+            " first_sent_at REAL NOT NULL DEFAULT 0,"
+            " last_sent_at REAL NOT NULL DEFAULT 0,"
+            " send_count INTEGER NOT NULL DEFAULT 1,"
+            " last_action TEXT, last_action_at REAL,"
+            " rejection_count INTEGER NOT NULL DEFAULT 0,"
+            " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+            " known_issue_note TEXT, resolved_at REAL)"
+        )
+    return db
+
+
+class TestFinishHostHealth:
+    def _make_executor(self, db, notifier=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=notifier or FakeNotifier(),
+            db_path=db,
+        )
+
+    def test_with_finding_sends_notification_payload(self, tmp_path):
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+        from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        finding = HostHealthFinding(
+            key="disk_wear",
+            kind="disk_wear",
+            severity="WARN",
+            evidence={"disk_life_used_pct": 85.0},
+        )
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Disk wear at 85%.",
+                root_cause="eMMC aging.",
+                outcome="monitoring",
+                recommended_actions=[],
+            )
+        )
+
+        assert len(notifier.sent) == 1
+        payload = notifier.sent[0]["payload"]
+        assert payload["card_type"] == CARD_TYPE_HOST_HEALTH
+        assert payload["kind"] == "disk_wear"
+        assert payload["severity"] == "WARN"
+        assert payload["outcome"] == "monitoring"
+        assert "disk_life_used_pct" in payload["evidence"]
+
+    def test_with_finding_marks_hitl_row_sent(self, tmp_path):
+        import asyncio
+        import sqlite3
+
+        from utils.disk.host_health import HostHealthFinding
+
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Disk wear at 85%.",
+                root_cause="eMMC aging.",
+                outcome="monitoring",
+                recommended_actions=[],
+            )
+        )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT card_key FROM hitl_suppression"
+                " WHERE card_key = 'host_health:disk_wear'"
+            ).fetchone()
+        assert row is not None
+
+    def test_without_finding_returns_summary_only(self, tmp_path):
+        import asyncio
+
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = self._make_executor(db, notifier=notifier)
+        # No set_host_health_finding call → _host_health_finding is None
+
+        result = asyncio.run(
+            executor._finish_host_health(
+                summary="Investigation complete.",
+                root_cause="",
+                outcome="monitoring",
+                recommended_actions=[],
+            )
+        )
+
+        assert result.success is True
+        assert len(notifier.sent) == 0
+
+
+# ---------------------------------------------------------------------------
+# run_host_health_investigation
+# ---------------------------------------------------------------------------
+
+
+class TestRunHostHealthInvestigation:
+    def _make_db(self, tmp_path):
+        return _make_hitl_db(tmp_path)
+
+    def _patch_supervisor(self, monkeypatch):
+        import utils.agent.supervisor as _sup_mod
+
+        monkeypatch.setattr(_sup_mod, "increment_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "decrement_active_agent", lambda: None)
+        monkeypatch.setattr(_sup_mod, "publish_activity_done", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            _sup_mod, "make_activity_timeline_callback", lambda *a, **kw: None
+        )
+
+    def test_finish_called_no_backoff_written(self, tmp_path, monkeypatch):
+        """When finish_host_health is called, outcome is success → no backoff row."""
+        import asyncio
+        import sqlite3
+
+        import utils.ha.ha_environment as _env_mod
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        db = self._make_db(tmp_path)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+
+        llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_host_health",
+                                "arguments": {
+                                    "summary": "Disk wear at 85%.",
+                                    "root_cause": "eMMC aging.",
+                                    "outcome": "monitoring",
+                                    "recommended_actions": [],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=llm,
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT next_allowed_at FROM hitl_suppression"
+                " WHERE card_key = 'host_health_backoff:disk_wear'"
+            ).fetchone()
+        assert row is None
+
+    def test_no_terminal_tool_writes_backoff(self, tmp_path, monkeypatch):
+        """When AgentLoop returns a non-success outcome, backoff row is written."""
+        import asyncio
+        import sqlite3
+
+        import utils.agent.agent_loop as _al_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+
+        _original_loop = _al_mod.AgentLoop
+
+        class _ExhaustedLoop(_original_loop):
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="exhausted")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _ExhaustedLoop)
+
+        db = self._make_db(tmp_path)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT next_allowed_at FROM hitl_suppression"
+                " WHERE card_key = 'host_health_backoff:disk_wear'"
+            ).fetchone()
+        assert row is not None
+
+    def test_gate_built_with_autonomy_level(self, tmp_path, monkeypatch):
+        """AutonomyGate is constructed with config.AUTONOMY_LEVEL."""
+        import asyncio
+
+        import config as cfg_mod
+        import utils.agent.agent_loop as _al_mod
+        import utils.agent.autonomy as _autonomy_mod
+        import utils.ha.ha_environment as _env_mod
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        self._patch_supervisor(monkeypatch)
+        monkeypatch.setattr(_env_mod, "load_environment_profile", lambda db: None)
+        monkeypatch.setattr(cfg_mod, "AUTONOMY_LEVEL", 2)
+
+        _original_loop = _al_mod.AgentLoop
+
+        class _NoopLoop(_original_loop):
+            async def run(self, *args, **kwargs):
+                return AgentLoopResult(outcome="success")
+
+        monkeypatch.setattr(_al_mod, "AgentLoop", _NoopLoop)
+
+        captured_levels: list = []
+        _original_gate = _autonomy_mod.AutonomyGate
+
+        class _CapturingGate(_original_gate):
+            def __init__(self, level, **kwargs):
+                captured_levels.append(level)
+                super().__init__(level, **kwargs)
+
+        monkeypatch.setattr(_autonomy_mod, "AutonomyGate", _CapturingGate)
+
+        db = self._make_db(tmp_path)
+        finding = HostHealthFinding(key="disk_wear", kind="disk_wear", severity="WARN")
+
+        asyncio.run(
+            run_host_health_investigation(
+                finding=finding,
+                notifier=FakeNotifier(),
+                db_path=db,
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+
+        assert 2 in captured_levels
