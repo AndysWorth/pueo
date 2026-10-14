@@ -102,11 +102,14 @@ async def run_host_health_investigation(
         ),
         capture_llm=True,
     )
+    from utils.knowledge.runbook_signature import sig_host_health
+
     increment_active_agent()
     try:
         result = await loop.run(
             initial_context=initial_context,
             knowledge_query=host_health_knowledge_query(finding),
+            signature=sig_host_health(finding.kind, finding.evidence.get("type", "")),
         )
         publish_activity_done("host_health", result.outcome)
         if result.outcome != "success":

@@ -276,6 +276,84 @@ class TestAgentLoopPreInject:
         )
         assert result.outcome in ("exhausted", "success", "stuck", "timeout")
 
+    def test_run_stores_signature_on_loop(self):
+        """run(signature=...) stores the value on self._signature."""
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(knowledge_store=store)
+        asyncio.run(
+            loop.run(
+                "HA repair issue",
+                signature="repair:recorder:backup_not_available",
+            )
+        )
+        assert loop._signature == "repair:recorder:backup_not_available"
+
+    def test_run_falls_back_to_trigger_when_no_signature(self):
+        """run() with no signature= arg uses self._trigger as the signature."""
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(knowledge_store=store)
+        asyncio.run(loop.run("some context"))
+        assert loop._signature == loop._trigger
+
+    def test_pre_inject_exact_signature_match_prepended(self, tmp_path):
+        """Exact-signature match from SQLite appears first, labelled correctly."""
+        import asyncio
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies"
+                " (id TEXT PRIMARY KEY, title TEXT, approach TEXT,"
+                "  runbook_state TEXT, signature TEXT, version INTEGER,"
+                "  trigger_pattern TEXT, created_at TEXT, episode_refs TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO agent_strategies"
+                " (id, title, approach, runbook_state, signature, version)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "rb:exact",
+                    "Exact Runbook",
+                    "Step 1: restart the integration.",
+                    "validated",
+                    "repair:recorder:backup_not_available",
+                    1,
+                ),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(knowledge_store=store)
+        loop._db_path = db
+        loop._signature = "repair:recorder:backup_not_available"
+
+        result = asyncio.run(loop._pre_inject_knowledge("recorder backup"))
+        assert "[RUNBOOK FOR THIS EXACT SYMPTOM]" in result
+        assert "Exact Runbook" in result
+        assert "Step 1: restart the integration." in result
+
+    def test_pre_inject_no_exact_match_when_trigger_style_signature(self, tmp_path):
+        """Trigger-style signatures (no colon) skip the exact-match lookup."""
+        import asyncio
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        loop = self._make_loop(knowledge_store=store)
+        loop._db_path = str(tmp_path / "empty.db")
+        loop._signature = "update_poll"  # no colon → skip lookup
+
+        result = asyncio.run(loop._pre_inject_knowledge("update available"))
+        # No exact match block even if a db exists; no crash either.
+        assert "[RUNBOOK FOR THIS EXACT SYMPTOM]" not in result
+
 
 class TestFormatKnowledgeBlock:
     """_format_knowledge_block renders chunks in rank order with per-chunk budgets."""

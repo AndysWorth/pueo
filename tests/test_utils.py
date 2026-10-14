@@ -6924,6 +6924,117 @@ class TestPromptCommandAllowlist:
         assert offenders == []
 
 
+class TestDiscardTriggerKeyedCandidates:
+    """discard_trigger_keyed_candidates marks candidates with no-colon signature."""
+
+    def _setup_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "test.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE agent_strategies"
+                " (id TEXT PRIMARY KEY, title TEXT, approach TEXT,"
+                "  runbook_state TEXT, signature TEXT, version INTEGER DEFAULT 1,"
+                "  trigger_pattern TEXT, created_at TEXT, episode_refs TEXT)"
+            )
+        return db
+
+    def test_discards_trigger_keyed_candidate(self, tmp_path):
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import discard_trigger_keyed_candidates
+
+        db = self._setup_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, runbook_state, signature)"
+                " VALUES (?, 'candidate', 'update_poll')",
+                ("bad:1",),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        store.upsert("strategies", ids=["bad:1"], documents=["text"], metadatas=[{}])
+
+        count = discard_trigger_keyed_candidates(store, db)
+        assert count == 1
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='bad:1'"
+            ).fetchone()
+        assert row[0] == "discarded"
+
+    def test_does_not_discard_real_signature(self, tmp_path):
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import discard_trigger_keyed_candidates
+
+        db = self._setup_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, runbook_state, signature)"
+                " VALUES (?, 'candidate', 'repair:recorder:backup_not_available')",
+                ("good:1",),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        count = discard_trigger_keyed_candidates(store, db)
+        assert count == 0
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT runbook_state FROM agent_strategies WHERE id='good:1'"
+            ).fetchone()
+        assert row[0] == "candidate"
+
+    def test_does_not_discard_seed_or_validated(self, tmp_path):
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import discard_trigger_keyed_candidates
+
+        db = self._setup_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.executemany(
+                "INSERT INTO agent_strategies (id, runbook_state, signature)"
+                " VALUES (?, ?, 'update_poll')",
+                [("s1", "seed"), ("s2", "validated")],
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        count = discard_trigger_keyed_candidates(store, db)
+        assert count == 0
+
+    def test_returns_zero_with_no_db_path(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import discard_trigger_keyed_candidates
+
+        store = FakeKnowledgeStore()
+        assert discard_trigger_keyed_candidates(store, "") == 0
+
+    def test_idempotent_second_call(self, tmp_path):
+        import sqlite3
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import discard_trigger_keyed_candidates
+
+        db = self._setup_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, runbook_state, signature)"
+                " VALUES (?, 'candidate', 'repair_poll')",
+                ("dup:1",),
+            )
+            conn.commit()
+
+        store = FakeKnowledgeStore()
+        discard_trigger_keyed_candidates(store, db)
+        count2 = discard_trigger_keyed_candidates(store, db)
+        assert count2 == 0  # already discarded, not candidate
+
+
 class TestSeedHomeProfile:
     def test_returns_one_on_success(self):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore

@@ -948,6 +948,8 @@ class ToolExecutor:
     @staticmethod
     def _knowledge_authority_label(collection: str, metadata: dict) -> str:
         """Return a human-readable trust label for a knowledge chunk."""
+        if metadata.get("exact_match"):
+            return "[RUNBOOK FOR THIS EXACT SYMPTOM]"
         if collection in (
             "ha_integration_docs",
             "ha_concepts",

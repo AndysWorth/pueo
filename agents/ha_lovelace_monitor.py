@@ -146,11 +146,17 @@ async def _run_lovelace_investigation(
         ),
         capture_llm=True,
     )
+    from utils.knowledge.runbook_signature import sig_lovelace
+
+    _first_domain = (
+        str(suspicious[0]["entity_id"]).split(".", 1)[0] if suspicious else "unknown"
+    )
     increment_active_agent()
     try:
         result = await loop.run(
             initial_context=initial_context,
             knowledge_query=_lovelace_knowledge_query(suspicious),
+            signature=sig_lovelace(_first_domain, "unregistered"),
         )
         publish_activity_done("lovelace_investigation", result.outcome)
         if result.outcome != "success":
