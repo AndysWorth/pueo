@@ -84,6 +84,31 @@ def _format_step_trace(steps: list["AgentStep"]) -> str:
     return "\n".join(lines) if lines else "  (no tool calls)"
 
 
+# Per-chunk token budget for pre-injected knowledge (top_k=3 → ~900 tokens total).
+_PRE_INJECT_CHUNK_TOKENS = 300
+
+
+def _format_knowledge_block(chunks: list[Any]) -> str:
+    """Render pre-injected knowledge chunks in rank order.
+
+    Each chunk body is head-truncated to its own budget, so the header and the
+    highest-ranked chunk are never dropped by a later, lower-ranked one.
+    """
+    from utils.agent.tool_executor import ToolExecutor as _TE
+    from utils.core.context import truncate_to_budget
+
+    parts = ["Relevant context (use as reference, verify before applying):"]
+    for chunk in chunks:
+        col = getattr(chunk, "collection", "")
+        label = _TE._knowledge_authority_label(col, getattr(chunk, "metadata", {}))
+        source = getattr(chunk, "source", "")
+        body = truncate_to_budget(chunk.text, _PRE_INJECT_CHUNK_TOKENS, "head")
+        if len(body) < len(chunk.text):
+            body += " …[truncated]"
+        parts.append(f"\n{label} [{col} | {source}]\n{body}")
+    return "\n".join(parts)
+
+
 def _parse_content_as_tool_call(
     content: str, known_names: set[str]
 ) -> list[dict] | None:
@@ -377,14 +402,13 @@ class AgentLoop:
         """Query the knowledge store and append results to the initial context.
 
         Best-effort — any failure returns the original context unchanged.
-        Capped at 1,000 tokens via truncate_to_budget.
+        Each chunk is head-truncated to _PRE_INJECT_CHUNK_TOKENS in rank order, so
+        the top hit always survives (a single tail-truncated block dropped it).
         The query_text parameter should be the original user question so
         ChromaDB searches user intent rather than the injected HA profile.
         Sets executor._query_knowledge_had_results when chunks are found so that
         sessions benefiting from pre-injected context don't trigger the auto-gap.
         """
-        from utils.core.context import truncate_to_budget
-
         effective_query = (query_text or initial_context)[:500]
         try:
             chunks = await asyncio.to_thread(
@@ -414,18 +438,7 @@ class AgentLoop:
         ]
         if repair_chunks:
             log.info("pre_inject_similar_episodes", count=len(repair_chunks))
-        from utils.agent.tool_executor import ToolExecutor as _TE
-
-        parts = ["Relevant context (use as reference, verify before applying):"]
-        for chunk in chunks:
-            label = _TE._knowledge_authority_label(
-                getattr(chunk, "collection", ""),
-                getattr(chunk, "metadata", {}),
-            )
-            source = getattr(chunk, "source", "")
-            col = getattr(chunk, "collection", "")
-            parts.append(f"\n{label} [{col} | {source}]\n{chunk.text}")
-        block = truncate_to_budget("\n".join(parts), 1000)
+        block = _format_knowledge_block(chunks)
         log.debug("agent_loop_knowledge_injected", runbooks_found=len(chunks))
         import config as _al_cfg
 

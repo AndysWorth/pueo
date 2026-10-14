@@ -6771,6 +6771,158 @@ class TestStrategySeeder:
         chunks = store.query("swap pressure", top_k=10, collections=["strategies"])
         assert any("host" in (c.text or "").lower() for c in chunks)
 
+    def _init_db(self, tmp_path, monkeypatch) -> str:
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        return db
+
+    def test_retired_seeds_not_registered(self):
+        """Other agents' system prompts are not seeded as runbooks (#871)."""
+        from utils.knowledge.strategy_seeder import _RETIRED_SEED_PROMPTS, _SEED_PROMPTS
+
+        filenames = {f for f, _, _ in _SEED_PROMPTS}
+        assert _RETIRED_SEED_PROMPTS
+        assert filenames.isdisjoint(_RETIRED_SEED_PROMPTS)
+        assert "diagnose_netalertx.md" in _RETIRED_SEED_PROMPTS
+
+    def test_seed_strategies_purges_retired_ids(self, tmp_path, monkeypatch):
+        """Retired seed ids are deleted from Chroma and agent_strategies on seeding."""
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        db = self._init_db(tmp_path, monkeypatch)
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["seed:diagnose_netalertx.md", "rb_keep"],
+            documents=["old netalertx prompt", "learned runbook"],
+            metadatas=[{"source": "seed_prompt"}, {"source": "agent_strategies"}],
+        )
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_strategies (id, title, trigger_pattern, approach,"
+                " runbook_state, created_at) VALUES"
+                " ('seed:investigation.md', 't', 'p', 'a', 'seed', datetime('now'))"
+            )
+        seed_strategies(store, db_path=db)
+        ids = {d[0] for d in store._docs["strategies"]}
+        assert "seed:diagnose_netalertx.md" not in ids
+        assert "rb_keep" in ids
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM agent_strategies WHERE id='seed:investigation.md'"
+            ).fetchone()
+        assert row is None
+
+    def test_purge_retired_seeds_tolerates_failures(self):
+        """A store that raises and a db without the table are both swallowed."""
+        from utils.knowledge.strategy_seeder import purge_retired_seeds
+
+        class _BrokenStore:
+            def delete_ids(self, *a, **k):
+                raise RuntimeError("chroma down")
+
+        purge_retired_seeds(_BrokenStore(), db_path="/nonexistent/dir/x.db")  # type: ignore[arg-type]
+
+    def test_only_changed_skips_unchanged_seeds(self, tmp_path, monkeypatch):
+        """only_changed=True re-embeds only seeds whose content differs from SQLite."""
+        import sqlite3
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, seed_strategies
+
+        db = self._init_db(tmp_path, monkeypatch)
+        n_all = seed_strategies(FakeKnowledgeStore(), db_path=db)
+        assert n_all == len(_SEED_PROMPTS)
+
+        # Everything current → nothing re-seeded.
+        assert seed_strategies(FakeKnowledgeStore(), db_path=db, only_changed=True) == 0
+
+        # One stale row and one missing row → exactly those two re-seeded.
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE agent_strategies SET approach='stale'"
+                " WHERE id='seed:seed_host_health.md'"
+            )
+            conn.execute(
+                "DELETE FROM agent_strategies WHERE id='seed:seed_repair_issue.md'"
+            )
+        store = FakeKnowledgeStore()
+        assert seed_strategies(store, db_path=db, only_changed=True) == 2
+        ids = {d[0] for d in store._docs["strategies"]}
+        assert ids == {"seed:seed_host_health.md", "seed:seed_repair_issue.md"}
+
+    def test_only_changed_without_db_seeds_everything(self):
+        """With no db_path there is nothing to compare against, so all seeds upsert."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS, seed_strategies
+
+        n = seed_strategies(FakeKnowledgeStore(), only_changed=True)
+        assert n == len(_SEED_PROMPTS)
+
+    def test_stored_seed_approaches_missing_table(self, tmp_path):
+        """A db without agent_strategies yields an empty mapping."""
+        from utils.knowledge.strategy_seeder import _stored_seed_approaches
+
+        assert _stored_seed_approaches(str(tmp_path / "empty.db")) == {}
+        assert _stored_seed_approaches("") == {}
+
+
+class TestPromptCommandAllowlist:
+    """Every run_ha_command("…") a prompt recommends must pass the allowlist (#871)."""
+
+    _PLACEHOLDERS = {
+        "<uuid>": "21716717e35942828286b9b45fe378cf",
+        "<slug>": "core_mosquitto",
+    }
+
+    def _prompt_commands(self) -> list[tuple[str, str]]:
+        import re
+        from pathlib import Path
+
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        found: list[tuple[str, str]] = []
+        for path in sorted(prompts_dir.glob("*.md")):
+            text = path.read_text("utf-8")
+            for m in re.finditer(r"run_ha_command\(\s*[\"']([^\"']+)[\"']", text):
+                cmd = m.group(1)
+                for placeholder, value in self._PLACEHOLDERS.items():
+                    cmd = cmd.replace(placeholder, value)
+                found.append((path.name, " ".join(cmd.split())))
+        return found
+
+    def test_prompts_reference_some_commands(self):
+        """Guard against the regex silently matching nothing."""
+        assert len(self._prompt_commands()) >= 10
+
+    def test_every_prompt_command_is_allowlisted(self):
+        from utils.agent.tool_executor import _is_ha_command_allowed
+
+        rejected = [
+            (name, cmd)
+            for name, cmd in self._prompt_commands()
+            if not _is_ha_command_allowed(cmd)
+        ]
+        assert rejected == []
+
+    def test_no_prompt_mentions_removed_save_runbook(self):
+        """save_runbook was removed in ADR 038; prompts must not tell agents to call it."""
+        from pathlib import Path
+
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        offenders = [
+            p.name
+            for p in prompts_dir.glob("*.md")
+            if "save_runbook" in p.read_text("utf-8")
+            or "save a runbook" in p.read_text("utf-8").lower()
+        ]
+        assert offenders == []
+
 
 class TestSeedHomeProfile:
     def test_returns_one_on_success(self):

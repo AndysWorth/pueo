@@ -5,85 +5,71 @@ ha network, which CLI command, how to restart HA, how to update HA, how to list 
 
 ## Overview
 
-The `run_ha_command` tool executes these commands on the HA host via SSH. All commands use
-the `ha` CLI provided by the Home Assistant Supervisor.
+The `run_ha_command` tool runs `ha` CLI commands on the HA host via SSH, but **only the
+commands listed under "Commands run_ha_command accepts"**. Anything else (including shell
+chaining with `&&`, pipes, or `grep`) is rejected with "Command not in allowlist". The
+other sections are a CLI reference so you can explain things to the user — do not call
+them through `run_ha_command`.
 
-## Core Commands
+## Commands run_ha_command accepts
 
-```
-ha core check          # Validate configuration.yaml (returns errors; exit 0 = valid)
-ha core restart        # Restart HA Core — REQUIRES APPROVAL (MEDIUM risk; brief outage)
-ha core update         # Update HA Core to the latest available version
-ha core logs           # Show recent Core log lines (use --follow for live tail)
-ha core info           # Show current Core version, state, and boot count (read-only)
-ha core stop           # Stop HA Core entirely — REQUIRES APPROVAL (HIGH risk)
-```
-
-## OS Commands
+Read-only (run directly):
 
 ```
-ha os update           # Update HA OS to the latest available version
-ha os info             # Show OS version, board, and boot slot
+run_ha_command("ha core check")                  # Validate config (exit 0 = valid)
+run_ha_command("ha core info")                   # Core version, version_latest, state, boot
+run_ha_command("ha os info")                     # OS version, version_latest, board, boot slot
+run_ha_command("ha host info")                   # Hostname, kernel, disk, uptime
+run_ha_command("ha resolution info --raw-json")  # Supervisor issues, suggestions, unhealthy
+run_ha_command("ha backups list")                # Backups with slug, type (full/partial), date
+run_ha_command("ha apps list")                   # Installed apps with slug, state, version
+run_ha_command("ha apps info core_mosquitto")    # One app's details (any valid slug)
+run_ha_command("ha core stats")                  # CPU / memory for Core (also --raw-json)
+run_ha_command("ha supervisor stats")            # CPU / memory for Supervisor
+run_ha_command("ha apps stats core_mosquitto")   # CPU / memory for one app
 ```
 
-## Apps (formerly Add-ons)
+`ha dns|audio|multicast|observer|cli stats` (each optionally `--raw-json`) are also
+accepted. For Supervisor version details use `ha os info` and `ha core info` —
+`ha supervisor info` is **not** accepted.
+
+State-changing (gated — queues an approval card below FULL_AUTONOMOUS, level 4):
 
 ```
-ha apps list           # List all installed apps with slug, state, and version
-ha apps info <slug>    # Show details for one app (e.g. ha apps info core_mosquitto)
-ha apps start <slug>   # Start an app
-ha apps stop <slug>    # Stop an app
-ha apps restart <slug> # Restart an app
-ha apps update <slug>  # Update one app to latest
-ha apps logs <slug>    # Show recent logs for an app
+run_ha_command("ha core restart")                          # MEDIUM — brief outage
+run_ha_command("ha core stop")                             # HIGH
+run_ha_command("ha supervisor repair")                     # MEDIUM — prune unused image layers
+run_ha_command("ha apps restart core_mosquitto")           # MEDIUM — any valid slug
+run_ha_command("ha resolution healthcheck")                # LOW — re-run Supervisor checks
 ```
 
-**Note:** `ha apps` replaced `ha addons` in HA 2026.2. Use `ha apps` on any installation
-running 2026.2 or later.
+`ha resolution suggestion apply <uuid>` (MEDIUM) and `ha resolution issue dismiss <uuid>`
+(LOW) are accepted with a real UUID from `ha resolution info --raw-json`.
 
-## Backups
+Logs: use `read_logs(log_source="ha_core" | "ha_supervisor" | "ha_os" | "ha_host" |
+"ha_app")`, not `ha core logs`.
 
-```
-ha backups list                    # List all backups with slug, name, date, size
-ha backups new --name "my-backup"  # Create a full backup snapshot (returns slug)
-ha backups remove <slug>           # Delete a backup by slug
-ha backups info <slug>             # Show details for one backup
-```
-
-**Safety rule:** Always run `ha backups new` and confirm the returned slug before any
-write operation on configuration.yaml. Never skip this step.
-
-## Supervisor
+## CLI reference (not available via run_ha_command)
 
 ```
-ha supervisor logs     # Show Supervisor log lines
+ha core update / ha os update / ha supervisor update / ha apps update <slug>
+                       # Updates — handled by Pueo's update manager, never ad hoc
+ha core logs / ha supervisor logs / ha apps logs <slug>
+                       # Use read_logs instead
+ha supervisor info     # Supervisor version and state (use ha os info / ha core info)
 ha supervisor reload   # Reload Supervisor configuration (rarely needed)
-ha supervisor update   # Update the Supervisor itself
-ha supervisor info     # Show Supervisor version and state
-ha supervisor repair   # Remove unused container image layers — REQUIRES APPROVAL (MEDIUM risk)
-ha su repair           # Alias for ha supervisor repair — also REQUIRES APPROVAL
+ha apps start|stop <slug>
+ha backups new / ha backups remove <slug> / ha backups info <slug>
+ha network info / ha network update
+ha os datadisk list
+ha docker reset-storage  # Nuclear: wipe Docker storage, re-download on reboot (HAOS 18.3+)
 ```
 
-**Approval note:** `ha core restart`, `ha core stop`, `ha supervisor repair`, and
-`ha su repair` are state-changing. Calling `run_ha_command` with any of these queues an
-approval card (HITL) at non-autonomous autonomy levels. At FULL_AUTONOMOUS (level 4)
-they execute directly. Read-only commands (`ha core check`, `ha core info`, etc.) never
-require approval.
+**Note:** `ha apps` replaced `ha addons` in HA 2026.2.
 
-## Network
-
-```
-ha network info        # Show current network config (IPs, interfaces, DNS)
-ha network update      # Update network config (requires JSON args; prefer HA UI)
-```
-
-## Disk / Maintenance
-
-```
-ha os datadisk list      # List available data disks (for migration)
-ha docker reset-storage  # Nuclear: wipe all Docker storage and re-download on next reboot
-                         # (HAOS 18.3+; requires internet; for corruption recovery only)
-```
+**Backups:** Pueo's repair pipeline takes a backup automatically before any config write
+(`apply_fix`). Never try to create or delete backups with `run_ha_command`. If the user
+needs a manual backup, tell them to use Settings → System → Backups.
 
 ## Commands that do NOT exist — never recommend these
 
@@ -96,30 +82,18 @@ docker system prune      # docker CLI is unavailable in the HAOS SSH shell
 
 ## Common Patterns
 
-**Check config and restart:**
+**Check config, then restart** (two separate calls; never chain with `&&`):
 ```
-ha core check && ha core restart
-```
-
-**Create a backup and capture the slug:**
-```
-ha backups new --name "pre-repair-$(date +%Y%m%d)"
-# Note the slug from the output before proceeding
+run_ha_command("ha core check")
+run_ha_command("ha core restart")
 ```
 
-**Check if an app is running:**
-```
-ha apps info core_mosquitto | grep state
-```
-
-**View live HA log:**
-```
-ha core logs --follow
-```
+**Check whether an app is running:** `run_ha_command("ha apps info core_mosquitto")` and
+read the `state` field.
 
 ## Error Handling
 
 - `ha core check` exit code 1 = config invalid; parse stdout for the error message.
 - Commands that time out usually mean the Supervisor is busy or restarting; retry after 30 s.
-- If `ha core restart` returns immediately with no output, the restart was queued; give it
-  60–90 s before checking `ha core info` to confirm it came back up.
+- After `ha core restart`, give HA 60–90 s, then `run_ha_command("ha core info")` to confirm
+  it came back up.

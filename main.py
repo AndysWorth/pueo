@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -400,9 +401,15 @@ def run_rag_refresh(
     _log.info("rag_refresh_step_done", step="parse_deprecated_keys", count=n_deprecated)
 
     # ── 9. pueo-kb sync ─────────────────────────────────────────────────────
-    from utils.knowledge.strategy_seeder import _SEED_PROMPTS as _seed_prompts
+    from utils.knowledge.strategy_seeder import (
+        _RETIRED_SEED_PROMPTS as _retired_seeds,
+        _SEED_PROMPTS as _seed_prompts,
+    )
 
-    _local_seed_filenames: frozenset[str] = frozenset(fn for fn, _, _ in _seed_prompts)
+    # Retired seeds are included so pueo-kb copies of them are not ingested either.
+    _local_seed_filenames: frozenset[str] = (
+        frozenset(fn for fn, _, _ in _seed_prompts) | _retired_seeds
+    )
 
     n_kb_sync = 0
     if config.PUEO_KB_REPO:
@@ -454,6 +461,7 @@ def run_rag_refresh(
         + n_skills
         + n_kb_sync
     )
+    _write_last_rag_refresh(config.DB_PATH, time.time())
     write_timeline_event(
         "INFO", "rag_refresh", "RAG refresh complete (manual/scheduled)"
     )
@@ -504,6 +512,65 @@ def _load_registered_tools(executor: "Any", db_path: str) -> None:
                 log.info("dynamic_tool_loaded", tool=tool_name)
         except Exception as exc:
             log.warning("dynamic_tool_load_failed", tool=tool_name, error=str(exc))
+
+
+_RAG_LAST_RUN_PREF_KEY = "rag_refresh:last_run_at"
+
+
+def _read_last_rag_refresh(db_path: str) -> Optional[float]:
+    """Return the epoch time of the last completed RAG refresh, or None."""
+    import sqlite3
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?",
+                (_RAG_LAST_RUN_PREF_KEY,),
+            ).fetchone()
+            return float(row[0]) if row else None
+    except Exception:  # nosec B110 — table may not exist yet / bad value
+        return None
+
+
+def _write_last_rag_refresh(db_path: str, ts: float) -> None:
+    """Persist the completion time of a RAG refresh so restarts keep the schedule."""
+    import sqlite3
+
+    from utils.core.logging import get_logger
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO user_prefs (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_RAG_LAST_RUN_PREF_KEY, str(ts)),
+            )
+            conn.commit()
+    except Exception as exc:  # nosec B110
+        get_logger("main").warning("rag_last_run_write_failed", error=str(exc))
+
+
+def _rag_first_sleep_seconds(
+    last_run_at: Optional[float], interval_seconds: float, now: float
+) -> float:
+    """Seconds until the next scheduled refresh: the remaining interval, not a full one."""
+    if last_run_at is None:
+        return interval_seconds
+    return max(0.0, min(interval_seconds, interval_seconds - (now - last_run_at)))
+
+
+def _rag_startup_step(knowledge_store: Any, db_path: str) -> tuple[int, int]:
+    """Cheap startup sync: seed changed seed prompts and embed new repair episodes.
+
+    Lets newly merged seeds and freshly recorded episodes reach ChromaDB without
+    waiting for the weekly full refresh. Returns (seeded, episodes_embedded).
+    """
+    from utils.knowledge.repair_episode_embedder import embed_repair_episodes
+    from utils.knowledge.strategy_seeder import seed_strategies
+
+    seeded = seed_strategies(knowledge_store, db_path=db_path, only_changed=True)
+    embedded = embed_repair_episodes(knowledge_store, db_path)
+    return seeded, embedded
 
 
 async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
@@ -604,17 +671,35 @@ async def _rag_refresh_loop(knowledge_store: Any, interval_hours: int) -> None:
                         pass
                     await asyncio.sleep(5)
 
-    _log.info("rag_refresh_loop_started", next_run_hours=interval_hours)
+    else:
+        try:
+            _seeded, _embedded = await asyncio.to_thread(
+                _rag_startup_step, knowledge_store, _cfg.DB_PATH
+            )
+            _log.info(
+                "rag_startup_step_done", seeded=_seeded, episodes_embedded=_embedded
+            )
+        except Exception as exc:  # nosec B110 — startup sync is best-effort
+            _log.warning("rag_startup_step_failed", error=str(exc))
+
+    interval_seconds = interval_hours * 3600
+    first_sleep = _rag_first_sleep_seconds(
+        _read_last_rag_refresh(_cfg.DB_PATH), interval_seconds, time.time()
+    )
+    _next_hours = round(first_sleep / 3600, 1)
+    _log.info("rag_refresh_loop_started", next_run_hours=_next_hours)
     write_timeline_event(
         "INFO",
         "rag_refresh",
-        f"RAG refresh scheduled (next run in {interval_hours}h)",
+        f"RAG refresh scheduled (next run in {_next_hours}h)",
     )
 
+    sleep_seconds = first_sleep
     while True:
         from utils.agent.supervisor import supervised_sleep as _sup_sleep_rag
 
-        await _sup_sleep_rag("rag_refresh", interval_hours * 3600)
+        await _sup_sleep_rag("rag_refresh", sleep_seconds)
+        sleep_seconds = interval_seconds
         _log.info("rag_refresh_start", reason="scheduled")
         write_timeline_event(
             "INFO",

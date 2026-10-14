@@ -10,9 +10,9 @@ supervisor_unhealthy, supervisor_unsupported, resolution_issue.
 or low-RAM device with many integrations loaded.
 
 **Evidence to gather:**
-- `ha apps stats` — find top memory consumers among add-ons/apps
+- `ha apps list`, then `ha apps stats <slug>` per suspect app — find top memory consumers
 - `ha core stats` — check Core process RSS
-- `ha core logs --lines 30` — look for OOM kills or high-memory warnings
+- `read_logs(lines=30, log_source="ha_core")` — look for OOM kills or high-memory warnings
 
 **Fixes:**
 - If one app is clearly the outlier: `ha apps restart <slug>` (MEDIUM)
@@ -36,9 +36,9 @@ or low-RAM device with many integrations loaded.
 ## Unexpected reboot
 
 **Evidence to gather:**
-- `ha core logs --lines 50` — OOM kill lines (look for "Out of memory: Kill process")
+- `read_logs(lines=50, log_source="ha_host")` — OOM kill lines ("Out of memory: Kill process")
 - `ha os info` — check if an OS update was scheduled (auto-reboot after update)
-- `ha supervisor logs --lines 20` — Supervisor activity around reboot time
+- `read_logs(lines=20, log_source="ha_supervisor")` — Supervisor activity around reboot time
 
 **Fixes:** Usually needs_action. If OOM, recommend reducing recorder history or upgrading RAM.
 
@@ -62,10 +62,12 @@ or low-RAM device with many integrations loaded.
 ## Supervisor unhealthy / unsupported
 
 **Evidence:**
-- `ha supervisor info` — check version compatibility
+- `ha os info` / `ha core info` — check version vs version_latest
 - `ha resolution info --raw-json` — get all issues
 
-**Fix:** Usually requires OS or Supervisor update. Run `ha os update` if safe.
+**Fix:** Usually requires an OS or Supervisor update. Recommend it with
+outcome="needs_action"; Pueo's update manager applies updates (`ha os update` is not
+available via run_ha_command).
 
 ---
 trigger_patterns:

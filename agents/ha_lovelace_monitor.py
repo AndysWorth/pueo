@@ -49,6 +49,12 @@ def _classify_entity_without_llm(
     return None
 
 
+def _lovelace_knowledge_query(suspicious: list[dict]) -> str:
+    """Targeted pre-inject query: unregistered-entity symptom plus entity domains."""
+    domains = sorted({str(e["entity_id"]).split(".", 1)[0] for e in suspicious})
+    return " ".join(["lovelace unregistered entity", *domains])
+
+
 async def _run_lovelace_investigation(
     suspicious: list[dict],
     ws_client: HAWebSocketClientProtocol,
@@ -150,7 +156,10 @@ async def _run_lovelace_investigation(
     )
     increment_active_agent()
     try:
-        result = await loop.run(initial_context=initial_context)
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=_lovelace_knowledge_query(suspicious),
+        )
         publish_activity_done("lovelace_investigation", result.outcome)
         if result.outcome != "success":
             import sqlite3 as _sqlite3

@@ -42,7 +42,9 @@ The `strategies` collection is queried alongside `ha_release_notes`, `hacs_chang
 
 ### Strategy seeding at RAG refresh
 
-At each RAG refresh, `utils/knowledge/strategy_seeder.py::seed_strategies()` embeds Pueo's existing playbook prompt files (`diagnose_netalertx.md`, `diagnose_installer.md`, `triage_repair_issue.md`, `investigation.md`, etc.) into the `strategies` collection. These seed documents cover common scenarios and are idempotent (upsert by filename-based ID).
+At each RAG refresh, `utils/knowledge/strategy_seeder.py::seed_strategies()` embeds Pueo's `prompts/seed_*.md` runbook files into the `strategies` collection. These seed documents cover common scenarios and are idempotent (upsert by filename-based ID).
+
+> **Amended 2026-10-14 (#871):** The original seed list also included other agents' system prompts (`diagnose_netalertx.md`, `diagnose_installer.md`, `triage_repair_issue.md`, `investigation.md`, `diagnose_config.md`). They were retrieved, and credited, for unrelated sessions, so they are now `_RETIRED_SEED_PROMPTS` and `seed_strategies()` purges their ids from Chroma and `agent_strategies`. A cheap startup step (`main._rag_startup_step`) re-seeds changed seeds and embeds new repair episodes at every supervisor start. The weekly refresh schedule is persisted in `user_prefs` (`rag_refresh:last_run_at`), so restarts no longer reset it.
 
 ### Log reading tools
 

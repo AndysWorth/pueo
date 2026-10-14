@@ -547,6 +547,11 @@ async def analyze_log_line_with_ai(
                 pass
 
 
+def _repair_issue_knowledge_query(issue: HARepairIssue) -> str:
+    """Targeted pre-inject query: domain plus translation key."""
+    return f"HA repair issue {issue.domain} {issue.translation_key or ''}".strip()
+
+
 async def _run_repair_issue_investigation(
     issue: HARepairIssue,
     notifier: NotifierProtocol,
@@ -648,7 +653,10 @@ async def _run_repair_issue_investigation(
     )
     increment_active_agent()
     try:
-        result = await loop.run(initial_context=initial_context)
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=_repair_issue_knowledge_query(issue),
+        )
         publish_activity_done("repair_issue", result.outcome)
         if result.outcome != "success":
             import sqlite3 as _sqlite3

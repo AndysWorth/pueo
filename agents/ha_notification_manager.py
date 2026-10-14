@@ -58,6 +58,14 @@ def classify_notification(notification_id: str) -> tuple[str, str]:
     return _CLASSIFICATION_MAP.get(notification_id, ("other", "MEDIUM"))
 
 
+def notification_knowledge_query(notification_id: str, title: Optional[str]) -> str:
+    """Targeted pre-inject query: notification id words (no numeric suffixes) + title."""
+    id_words = [
+        w for w in re.split(r"[^A-Za-z0-9]+", notification_id) if w and w.isalpha()
+    ]
+    return " ".join(["HA notification", *id_words, title or ""]).strip()
+
+
 def extract_ip_from_message(message: str) -> Optional[str]:
     """Extract the first IPv4 address preceded by 'from ' in a notification message."""
     m = _IP_PATTERN.search(message)
@@ -330,7 +338,10 @@ async def _run_notification_investigation(
     )
     increment_active_agent()
     try:
-        result = await loop.run(initial_context=initial_context)
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=notification_knowledge_query(notification_id, title),
+        )
         publish_activity_done("notification", result.outcome)
         if result.outcome != "success":
             import sqlite3 as _sqlite3

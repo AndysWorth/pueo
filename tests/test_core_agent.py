@@ -232,6 +232,35 @@ class TestAgentLoopPreInject:
         _asyncio.run(loop._pre_inject_knowledge("unrelated query"))
         assert loop._executor._query_knowledge_had_results is False
 
+    def test_pre_inject_keeps_top_chunk_when_later_chunks_are_long(self):
+        """Top-ranked chunk and header survive even when lower chunks are huge (#871).
+
+        The old single tail-truncated block kept only the end of the last chunk.
+        """
+        import asyncio as _asyncio
+
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["seed:top"],
+            documents=["swap pressure TOP-RUNBOOK-HEAD investigate apps"],
+            metadatas=[{"source": "seed_prompt", "runbook_type": "seed"}],
+        )
+        store.upsert(
+            "ha_release_notes",
+            ids=["rn1"],
+            documents=["swap pressure " + "x" * 20000 + " LOW-RANK-TAIL"],
+            metadatas=[{"source": "release_notes"}],
+        )
+        loop = self._make_loop(knowledge_store=store)
+        result = _asyncio.run(loop._pre_inject_knowledge("swap pressure"))
+        assert "Relevant context" in result
+        assert "TOP-RUNBOOK-HEAD" in result
+        assert "LOW-RANK-TAIL" not in result
+        assert "…[truncated]" in result
+
     def test_run_accepts_knowledge_query_kwarg(self):
         """AgentLoop.run() accepts knowledge_query without raising."""
         import asyncio
@@ -246,6 +275,182 @@ class TestAgentLoopPreInject:
             )
         )
         assert result.outcome in ("exhausted", "success", "stuck", "timeout")
+
+
+class TestFormatKnowledgeBlock:
+    """_format_knowledge_block renders chunks in rank order with per-chunk budgets."""
+
+    def _chunk(self, text, collection="strategies", chunk_id="c"):
+        from utils.knowledge.knowledge_store import KnowledgeChunk
+
+        return KnowledgeChunk(
+            text=text,
+            source="src",
+            collection=collection,
+            score=1.0,
+            metadata={"source": "seed_prompt", "runbook_type": "seed"},
+            authority_score=0.85,
+            chunk_id=chunk_id,
+        )
+
+    def test_preserves_order_and_header(self):
+        from utils.agent.agent_loop import _format_knowledge_block
+
+        block = _format_knowledge_block(
+            [self._chunk("FIRST", chunk_id="a"), self._chunk("SECOND", chunk_id="b")]
+        )
+        assert block.startswith("Relevant context")
+        assert block.index("FIRST") < block.index("SECOND")
+        assert "[SEED RUNBOOK]" in block
+        assert "…[truncated]" not in block
+
+    def test_each_chunk_head_truncated_to_budget(self):
+        from utils.agent.agent_loop import (
+            _PRE_INJECT_CHUNK_TOKENS,
+            _format_knowledge_block,
+        )
+
+        long_text = "HEAD" + "y" * (_PRE_INJECT_CHUNK_TOKENS * 4 * 3) + "TAIL"
+        block = _format_knowledge_block(
+            [self._chunk(long_text, chunk_id="a"), self._chunk("NEXT", chunk_id="b")]
+        )
+        assert "HEAD" in block
+        assert "TAIL" not in block
+        assert "NEXT" in block
+        assert block.count("…[truncated]") == 1
+
+
+class TestInvestigationKnowledgeQueries:
+    """Investigation callers build a targeted pre-inject query (#871)."""
+
+    def test_host_health_query_uses_resolution_type(self):
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import host_health_knowledge_query
+
+        f = HostHealthFinding(
+            key="resolution_issue:abc",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"uuid": "abc", "type": "rpi_firmware_update_blocked"},
+        )
+        assert (
+            host_health_knowledge_query(f)
+            == "host health resolution_issue rpi_firmware_update_blocked"
+        )
+
+    def test_host_health_query_uses_reason(self):
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import host_health_knowledge_query
+
+        f = HostHealthFinding(
+            key="supervisor_unhealthy:docker",
+            kind="supervisor_unhealthy",
+            severity="HIGH",
+            evidence={"reason": "docker"},
+        )
+        assert (
+            host_health_knowledge_query(f) == "host health supervisor_unhealthy docker"
+        )
+
+    def test_host_health_query_kind_only(self):
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import host_health_knowledge_query
+
+        f = HostHealthFinding(
+            key="swap_pressure",
+            kind="swap_pressure",
+            severity="WARN",
+            evidence={"swap_pct": 90.0},
+        )
+        assert host_health_knowledge_query(f) == "host health swap_pressure"
+
+    def test_repair_issue_query(self):
+        from agents.ha_log_monitor import _repair_issue_knowledge_query
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            domain="hacs",
+            issue_id="restart_required_x",
+            severity="warning",
+            issue_key="hacs:restart_required_x",
+            breaks_in_ha_version=None,
+            translation_key="restart_required",
+        )
+        assert (
+            _repair_issue_knowledge_query(issue)
+            == "HA repair issue hacs restart_required"
+        )
+        issue_no_key = HARepairIssue(
+            domain="zha",
+            issue_id="x",
+            severity="error",
+            issue_key="zha:x",
+            breaks_in_ha_version=None,
+        )
+        assert _repair_issue_knowledge_query(issue_no_key) == "HA repair issue zha"
+
+    def test_notification_query_drops_numeric_tokens(self):
+        from agents.ha_notification_manager import notification_knowledge_query
+
+        assert (
+            notification_knowledge_query("http-login", "Login attempt failed")
+            == "HA notification http login Login attempt failed"
+        )
+        assert (
+            notification_knowledge_query("config_entry_discovery_1234", None)
+            == "HA notification config entry discovery"
+        )
+
+    def test_lovelace_query_lists_unique_domains(self):
+        from agents.ha_lovelace_monitor import _lovelace_knowledge_query
+
+        q = _lovelace_knowledge_query(
+            [
+                {"entity_id": "sensor.a"},
+                {"entity_id": "light.b"},
+                {"entity_id": "sensor.c"},
+            ]
+        )
+        assert q == "lovelace unregistered entity light sensor"
+
+    def test_host_health_investigation_passes_knowledge_query(
+        self, tmp_path, monkeypatch
+    ):
+        """run_host_health_investigation hands the targeted query to AgentLoop.run."""
+        from utils.agent.agent_loop import AgentLoop
+        from utils.agent.tool_registry import AgentLoopResult
+        from utils.disk.host_health import HostHealthFinding
+        from utils.disk.host_health_investigation import run_host_health_investigation
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        captured: dict = {}
+
+        async def _fake_run(self, initial_context, initial_messages=None, **kw):
+            captured.update(kw)
+            return AgentLoopResult(outcome="success")
+
+        monkeypatch.setattr(AgentLoop, "run", _fake_run)
+        finding = HostHealthFinding(
+            key="resolution_issue:abc",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"uuid": "abc", "type": "no_current_backup"},
+        )
+        asyncio.run(
+            run_host_health_investigation(
+                finding,
+                notifier=FakeNotifier(),
+                db_path=str(tmp_path / "t.db"),
+                llm_client=FakeToolCallingLLMClient([]),
+                ssh_client=FakeSSHClient(),
+            )
+        )
+        assert (
+            captured["knowledge_query"]
+            == "host health resolution_issue no_current_backup"
+        )
 
 
 class TestAgentLoopPreInjectHaProfile:
@@ -11878,6 +12083,12 @@ class TestAgentLoop:
 class TestRunRagRefresh:
     """Tests for run_rag_refresh() — all network-dependent functions are mocked."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_rag_db(self, monkeypatch, tmp_path):
+        # run_rag_refresh seeds strategies, marks episodes embedded, and records
+        # last_run_at against config.DB_PATH — never let that hit the real DB.
+        monkeypatch.setattr("config.DB_PATH", str(tmp_path / "rag.db"))
+
     def _patch_network(self, monkeypatch, tmp_path):
         """Patch all network-dependent functions to no-ops."""
         import utils.knowledge.ha_concepts_scraper as concepts_mod
@@ -12129,6 +12340,12 @@ class TestKnowledgeStoreAlwaysInit:
 class TestRagRefreshLoopStartupTrigger:
     """_rag_refresh_loop fires the startup refresh only when bootstrap collections are empty."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_rag_db(self, monkeypatch, tmp_path):
+        # The startup step seeds strategies and marks episodes embedded against
+        # config.DB_PATH — never let that hit the real DB.
+        monkeypatch.setattr("config.DB_PATH", str(tmp_path / "rag.db"))
+
     def _make_store(
         self, release_notes_count: int, strategies_count: int, hacs_count: int = 0
     ):
@@ -12258,6 +12475,152 @@ class TestRagRefreshLoopStartupTrigger:
             "next run in" in msg and src == "rag_refresh"
             for _, src, msg in timeline_calls
         )
+
+
+class TestRagRefreshSchedulePersistence:
+    """Restarts keep the RAG refresh schedule; startup syncs seeds + episodes (#871)."""
+
+    @pytest.fixture
+    def db(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        path = str(tmp_path / "rag.db")
+        monkeypatch.setattr(haa, "DB_PATH", path)
+        haa.init_local_database()
+        monkeypatch.setattr("config.DB_PATH", path)
+        monkeypatch.setattr("config.HA_API_TOKEN", "")
+        return path
+
+    def _populated_store(self):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert("ha_release_notes", ["r"], ["doc"], [{"source": "s"}])
+        store.upsert("strategies", ["s"], ["strategy"], [{"source": "s"}])
+        return store
+
+    def _run_until_first_sleep(self, store, monkeypatch, startup=None):
+        """Run _rag_refresh_loop and return the seconds passed to the first sleep."""
+        from unittest.mock import MagicMock
+
+        import main as main_module
+        import utils.agent.supervisor as sup_mod
+
+        sleeps: list[float] = []
+
+        async def _capture_sleep(name, seconds):
+            sleeps.append(seconds)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(sup_mod, "supervised_sleep", _capture_sleep)
+        monkeypatch.setattr(main_module, "run_rag_refresh", MagicMock())
+        if startup is not None:
+            monkeypatch.setattr(main_module, "_rag_startup_step", startup)
+
+        async def _run():
+            try:
+                await main_module._rag_refresh_loop(store, interval_hours=168)
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        return sleeps[0]
+
+    def test_first_sleep_seconds_no_history(self):
+        from main import _rag_first_sleep_seconds
+
+        assert _rag_first_sleep_seconds(None, 3600.0, 1000.0) == 3600.0
+
+    def test_first_sleep_seconds_remaining_interval(self):
+        from main import _rag_first_sleep_seconds
+
+        assert _rag_first_sleep_seconds(1000.0, 3600.0, 1000.0 + 600.0) == 3000.0
+
+    def test_first_sleep_seconds_overdue_is_zero(self):
+        from main import _rag_first_sleep_seconds
+
+        assert _rag_first_sleep_seconds(0.0, 3600.0, 10_000.0) == 0.0
+
+    def test_first_sleep_seconds_future_timestamp_capped(self):
+        """A last-run time in the future (clock skew) never sleeps past one interval."""
+        from main import _rag_first_sleep_seconds
+
+        assert _rag_first_sleep_seconds(5000.0, 3600.0, 1000.0) == 3600.0
+
+    def test_last_run_roundtrip(self, db):
+        from main import _read_last_rag_refresh, _write_last_rag_refresh
+
+        assert _read_last_rag_refresh(db) is None
+        _write_last_rag_refresh(db, 123.5)
+        _write_last_rag_refresh(db, 456.25)  # upsert, not duplicate
+        assert _read_last_rag_refresh(db) == 456.25
+
+    def test_last_run_missing_table(self, tmp_path):
+        """No user_prefs table: read returns None and write only logs."""
+        from main import _read_last_rag_refresh, _write_last_rag_refresh
+
+        path = str(tmp_path / "empty.db")
+        assert _read_last_rag_refresh(path) is None
+        _write_last_rag_refresh(path, 1.0)  # must not raise
+        assert _read_last_rag_refresh(path) is None
+
+    def test_loop_sleeps_remaining_interval_after_restart(self, db, monkeypatch):
+        import time as _time
+
+        from main import _write_last_rag_refresh
+
+        _write_last_rag_refresh(db, _time.time() - 100 * 3600)
+        first = self._run_until_first_sleep(
+            self._populated_store(), monkeypatch, startup=lambda s, d: (0, 0)
+        )
+        assert 67 * 3600 <= first <= 68 * 3600
+
+    def test_loop_sleeps_full_interval_without_history(self, db, monkeypatch):
+        first = self._run_until_first_sleep(
+            self._populated_store(), monkeypatch, startup=lambda s, d: (0, 0)
+        )
+        assert first == 168 * 3600
+
+    def test_loop_runs_startup_step_when_populated(self, db, monkeypatch):
+        calls: list[str] = []
+
+        def _startup(store, db_path):
+            calls.append(db_path)
+            return (1, 2)
+
+        self._run_until_first_sleep(self._populated_store(), monkeypatch, _startup)
+        assert calls == [db]
+
+    def test_loop_survives_startup_step_failure(self, db, monkeypatch):
+        def _boom(store, db_path):
+            raise RuntimeError("embedding server down")
+
+        first = self._run_until_first_sleep(self._populated_store(), monkeypatch, _boom)
+        assert first == 168 * 3600
+
+    def test_startup_step_seeds_and_embeds(self, db, monkeypatch):
+        import main as main_module
+        import utils.knowledge.repair_episode_embedder as emb_mod
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(emb_mod, "embed_repair_episodes", lambda store, path: 4)
+        store = FakeKnowledgeStore()
+        seeded, embedded = main_module._rag_startup_step(store, db)
+        assert seeded > 0
+        assert embedded == 4
+        # Second startup: seeds unchanged, nothing re-embedded.
+        seeded2, _ = main_module._rag_startup_step(store, db)
+        assert seeded2 == 0
+
+    def test_run_rag_refresh_records_last_run(self, db, tmp_path, monkeypatch):
+        """run_rag_refresh stamps rag_refresh:last_run_at in user_prefs on completion."""
+        import main as main_module
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        TestRunRagRefresh()._patch_network(monkeypatch, tmp_path)
+        monkeypatch.setattr("config.PUEO_KB_REPO", "")
+        main_module.run_rag_refresh(FakeKnowledgeStore())
+        assert main_module._read_last_rag_refresh(db) is not None
 
 
 class TestLoopCrashTimeline:
@@ -17069,6 +17432,12 @@ class TestAgentLoopToolResultSanitizer:
 class TestRunRagRefreshKbSync:
     """run_rag_refresh step 9: pueo-kb sync."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_rag_db(self, monkeypatch, tmp_path):
+        # run_rag_refresh seeds strategies, marks episodes embedded, and records
+        # last_run_at against config.DB_PATH — never let that hit the real DB.
+        monkeypatch.setattr("config.DB_PATH", str(tmp_path / "rag.db"))
+
     def _make_store(self):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
@@ -17149,6 +17518,29 @@ class TestRunRagRefreshKbSync:
         )
         main_mod.run_rag_refresh(store)
         assert calls == [("Owner/repo", str(tmp_path))]
+
+    def test_kb_sync_skips_retired_seed_copies(self, monkeypatch, tmp_path):
+        """Retired seeds are in the skip set so pueo-kb copies aren't ingested (#871)."""
+        import config as _cfg
+        import main as main_mod
+        import utils.knowledge.kb_ingester as kb_mod
+
+        monkeypatch.setattr(_cfg, "PUEO_KB_REPO", "Owner/repo")
+        monkeypatch.setattr(_cfg, "KB_SYNC_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "")
+        self._minimal_patches(monkeypatch)
+        seen: list[frozenset] = []
+
+        def _fake_run_kb_sync(
+            repo, cache_dir, store, integration_profile=None, local_seed_filenames=None
+        ):
+            seen.append(local_seed_filenames)
+            return 0
+
+        monkeypatch.setattr(kb_mod, "run_kb_sync", _fake_run_kb_sync)
+        main_mod.run_rag_refresh(self._make_store())
+        assert "diagnose_netalertx.md" in seen[0]
+        assert "seed_host_health.md" in seen[0]
 
     def test_kb_sync_skipped_when_repo_not_configured(self, monkeypatch, tmp_path):
         import config as _cfg

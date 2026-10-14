@@ -9,6 +9,12 @@ from utils.disk.host_health import HostHealthFinding
 log = get_logger("host_health_investigation")
 
 
+def host_health_knowledge_query(finding: HostHealthFinding) -> str:
+    """Targeted pre-inject query: kind plus resolution issue type or reason."""
+    detail = finding.evidence.get("type") or finding.evidence.get("reason") or ""
+    return f"host health {finding.kind} {detail}".strip()
+
+
 async def run_host_health_investigation(
     finding: HostHealthFinding,
     notifier: Any,  # NotifierProtocol
@@ -98,7 +104,10 @@ async def run_host_health_investigation(
     )
     increment_active_agent()
     try:
-        result = await loop.run(initial_context=initial_context)
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=host_health_knowledge_query(finding),
+        )
         publish_activity_done("host_health", result.outcome)
         if result.outcome != "success":
             import sqlite3 as _sqlite3
