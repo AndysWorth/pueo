@@ -130,7 +130,7 @@ READ_LOGS = ToolDefinition(
     name="read_logs",
     description=(
         "Tail N recent lines from an HA log source over SSH. "
-        "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_os', 'ha_host', or 'ha_app'. "
+        "log_source: 'ha_core' (default), 'ha_supervisor', 'ha_host' (HAOS journal; 'ha_os' is an alias), or 'ha_app'. "
         "When log_source='ha_app', also pass addon_slug (e.g. 'core_mosquitto'). "
         "Use list_log_sources to discover valid addon slugs."
     ),
@@ -1281,7 +1281,7 @@ SEARCH_LOG = ToolDefinition(
         "For time-range analysis use summarize_log_window instead. "
         "Sources: 'pueo' (Pueo JSON log), 'pueo_stderr' (Pueo uvicorn/ASGI stderr), "
         "'ha_core' (HA Core journal), 'ha_supervisor' (HA Supervisor daemon), "
-        "'ha_os' (HassOS OS log), 'ha_host' (host-level log), "
+        "'ha_host' (HAOS host journal: systemd, kernel, OS; 'ha_os' is an alias), "
         "'ha_app' (add-on log — also pass addon_slug, e.g. 'core_mosquitto')."
     ),
     parameters={
