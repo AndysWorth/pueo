@@ -746,9 +746,9 @@ class ToolExecutor:
 
     _HA_LOG_CMDS = {
         "ha_core": "ha core logs --lines {lines}",
-        "ha_supervisor": "ha supervisor logs --no-follow",
-        "ha_os": "ha os logs --no-follow",
-        "ha_host": "ha host logs --no-follow",
+        "ha_supervisor": "ha supervisor logs --lines {lines}",
+        "ha_os": "ha host logs --lines {lines}",  # HAOS has no `ha os logs`
+        "ha_host": "ha host logs --lines {lines}",
     }
 
     async def _read_logs(
@@ -766,14 +766,28 @@ class ToolExecutor:
                     output="",
                     error="addon_slug is required when log_source='ha_app'",
                 )
+            if not _SLUG_RE.match(addon_slug):
+                return ToolResult(
+                    tool_name="read_logs",
+                    success=False,
+                    output="",
+                    error=f"Invalid addon_slug: {addon_slug!r}",
+                )
             cmd = f"ha apps logs {addon_slug} -n {lines}"
         else:
             cmd_tmpl = self._HA_LOG_CMDS.get(log_source, self._HA_LOG_CMDS["ha_core"])
             cmd = cmd_tmpl.format(lines=lines)
         try:
-            _, stdout, stderr = await self._ha_ssh.run(cmd, check=False)
+            exit_code, stdout, stderr = await self._ha_ssh.run(cmd, check=False)
+            if exit_code != 0:
+                return ToolResult(
+                    tool_name="read_logs",
+                    success=False,
+                    output="",
+                    error=f"exit {exit_code}: {(stderr or stdout or '(no output)')[:500]}",
+                )
             return ToolResult(
-                tool_name="read_logs", success=True, output=stdout or stderr
+                tool_name="read_logs", success=True, output=stdout or "(no output)"
             )
         except Exception as exc:
             return ToolResult(
@@ -784,8 +798,11 @@ class ToolExecutor:
         system_sources = [
             {"log_name": "ha_core", "description": "HA Core container journal"},
             {"log_name": "ha_supervisor", "description": "HA Supervisor daemon"},
-            {"log_name": "ha_os", "description": "HassOS operating system"},
-            {"log_name": "ha_host", "description": "Host-level log"},
+            {"log_name": "ha_os", "description": "Alias of ha_host (HAOS journal)"},
+            {
+                "log_name": "ha_host",
+                "description": "HAOS host journal (systemd, kernel, OS)",
+            },
         ]
         app_sources: list[dict] = []
         if self._ha_ssh is not None:
@@ -863,10 +880,20 @@ class ToolExecutor:
 
         try:
             exit_code, stdout, stderr = await self._ha_ssh.run(normalized, check=False)
+            if exit_code != 0:
+                return ToolResult(
+                    tool_name="run_ha_command",
+                    success=False,
+                    output=stdout,
+                    error=(
+                        f"exit {exit_code}: "
+                        f"{(stderr.strip() or stdout.strip() or '(no output)')[:500]}"
+                    ),
+                )
             return ToolResult(
                 tool_name="run_ha_command",
-                success=exit_code == 0,
-                output=stdout or stderr,
+                success=True,
+                output=stdout or stderr or "(no output)",
             )
         except Exception as exc:
             return ToolResult(
@@ -3536,10 +3563,10 @@ class ToolExecutor:
         # Limit HA journal fetch to the most recent 5000 lines to avoid
         # fetching tens of thousands of lines from a long-running installation.
         _SSH_COMMANDS = {
-            "ha_core": "ha core logs --no-follow 2>&1 | tail -n 5000",
-            "ha_supervisor": "ha supervisor logs --no-follow 2>&1 | tail -n 5000",
-            "ha_os": "ha os logs --no-follow 2>&1 | tail -n 5000",
-            "ha_host": "ha host logs --no-follow 2>&1 | tail -n 5000",
+            "ha_core": "ha core logs --lines 5000",
+            "ha_supervisor": "ha supervisor logs --lines 5000",
+            "ha_os": "ha host logs --lines 5000",  # alias of ha_host
+            "ha_host": "ha host logs --lines 5000",
         }
 
         if log_name in ("pueo", "pueo_stderr"):
@@ -3571,7 +3598,9 @@ class ToolExecutor:
                     error=f"No SSH client available for {log_name} log search",
                 )
             try:
-                _, stdout, _ = await self._ha_ssh.run(_SSH_COMMANDS[log_name])
+                code, stdout, stderr = await self._ha_ssh.run(_SSH_COMMANDS[log_name])
+                if code != 0:
+                    raise RuntimeError(f"exit {code}: {(stderr or stdout)[:500]}")
                 all_lines = stdout.splitlines()
             except Exception as exc:
                 return ToolResult(
@@ -3588,6 +3617,13 @@ class ToolExecutor:
                     output="",
                     error="addon_slug is required when log_name='ha_app' (e.g. 'core_mosquitto')",
                 )
+            if not _SLUG_RE.match(addon_slug):
+                return ToolResult(
+                    tool_name="search_log",
+                    success=False,
+                    output="",
+                    error=f"Invalid addon_slug: {addon_slug!r}",
+                )
             if self._ha_ssh is None:
                 return ToolResult(
                     tool_name="search_log",
@@ -3596,9 +3632,11 @@ class ToolExecutor:
                     error="No SSH client available for ha_app log search",
                 )
             try:
-                _, stdout, _ = await self._ha_ssh.run(
+                code, stdout, stderr = await self._ha_ssh.run(
                     f"ha apps logs {addon_slug} -n 500"
                 )
+                if code != 0:
+                    raise RuntimeError(f"exit {code}: {(stderr or stdout)[:500]}")
                 all_lines = stdout.splitlines()
             except Exception as exc:
                 return ToolResult(

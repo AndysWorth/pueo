@@ -46,8 +46,9 @@ run_ha_command("ha resolution healthcheck")                # LOW — re-run Supe
 `ha resolution suggestion apply <uuid>` (MEDIUM) and `ha resolution issue dismiss <uuid>`
 (LOW) are accepted with a real UUID from `ha resolution info --raw-json`.
 
-Logs: use `read_logs(log_source="ha_core" | "ha_supervisor" | "ha_os" | "ha_host" |
-"ha_app")`, not `ha core logs`.
+Logs: use `read_logs(log_source="ha_core" | "ha_supervisor" | "ha_host" | "ha_app")`,
+not `ha core logs`. `ha_host` is the HAOS journal (systemd, kernel, OS); there is no
+separate `ha os logs` command.
 
 ## CLI reference (not available via run_ha_command)
 

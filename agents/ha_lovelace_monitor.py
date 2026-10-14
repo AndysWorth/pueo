@@ -9,6 +9,7 @@ from typing import Optional, TYPE_CHECKING
 from interfaces import (
     HAWebSocketClientProtocol,
     LLMClientProtocol,
+    SSHClientProtocol,
 )
 from utils.core.logging import get_logger
 from utils.ha.lovelace_utils import EntityRef, _extract_entity_refs
@@ -63,12 +64,14 @@ async def _run_lovelace_investigation(
     llm_client: Optional[LLMClientProtocol] = None,
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     ha_rest_client: Optional["HARestClientProtocol"] = None,
+    ssh_client: Optional["SSHClientProtocol"] = None,
 ) -> None:
     """Run an AgentLoop to investigate unregistered Lovelace entities.
 
     The agent uses check_entity_status, get_config_entries_all, get_ha_components,
     and read_logs to classify each entity, then calls finish_lovelace_investigation
-    with findings (or an empty list when all entities are benign).
+    with findings (or an empty list when all entities are benign). Runs under an
+    auto-approving gate, so tools get a ``ReadOnlySSHClient`` (ADR 043).
     """
     if not suspicious:
         return
@@ -77,30 +80,19 @@ async def _run_lovelace_investigation(
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_lovelace_investigation_registry
     from utils.agent.autonomy import FakeAutonomyGate
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
     gate = FakeAutonomyGate(auto_execute_result=True)
+    if ssh_client is None:
+        from utils.ha.ssh_client import AsyncSSHClient
 
-    class _NullSSH:
-        async def read_file(self, path: str) -> str:
-            return ""
-
-        async def write_file(self, path: str, content: str) -> None:
-            pass
-
-        async def download_file(self, remote_path: str, local_path: str) -> None:
-            pass
-
-        async def run(self, command: str, check: bool = False) -> tuple[int, str, str]:
-            return (0, "", "")
-
-        async def stream_lines(self, command: str):  # type: ignore[return]
-            pass
+        ssh_client = AsyncSSHClient()
 
     executor = ToolExecutor(
-        ha_ssh_client=_NullSSH(),  # type: ignore[arg-type]
+        ha_ssh_client=ReadOnlySSHClient(ssh_client),
         gate=gate,  # type: ignore[arg-type]
         notifier=notifier,
         ha_ws_client=ws_client,

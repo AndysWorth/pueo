@@ -932,27 +932,27 @@ class TestReadLogsExtended:
         assert "core log line" in result.output
 
     def test_ha_supervisor_calls_correct_command(self):
-        """read_logs(log_source='ha_supervisor') calls ha supervisor logs --no-follow."""
+        """read_logs(log_source='ha_supervisor') calls ha supervisor logs --lines N."""
         executor = self._make_executor(
-            {"ha supervisor logs --no-follow": (0, "supervisor started\n", "")}
+            {"ha supervisor logs --lines": (0, "supervisor started\n", "")}
         )
         result = asyncio.run(executor._read_logs(100, log_source="ha_supervisor"))
         assert result.success is True
         assert "supervisor started" in result.output
 
     def test_ha_os_calls_correct_command(self):
-        """read_logs(log_source='ha_os') calls ha os logs --no-follow."""
+        """read_logs(log_source='ha_os') is an alias of ha host logs (no `ha os logs`)."""
         executor = self._make_executor(
-            {"ha os logs --no-follow": (0, "os boot info\n", "")}
+            {"ha host logs --lines": (0, "os boot info\n", "")}
         )
         result = asyncio.run(executor._read_logs(100, log_source="ha_os"))
         assert result.success is True
         assert "os boot info" in result.output
 
     def test_ha_host_calls_correct_command(self):
-        """read_logs(log_source='ha_host') calls ha host logs --no-follow."""
+        """read_logs(log_source='ha_host') calls ha host logs --lines N."""
         executor = self._make_executor(
-            {"ha host logs --no-follow": (0, "host kernel msg\n", "")}
+            {"ha host logs --lines": (0, "host kernel msg\n", "")}
         )
         result = asyncio.run(executor._read_logs(100, log_source="ha_host"))
         assert result.success is True
