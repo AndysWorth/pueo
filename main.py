@@ -1461,6 +1461,7 @@ def main() -> None:
             "  restart-service     stop the service; launchd KeepAlive restarts it immediately\n"
             "  audit               self-diagnostics: gap report saved to audits/ (deprecated)\n"
             "  export-episodes     export anonymized repair episodes as YAML (use --since DATE)\n"
+            "  ha-sidebar          add Pueo owl iconset + Webpage dashboard to HA sidebar\n"
         ),
     )
     parser.add_argument(
@@ -1496,6 +1497,7 @@ def main() -> None:
             "audit",
             "export-episodes",
             "replay-episode",
+            "ha-sidebar",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -1517,6 +1519,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="replay-episode: re-run with live LLM/tools and store a new episode instead of using the deterministic mock",
+    )
+    parser.add_argument(
+        "--url",
+        default=None,
+        metavar="URL",
+        help="ha-sidebar: Pueo dashboard URL as seen from HA (default: http://<LAN-IP>:<DASHBOARD_PORT>)",
     )
     args = parser.parse_args()
 
@@ -1541,6 +1549,7 @@ def main() -> None:
                 "netalertx-docker-uninstall",
                 "netalertx-switch",
                 "netalertx-diagnose",
+                "ha-sidebar",
             )
         )
     )
@@ -1709,6 +1718,11 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(_run_replay(args))
+    elif args.mode == "ha-sidebar":
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(_run_ha_sidebar(args))
 
 
 async def _run_replay(args: Any) -> None:
@@ -1839,6 +1853,31 @@ def _print_replay_result(result: Any) -> None:
             print(f"  Diverged at tool call #{result.diverged_at_tool_call}")
         if result.error:
             print(f"  Error: {result.error}")
+
+
+async def _run_ha_sidebar(args: Any) -> None:
+    """One-shot: install Pueo owl iconset + Webpage dashboard into HA."""
+    import config as _config
+
+    from utils.ha.ha_sidebar import detect_lan_ip, install_ha_sidebar
+    from utils.ha.ha_ws_client import HAWebSocketClient
+    from utils.ha.ssh_client import AsyncSSHClient
+    from utils.hitl.notify import get_notifier
+
+    url = args.url
+    if url is None:
+        lan_ip = detect_lan_ip()
+        host = lan_ip or "127.0.0.1"
+        url = f"http://{host}:{_config.DASHBOARD_PORT}"
+        print(f"Using dashboard URL: {url}  (pass --url to override)")
+
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    ws = HAWebSocketClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+    notifier = get_notifier(
+        _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+    )
+
+    await install_ha_sidebar(ssh, ws, url, notifier=notifier)
 
 
 if __name__ == "__main__":

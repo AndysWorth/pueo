@@ -1,7 +1,10 @@
-"""Pure helpers for installing the Pueo owl icon and Webpage dashboard in HA.
+"""Helpers for installing the Pueo owl icon and Webpage dashboard in HA.
 
-All functions are synchronous and have no external dependencies beyond stdlib.
-No HA connectivity or SSH is needed in this module.
+Pure helpers (png_from_nav_svg, decode_png_rgba, icon_path_from_rgba,
+build_iconset_js, add_extra_module_url, detect_lan_ip,
+webpage_dashboard_payload) are synchronous with no external dependencies.
+
+install_ha_sidebar() is the async orchestrator that requires SSH + WS clients.
 """
 
 from __future__ import annotations
@@ -13,7 +16,11 @@ import socket
 import struct
 import subprocess
 import zlib
-from typing import Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from interfaces import HAWebSocketClientProtocol, SSHClientProtocol
 
 
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -255,3 +262,118 @@ def webpage_dashboard_payload(
         "type": "iframe",
         "url": url,
     }
+
+
+_CONFIG_REMOTE_PATH = "/config/configuration.yaml"
+_ICONSET_REMOTE_PATH = "/config/www/pueo/pueo-icons.js"
+_ICONSET_MODULE_URL = "/local/pueo/pueo-icons.js"
+_DASHBOARD_URL_PATH = "pueo-dashboard"
+
+
+async def install_ha_sidebar(
+    ssh: "SSHClientProtocol",
+    ws: "HAWebSocketClientProtocol",
+    dashboard_url: str,
+    *,
+    notifier: Any,
+    svg_path: Optional[Path] = None,
+) -> None:
+    """Install the Pueo owl iconset and Webpage dashboard in HA.
+
+    Steps:
+    1. Derive the JS iconset from nav_32.svg and SFTP-write it to /config/www/pueo/.
+    2. Edit /config/configuration.yaml to add frontend.extra_module_url.
+       - If the URL is already present: skip backup/restart.
+       - If add_extra_module_url returns None: print manual instructions; still
+         proceed to create the dashboard.
+       - Otherwise: backup → write → ha core check → (restore on failure) → restart.
+    3. Create or update the Webpage dashboard via WebSocket.
+    """
+    from agents.ha_agent_advanced import execute_remote_backup, record_backup_slug
+    from agents.ha_update_manager import execute_ha_core_restart
+
+    if svg_path is None:
+        svg_path = Path(__file__).parent.parent.parent / "web" / "static" / "nav_32.svg"
+
+    # 1. Build and upload the iconset JS.
+    svg_text = svg_path.read_text()
+    png_bytes = png_from_nav_svg(svg_text)
+    rows = decode_png_rgba(png_bytes)
+    path_d = icon_path_from_rgba(rows)
+    js_content = build_iconset_js(path_d)
+
+    await ssh.run("mkdir -p /config/www/pueo")
+    await ssh.write_file(_ICONSET_REMOTE_PATH, js_content)
+    print(f"✓  Iconset written to {_ICONSET_REMOTE_PATH}")
+
+    # 2. Edit configuration.yaml.
+    config_text = await ssh.read_file(_CONFIG_REMOTE_PATH)
+    new_config = add_extra_module_url(config_text, _ICONSET_MODULE_URL)
+
+    if new_config is None:
+        print(
+            "\n⚠  Could not auto-edit configuration.yaml (frontend: block uses an unsupported form).\n"
+            "   Add this manually, then restart HA Core:\n\n"
+            "   frontend:\n"
+            "     extra_module_url:\n"
+            f"       - {_ICONSET_MODULE_URL}\n"
+        )
+    elif new_config == config_text:
+        print(
+            "✓  configuration.yaml already contains the module URL — no changes needed."
+        )
+    else:
+        # Safety invariant: backup before any production write.
+        backup_slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(backup_slug)
+
+        # Write, sandbox-check, restore on failure.
+        try:
+            await ssh.write_file(_CONFIG_REMOTE_PATH, new_config)
+            exit_code, _, stderr = await ssh.run("ha core check")
+            if exit_code != 0:
+                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
+                raise RuntimeError(
+                    f"ha core check failed after adding extra_module_url "
+                    f"(exit {exit_code}); original config restored.\n{stderr}"
+                )
+        except Exception:
+            # Ensure restore on any unexpected error too.
+            try:
+                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
+            except Exception:  # nosec B110
+                pass
+            raise
+
+        print("✓  configuration.yaml updated with extra_module_url.")
+        await execute_ha_core_restart(
+            ssh_client=ssh, notifier=notifier, skip_backup=True
+        )
+
+    # 3. Create or update the Webpage dashboard.
+    dashboards = await ws.get_lovelace_dashboards()
+    existing = next(
+        (d for d in dashboards if d.get("url_path") == _DASHBOARD_URL_PATH), None
+    )
+
+    payload = webpage_dashboard_payload(dashboard_url)
+
+    if existing is None:
+        created = await ws.create_lovelace_dashboard(**payload)
+        dashboard_id = created.get("id", "")
+        print(f"✓  Webpage dashboard created (id={dashboard_id}).")
+    else:
+        dashboard_id = existing.get("id", "")
+        await ws.update_lovelace_dashboard(
+            dashboard_id,
+            title=payload["title"],
+            icon=payload["icon"],
+            show_in_sidebar=payload["show_in_sidebar"],
+            require_admin=payload["require_admin"],
+        )
+        print(f"✓  Webpage dashboard updated (id={dashboard_id}).")
+
+    # Save the iframe config so HA knows the target URL.
+    dashboard_config = {"strategy": {"type": "iframe", "url": dashboard_url}}
+    await ws.save_lovelace_config(_DASHBOARD_URL_PATH, dashboard_config)
+    print(f"✓  Dashboard config saved (url={dashboard_url}).")

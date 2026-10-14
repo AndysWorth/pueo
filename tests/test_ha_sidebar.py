@@ -1,12 +1,13 @@
-"""Tests for utils/ha/ha_sidebar.py — pure helper functions."""
+"""Tests for utils/ha/ha_sidebar.py — pure helpers and install_ha_sidebar orchestrator."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 import zlib
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +17,7 @@ from utils.ha.ha_sidebar import (
     decode_png_rgba,
     detect_lan_ip,
     icon_path_from_rgba,
+    install_ha_sidebar,
     png_from_nav_svg,
     webpage_dashboard_payload,
 )
@@ -441,3 +443,335 @@ class TestWebpageDashboardPayload:
     def test_type_is_iframe(self):
         p = webpage_dashboard_payload("http://192.168.1.1:8099")
         assert p["type"] == "iframe"
+
+
+# ---------------------------------------------------------------------------
+# FakeHAWebSocketClient new methods
+# ---------------------------------------------------------------------------
+
+
+class TestFakeWsClientSidebarMethods:
+    """Verify the three new Fake WS methods record calls and mutate state correctly."""
+
+    def setup_method(self):
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        self.ws = FakeHAWebSocketClient()
+
+    def test_create_lovelace_dashboard_appends_and_returns(self):
+        result = asyncio.run(
+            self.ws.create_lovelace_dashboard(
+                url_path="pueo-dashboard", title="Pueo", type="iframe"
+            )
+        )
+        assert result["url_path"] == "pueo-dashboard"
+        assert "id" in result
+        assert any(
+            "create_lovelace_dashboard:pueo-dashboard" in c for c in self.ws.calls
+        )
+
+    def test_update_lovelace_dashboard_mutates_existing(self):
+        asyncio.run(
+            self.ws.create_lovelace_dashboard(url_path="pueo-dashboard", id="abc123")
+        )
+        asyncio.run(self.ws.update_lovelace_dashboard("abc123", icon="mdi:owl"))
+        d = next(d for d in self.ws._lovelace_dashboards if d.get("id") == "abc123")
+        assert d["icon"] == "mdi:owl"
+        assert "update_lovelace_dashboard:abc123" in self.ws.calls
+
+    def test_save_lovelace_config_records_config(self):
+        cfg = {"strategy": {"type": "iframe", "url": "http://example.com"}}
+        asyncio.run(self.ws.save_lovelace_config("pueo-dashboard", cfg))
+        assert self.ws._lovelace_configs["pueo-dashboard"] == cfg
+        assert "save_lovelace_config:pueo-dashboard" in self.ws.calls
+
+
+# ---------------------------------------------------------------------------
+# install_ha_sidebar orchestrator
+# ---------------------------------------------------------------------------
+
+
+# Minimal valid SVG that embeds a 2×2 RGBA PNG with one dark pixel.
+def _make_minimal_svg() -> str:
+    """Return an SVG string that embeds a 2×2 RGBA PNG decodable by png_from_nav_svg."""
+    # Build a 2×2 RGBA PNG with pixel (0,0) dark-opaque, rest transparent.
+    width, height = 2, 2
+
+    def _chunk(ctype: bytes, data: bytes) -> bytes:
+        c = ctype + data
+        return (
+            struct.pack(">I", len(data))
+            + c
+            + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+        )
+
+    ihdr = _chunk(
+        b"IHDR",
+        struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0),
+    )
+    rows = [bytearray([0, 0, 0, 255, 0, 0, 0, 0])]  # row0: dark opaque, transparent
+    rows.append(bytearray([0, 0, 0, 0, 0, 0, 0, 0]))  # row1: all transparent
+    raw = b""
+    for row in rows:
+        raw += bytes([0]) + bytes(row)
+    idat = _chunk(b"IDAT", zlib.compress(raw))
+    iend = _chunk(b"IEND", b"")
+    png_bytes = b"\x89PNG\r\n\x1a\n" + ihdr + idat + iend
+    b64 = base64.b64encode(png_bytes).decode()
+    return f'<svg><image xlink:href="data:image/png;base64,{b64}"/></svg>'
+
+
+def _make_fake_ssh(config_text: str, check_exit_code: int = 0):
+    from utils.ha.ssh_client import FakeSSHClient
+
+    return FakeSSHClient(
+        file_contents={"/config/configuration.yaml": config_text},
+        command_results={
+            "mkdir": (0, "", ""),
+            "ha core check": (
+                check_exit_code,
+                "",
+                "check failed" if check_exit_code else "",
+            ),
+        },
+    )
+
+
+def _make_fake_ws(existing_dashboards=None):
+    from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+    return FakeHAWebSocketClient(lovelace_dashboards=existing_dashboards or [])
+
+
+_PATCH_BACKUP = "agents.ha_agent_advanced.execute_remote_backup"
+_PATCH_RECORD = "agents.ha_agent_advanced.record_backup_slug"
+_PATCH_RESTART = "agents.ha_update_manager.execute_ha_core_restart"
+
+
+class TestInstallHaSidebar:
+    """Tests for the install_ha_sidebar async orchestrator."""
+
+    def _patch_agents(self, backup_slug="abc123"):
+        mock_backup = AsyncMock(return_value=backup_slug)
+        mock_record = MagicMock()
+        mock_restart = AsyncMock(return_value=True)
+        return mock_backup, mock_record, mock_restart
+
+    def _run_install(
+        self,
+        ssh,
+        ws,
+        notifier=None,
+        url="http://1.2.3.4:8080",
+        mock_backup=None,
+        mock_record=None,
+        mock_restart=None,
+        svg_path=None,
+    ):
+        mb = mock_backup or AsyncMock(return_value="abc123")
+        mr = mock_record or MagicMock()
+        mres = mock_restart or AsyncMock(return_value=True)
+        with (
+            patch(_PATCH_BACKUP, mb),
+            patch(_PATCH_RECORD, mr),
+            patch(_PATCH_RESTART, mres),
+        ):
+            asyncio.run(
+                install_ha_sidebar(
+                    ssh, ws, url, notifier=notifier or MagicMock(), svg_path=svg_path
+                )
+            )
+        return mb, mr, mres
+
+    def _svg_path(self, tmp_path: Path) -> Path:
+        svg = tmp_path / "nav_32.svg"
+        svg.write_text(_make_minimal_svg())
+        return svg
+
+    def test_backup_before_config_write(self, tmp_path):
+        """Backup must precede the config write when configuration.yaml changes."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws()
+        call_order = []
+
+        async def fake_backup(ssh_client=None):
+            call_order.append("backup")
+            return "slug1"
+
+        async def fake_write(path, content):
+            call_order.append(f"write:{path}")
+
+        ssh.write_file = fake_write  # type: ignore[method-assign]
+
+        with (
+            patch(_PATCH_BACKUP, fake_backup),
+            patch(_PATCH_RECORD, MagicMock()),
+            patch(_PATCH_RESTART, AsyncMock(return_value=True)),
+        ):
+            asyncio.run(
+                install_ha_sidebar(
+                    ssh,
+                    ws,
+                    "http://1.2.3.4:8080",
+                    notifier=MagicMock(),
+                    svg_path=self._svg_path(tmp_path),
+                )
+            )
+
+        config_write_idx = next(
+            (
+                i
+                for i, c in enumerate(call_order)
+                if c == "write:/config/configuration.yaml"
+            ),
+            None,
+        )
+        backup_idx = call_order.index("backup")
+        assert backup_idx < config_write_idx
+
+    def test_failed_check_restores_original(self, tmp_path):
+        """When ha core check fails the original config is restored and restart is not called."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text, check_exit_code=1)
+        ws = _make_fake_ws()
+        mock_restart = AsyncMock(return_value=True)
+
+        with pytest.raises(RuntimeError, match="ha core check failed"):
+            with (
+                patch(_PATCH_BACKUP, AsyncMock(return_value="s")),
+                patch(_PATCH_RECORD, MagicMock()),
+                patch(_PATCH_RESTART, mock_restart),
+            ):
+                asyncio.run(
+                    install_ha_sidebar(
+                        ssh,
+                        ws,
+                        "http://1.2.3.4:8080",
+                        notifier=MagicMock(),
+                        svg_path=self._svg_path(tmp_path),
+                    )
+                )
+
+        assert ssh.written_files.get("/config/configuration.yaml") == config_text
+        mock_restart.assert_not_called()
+
+    def test_unchanged_config_skips_backup_and_restart(self, tmp_path):
+        """If the module URL is already present, no backup or restart should happen."""
+        config_text = (
+            "frontend:\n  extra_module_url:\n    - /local/pueo/pueo-icons.js\n"
+        )
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws()
+        mb, mr, mres = self._patch_agents()
+
+        self._run_install(
+            ssh,
+            ws,
+            mock_backup=mb,
+            mock_record=mr,
+            mock_restart=mres,
+            svg_path=self._svg_path(tmp_path),
+        )
+
+        mb.assert_not_called()
+        mr.assert_not_called()
+        mres.assert_not_called()
+
+    def test_none_case_skips_config_but_creates_dashboard(self, tmp_path, capsys):
+        """When add_extra_module_url returns None, the config write is skipped but the dashboard is created."""
+        config_text = "frontend: !include frontend.yaml\n"
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws()
+        mb = AsyncMock(return_value="s")
+        mr = MagicMock()
+        mres = AsyncMock(return_value=True)
+
+        self._run_install(
+            ssh,
+            ws,
+            mock_backup=mb,
+            mock_record=mr,
+            mock_restart=mres,
+            svg_path=self._svg_path(tmp_path),
+        )
+
+        mb.assert_not_called()
+        captured = capsys.readouterr()
+        assert "manually" in captured.out.lower() or "⚠" in captured.out
+        assert any("create_lovelace_dashboard" in c for c in ws.calls)
+
+    def test_existing_dashboard_updated_not_duplicated(self, tmp_path):
+        """When the dashboard already exists it should be updated, not duplicated."""
+        config_text = "homeassistant:\n  name: Test\n"
+        existing = [
+            {
+                "id": "ex-id",
+                "url_path": "pueo-dashboard",
+                "title": "Old",
+                "icon": "mdi:owl",
+            }
+        ]
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws(existing_dashboards=existing)
+
+        self._run_install(ssh, ws, svg_path=self._svg_path(tmp_path))
+
+        # Should have called update, not create
+        assert any("update_lovelace_dashboard:ex-id" in c for c in ws.calls)
+        assert not any("create_lovelace_dashboard" in c for c in ws.calls)
+        # Dashboard list should still have only one entry
+        assert len(ws._lovelace_dashboards) == 1
+
+    def test_iconset_js_written_to_remote(self, tmp_path):
+        """The JS iconset file should be written to /config/www/pueo/pueo-icons.js."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws()
+
+        self._run_install(ssh, ws, svg_path=self._svg_path(tmp_path))
+
+        assert "/config/www/pueo/pueo-icons.js" in ssh.written_files
+        assert "customIconsets" in ssh.written_files["/config/www/pueo/pueo-icons.js"]
+
+    def test_dashboard_config_saved_with_iframe_url(self, tmp_path):
+        """save_lovelace_config must be called with the iframe strategy and dashboard URL."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text)
+        ws = _make_fake_ws()
+        url = "http://5.6.7.8:8080"
+
+        self._run_install(ssh, ws, url=url, svg_path=self._svg_path(tmp_path))
+
+        saved = ws._lovelace_configs.get("pueo-dashboard")
+        assert saved is not None
+        assert saved["strategy"]["type"] == "iframe"
+        assert saved["strategy"]["url"] == url
+
+
+# ---------------------------------------------------------------------------
+# main.py --mode ha-sidebar dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestMainHaSidebarMode:
+    def test_ha_sidebar_mode_dispatches(self, monkeypatch, tmp_path):
+        import sys
+        import main as main_module
+
+        config = tmp_path / "config.yaml"
+        config.write_text("")
+
+        ran = []
+
+        async def fake_run_ha_sidebar(args):
+            ran.append(args.mode)
+
+        monkeypatch.setattr(main_module, "_run_ha_sidebar", fake_run_ha_sidebar)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["main.py", "--config", str(config), "--mode", "ha-sidebar"],
+        )
+        main_module.main()
+        assert ran == ["ha-sidebar"]
