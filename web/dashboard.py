@@ -475,6 +475,8 @@ def _hitl_write(fn: Any, *args: Any) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
     from utils.disk.resource import get_resource_status
+    from utils.disk.host_health import get_host_health
+    from utils.disk.memory_usage import get_memory_breakdown
     from utils.agent.supervisor import get_supervisor_instance
     from utils.core.timeline import load_timeline_events
 
@@ -488,6 +490,8 @@ async def overview(request: Request) -> HTMLResponse:
     sv = get_supervisor_instance()
     loop_statuses = sv.get_statuses() if sv else []
     resource = get_resource_status()
+    host_health = get_host_health()
+    mem_breakdown = get_memory_breakdown()
     import config as _cfg
 
     _LLM_LOCATION_LABELS = {
@@ -508,6 +512,8 @@ async def overview(request: Request) -> HTMLResponse:
         {
             "loop_statuses": loop_statuses,
             "resource": resource,
+            "host_health": host_health,
+            "mem_breakdown": mem_breakdown,
             "pending_count": pending_count,
             "notification_count": notification_count,
             "last_backup": last_backup,

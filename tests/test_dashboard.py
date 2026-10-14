@@ -4259,6 +4259,111 @@ class TestOverviewRoute:
         html = client.get("/").text
         assert "both local and cloud" in html
 
+    def test_overview_shows_host_health_uptime_swap_emmc(self, tmp_path, monkeypatch):
+        """Overview renders uptime, swap %, and eMMC wear from HostHealth."""
+        import time
+        import web.dashboard as dashboard
+        import utils.disk.host_health as hh_mod
+        import utils.disk.memory_usage as mu_mod
+        from utils.disk.host_health import HostHealth, ResolutionInfo
+        from fastapi.testclient import TestClient
+
+        hh = HostHealth(
+            swap_total_mb=512.0,
+            swap_used_mb=256.0,
+            disk_life_used_pct=45.0,
+            boot_ts=time.time() - 86400 * 3,
+            uptime_seconds=86400 * 3,
+            resolution=ResolutionInfo(),
+            fetched_at=time.time(),
+            errors=[],
+        )
+        monkeypatch.setattr(hh_mod, "_last_host_health", hh)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "3d" in html  # uptime days
+        assert "50.0%" in html  # swap pct = 256/512*100
+        assert "45%" in html  # eMMC life
+
+    def test_overview_no_host_health_renders_without_strip(self, tmp_path, monkeypatch):
+        """Overview renders cleanly when no HostHealth data is available yet."""
+        import web.dashboard as dashboard
+        import utils.disk.host_health as hh_mod
+        import utils.disk.memory_usage as mu_mod
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(hh_mod, "_last_host_health", None)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        # Host-health rows should not appear
+        assert "eMMC" not in resp.text
+        assert "Uptime" not in resp.text
+
+    def test_overview_host_health_errors_show_resources_link(
+        self, tmp_path, monkeypatch
+    ):
+        """When host_health has errors, Overview shows a link to /resources."""
+        import time
+        import web.dashboard as dashboard
+        import utils.disk.host_health as hh_mod
+        import utils.disk.memory_usage as mu_mod
+        from utils.disk.host_health import HostHealth, ResolutionInfo
+        from fastapi.testclient import TestClient
+
+        hh = HostHealth(
+            swap_total_mb=0.0,
+            swap_used_mb=0.0,
+            disk_life_used_pct=None,
+            boot_ts=None,
+            uptime_seconds=None,
+            resolution=ResolutionInfo(),
+            fetched_at=time.time(),
+            errors=["mem", "host"],
+        )
+        monkeypatch.setattr(hh_mod, "_last_host_health", hh)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "see Resources" in html
+        assert "/resources" in html
+
+    def test_overview_supervisor_resolution_issues_shown(self, tmp_path, monkeypatch):
+        """When Supervisor has unhealthy/unsupported items, Overview shows issue count."""
+        import time
+        import web.dashboard as dashboard
+        import utils.disk.host_health as hh_mod
+        import utils.disk.memory_usage as mu_mod
+        from utils.disk.host_health import HostHealth, ResolutionInfo
+        from fastapi.testclient import TestClient
+
+        hh = HostHealth(
+            swap_total_mb=0.0,
+            swap_used_mb=0.0,
+            disk_life_used_pct=None,
+            boot_ts=None,
+            uptime_seconds=None,
+            resolution=ResolutionInfo(unhealthy=["addon_dns"], unsupported=[]),
+            fetched_at=time.time(),
+            errors=[],
+        )
+        monkeypatch.setattr(hh_mod, "_last_host_health", hh)
+        monkeypatch.setattr(mu_mod, "_last_memory_breakdown", None)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(dashboard, "DB_PATH", str(tmp_path / "nonexistent.db"))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/").text
+        assert "1 issue" in html
+        assert "Supervisor" in html
+
     def test_count_pending_notification_cards_excludes_non_notification(
         self, tmp_path, monkeypatch
     ):
