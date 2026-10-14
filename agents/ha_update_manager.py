@@ -776,10 +776,20 @@ async def _run_update_analysis(
             f"{update.installed_version} → {update.latest_version} "
             "update breaking changes"
         )
+        from utils.knowledge.runbook_signature import sig_update
+
+        _SYSTEM_COMPONENTS = frozenset({"core", "os", "supervisor"})
+        _update_type = (
+            update.component if update.component in _SYSTEM_COMPONENTS else "addon"
+        )
         _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:
-            _result = await loop.run(initial_context, knowledge_query=_knowledge_query)
+            _result = await loop.run(
+                initial_context,
+                knowledge_query=_knowledge_query,
+                signature=sig_update(_update_type, update.component),
+            )
             if _result.outcome != "success":
                 import sqlite3 as _sqlite3
                 from utils.hitl.hitl_tracker import mark_investigation_backoff

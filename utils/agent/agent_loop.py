@@ -109,6 +109,48 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
     return "\n".join(parts)
 
 
+def _fetch_exact_signature_chunk(db_path: str, signature: str) -> "Optional[Any]":
+    """Query SQLite for the best live runbook matching *signature* exactly.
+
+    Returns a KnowledgeChunk with ``metadata["exact_match"]=True`` so
+    ``_knowledge_authority_label`` emits ``[RUNBOOK FOR THIS EXACT SYMPTOM]``.
+    Returns None when there is no match or on any error.
+    """
+    import sqlite3
+
+    from utils.knowledge.knowledge_store import KnowledgeChunk
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, title, approach, runbook_state FROM agent_strategies"
+                " WHERE signature = ?"
+                "   AND runbook_state IN ('seed', 'validated', 'candidate')"
+                " ORDER BY CASE runbook_state"
+                "   WHEN 'seed' THEN 0 WHEN 'validated' THEN 1 ELSE 2 END,"
+                "   version DESC LIMIT 1",
+                (signature,),
+            ).fetchone()
+    except Exception:  # nosec B110
+        return None
+    if row is None:
+        return None
+    title = row["title"] or signature
+    approach = row["approach"] or ""
+    runbook_state = row["runbook_state"] or "candidate"
+    text = f"# {title}\n\n{approach}".strip()
+    return KnowledgeChunk(
+        text=text,
+        source=f"exact:{row['id']}",
+        collection="strategies",
+        score=1.0,
+        metadata={"exact_match": True, "runbook_type": runbook_state},
+        authority_score=1.0,
+        chunk_id=row["id"],
+    )
+
+
 def _parse_content_as_tool_call(
     content: str, known_names: set[str]
 ) -> list[dict] | None:
@@ -271,6 +313,7 @@ class AgentLoop:
         self._absolute_max = AGENT_MAX_TOTAL_CALLS
         self._messages: Optional[list] = None  # set during run(), cleared after
         self._episode_id: str = ""  # set at start of run()
+        self._signature: str = ""  # set at start of run() from the signature= argument
         self._raw_initial_context: str = (
             ""  # pre-injection context, set at start of run()
         )
@@ -408,7 +451,27 @@ class AgentLoop:
         ChromaDB searches user intent rather than the injected HA profile.
         Sets executor._query_knowledge_had_results when chunks are found so that
         sessions benefiting from pre-injected context don't trigger the auto-gap.
+
+        When self._signature is set (and has a colon, meaning it is a real symptom
+        signature rather than a trigger name), the exact-matching runbook from
+        agent_strategies is prepended at the top of the injected block and labelled
+        [RUNBOOK FOR THIS EXACT SYMPTOM].  Semantic results follow.
         """
+        # Exact-signature lookup — runs before the semantic query so the best match
+        # always appears first regardless of ChromaDB relevance scoring.
+        exact_chunk = None
+        _sig = getattr(self, "_signature", "")
+        if _sig and ":" in _sig and self._db_path:
+            exact_chunk = await asyncio.to_thread(
+                _fetch_exact_signature_chunk, self._db_path, _sig
+            )
+            if exact_chunk is not None:
+                log.debug(
+                    "pre_inject_exact_signature_match",
+                    signature=_sig,
+                    chunk_id=exact_chunk.chunk_id,
+                )
+
         effective_query = (query_text or initial_context)[:500]
         try:
             chunks = await asyncio.to_thread(
@@ -420,6 +483,16 @@ class AgentLoop:
         except Exception as exc:
             log.warning("knowledge_injection_failed", error=str(exc))
             return initial_context
+
+        # Prepend the exact match (if any), deduplicating by non-empty chunk_id only.
+        if exact_chunk is not None:
+            exact_id = exact_chunk.chunk_id
+            if exact_id:
+                deduped = [c for c in chunks if getattr(c, "chunk_id", "") != exact_id]
+            else:
+                deduped = list(chunks)
+            chunks = [exact_chunk] + deduped
+
         if not chunks:
             return initial_context
         # Signal to the executor so the auto-gap logic knows KB had results.
@@ -567,6 +640,7 @@ class AgentLoop:
         initial_context: str,
         initial_messages: Optional[list[dict]] = None,
         knowledge_query: str = "",
+        signature: str = "",
     ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
@@ -584,11 +658,16 @@ class AgentLoop:
             Optional prior conversation history as {"role", "content"} dicts.
             Inserted between the system prompt and the current user message so
             the model has proper multi-turn context.
+        signature:
+            Symptom-class signature (from runbook_signature.py). Used for
+            exact-match runbook lookup, runbook_usage keying, and distillation
+            dedup. Falls back to self._trigger when empty.
         """
         self._executor.reset()
         self._llm_captures = []
         self._tool_call_records = []
         self._episode_id = str(uuid.uuid4())
+        self._signature = signature or self._trigger
         self._raw_initial_context = initial_context
 
         # Use the caller-supplied knowledge_query for a more targeted ChromaDB search
@@ -700,7 +779,7 @@ class AgentLoop:
             and self._executor is not None
             and self._executor._injected_strategy_ids
         ):
-            _signature = self._trigger
+            _signature = self._signature
             try:
                 await asyncio.to_thread(
                     self._executor.record_runbook_usage,
@@ -809,7 +888,7 @@ class AgentLoop:
         )
 
         queue = get_work_queue_or_none()
-        sig = self._trigger
+        sig = self._signature
         _db = self._db_path
         _store = self._knowledge_store
         _model = self._model
@@ -837,7 +916,7 @@ class AgentLoop:
                     priority=PRIORITY_LOW,
                     activity_type="runbook_distillation",
                     description=f"Distill {sig}",
-                    dedup_key=f"distill_{sig}",
+                    dedup_key=f"distill_{sig}_{_ep}",
                     suppress_while_running=frozenset(),
                     coro_factory=_run_distillation,
                 )

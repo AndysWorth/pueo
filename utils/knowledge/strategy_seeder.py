@@ -143,6 +143,7 @@ def seed_strategies(
     stored agent_strategies approach, so only new or edited seeds are re-embedded.
     """
     purge_retired_seeds(store, db_path)
+    discard_trigger_keyed_candidates(store, db_path)
     stored = _stored_seed_approaches(db_path) if only_changed else {}
     prompts_dir = Path(__file__).parent.parent.parent / "prompts"
     n = 0
@@ -214,6 +215,46 @@ def purge_retired_seeds(
                 conn.commit()
         except Exception:  # nosec B110
             pass
+
+
+def discard_trigger_keyed_candidates(
+    store: "KnowledgeStoreClientProtocol",
+    db_path: str = "",
+) -> int:
+    """Mark candidates whose signature equals a loop trigger name as discarded.
+
+    Signatures must contain at least one colon (e.g. ``repair:recorder:key``).
+    Candidates whose ``signature`` has no colon were keyed by the trigger fallback
+    (e.g. ``update_poll``), not a real symptom signature.  They cannot match any
+    real session and should be discarded so they don't pollute exact-match lookups.
+
+    Idempotent; best-effort.  Returns the count of rows discarded.
+    """
+    if not db_path:
+        return 0
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT id FROM agent_strategies"
+                " WHERE runbook_state = 'candidate'"
+                "   AND signature IS NOT NULL"
+                "   AND signature NOT LIKE '%:%'",
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                conn.executemany(
+                    "UPDATE agent_strategies SET runbook_state='discarded' WHERE id=?",
+                    [(i,) for i in ids],
+                )
+                conn.commit()
+        if ids:
+            try:
+                store.delete_ids("strategies", ids)
+            except Exception:  # nosec B110
+                pass
+        return len(ids)
+    except Exception:  # nosec B110
+        return 0
 
 
 def seed_home_profile(

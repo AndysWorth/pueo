@@ -3824,8 +3824,12 @@ async def _run_chat_loop(
         enriched_message = await _pre_inject_chat_context(message, executor)
         if enriched_message != message:
             await asyncio.to_thread(_store_pre_inject, enriched_message)
+        from utils.knowledge.runbook_signature import sig_chat
+
         result = await agent_loop.run(
-            enriched_message, initial_messages=prior_messages or None
+            enriched_message,
+            initial_messages=prior_messages or None,
+            signature=sig_chat(None),
         )
 
         summary = result.episode_stub.get("summary", "") if result.episode_stub else ""

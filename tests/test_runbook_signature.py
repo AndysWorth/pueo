@@ -6,6 +6,7 @@ from utils.knowledge.runbook_signature import (
     _part,
     _sanitize,
     sig_chat,
+    sig_host_health,
     sig_log,
     sig_lovelace,
     sig_notification,
@@ -180,6 +181,34 @@ class TestSigNotification:
 
     def test_uppercase_prefix(self):
         assert sig_notification("Config.some_key") == "notification:config"
+
+
+class TestSigHostHealth:
+    def test_resolution_issue(self):
+        assert sig_host_health("resolution_issue", "rpi_firmware_update_blocked") == (
+            "host:resolution_issue:rpi_firmware_update_blocked"
+        )
+
+    def test_memory_low(self):
+        assert sig_host_health("memory_low", "") == "host:memory_low:unknown"
+
+    def test_swap_pressure_with_type(self):
+        assert sig_host_health("swap_pressure", "oom") == "host:swap_pressure:oom"
+
+    def test_empty_kind(self):
+        assert sig_host_health("", "some_type") == "host:unknown:some_type"
+
+    def test_both_empty(self):
+        assert sig_host_health("", "") == "host:unknown:unknown"
+
+    def test_uppercase_normalised(self):
+        assert sig_host_health("Disk_Wear", "SSD") == "host:disk_wear:ssd"
+
+    def test_none_handled_via_empty_string(self):
+        # callers pass evidence.get("type", "") which returns "" for missing keys
+        assert sig_host_health("supervisor_unhealthy", "") == (
+            "host:supervisor_unhealthy:unknown"
+        )
 
 
 class TestSigChat:

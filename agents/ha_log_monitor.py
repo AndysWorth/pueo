@@ -637,11 +637,14 @@ async def _run_repair_issue_investigation(
         ),
         capture_llm=True,
     )
+    from utils.knowledge.runbook_signature import sig_repair
+
     increment_active_agent()
     try:
         result = await loop.run(
             initial_context=initial_context,
             knowledge_query=_repair_issue_knowledge_query(issue),
+            signature=sig_repair(issue.domain, issue.translation_key or ""),
         )
         publish_activity_done("repair_issue", result.outcome)
         if result.outcome != "success":

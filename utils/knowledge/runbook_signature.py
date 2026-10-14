@@ -79,3 +79,8 @@ def sig_chat(top_sig: Optional[str]) -> str:
     if top_sig:
         return f"chat:{_sanitize(top_sig)}"
     return "chat:unclassified"
+
+
+def sig_host_health(kind: str, issue_type: str) -> str:
+    """host:<kind>:<issue_type>"""
+    return f"host:{_part(kind)}:{_part(issue_type)}"

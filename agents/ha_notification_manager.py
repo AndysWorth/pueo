@@ -330,11 +330,14 @@ async def _run_notification_investigation(
         ),
         capture_llm=True,
     )
+    from utils.knowledge.runbook_signature import sig_notification
+
     increment_active_agent()
     try:
         result = await loop.run(
             initial_context=initial_context,
             knowledge_query=notification_knowledge_query(notification_id, title),
+            signature=sig_notification(notification_id),
         )
         publish_activity_done("notification", result.outcome)
         if result.outcome != "success":
