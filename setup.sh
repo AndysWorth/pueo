@@ -1059,6 +1059,30 @@ if [[ "$_RESET_MODE" != "true" ]]; then
     fi
 fi
 
+# ── 5.6. HA Sidebar (optional) ───────────────────────────────────────────────────
+hdr "5.6. HA Sidebar (optional)"
+
+if [[ "$_RESET_MODE" != "true" ]]; then
+    echo
+    read -rp "  Add Pueo to the Home Assistant sidebar? (edits configuration.yaml + restarts HA Core) [y/N]: " _sidebar_ans
+    if [[ "$_sidebar_ans" =~ ^[Yy] ]]; then
+        _LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1")
+        ask "Pueo URL as seen from HA" "http://${_LAN_IP}:${DASHBOARD_PORT}" PUEO_SIDEBAR_URL
+        info "(If HA uses HTTPS, the iframe will be blocked by mixed-content rules. Use HTTP on your LAN to avoid this.)"
+        echo
+        if [[ "$DEPLOY_MODE" == "docker" ]]; then
+            info "Docker mode — run the following after 'docker compose up -d' to install the sidebar:"
+            echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode ha-sidebar --url \"$PUEO_SIDEBAR_URL\""
+        else
+            ok "Installing HA sidebar (this may restart HA Core)…"
+            .venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode ha-sidebar --url "$PUEO_SIDEBAR_URL" \
+                || warn "Sidebar install failed — run it manually: python main.py --mode ha-sidebar --url \"$PUEO_SIDEBAR_URL\""
+        fi
+    else
+        info "Skipping sidebar install. Run later: python main.py --mode ha-sidebar"
+    fi
+fi
+
 # ── 6. launchd service ───────────────────────────────────────────────────────────
 hdr "6. launchd Service"
 

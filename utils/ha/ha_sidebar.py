@@ -14,13 +14,13 @@ import json
 import re
 import socket
 import struct
-import subprocess
+import subprocess  # nosec B404
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from interfaces import HAWebSocketClientProtocol, SSHClientProtocol
+    from interfaces import SSHClientProtocol
 
 
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -224,7 +224,7 @@ def detect_lan_ip() -> Optional[str]:
     """Return the LAN IP of this machine, or None if it cannot be determined."""
     for iface in ("en0", "en1"):
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B603, B607
                 ["ipconfig", "getifaddr", iface],
                 capture_output=True,
                 text=True,
@@ -268,11 +268,13 @@ _CONFIG_REMOTE_PATH = "/config/configuration.yaml"
 _ICONSET_REMOTE_PATH = "/config/www/pueo/pueo-icons.js"
 _ICONSET_MODULE_URL = "/local/pueo/pueo-icons.js"
 _DASHBOARD_URL_PATH = "pueo-dashboard"
+_DASHBOARD_REGISTRY_REMOTE_PATH = "/config/.storage/lovelace_dashboards"
+_DASHBOARD_CONFIG_REMOTE_PATH = "/config/.storage/lovelace.pueo-dashboard"
+_DASHBOARD_ID = "lovelace_pueo_dashboard"
 
 
 async def install_ha_sidebar(
     ssh: "SSHClientProtocol",
-    ws: "HAWebSocketClientProtocol",
     dashboard_url: str,
     *,
     notifier: Any,
@@ -287,7 +289,8 @@ async def install_ha_sidebar(
        - If add_extra_module_url returns None: print manual instructions; still
          proceed to create the dashboard.
        - Otherwise: backup → write → ha core check → (restore on failure) → restart.
-    3. Create or update the Webpage dashboard via WebSocket.
+    3. Write .storage/lovelace_dashboards and .storage/lovelace.pueo-dashboard.
+       - If storage was changed and no restart was triggered in step 2: restart.
     """
     from agents.ha_agent_advanced import execute_remote_backup, record_backup_slug
     from agents.ha_update_manager import execute_ha_core_restart
@@ -307,6 +310,7 @@ async def install_ha_sidebar(
     print(f"✓  Iconset written to {_ICONSET_REMOTE_PATH}")
 
     # 2. Edit configuration.yaml.
+    _config_restart_triggered = False
     config_text = await ssh.read_file(_CONFIG_REMOTE_PATH)
     new_config = add_extra_module_url(config_text, _ICONSET_MODULE_URL)
 
@@ -349,31 +353,77 @@ async def install_ha_sidebar(
         await execute_ha_core_restart(
             ssh_client=ssh, notifier=notifier, skip_backup=True
         )
+        _config_restart_triggered = True
 
-    # 3. Create or update the Webpage dashboard.
-    dashboards = await ws.get_lovelace_dashboards()
-    existing = next(
-        (d for d in dashboards if d.get("url_path") == _DASHBOARD_URL_PATH), None
+    # 3. Write .storage/lovelace_dashboards and .storage/lovelace.pueo-dashboard.
+    _storage_changed = False
+
+    try:
+        registry_text = await ssh.read_file(_DASHBOARD_REGISTRY_REMOTE_PATH)
+        registry: dict = json.loads(registry_text)
+    except (FileNotFoundError, json.JSONDecodeError):
+        registry = {
+            "version": 1,
+            "minor_version": 1,
+            "key": "lovelace_dashboards",
+            "data": {"items": []},
+        }
+
+    items: list[dict] = registry.setdefault("data", {}).setdefault("items", [])
+    existing_idx = next(
+        (i for i, d in enumerate(items) if d.get("url_path") == _DASHBOARD_URL_PATH),
+        None,
     )
 
     payload = webpage_dashboard_payload(dashboard_url)
+    registry_entry: dict = {
+        "id": _DASHBOARD_ID,
+        "url_path": payload["url_path"],
+        "title": payload["title"],
+        "icon": payload["icon"],
+        "show_in_sidebar": payload["show_in_sidebar"],
+        "require_admin": payload["require_admin"],
+        "mode": payload["mode"],
+    }
 
-    if existing is None:
-        created = await ws.create_lovelace_dashboard(**payload)
-        dashboard_id = created.get("id", "")
-        print(f"✓  Webpage dashboard created (id={dashboard_id}).")
+    if existing_idx is None:
+        items.append(registry_entry)
+        _storage_changed = True
+        print("✓  Webpage dashboard added to registry.")
+    elif items[existing_idx] != registry_entry:
+        items[existing_idx] = registry_entry
+        _storage_changed = True
+        print(f"✓  Webpage dashboard updated in registry.")
     else:
-        dashboard_id = existing.get("id", "")
-        await ws.update_lovelace_dashboard(
-            dashboard_id,
-            title=payload["title"],
-            icon=payload["icon"],
-            show_in_sidebar=payload["show_in_sidebar"],
-            require_admin=payload["require_admin"],
-        )
-        print(f"✓  Webpage dashboard updated (id={dashboard_id}).")
+        print("✓  Webpage dashboard already up to date in registry.")
 
-    # Save the iframe config so HA knows the target URL.
-    dashboard_config = {"strategy": {"type": "iframe", "url": dashboard_url}}
-    await ws.save_lovelace_config(_DASHBOARD_URL_PATH, dashboard_config)
-    print(f"✓  Dashboard config saved (url={dashboard_url}).")
+    dashboard_config_file: dict = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "lovelace.pueo-dashboard",
+        "data": {"config": {"strategy": {"type": "iframe", "url": dashboard_url}}},
+    }
+
+    try:
+        existing_cfg_text = await ssh.read_file(_DASHBOARD_CONFIG_REMOTE_PATH)
+        existing_cfg: Any = json.loads(existing_cfg_text)
+    except (FileNotFoundError, json.JSONDecodeError):
+        existing_cfg = None
+
+    if existing_cfg != dashboard_config_file:
+        await ssh.write_file(
+            _DASHBOARD_CONFIG_REMOTE_PATH,
+            json.dumps(dashboard_config_file, indent=2),
+        )
+        _storage_changed = True
+        print(f"✓  Dashboard config saved (url={dashboard_url}).")
+
+    if _storage_changed:
+        await ssh.write_file(
+            _DASHBOARD_REGISTRY_REMOTE_PATH, json.dumps(registry, indent=2)
+        )
+
+    if _storage_changed and not _config_restart_triggered:
+        await execute_ha_core_restart(
+            ssh_client=ssh, notifier=notifier, skip_backup=True
+        )

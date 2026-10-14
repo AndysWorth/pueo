@@ -1860,7 +1860,6 @@ async def _run_ha_sidebar(args: Any) -> None:
     import config as _config
 
     from utils.ha.ha_sidebar import detect_lan_ip, install_ha_sidebar
-    from utils.ha.ha_ws_client import HAWebSocketClient
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.hitl.notify import get_notifier
 
@@ -1872,12 +1871,11 @@ async def _run_ha_sidebar(args: Any) -> None:
         print(f"Using dashboard URL: {url}  (pass --url to override)")
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
-    ws = HAWebSocketClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
     notifier = get_notifier(
         _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
     )
 
-    await install_ha_sidebar(ssh, ws, url, notifier=notifier)
+    await install_ha_sidebar(ssh, url, notifier=notifier)
 
 
 if __name__ == "__main__":

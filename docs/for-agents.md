@@ -4,7 +4,7 @@ Compact "where is X?" map. `CLAUDE.md` is the authoritative reference; this file
 
 ## 1. Quick orientation
 
-- **Entry point:** `main.py`; default mode `supervisor`; 24 `--mode` values (see the `choices=` list in `main.py`). Agent imports are deferred inside mode branches so `PUEO_CONFIG` is set first.
+- **Entry point:** `main.py`; default mode `supervisor`; 25 `--mode` values (see the `choices=` list in `main.py`). Agent imports are deferred inside mode branches so `PUEO_CONFIG` is set first.
 - **Runtime:** `LoopSupervisor` (`utils/agent/supervisor.py`) starts the background tasks and the dashboard. Every significant decision goes through `AgentLoop` (`utils/agent/agent_loop.py`).
 - **Tools:** `utils/agent/tool_executor.py` (implementations) and `utils/agent/tool_registry.py` (definitions and per-agent registry builders).
 - **Config:** `config.py` is the single source. Adding a key means updating `config.py`, `config.yaml.default`, and `setup.sh` (ADR 001).

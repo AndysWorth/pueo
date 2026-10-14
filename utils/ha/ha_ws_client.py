@@ -329,20 +329,6 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
-    async def create_lovelace_dashboard(self, **payload: Any) -> dict:
-        """Create a new named Lovelace dashboard. Returns the created dashboard dict."""
-        return await self._call("lovelace/dashboards/create", **payload)
-
-    async def update_lovelace_dashboard(self, dashboard_id: str, **fields: Any) -> None:
-        """Update an existing named Lovelace dashboard by its ID."""
-        await self._call(
-            "lovelace/dashboards/update", dashboard_id=dashboard_id, **fields
-        )
-
-    async def save_lovelace_config(self, url_path: str, config: dict) -> None:
-        """Save (overwrite) the config for a named Lovelace dashboard."""
-        await self._call("lovelace/config/save", url_path=url_path, config=config)
-
 
 class FakeHAWebSocketClient:
     """Test double for HAWebSocketClientProtocol."""
@@ -511,21 +497,3 @@ class FakeHAWebSocketClient:
     def set_validate_automation_result(self, result: dict) -> None:
         """Pre-load the validation result for tests."""
         self._validate_automation_result = result
-
-    async def create_lovelace_dashboard(self, **payload: Any) -> dict:
-        self.calls.append(f"create_lovelace_dashboard:{payload.get('url_path')}")
-        created = dict(payload)
-        created.setdefault("id", f"fake-id-{len(self._lovelace_dashboards)}")
-        self._lovelace_dashboards.append(created)
-        return created
-
-    async def update_lovelace_dashboard(self, dashboard_id: str, **fields: Any) -> None:
-        self.calls.append(f"update_lovelace_dashboard:{dashboard_id}")
-        for d in self._lovelace_dashboards:
-            if d.get("id") == dashboard_id:
-                d.update(fields)
-                return
-
-    async def save_lovelace_config(self, url_path: str, config: dict) -> None:
-        self.calls.append(f"save_lovelace_config:{url_path}")
-        self._lovelace_configs[url_path] = config
