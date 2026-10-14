@@ -460,7 +460,7 @@ async def install_ha_sidebar(
 
     # 7. Write configuration.yaml if needed.
     if config_needs_update:
-        assert new_config is not None
+        assert new_config is not None  # nosec B101
         try:
             await ssh.write_file(_CONFIG_REMOTE_PATH, new_config)
             exit_code, _, stderr = await ssh.run("ha core check")
