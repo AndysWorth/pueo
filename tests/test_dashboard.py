@@ -1860,6 +1860,15 @@ class TestSuppressAndKnownIssues:
 class TestDismissNotificationRoute:
     """Tests for the /dismiss-notification/{card_id} POST route."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_dismiss_db(self, monkeypatch):
+        # mark_notification_dismissed defaults to the DB_PATH bound when
+        # ha_notification_manager was first imported, which depends on test order
+        # (a stale tmp path, or the real production DB). Never touch either.
+        import agents.ha_notification_manager as nm
+
+        monkeypatch.setattr(nm, "mark_notification_dismissed", lambda *a, **kw: None)
+
     def _write_notification_card(
         self, watch_dir: Path, card_id: str, ha_nid: str
     ) -> None:
