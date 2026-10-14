@@ -849,7 +849,7 @@ class AgentLoop:
             except Exception as exc:  # nosec B110
                 log.warning("episode_html_write_failed", error=str(exc))
 
-        await self._enqueue_distillation(outcome, steps)
+        await self._enqueue_distillation(outcome, steps, episode_stub)
 
         return AgentLoopResult(
             outcome=outcome,  # type: ignore[arg-type]
@@ -865,7 +865,12 @@ class AgentLoop:
             debug_log_path=debug_log_path,
         )
 
-    async def _enqueue_distillation(self, outcome: str, steps: list[AgentStep]) -> None:
+    async def _enqueue_distillation(
+        self,
+        outcome: str,
+        steps: list[AgentStep],
+        episode_stub: Optional[dict],
+    ) -> None:
         """Enqueue a post-session distillation WorkItem via the supervisor queue.
 
         In supervisor mode the distiller runs as a low-priority WorkItem, honouring
@@ -893,11 +898,14 @@ class AgentLoop:
         _store = self._knowledge_store
         _model = self._model
         _ep = self._episode_id
+        _llm = self._llm
+        _initial_ctx = self._raw_initial_context
 
         if queue is not None:
             # Supervisor mode: full distillation (may include LLM call).
             _steps_snap = list(steps)
             _outcome = outcome
+            _stub = dict(episode_stub) if episode_stub else None
 
             async def _run_distillation() -> None:
                 await distill_and_persist(
@@ -909,6 +917,9 @@ class AgentLoop:
                     db_path=_db,
                     knowledge_store=_store,
                     model=_model,
+                    initial_context=_initial_ctx,
+                    episode_stub=_stub,
+                    llm_client=_llm,
                 )
 
             submitted = await queue.submit(

@@ -11,7 +11,9 @@ from pydantic import ValidationError
 
 from utils.knowledge.runbook_distiller import (
     DistilledRunbook,
+    _build_prompt,
     _count_evidence_calls,
+    _distillation_timeout_seconds,
     _get_existing_by_signature,
     distill_and_persist,
     qualifies_for_distillation,
@@ -25,13 +27,23 @@ from utils.knowledge.runbook_distiller import (
 # ---------------------------------------------------------------------------
 
 
-def _make_step(name: str, step_number: int = 1):
+def _make_step(
+    name: str,
+    step_number: int = 1,
+    success: bool = True,
+    output: str = "ok",
+):
     from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
 
     return AgentStep(
         step_number=step_number,
         tool_call=ToolCall(name=name, arguments={}),
-        tool_result=ToolResult(tool_name=name, success=True, output="ok"),
+        tool_result=ToolResult(
+            tool_name=name,
+            success=success,
+            output=output,
+            error=None if success else "err",
+        ),
         timestamp=0.0,
     )
 
@@ -154,6 +166,157 @@ class TestQualifiesForDistillation:
             "run_ha_command",  # evidence
         )
         assert _count_evidence_calls(steps) == 3
+
+    def test_failed_evidence_calls_not_counted(self):
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
+
+        steps = [
+            _make_step("read_config", 1),  # success, non-empty → counts
+            AgentStep(
+                step_number=2,
+                tool_call=ToolCall(name="read_logs", arguments={}),
+                tool_result=ToolResult(
+                    tool_name="read_logs",
+                    success=False,
+                    output="",
+                    error="exit 1",
+                ),
+                timestamp=0.0,
+            ),  # failed → does not count
+            AgentStep(
+                step_number=3,
+                tool_call=ToolCall(name="run_ha_command", arguments={}),
+                tool_result=ToolResult(
+                    tool_name="run_ha_command",
+                    success=True,
+                    output="",  # empty → does not count
+                ),
+                timestamp=0.0,
+            ),
+        ]
+        assert _count_evidence_calls(steps) == 1
+
+    def test_empty_success_does_not_qualify(self):
+        """3 evidence calls but all empty — thin evidence, should not qualify."""
+        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
+
+        steps = [
+            AgentStep(
+                step_number=i + 1,
+                tool_call=ToolCall(name=name, arguments={}),
+                tool_result=ToolResult(tool_name=name, success=True, output=""),
+                timestamp=0.0,
+            )
+            for i, name in enumerate(["read_config", "read_logs", "run_ha_command"])
+        ]
+        assert not qualifies_for_distillation("success", steps)
+
+
+# ---------------------------------------------------------------------------
+# _build_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPrompt:
+    def test_includes_signature_and_outcome(self):
+        prompt = _build_prompt(
+            signature="repair:zha:device_offline",
+            trigger="repair_poll",
+            outcome="success",
+            initial_context="ZHA device offline",
+            episode_stub=None,
+            existing_approach="",
+            step_trace="  1. read_logs() → some log output",
+        )
+        assert "repair:zha:device_offline" in prompt
+        assert "success" in prompt
+        assert "ZHA device offline" in prompt
+
+    def test_includes_terminal_tool_conclusions(self):
+        stub = {
+            "summary": "ZHA coordinator crashed",
+            "recommendation": "Restart ZHA integration",
+            "action_taken": "Ran ha integration reload",
+        }
+        prompt = _build_prompt(
+            signature="sig",
+            trigger="t",
+            outcome="success",
+            initial_context="ctx",
+            episode_stub=stub,
+            existing_approach="",
+            step_trace="trace",
+        )
+        assert "ZHA coordinator crashed" in prompt
+        assert "Restart ZHA integration" in prompt
+        assert "Ran ha integration reload" in prompt
+
+    def test_includes_existing_runbook_when_present(self):
+        prompt = _build_prompt(
+            signature="sig",
+            trigger="t",
+            outcome="success",
+            initial_context="ctx",
+            episode_stub=None,
+            existing_approach="## When to use\nWhen ZHA crashes",
+            step_trace="trace",
+        )
+        assert "refine, don't replace" in prompt
+        assert "When ZHA crashes" in prompt
+
+    def test_excludes_existing_section_when_empty(self):
+        prompt = _build_prompt(
+            signature="sig",
+            trigger="t",
+            outcome="success",
+            initial_context="ctx",
+            episode_stub=None,
+            existing_approach="",
+            step_trace="trace",
+        )
+        assert "refine, don't replace" not in prompt
+
+    def test_initial_context_truncated_at_head(self):
+        # First 50 chars are distinctive START_TOKEN, rest is padding, last 50 are END_TOKEN
+        start = "START_TOKEN_AAAA"
+        end = "END_TOKEN_ZZZZ"
+        long_ctx = start + ("B" * 9_900) + end
+        prompt = _build_prompt(
+            signature="sig",
+            trigger="t",
+            outcome="success",
+            initial_context=long_ctx,
+            episode_stub=None,
+            existing_approach="",
+            step_trace="trace",
+        )
+        # Head strategy: start is present, tail end token is dropped
+        assert start in prompt
+        assert end not in prompt
+
+
+# ---------------------------------------------------------------------------
+# _distillation_timeout_seconds
+# ---------------------------------------------------------------------------
+
+
+class TestDistillationTimeoutSeconds:
+    def test_returns_float(self, tmp_path):
+        db_path = str(tmp_path / "t.db")
+        # No llm_calls table → falls back to default
+        t = _distillation_timeout_seconds(db_path, "qwen2.5:7b")
+        assert isinstance(t, float)
+        assert t > 0
+
+    def test_minimum_bound_respected(self, tmp_path, monkeypatch):
+        import config as _cfg
+
+        db_path = str(tmp_path / "t.db")
+        monkeypatch.setattr(_cfg, "AGENT_PER_CALL_MIN_TIMEOUT_SECONDS", 60.0)
+        monkeypatch.setattr(_cfg, "AGENT_PER_CALL_MAX_TIMEOUT_SECONDS", 1800.0)
+        monkeypatch.setattr(_cfg, "AGENT_PER_CALL_TIMEOUT_FACTOR", 5.0)
+        t = _distillation_timeout_seconds(db_path, "qwen2.5:7b")
+        assert t >= 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +564,7 @@ class TestDistillAndPersist:
                 model="qwen2.5:7b",
             )
         )
-        # Second distillation → merge (bumps version)
+        # Second distillation → merge (bumps version, updates approach + title)
         asyncio.run(
             distill_and_persist(
                 trigger="update_poll",
@@ -417,13 +580,105 @@ class TestDistillAndPersist:
 
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute(
-                "SELECT version, episode_refs FROM agent_strategies"
+                "SELECT version, episode_refs, approach, title FROM agent_strategies"
             ).fetchall()
         assert len(rows) == 1  # still one row, not two
         assert rows[0][0] == 2  # version bumped
         refs = json.loads(rows[0][1])
         assert "ep4" in refs
         assert "ep5" in refs
+        # approach and title should be updated to the latest distilled content
+        assert "When to use" in rows[0][2]
+        assert rows[0][3] == "Diagnosing core update risks"
+
+    def test_injected_llm_client_used_preferentially(self, tmp_path, monkeypatch):
+        """When llm_client is injected, make_llm_client must not be called."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+
+        fallback_called = []
+
+        def _bad_factory():
+            fallback_called.append(True)
+            raise RuntimeError("should not be called")
+
+        monkeypatch.setattr(
+            "utils.knowledge.runbook_distiller.make_llm_client",
+            _bad_factory,
+        )
+        steps = _make_steps(
+            "get_update_release_notes",
+            "check_config_against_breaking_change",
+            "read_config",
+        )
+        asyncio.run(
+            distill_and_persist(
+                trigger="update_poll",
+                signature="update:core:ha",
+                steps=steps,
+                outcome="success",
+                episode_id="ep8",
+                db_path=db_path,
+                knowledge_store=store,
+                model="qwen2.5:7b",
+                llm_client=_FakeLLMWithRunbook(),
+            )
+        )
+        assert not fallback_called
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 1
+
+    def test_episode_stub_included_in_prompt_sent_to_llm(self, tmp_path, monkeypatch):
+        """episode_stub fields appear in the prompt passed to the LLM."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        captured_prompts: list[str] = []
+
+        class _CapturingLLM:
+            def __init__(self):
+                self._rb = _FakeLLMWithRunbook()
+
+            async def chat(self, model, messages, options, format):  # noqa: A002
+                for m in messages:
+                    if m.get("role") == "user":
+                        captured_prompts.append(m["content"])
+                return await self._rb.chat(model, messages, options, format)
+
+            async def chat_with_tools(self, *a, **kw):  # pragma: no cover
+                raise NotImplementedError
+
+        steps = _make_steps(
+            "get_update_release_notes",
+            "check_config_against_breaking_change",
+            "read_config",
+        )
+        asyncio.run(
+            distill_and_persist(
+                trigger="update_poll",
+                signature="update:core:ha",
+                steps=steps,
+                outcome="success",
+                episode_id="ep9",
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                initial_context="HA core update detected",
+                episode_stub={
+                    "summary": "Update applied cleanly",
+                    "recommendation": "Monitor logs",
+                },
+                llm_client=_CapturingLLM(),
+            )
+        )
+        assert captured_prompts, "LLM should have been called"
+        full_prompt = captured_prompts[0]
+        assert "HA core update detected" in full_prompt
+        assert "Update applied cleanly" in full_prompt
+        assert "Monitor logs" in full_prompt
 
     def test_success_resolves_existing_gap(self, tmp_path, monkeypatch):
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
