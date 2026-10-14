@@ -483,7 +483,7 @@ def _make_minimal_svg() -> str:
 import json as _json
 
 _REGISTRY_PATH = "/config/.storage/lovelace_dashboards"
-_DASH_CONFIG_PATH = "/config/.storage/lovelace.pueo-dashboard"
+_DASH_CONFIG_PATH = "/config/.storage/lovelace.pueo_dashboard"
 
 
 def _make_fake_ssh(
@@ -630,7 +630,7 @@ class TestInstallHaSidebar:
             "data": {
                 "items": [
                     {
-                        "id": "lovelace_pueo_dashboard",
+                        "id": "pueo_dashboard",
                         "url_path": "pueo-dashboard",
                         "title": "Pueo",
                         "icon": "pueo:owl",
@@ -644,7 +644,7 @@ class TestInstallHaSidebar:
         dash_cfg = {
             "version": 1,
             "minor_version": 1,
-            "key": "lovelace.pueo-dashboard",
+            "key": "lovelace.pueo_dashboard",
             "data": {"config": {"strategy": {"type": "iframe", "url": url}}},
         }
         ssh = _make_fake_ssh(
@@ -685,7 +685,8 @@ class TestInstallHaSidebar:
             svg_path=self._svg_path(tmp_path),
         )
 
-        mb.assert_not_called()
+        mb.assert_called_once()
+        mr.assert_called_once()
         captured = capsys.readouterr()
         assert "manually" in captured.out.lower() or "⚠" in captured.out
         assert _REGISTRY_PATH in ssh.written_files
@@ -701,7 +702,7 @@ class TestInstallHaSidebar:
             "data": {
                 "items": [
                     {
-                        "id": "lovelace_pueo_dashboard",
+                        "id": "pueo_dashboard",
                         "url_path": "pueo-dashboard",
                         "title": "Old Title",
                         "icon": "mdi:owl",
@@ -750,6 +751,101 @@ class TestInstallHaSidebar:
         cfg = saved["data"]["config"]
         assert cfg["strategy"]["type"] == "iframe"
         assert cfg["strategy"]["url"] == url
+
+    def test_storage_written_before_restart_storage_only_change(self, tmp_path):
+        """When only storage changes, lovelace writes must all precede the restart."""
+        config_text = (
+            "frontend:\n  extra_module_url:\n    - /local/pueo/pueo-icons.js\n"
+        )
+        ssh = _make_fake_ssh(config_text)
+        call_order: list[str] = []
+
+        orig_write = (
+            ssh.write_file.__func__ if hasattr(ssh.write_file, "__func__") else None
+        )
+
+        async def tracked_write(path: str, content: str) -> None:
+            call_order.append(f"write:{path}")
+            ssh.written_files[path] = content
+
+        ssh.write_file = tracked_write  # type: ignore[method-assign]
+
+        async def fake_restart(ssh_client=None, notifier=None, skip_backup=False):
+            call_order.append("restart")
+
+        mb = AsyncMock(return_value="s")
+        mr = MagicMock()
+        with (
+            patch(_PATCH_BACKUP, mb),
+            patch(_PATCH_RECORD, mr),
+            patch(_PATCH_RESTART, fake_restart),
+        ):
+            asyncio.run(
+                install_ha_sidebar(
+                    ssh,
+                    "http://1.2.3.4:8080",
+                    notifier=MagicMock(),
+                    svg_path=self._svg_path(tmp_path),
+                )
+            )
+
+        restart_idx = call_order.index("restart")
+        lovelace_writes = [i for i, c in enumerate(call_order) if "lovelace" in c]
+        assert lovelace_writes, "Expected lovelace writes in call_order"
+        assert all(i < restart_idx for i in lovelace_writes)
+
+    def test_backup_taken_when_only_storage_changes(self, tmp_path):
+        """A backup must be taken even when only storage (not config) changes."""
+        config_text = (
+            "frontend:\n  extra_module_url:\n    - /local/pueo/pueo-icons.js\n"
+        )
+        ssh = _make_fake_ssh(config_text)
+        mb = AsyncMock(return_value="s")
+        mr = MagicMock()
+        mres = AsyncMock(return_value=True)
+
+        self._run_install(
+            ssh,
+            mock_backup=mb,
+            mock_record=mr,
+            mock_restart=mres,
+            svg_path=self._svg_path(tmp_path),
+        )
+
+        mb.assert_called_once()
+        mr.assert_called_once()
+        mres.assert_called_once()
+
+    def test_legacy_file_removed(self, tmp_path):
+        """rm -f of the legacy lovelace.pueo-dashboard file must always be called."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text)
+
+        self._run_install(ssh, svg_path=self._svg_path(tmp_path))
+
+        assert any(
+            "rm -f /config/.storage/lovelace.pueo-dashboard" in cmd
+            for cmd in ssh.commands_run
+        )
+
+    def test_readback_warns_when_entry_missing(self, tmp_path, capsys):
+        """After install+restart, warn if the read-back registry does not have the entry."""
+        config_text = "homeassistant:\n  name: Test\n"
+        empty_registry = {
+            "version": 1,
+            "minor_version": 1,
+            "key": "lovelace_dashboards",
+            "data": {"items": []},
+        }
+        ssh = _make_fake_ssh(
+            config_text,
+            storage_files={_REGISTRY_PATH: _json.dumps(empty_registry)},
+        )
+
+        self._run_install(ssh, svg_path=self._svg_path(tmp_path))
+
+        captured = capsys.readouterr()
+        assert "⚠" in captured.out or "not found" in captured.out.lower()
 
 
 # ---------------------------------------------------------------------------
