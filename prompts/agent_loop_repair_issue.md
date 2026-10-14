@@ -21,7 +21,8 @@ Phase 2 — FORM A HYPOTHESIS: State in one sentence what you think is causing t
   - missing_credentials: API key or token was revoked or changed
 
 Phase 3 — GATHER EVIDENCE: Use a targeted subset of these tools:
-  a. run_ha_command("ha supervisor info") — check HA, OS, Supervisor versions
+  a. run_ha_command("ha core info") / run_ha_command("ha os info") — check versions
+     (version vs version_latest)
   b. read_logs(lines=50, log_source="ha_core") — check for errors from this domain
   c. query_knowledge("translation_key domain") — check for known fixes in the runbook library
   d. fetch_ha_docs(domain, "__init__.py") — check integration source if you need specifics

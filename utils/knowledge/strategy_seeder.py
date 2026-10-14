@@ -17,34 +17,23 @@ if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
     from utils.ha.ha_environment import HAEnvironmentProfile
 
+# Prompt files that used to be seeded but are other agents' system prompts, not
+# runbooks. seed_strategies() purges their ids from Chroma and agent_strategies so
+# they stop being retrieved (and credited) in unrelated sessions. run_rag_refresh
+# also passes them to kb sync so pueo-kb copies are not re-ingested.
+_RETIRED_SEED_PROMPTS: frozenset[str] = frozenset(
+    {
+        "diagnose_netalertx.md",
+        "diagnose_installer.md",
+        "triage_repair_issue.md",
+        "investigation.md",
+        "diagnose_config.md",
+    }
+)
+
 # Prompt files to seed as runbook documents.
 # Each entry is (prompt_filename, title, trigger_pattern).
 _SEED_PROMPTS: list[tuple[str, str, str]] = [
-    (
-        "diagnose_netalertx.md",
-        "NetAlertX health diagnosis",
-        "NetAlertX not scanning, MQTT errors, device detection failures",
-    ),
-    (
-        "diagnose_installer.md",
-        "NetAlertX installer diagnosis",
-        "NetAlertX installation failure, docker pull error, port conflict",
-    ),
-    (
-        "triage_repair_issue.md",
-        "HA repair issue triage",
-        "HA repair card, persistent issue, component failure flagged by HA",
-    ),
-    (
-        "investigation.md",
-        "General investigation methodology",
-        "Unknown HA failure, general diagnostic investigation",
-    ),
-    (
-        "diagnose_config.md",
-        "HA configuration diagnosis",
-        "Invalid HA configuration, yaml error, config check failure",
-    ),
     (
         "seed_integration_error.md",
         "Integration or entity error investigation",
@@ -123,9 +112,24 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
 ]
 
 
+def _stored_seed_approaches(db_path: str) -> dict[str, str]:
+    """Return {seed id: approach} for seed rows already in agent_strategies."""
+    if not db_path:
+        return {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, approach FROM agent_strategies WHERE id LIKE 'seed:%'"
+            ).fetchall()
+        return {str(r[0]): str(r[1] or "") for r in rows}
+    except Exception:  # nosec B110 — table may not exist yet
+        return {}
+
+
 def seed_strategies(
     store: "KnowledgeStoreClientProtocol",
     db_path: str = "",
+    only_changed: bool = False,
 ) -> int:
     """Embed seed runbook documents into the 'strategies' collection.
 
@@ -133,7 +137,13 @@ def seed_strategies(
     idempotent (upsert semantics). Also writes seed entries to the
     agent_strategies SQLite table, refreshing approach/title/trigger_pattern
     on each run so stale text is updated. Returns the number of documents upserted.
+    Retired seed ids (_RETIRED_SEED_PROMPTS) are purged from both stores.
+
+    only_changed=True (startup sync) skips seeds whose file content matches the
+    stored agent_strategies approach, so only new or edited seeds are re-embedded.
     """
+    purge_retired_seeds(store, db_path)
+    stored = _stored_seed_approaches(db_path) if only_changed else {}
     prompts_dir = Path(__file__).parent.parent.parent / "prompts"
     n = 0
     for filename, title, trigger_pattern in _SEED_PROMPTS:
@@ -143,6 +153,8 @@ def seed_strategies(
         content = path.read_text("utf-8")
         text = f"# {title}\n\nTrigger: {trigger_pattern}\n\n{content}"
         doc_id = f"seed:{filename}"
+        if only_changed and stored.get(doc_id) == content:
+            continue
         try:
             store.upsert(
                 collection="strategies",
@@ -177,6 +189,31 @@ def seed_strategies(
             except Exception:  # nosec B110
                 pass
     return n
+
+
+def purge_retired_seeds(
+    store: "KnowledgeStoreClientProtocol",
+    db_path: str = "",
+) -> None:
+    """Delete retired seed ids from the 'strategies' collection and agent_strategies.
+
+    Idempotent; best-effort. runbook_usage rows are kept as history.
+    """
+    retired_ids = sorted(f"seed:{fn}" for fn in _RETIRED_SEED_PROMPTS)
+    try:
+        store.delete_ids("strategies", retired_ids)
+    except Exception:  # nosec B110
+        pass
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.executemany(
+                    "DELETE FROM agent_strategies WHERE id=?",
+                    [(i,) for i in retired_ids],
+                )
+                conn.commit()
+        except Exception:  # nosec B110
+            pass
 
 
 def seed_home_profile(

@@ -26,11 +26,12 @@ Phase 2 — FORM A HYPOTHESIS: One sentence about what you think is causing the 
 Phase 3 — GATHER EVIDENCE: Use tools relevant to the finding kind.
 
   Swap / memory:
-  a. run_ha_command("ha apps stats") — check per-app CPU and memory
+  a. run_ha_command("ha apps list"), then run_ha_command("ha apps stats <slug>") for
+     suspect apps — check per-app CPU and memory
   b. run_ha_command("ha core stats") — check Core process memory
   c. read_logs(lines=30, log_source="ha_core") — look for OOM or memory errors
-  d. Consider call_service(domain="homeassistant", service="restart") at MEDIUM risk if a
-     leak is confirmed and the user's autonomy level permits it.
+  d. Consider run_ha_command("ha core restart") (gated, MEDIUM) if a leak is confirmed
+     and the user's autonomy level permits it.
 
   Disk wear:
   a. run_ha_command("ha host info --raw-json") — confirm current disk_life_time value
@@ -38,7 +39,7 @@ Phase 3 — GATHER EVIDENCE: Use tools relevant to the finding kind.
      replacement. Set outcome="needs_action".
 
   Unexpected reboot:
-  a. run_ha_command("ha core logs --lines 50") — check for OOM kills or panic lines
+  a. read_logs(lines=50, log_source="ha_host") — check for OOM kills or panic lines
   b. run_ha_command("ha os info") — check HAOS version and last known update
   c. query_knowledge("unexpected reboot OOM kernel Pi") — check runbook library
 
@@ -52,7 +53,7 @@ Phase 3 — GATHER EVIDENCE: Use tools relevant to the finding kind.
      unhealthy states that need Supervisor repair.
 
   Supervisor unhealthy / unsupported:
-  a. run_ha_command("ha supervisor info") — check versions
+  a. run_ha_command("ha os info") — check OS version vs version_latest
   b. run_ha_command("ha resolution info --raw-json") — see all issues and suggestions
 
 Phase 4 — CONFIRM ROOT CAUSE: One sentence explaining the root cause or why the condition

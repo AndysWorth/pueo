@@ -15,7 +15,7 @@ This runbook covers investigation of Home Assistant repair issues surfaced via t
 ### reboot_required — OS or Supervisor update applied
 - **Cause**: Home Assistant OS or Supervisor update requires a restart to take effect
 - **Urgency**: Medium — system is running on old code until reboot; some features may behave oddly
-- **Investigation**: run_ha_command("ha supervisor info") to check pending versions
+- **Investigation**: run_ha_command("ha os info") to check version vs version_latest
 - **Action**: requires_hitl=true, action="reboot"
 - **Explanation**: "A Home Assistant OS or Supervisor update has been applied and requires a
   reboot to take effect."
@@ -23,7 +23,7 @@ This runbook covers investigation of Home Assistant repair issues surfaced via t
 ### restart_required — HA Core update applied
 - **Cause**: HA Core update was installed; a restart activates the new version
 - **Urgency**: Low — running fine, just on old code
-- **Investigation**: run_ha_command("ha supervisor info") to confirm update version
+- **Investigation**: run_ha_command("ha core info") to confirm the installed version
 - **Action**: requires_hitl=true, action="restart"
 - **Explanation**: "Home Assistant Core has been updated. A restart is needed to activate the
   new version."
@@ -48,4 +48,5 @@ This runbook covers investigation of Home Assistant repair issues surfaced via t
 - If breaks_in_ha_version is set, the issue is time-sensitive — flag it clearly
 - If severity is "critical", always set requires_hitl=true and action="reboot" unless
   investigation clearly shows otherwise
-- Save a runbook if you discover a novel translation_key not covered above
+- For a novel translation_key not covered above, state the root cause clearly in your
+  finish call — runbooks are distilled from the session automatically
