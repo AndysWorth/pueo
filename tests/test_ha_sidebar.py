@@ -16,9 +16,11 @@ from utils.ha.ha_sidebar import (
     build_iconset_js,
     decode_png_rgba,
     detect_lan_ip,
+    detect_pueo_url,
     icon_path_from_rgba,
     install_ha_sidebar,
     png_from_nav_svg,
+    probe_pueo_url,
     webpage_dashboard_payload,
 )
 
@@ -416,6 +418,77 @@ class TestDetectLanIp:
 
 
 # ---------------------------------------------------------------------------
+# detect_pueo_url
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPueoUrl:
+    def test_scutil_success(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Funis\n")
+            result = detect_pueo_url(8080)
+        assert result == "http://funis.local:8080"
+
+    def test_scutil_uppercase_lowercased(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="MyMac\n")
+            result = detect_pueo_url(9000)
+        assert result == "http://mymac.local:9000"
+
+    def test_scutil_failure_falls_back_to_gethostname_local(self):
+        with patch("subprocess.run", side_effect=Exception("no scutil")):
+            with patch("socket.gethostname", return_value="mymac.local"):
+                result = detect_pueo_url(8080)
+        assert result == "http://mymac.local:8080"
+
+    def test_falls_back_to_lan_ip(self):
+        with patch("subprocess.run", return_value=MagicMock(stdout="")):
+            with patch("socket.gethostname", return_value="mymac"):
+                with patch(
+                    "utils.ha.ha_sidebar.detect_lan_ip", return_value="10.0.0.5"
+                ):
+                    result = detect_pueo_url(8080)
+        assert result == "http://10.0.0.5:8080"
+
+    def test_falls_back_to_localhost_when_all_fail(self):
+        with patch("subprocess.run", return_value=MagicMock(stdout="")):
+            with patch("socket.gethostname", return_value="mymac"):
+                with patch("utils.ha.ha_sidebar.detect_lan_ip", return_value=None):
+                    result = detect_pueo_url(8080)
+        assert result == "http://127.0.0.1:8080"
+
+
+# ---------------------------------------------------------------------------
+# probe_pueo_url
+# ---------------------------------------------------------------------------
+
+
+class TestProbePueoUrl:
+    def test_returns_true_on_200(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 200
+        with patch(
+            "utils.ha.ha_sidebar._urllib_request.urlopen", return_value=mock_resp
+        ):
+            assert probe_pueo_url("http://funis.local:8080") is True
+
+    def test_returns_false_on_exception(self):
+        with patch(
+            "utils.ha.ha_sidebar._urllib_request.urlopen",
+            side_effect=Exception("connection refused"),
+        ):
+            assert probe_pueo_url("http://funis.local:8080") is False
+
+    def test_rejects_non_http_scheme(self):
+        assert probe_pueo_url("ftp://funis.local:8080") is False
+
+    def test_rejects_empty_string(self):
+        assert probe_pueo_url("") is False
+
+
+# ---------------------------------------------------------------------------
 # webpage_dashboard_payload
 # ---------------------------------------------------------------------------
 
@@ -483,7 +556,7 @@ def _make_minimal_svg() -> str:
 import json as _json
 
 _REGISTRY_PATH = "/config/.storage/lovelace_dashboards"
-_DASH_CONFIG_PATH = "/config/.storage/lovelace.pueo-dashboard"
+_DASH_CONFIG_PATH = "/config/.storage/lovelace.pueo_dashboard"
 
 
 def _make_fake_ssh(
@@ -630,7 +703,7 @@ class TestInstallHaSidebar:
             "data": {
                 "items": [
                     {
-                        "id": "lovelace_pueo_dashboard",
+                        "id": "pueo_dashboard",
                         "url_path": "pueo-dashboard",
                         "title": "Pueo",
                         "icon": "pueo:owl",
@@ -644,7 +717,7 @@ class TestInstallHaSidebar:
         dash_cfg = {
             "version": 1,
             "minor_version": 1,
-            "key": "lovelace.pueo-dashboard",
+            "key": "lovelace.pueo_dashboard",
             "data": {"config": {"strategy": {"type": "iframe", "url": url}}},
         }
         ssh = _make_fake_ssh(
@@ -685,7 +758,8 @@ class TestInstallHaSidebar:
             svg_path=self._svg_path(tmp_path),
         )
 
-        mb.assert_not_called()
+        mb.assert_called_once()
+        mr.assert_called_once()
         captured = capsys.readouterr()
         assert "manually" in captured.out.lower() or "⚠" in captured.out
         assert _REGISTRY_PATH in ssh.written_files
@@ -701,7 +775,7 @@ class TestInstallHaSidebar:
             "data": {
                 "items": [
                     {
-                        "id": "lovelace_pueo_dashboard",
+                        "id": "pueo_dashboard",
                         "url_path": "pueo-dashboard",
                         "title": "Old Title",
                         "icon": "mdi:owl",
@@ -750,6 +824,101 @@ class TestInstallHaSidebar:
         cfg = saved["data"]["config"]
         assert cfg["strategy"]["type"] == "iframe"
         assert cfg["strategy"]["url"] == url
+
+    def test_storage_written_before_restart_storage_only_change(self, tmp_path):
+        """When only storage changes, lovelace writes must all precede the restart."""
+        config_text = (
+            "frontend:\n  extra_module_url:\n    - /local/pueo/pueo-icons.js\n"
+        )
+        ssh = _make_fake_ssh(config_text)
+        call_order: list[str] = []
+
+        orig_write = (
+            ssh.write_file.__func__ if hasattr(ssh.write_file, "__func__") else None
+        )
+
+        async def tracked_write(path: str, content: str) -> None:
+            call_order.append(f"write:{path}")
+            ssh.written_files[path] = content
+
+        ssh.write_file = tracked_write  # type: ignore[method-assign]
+
+        async def fake_restart(ssh_client=None, notifier=None, skip_backup=False):
+            call_order.append("restart")
+
+        mb = AsyncMock(return_value="s")
+        mr = MagicMock()
+        with (
+            patch(_PATCH_BACKUP, mb),
+            patch(_PATCH_RECORD, mr),
+            patch(_PATCH_RESTART, fake_restart),
+        ):
+            asyncio.run(
+                install_ha_sidebar(
+                    ssh,
+                    "http://1.2.3.4:8080",
+                    notifier=MagicMock(),
+                    svg_path=self._svg_path(tmp_path),
+                )
+            )
+
+        restart_idx = call_order.index("restart")
+        lovelace_writes = [i for i, c in enumerate(call_order) if "lovelace" in c]
+        assert lovelace_writes, "Expected lovelace writes in call_order"
+        assert all(i < restart_idx for i in lovelace_writes)
+
+    def test_backup_taken_when_only_storage_changes(self, tmp_path):
+        """A backup must be taken even when only storage (not config) changes."""
+        config_text = (
+            "frontend:\n  extra_module_url:\n    - /local/pueo/pueo-icons.js\n"
+        )
+        ssh = _make_fake_ssh(config_text)
+        mb = AsyncMock(return_value="s")
+        mr = MagicMock()
+        mres = AsyncMock(return_value=True)
+
+        self._run_install(
+            ssh,
+            mock_backup=mb,
+            mock_record=mr,
+            mock_restart=mres,
+            svg_path=self._svg_path(tmp_path),
+        )
+
+        mb.assert_called_once()
+        mr.assert_called_once()
+        mres.assert_called_once()
+
+    def test_legacy_file_removed(self, tmp_path):
+        """rm -f of the legacy lovelace.pueo-dashboard file must always be called."""
+        config_text = "homeassistant:\n  name: Test\n"
+        ssh = _make_fake_ssh(config_text)
+
+        self._run_install(ssh, svg_path=self._svg_path(tmp_path))
+
+        assert any(
+            "rm -f /config/.storage/lovelace.pueo-dashboard" in cmd
+            for cmd in ssh.commands_run
+        )
+
+    def test_readback_warns_when_entry_missing(self, tmp_path, capsys):
+        """After install+restart, warn if the read-back registry does not have the entry."""
+        config_text = "homeassistant:\n  name: Test\n"
+        empty_registry = {
+            "version": 1,
+            "minor_version": 1,
+            "key": "lovelace_dashboards",
+            "data": {"items": []},
+        }
+        ssh = _make_fake_ssh(
+            config_text,
+            storage_files={_REGISTRY_PATH: _json.dumps(empty_registry)},
+        )
+
+        self._run_install(ssh, svg_path=self._svg_path(tmp_path))
+
+        captured = capsys.readouterr()
+        assert "⚠" in captured.out or "not found" in captured.out.lower()
 
 
 # ---------------------------------------------------------------------------

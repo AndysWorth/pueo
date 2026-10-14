@@ -34,31 +34,45 @@ A Lovelace resource (`/api/lovelace/resources`) is only loaded when a dashboard 
 
 ### Setup-time config write under the backup chain
 
-`install_ha_sidebar()` follows the project's safety invariant:
+`install_ha_sidebar()` follows the project's safety invariant with a compute-first, write-once, restart-once ordering:
 
 1. SFTP-write `/config/www/pueo/pueo-icons.js` (new, inert file — no backup needed).
-2. Read `/config/configuration.yaml`. If unchanged or `add_extra_module_url` returns `None`, skip to the dashboard step.
-3. `execute_remote_backup()` → `record_backup_slug()` before writing.
-4. Write the modified config. Run `ha core check`; restore the original on failure and abort.
-5. On pass: `execute_ha_core_restart(skip_backup=True)`. Set `_config_restart_triggered = True`.
-6. SFTP-write `.storage/lovelace_dashboards` and `.storage/lovelace.pueo-dashboard`. Idempotent: reads the existing registry and only writes when changed.
-7. If storage was changed and no restart was triggered in step 5: `execute_ha_core_restart(skip_backup=True)`.
+2. Read `configuration.yaml`, `lovelace_dashboards`, and `lovelace.pueo_dashboard`. Compute all pending changes without writing anything.
+3. If anything needs to change: `execute_remote_backup()` → `record_backup_slug()`. The backup covers both config and storage writes.
+4. Write `configuration.yaml` if changed. Run `ha core check`; restore the original on failure and raise.
+5. Write `.storage/lovelace.pueo_dashboard` if changed.
+6. Write `.storage/lovelace_dashboards` if changed.
+7. Remove legacy `.storage/lovelace.pueo-dashboard` (left by pre-fix installs).
+8. If anything changed: exactly one `execute_ha_core_restart(skip_backup=True)`.
+9. Read-back: re-read `lovelace_dashboards` and warn loudly if the `pueo-dashboard` entry is absent. (HA saves its in-memory registry on shutdown; this catches any race where HA overwrote the file between the write and the restart.)
 
 ### Direct `.storage/` writes instead of WebSocket dashboard API
 
 HA 2026.10.1 does not expose a `lovelace/dashboards/create` WebSocket command (returns `unknown_command`). Dashboard creation is done by writing directly to the `.storage/` persistence layer instead:
 
 - `/config/.storage/lovelace_dashboards` — the dashboard registry (list of all named dashboards).
-- `/config/.storage/lovelace.pueo-dashboard` — the per-dashboard config (iframe strategy + URL).
+- `/config/.storage/lovelace.pueo_dashboard` — the per-dashboard config (iframe strategy + URL).
 
-Both files are SFTP-written over the existing SSH transport. HA reads these files on startup, so a restart is triggered whenever either file changes and no restart has already been triggered by step 5.
+HA maps dashboard config from `.storage/lovelace.<id>`, where `<id>` is the registry entry's `id` field (not the `url_path`). The dashboard is registered with `id: "pueo_dashboard"` which maps to `lovelace.pueo_dashboard`. Both files are SFTP-written over the existing SSH transport. HA reads these files on startup, so a restart is triggered whenever either file changes.
 
 `setup.sh` section 5.6 wraps the `--mode ha-sidebar` invocation in `|| warn …` so a failure never aborts the rest of setup.
+
+### Dashboard URL: mDNS hostname over DHCP IP
+
+`detect_pueo_url(port)` resolves the URL to embed in the iframe:
+1. `scutil --get LocalHostName` (macOS) lowercased + `.local` — stable across DHCP changes.
+2. `socket.gethostname()` if it already ends in `.local`.
+3. `detect_lan_ip()` — DHCP IP fallback.
+4. `127.0.0.1` — last resort.
+
+`probe_pueo_url(url)` makes a 2-second GET to confirm Pueo is serving at that URL. It only prints a warning on failure and never aborts — the Mac's view does not guarantee the browser's view.
+
+`setup.sh` §5.6 uses `scutil --get LocalHostName` for the default URL suggestion and falls back to `ipconfig getifaddr`/`hostname -I` on non-macOS hosts.
 
 ## Consequences
 
 - The sidebar icon is derived from `nav_32.svg` at install time. Changing the nav icon requires re-running `--mode ha-sidebar`.
 - Adding `extra_module_url` requires an HA Core restart. The backup chain ensures the restart is safe.
-- Rollback: restore the backup slug, or remove the `frontend.extra_module_url` line and `/config/www/pueo/`, delete the `/config/.storage/lovelace_dashboards` entry for `pueo-dashboard`, delete `/config/.storage/lovelace.pueo-dashboard`, and revert the commit.
+- Rollback: restore the backup slug, or remove the `frontend.extra_module_url` line and `/config/www/pueo/`, delete the `/config/.storage/lovelace_dashboards` entry for `pueo-dashboard`, delete `/config/.storage/lovelace.pueo_dashboard`, and revert the commit.
 - The `add_extra_module_url` parser handles the common YAML layouts but returns `None` for uncommon ones; manual instructions are printed in that case.
 - No HA WebSocket connection is required — the orchestrator uses SSH only.

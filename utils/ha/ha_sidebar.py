@@ -15,6 +15,7 @@ import re
 import socket
 import struct
 import subprocess  # nosec B404
+import urllib.request as _urllib_request
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -245,6 +246,61 @@ def detect_lan_ip() -> Optional[str]:
         return None
 
 
+def detect_pueo_url(port: int) -> str:
+    """Return the Pueo dashboard URL, preferring a stable mDNS hostname over a DHCP IP.
+
+    Resolution order:
+    1. scutil --get LocalHostName (macOS; stable across DHCP changes)
+    2. socket.gethostname() if it already ends in .local
+    3. detect_lan_ip() (DHCP IP)
+    4. 127.0.0.1 (last resort)
+    """
+    # 1. macOS: scutil --get LocalHostName → e.g. "Funis" → "funis.local"
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["scutil", "--get", "LocalHostName"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        hostname = result.stdout.strip().lower()
+        if hostname:
+            return f"http://{hostname}.local:{port}"
+    except Exception:  # nosec B110
+        pass
+
+    # 2. gethostname() if it already carries .local
+    try:
+        name = socket.gethostname().lower()
+        if name.endswith(".local"):
+            return f"http://{name}:{port}"
+    except Exception:  # nosec B110
+        pass
+
+    # 3. LAN IP
+    ip = detect_lan_ip()
+    if ip:
+        return f"http://{ip}:{port}"
+
+    # 4. Last resort
+    return f"http://127.0.0.1:{port}"
+
+
+def probe_pueo_url(url: str) -> bool:
+    """Return True if a GET to url succeeds within 2 s. Never raises.
+
+    Rejects non-http(s) schemes. Only warns — never aborts — because the
+    Mac's view does not guarantee the browser's view.
+    """
+    if not url.startswith(("http://", "https://")):
+        return False
+    try:
+        with _urllib_request.urlopen(url, timeout=2) as resp:  # nosec B310
+            return resp.status < 500
+    except Exception:  # nosec B110
+        return False
+
+
 def webpage_dashboard_payload(
     url: str,
     title: str = "Pueo",
@@ -269,8 +325,9 @@ _ICONSET_REMOTE_PATH = "/config/www/pueo/pueo-icons.js"
 _ICONSET_MODULE_URL = "/local/pueo/pueo-icons.js"
 _DASHBOARD_URL_PATH = "pueo-dashboard"
 _DASHBOARD_REGISTRY_REMOTE_PATH = "/config/.storage/lovelace_dashboards"
-_DASHBOARD_CONFIG_REMOTE_PATH = "/config/.storage/lovelace.pueo-dashboard"
-_DASHBOARD_ID = "lovelace_pueo_dashboard"
+_DASHBOARD_CONFIG_REMOTE_PATH = "/config/.storage/lovelace.pueo_dashboard"
+_DASHBOARD_CONFIG_LEGACY_REMOTE_PATH = "/config/.storage/lovelace.pueo-dashboard"
+_DASHBOARD_ID = "pueo_dashboard"
 
 
 async def install_ha_sidebar(
@@ -282,15 +339,21 @@ async def install_ha_sidebar(
 ) -> None:
     """Install the Pueo owl iconset and Webpage dashboard in HA.
 
+    Computes all changes first, then takes one backup, writes everything,
+    does one restart, and verifies with a registry read-back.
+
     Steps:
-    1. Derive the JS iconset from nav_32.svg and SFTP-write it to /config/www/pueo/.
-    2. Edit /config/configuration.yaml to add frontend.extra_module_url.
-       - If the URL is already present: skip backup/restart.
-       - If add_extra_module_url returns None: print manual instructions; still
-         proceed to create the dashboard.
-       - Otherwise: backup → write → ha core check → (restore on failure) → restart.
-    3. Write .storage/lovelace_dashboards and .storage/lovelace.pueo-dashboard.
-       - If storage was changed and no restart was triggered in step 2: restart.
+    1. Build and upload the iconset JS (inert write, no restart needed).
+    2. Read configuration.yaml → compute updated config.
+    3. Read .storage/lovelace_dashboards → compute updated registry.
+    4. Read .storage/lovelace.pueo_dashboard → compute updated dashboard config.
+    5. If anything changed: take one backup.
+    6. Write configuration.yaml if changed; run ha core check, restore on failure.
+    7. Write .storage/lovelace.pueo_dashboard if changed.
+    8. Write .storage/lovelace_dashboards if changed.
+    9. Remove legacy .storage/lovelace.pueo-dashboard.
+    10. If anything changed: one ha core restart.
+    11. Read-back registry to verify the Pueo entry is present; warn if not.
     """
     from agents.ha_agent_advanced import execute_remote_backup, record_backup_slug
     from agents.ha_update_manager import execute_ha_core_restart
@@ -309,11 +372,9 @@ async def install_ha_sidebar(
     await ssh.write_file(_ICONSET_REMOTE_PATH, js_content)
     print(f"✓  Iconset written to {_ICONSET_REMOTE_PATH}")
 
-    # 2. Edit configuration.yaml.
-    _config_restart_triggered = False
+    # 2. Read configuration.yaml → compute new_config.
     config_text = await ssh.read_file(_CONFIG_REMOTE_PATH)
     new_config = add_extra_module_url(config_text, _ICONSET_MODULE_URL)
-
     if new_config is None:
         print(
             "\n⚠  Could not auto-edit configuration.yaml (frontend: block uses an unsupported form).\n"
@@ -322,42 +383,16 @@ async def install_ha_sidebar(
             "     extra_module_url:\n"
             f"       - {_ICONSET_MODULE_URL}\n"
         )
+        config_needs_update = False
     elif new_config == config_text:
         print(
             "✓  configuration.yaml already contains the module URL — no changes needed."
         )
+        config_needs_update = False
     else:
-        # Safety invariant: backup before any production write.
-        backup_slug = await execute_remote_backup(ssh_client=ssh)
-        record_backup_slug(backup_slug)
+        config_needs_update = True
 
-        # Write, sandbox-check, restore on failure.
-        try:
-            await ssh.write_file(_CONFIG_REMOTE_PATH, new_config)
-            exit_code, _, stderr = await ssh.run("ha core check")
-            if exit_code != 0:
-                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
-                raise RuntimeError(
-                    f"ha core check failed after adding extra_module_url "
-                    f"(exit {exit_code}); original config restored.\n{stderr}"
-                )
-        except Exception:
-            # Ensure restore on any unexpected error too.
-            try:
-                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
-            except Exception:  # nosec B110
-                pass
-            raise
-
-        print("✓  configuration.yaml updated with extra_module_url.")
-        await execute_ha_core_restart(
-            ssh_client=ssh, notifier=notifier, skip_backup=True
-        )
-        _config_restart_triggered = True
-
-    # 3. Write .storage/lovelace_dashboards and .storage/lovelace.pueo-dashboard.
-    _storage_changed = False
-
+    # 3. Read .storage/lovelace_dashboards → compute registry entry.
     try:
         registry_text = await ssh.read_file(_DASHBOARD_REGISTRY_REMOTE_PATH)
         registry: dict = json.loads(registry_text)
@@ -387,20 +422,22 @@ async def install_ha_sidebar(
     }
 
     if existing_idx is None:
+        registry_needs_update = True
         items.append(registry_entry)
-        _storage_changed = True
         print("✓  Webpage dashboard added to registry.")
     elif items[existing_idx] != registry_entry:
+        registry_needs_update = True
         items[existing_idx] = registry_entry
-        _storage_changed = True
-        print(f"✓  Webpage dashboard updated in registry.")
+        print("✓  Webpage dashboard updated in registry.")
     else:
+        registry_needs_update = False
         print("✓  Webpage dashboard already up to date in registry.")
 
+    # 4. Read .storage/lovelace.pueo_dashboard → compute dashboard config.
     dashboard_config_file: dict = {
         "version": 1,
         "minor_version": 1,
-        "key": "lovelace.pueo-dashboard",
+        "key": "lovelace.pueo_dashboard",
         "data": {"config": {"strategy": {"type": "iframe", "url": dashboard_url}}},
     }
 
@@ -410,20 +447,73 @@ async def install_ha_sidebar(
     except (FileNotFoundError, json.JSONDecodeError):
         existing_cfg = None
 
-    if existing_cfg != dashboard_config_file:
+    dashboard_config_needs_update = existing_cfg != dashboard_config_file
+
+    # 5. Determine what changed.
+    storage_needs_update = registry_needs_update or dashboard_config_needs_update
+    anything_changed = config_needs_update or storage_needs_update
+
+    # 6. Backup if anything changed.
+    if anything_changed:
+        backup_slug = await execute_remote_backup(ssh_client=ssh)
+        record_backup_slug(backup_slug)
+
+    # 7. Write configuration.yaml if needed.
+    if config_needs_update:
+        assert new_config is not None  # nosec B101
+        try:
+            await ssh.write_file(_CONFIG_REMOTE_PATH, new_config)
+            exit_code, _, stderr = await ssh.run("ha core check")
+            if exit_code != 0:
+                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
+                raise RuntimeError(
+                    f"ha core check failed after adding extra_module_url "
+                    f"(exit {exit_code}); original config restored.\n{stderr}"
+                )
+        except Exception:
+            try:
+                await ssh.write_file(_CONFIG_REMOTE_PATH, config_text)
+            except Exception:  # nosec B110
+                pass
+            raise
+        print("✓  configuration.yaml updated with extra_module_url.")
+
+    # 8. Write dashboard config if needed.
+    if dashboard_config_needs_update:
         await ssh.write_file(
             _DASHBOARD_CONFIG_REMOTE_PATH,
             json.dumps(dashboard_config_file, indent=2),
         )
-        _storage_changed = True
         print(f"✓  Dashboard config saved (url={dashboard_url}).")
 
-    if _storage_changed:
+    # 9. Write registry if needed.
+    if registry_needs_update:
         await ssh.write_file(
             _DASHBOARD_REGISTRY_REMOTE_PATH, json.dumps(registry, indent=2)
         )
 
-    if _storage_changed and not _config_restart_triggered:
+    # 10. Remove legacy stale storage file.
+    await ssh.run(f"rm -f {_DASHBOARD_CONFIG_LEGACY_REMOTE_PATH}")
+
+    # 11. Restart if anything changed.
+    if anything_changed:
         await execute_ha_core_restart(
             ssh_client=ssh, notifier=notifier, skip_backup=True
         )
+
+    # 12. Read-back registry to verify the entry is present.
+    if anything_changed:
+        try:
+            readback_text = await ssh.read_file(_DASHBOARD_REGISTRY_REMOTE_PATH)
+            readback: dict = json.loads(readback_text)
+            readback_items: list = readback.get("data", {}).get("items", [])
+            found = any(
+                d.get("url_path") == _DASHBOARD_URL_PATH for d in readback_items
+            )
+            if not found:
+                print(
+                    "⚠  Read-back: Pueo dashboard entry not found in registry after restart.\n"
+                    "   HA may have overwritten the storage file. Verify in the HA UI."
+                )
+        except Exception:  # nosec B110
+            pass

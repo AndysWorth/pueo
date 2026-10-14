@@ -1066,8 +1066,13 @@ if [[ "$_RESET_MODE" != "true" ]]; then
     echo
     read -rp "  Add Pueo to the Home Assistant sidebar? (edits configuration.yaml + restarts HA Core) [y/N]: " _sidebar_ans
     if [[ "$_sidebar_ans" =~ ^[Yy] ]]; then
-        _LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1")
-        ask "Pueo URL as seen from HA" "http://${_LAN_IP}:${DASHBOARD_PORT}" PUEO_SIDEBAR_URL
+        _LOCAL_HOSTNAME=$(scutil --get LocalHostName 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        if [[ -n "$_LOCAL_HOSTNAME" ]]; then
+            _PUEO_HOST="${_LOCAL_HOSTNAME}.local"
+        else
+            _PUEO_HOST=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+        fi
+        ask "Pueo URL as seen from HA" "http://${_PUEO_HOST}:${DASHBOARD_PORT}" PUEO_SIDEBAR_URL
         info "(If HA uses HTTPS, the iframe will be blocked by mixed-content rules. Use HTTP on your LAN to avoid this.)"
         echo
         if [[ "$DEPLOY_MODE" == "docker" ]]; then
