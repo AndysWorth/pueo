@@ -16,9 +16,11 @@ from utils.ha.ha_sidebar import (
     build_iconset_js,
     decode_png_rgba,
     detect_lan_ip,
+    detect_pueo_url,
     icon_path_from_rgba,
     install_ha_sidebar,
     png_from_nav_svg,
+    probe_pueo_url,
     webpage_dashboard_payload,
 )
 
@@ -413,6 +415,77 @@ class TestDetectLanIp:
             with patch("socket.socket", side_effect=Exception):
                 result = detect_lan_ip()
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# detect_pueo_url
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPueoUrl:
+    def test_scutil_success(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Funis\n")
+            result = detect_pueo_url(8080)
+        assert result == "http://funis.local:8080"
+
+    def test_scutil_uppercase_lowercased(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="MyMac\n")
+            result = detect_pueo_url(9000)
+        assert result == "http://mymac.local:9000"
+
+    def test_scutil_failure_falls_back_to_gethostname_local(self):
+        with patch("subprocess.run", side_effect=Exception("no scutil")):
+            with patch("socket.gethostname", return_value="mymac.local"):
+                result = detect_pueo_url(8080)
+        assert result == "http://mymac.local:8080"
+
+    def test_falls_back_to_lan_ip(self):
+        with patch("subprocess.run", return_value=MagicMock(stdout="")):
+            with patch("socket.gethostname", return_value="mymac"):
+                with patch(
+                    "utils.ha.ha_sidebar.detect_lan_ip", return_value="10.0.0.5"
+                ):
+                    result = detect_pueo_url(8080)
+        assert result == "http://10.0.0.5:8080"
+
+    def test_falls_back_to_localhost_when_all_fail(self):
+        with patch("subprocess.run", return_value=MagicMock(stdout="")):
+            with patch("socket.gethostname", return_value="mymac"):
+                with patch("utils.ha.ha_sidebar.detect_lan_ip", return_value=None):
+                    result = detect_pueo_url(8080)
+        assert result == "http://127.0.0.1:8080"
+
+
+# ---------------------------------------------------------------------------
+# probe_pueo_url
+# ---------------------------------------------------------------------------
+
+
+class TestProbePueoUrl:
+    def test_returns_true_on_200(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 200
+        with patch(
+            "utils.ha.ha_sidebar._urllib_request.urlopen", return_value=mock_resp
+        ):
+            assert probe_pueo_url("http://funis.local:8080") is True
+
+    def test_returns_false_on_exception(self):
+        with patch(
+            "utils.ha.ha_sidebar._urllib_request.urlopen",
+            side_effect=Exception("connection refused"),
+        ):
+            assert probe_pueo_url("http://funis.local:8080") is False
+
+    def test_rejects_non_http_scheme(self):
+        assert probe_pueo_url("ftp://funis.local:8080") is False
+
+    def test_rejects_empty_string(self):
+        assert probe_pueo_url("") is False
 
 
 # ---------------------------------------------------------------------------

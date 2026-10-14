@@ -1859,16 +1859,19 @@ async def _run_ha_sidebar(args: Any) -> None:
     """One-shot: install Pueo owl iconset + Webpage dashboard into HA."""
     import config as _config
 
-    from utils.ha.ha_sidebar import detect_lan_ip, install_ha_sidebar
+    from utils.ha.ha_sidebar import detect_pueo_url, install_ha_sidebar, probe_pueo_url
     from utils.ha.ssh_client import AsyncSSHClient
     from utils.hitl.notify import get_notifier
 
     url = args.url
     if url is None:
-        lan_ip = detect_lan_ip()
-        host = lan_ip or "127.0.0.1"
-        url = f"http://{host}:{_config.DASHBOARD_PORT}"
+        url = detect_pueo_url(_config.DASHBOARD_PORT)
         print(f"Using dashboard URL: {url}  (pass --url to override)")
+
+    if probe_pueo_url(url):
+        print(f"✓  Pueo is reachable at {url}")
+    else:
+        print(f"⚠  Could not reach {url} — install will continue but verify afterwards")
 
     ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
     notifier = get_notifier(

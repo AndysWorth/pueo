@@ -15,6 +15,7 @@ import re
 import socket
 import struct
 import subprocess  # nosec B404
+import urllib.request as _urllib_request
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -243,6 +244,61 @@ def detect_lan_ip() -> Optional[str]:
             return s.getsockname()[0]
     except Exception:  # nosec B110
         return None
+
+
+def detect_pueo_url(port: int) -> str:
+    """Return the Pueo dashboard URL, preferring a stable mDNS hostname over a DHCP IP.
+
+    Resolution order:
+    1. scutil --get LocalHostName (macOS; stable across DHCP changes)
+    2. socket.gethostname() if it already ends in .local
+    3. detect_lan_ip() (DHCP IP)
+    4. 127.0.0.1 (last resort)
+    """
+    # 1. macOS: scutil --get LocalHostName → e.g. "Funis" → "funis.local"
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["scutil", "--get", "LocalHostName"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        hostname = result.stdout.strip().lower()
+        if hostname:
+            return f"http://{hostname}.local:{port}"
+    except Exception:  # nosec B110
+        pass
+
+    # 2. gethostname() if it already carries .local
+    try:
+        name = socket.gethostname().lower()
+        if name.endswith(".local"):
+            return f"http://{name}:{port}"
+    except Exception:  # nosec B110
+        pass
+
+    # 3. LAN IP
+    ip = detect_lan_ip()
+    if ip:
+        return f"http://{ip}:{port}"
+
+    # 4. Last resort
+    return f"http://127.0.0.1:{port}"
+
+
+def probe_pueo_url(url: str) -> bool:
+    """Return True if a GET to url succeeds within 2 s. Never raises.
+
+    Rejects non-http(s) schemes. Only warns — never aborts — because the
+    Mac's view does not guarantee the browser's view.
+    """
+    if not url.startswith(("http://", "https://")):
+        return False
+    try:
+        with _urllib_request.urlopen(url, timeout=2) as resp:  # nosec B310
+            return resp.status < 500
+    except Exception:  # nosec B110
+        return False
 
 
 def webpage_dashboard_payload(
