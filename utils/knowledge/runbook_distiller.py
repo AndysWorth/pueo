@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
+from utils.core.context import truncate_to_budget
 from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
@@ -71,7 +72,37 @@ _EVIDENCE_TOOLS: frozenset[str] = frozenset(
 
 _MIN_EVIDENCE_CALLS: int = 3
 
-_DISTILLATION_TIMEOUT_SECONDS: float = 120.0
+# Per-call initial-context budget for the distillation prompt.
+_INITIAL_CONTEXT_TOKENS: int = 400
+
+# Per-step tool output budget in the trace (characters, not tokens).
+_STEP_OUTPUT_MAX_CHARS: int = 800
+
+
+def _distillation_timeout_seconds(db_path: str, model: str) -> float:
+    """Compute distillation LLM timeout using the same adaptive logic as the main loop."""
+    import config as _cfg
+    from utils.llm.llm_stats import expected_timeout_ms
+
+    provider = "local"
+    try:
+        from utils.llm.llm_factory import _provider_name
+
+        provider = _provider_name()
+    except Exception:  # nosec B110
+        pass
+
+    return (
+        expected_timeout_ms(
+            db_path,
+            model=model,
+            provider=provider,
+            factor=_cfg.AGENT_PER_CALL_TIMEOUT_FACTOR,
+            min_ms=_cfg.AGENT_PER_CALL_MIN_TIMEOUT_SECONDS * 1000.0,
+            max_ms=_cfg.AGENT_PER_CALL_MAX_TIMEOUT_SECONDS * 1000.0,
+        )
+        / 1000.0
+    )
 
 
 class DistilledRunbook(BaseModel):
@@ -97,7 +128,14 @@ class DistilledRunbook(BaseModel):
 
 
 def _count_evidence_calls(steps: list[AgentStep]) -> int:
-    return sum(1 for s in steps if s.tool_call.name in _EVIDENCE_TOOLS)
+    """Count evidence-gathering calls with successful, non-empty output."""
+    return sum(
+        1
+        for s in steps
+        if s.tool_call.name in _EVIDENCE_TOOLS
+        and s.tool_result.success
+        and s.tool_result.output.strip()
+    )
 
 
 def qualifies_for_distillation(outcome: str, steps: list[AgentStep]) -> bool:
@@ -109,10 +147,12 @@ def _format_step_trace(steps: list[AgentStep]) -> str:
     lines = []
     for s in steps:
         args_preview = json.dumps(s.tool_call.arguments)[:200]
-        if s.tool_result.success:
-            out_preview = s.tool_result.output[:300]
+        if not s.tool_result.success:
+            out_preview = f"[FAILED] {s.tool_result.error or '(no error text)'}"
+        elif not s.tool_result.output.strip():
+            out_preview = "[EMPTY]"
         else:
-            out_preview = f"ERR: {s.tool_result.error}"
+            out_preview = s.tool_result.output[:_STEP_OUTPUT_MAX_CHARS]
         lines.append(
             f"  {s.step_number}. {s.tool_call.name}({args_preview}) → {out_preview}"
         )
@@ -121,30 +161,36 @@ def _format_step_trace(steps: list[AgentStep]) -> str:
 
 def _get_existing_by_signature(
     db_path: str, signature: str
-) -> Optional[tuple[str, int, str]]:
-    """Return (id, version, episode_refs_json) for a live (non-gap, non-discarded) runbook."""
+) -> Optional[tuple[str, int, str, str]]:
+    """Return (id, version, episode_refs_json, approach) for a live runbook."""
     try:
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT id, version, episode_refs FROM agent_strategies"
+                "SELECT id, version, episode_refs, approach FROM agent_strategies"
                 " WHERE signature = ? AND runbook_state NOT IN ('gap', 'discarded', 'resolved')"
                 " ORDER BY version DESC LIMIT 1",
                 (signature,),
             ).fetchone()
         if row:
-            return (row[0], row[1] or 1, row[2] or "[]")
+            return (row[0], row[1] or 1, row[2] or "[]", row[3] or "")
     except Exception:  # nosec B110
         pass
     return None
 
 
 def _merge_in_sqlite(
-    db_path: str, strategy_id: str, new_version: int, episode_refs_json: str
+    db_path: str,
+    strategy_id: str,
+    new_version: int,
+    episode_refs_json: str,
+    approach: str,
+    title: str,
 ) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE agent_strategies SET version=?, episode_refs=? WHERE id=?",
-            (new_version, episode_refs_json, strategy_id),
+            "UPDATE agent_strategies"
+            " SET version=?, episode_refs=?, approach=?, title=? WHERE id=?",
+            (new_version, episode_refs_json, approach, title, strategy_id),
         )
         conn.commit()
 
@@ -263,6 +309,72 @@ def _build_approach(runbook: DistilledRunbook) -> str:
     )
 
 
+def _build_prompt(
+    *,
+    signature: str,
+    trigger: str,
+    outcome: str,
+    initial_context: str,
+    episode_stub: Optional[dict],
+    existing_approach: str,
+    step_trace: str,
+) -> str:
+    ctx_trimmed = truncate_to_budget(
+        initial_context, _INITIAL_CONTEXT_TOKENS, strategy="head"
+    )
+
+    terminal_section = ""
+    if episode_stub:
+        parts = []
+        if episode_stub.get("summary"):
+            parts.append(f"Summary: {episode_stub['summary']}")
+        for key in (
+            "recommendation",
+            "action_taken",
+            "root_cause",
+            "human_explanation",
+        ):
+            val = episode_stub.get(key)
+            if val:
+                parts.append(f"{key.replace('_', ' ').title()}: {val}")
+        if parts:
+            terminal_section = "Terminal tool conclusions:\n" + "\n".join(parts)
+
+    existing_section = ""
+    if existing_approach.strip():
+        existing_section = (
+            "Existing runbook for this signature (refine, don't replace):\n"
+            + existing_approach
+        )
+
+    parts_prompt = [
+        "You are distilling a Home Assistant diagnostic session into a reusable runbook.",
+        "",
+        f"Session signature: {signature}",
+        f"Trigger: {trigger}",
+        f"Outcome: {outcome}",
+        "",
+        "Initial context:",
+        ctx_trimmed,
+    ]
+    if terminal_section:
+        parts_prompt += ["", terminal_section]
+    if existing_section:
+        parts_prompt += ["", existing_section]
+    parts_prompt += [
+        "",
+        "Tool trace (FAILED = tool error, EMPTY = no output returned):",
+        step_trace,
+        "",
+        "Write a concise, reusable runbook at the most general level that still captures "
+        "the diagnostic approach. Use the specific trigger as an example, not as the scope. "
+        "A runbook titled 'Diagnosing transient cloud integration connectivity errors' is "
+        "reusable across all polling integrations; one scoped to a single component only "
+        "helps that one case.",
+    ]
+    return "\n".join(parts_prompt)
+
+
 async def distill_and_persist(
     trigger: str,
     signature: str,
@@ -272,6 +384,9 @@ async def distill_and_persist(
     db_path: str,
     knowledge_store: KnowledgeStoreClientProtocol,
     model: str,
+    initial_context: str = "",
+    episode_stub: Optional[dict] = None,
+    llm_client: Optional[LLMClientProtocol] = None,
 ) -> None:
     """Orchestrate post-session distillation.
 
@@ -308,38 +423,52 @@ async def distill_and_persist(
     # Resolve any existing gap for this signature first.
     await asyncio.to_thread(resolve_gap, db_path, signature, episode_id)
 
-    # Check for an existing candidate to merge into.
+    # Check for an existing candidate to merge into (also fetches approach text).
     existing = await asyncio.to_thread(_get_existing_by_signature, db_path, signature)
+    existing_approach = existing[3] if existing else ""
 
     step_trace = _format_step_trace(steps)
-    prompt = (
-        "You are distilling a Home Assistant diagnostic session into a reusable runbook.\n\n"
-        f"Session signature: {signature}\n"
-        f"Trigger: {trigger}\n"
-        f"Outcome: {outcome}\n\n"
-        f"Tool trace:\n{step_trace}\n\n"
-        "Write a concise, reusable runbook at the most general level that still captures "
-        "the diagnostic approach. Use the specific trigger as an example, not as the scope. "
-        "A runbook titled 'Diagnosing transient cloud integration connectivity errors' is "
-        "reusable across all polling integrations; one scoped to a single component only "
-        "helps that one case."
+    prompt = _build_prompt(
+        signature=signature,
+        trigger=trigger,
+        outcome=outcome,
+        initial_context=initial_context,
+        episode_stub=episode_stub,
+        existing_approach=existing_approach,
+        step_trace=step_trace,
     )
 
+    timeout_secs = await asyncio.to_thread(
+        _distillation_timeout_seconds, db_path, model
+    )
+
+    # Derive structured-output call options (one-shot: temp=0, num_predict=1024).
+    from utils.llm.model_options import one_shot_options
+
+    _options = await asyncio.to_thread(one_shot_options, model)
+
+    _client = llm_client if llm_client is not None else make_llm_client()
+
     try:
-        llm_client = make_llm_client()
         response = await asyncio.wait_for(
-            llm_client.chat(
+            _client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.0},
+                options=_options,
                 format=DistilledRunbook.model_json_schema(),
             ),
-            timeout=_DISTILLATION_TIMEOUT_SECONDS,
+            timeout=timeout_secs,
         )
         content = response["message"]["content"]
         runbook = DistilledRunbook.model_validate_json(content)
     except Exception as exc:
-        log.warning("distillation_llm_failed", signature=signature, error=str(exc))
+        log.warning(
+            "distillation_llm_failed",
+            signature=signature,
+            error=str(exc),
+            error_type=type(exc).__name__,
+            timeout_secs=round(timeout_secs, 1),
+        )
         return
 
     approach = _build_approach(runbook)
@@ -354,7 +483,7 @@ async def distill_and_persist(
     }
 
     if existing:
-        strategy_id, current_version, episode_refs_json = existing
+        strategy_id, current_version, episode_refs_json, _ = existing
         try:
             refs: list = json.loads(episode_refs_json)
         except Exception:  # nosec B110
@@ -364,7 +493,13 @@ async def distill_and_persist(
         new_version = current_version + 1
         try:
             await asyncio.to_thread(
-                _merge_in_sqlite, db_path, strategy_id, new_version, json.dumps(refs)
+                _merge_in_sqlite,
+                db_path,
+                strategy_id,
+                new_version,
+                json.dumps(refs),
+                approach,
+                runbook.title,
             )
         except Exception as exc:  # nosec B110
             log.warning(
