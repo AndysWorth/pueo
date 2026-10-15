@@ -41,3 +41,7 @@ The default also changes from 2 (SUGGEST) to 1 (SUGGEST) — numerically differe
 - The `confidence` field is optional in `finish_update_analysis` — older LLM calls that omit it default to `None`, which is treated as below-threshold (card is sent).
 - `AUTO_APPLY_CONFIDENCE_THRESHOLD` is configurable per-instance in `config.yaml` so operators can tighten or loosen the gate.
 - `AutonomyGate` gains a public `level` property so callers can read the current level without reaching into `_level`.
+
+## Bug fix (2026-10-15)
+
+The gate was effectively dead because the `finish_update_analysis` dispatch in `ToolExecutor.execute()` did not forward `risk_score`, `confidence`, `prerequisites`, `deprecations`, or `new_features` from the LLM's tool-call arguments. All five fields were silently dropped before reaching `_finish_update_analysis()`. Fixed in PR #892 — the dispatch now forwards all five fields.
