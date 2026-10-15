@@ -4450,7 +4450,14 @@ class ToolExecutor:
                     issue_key=issue.issue_key,
                 )
                 set_restart_pending_after_update(False)
-                from agents.ha_agent_advanced import mark_repair_resolved
+                from agents.ha_agent_advanced import (
+                    mark_repair_hitl_sent,
+                    mark_repair_resolved,
+                )
+
+                # Mark as sent before the restart so a concurrent poll_for_repairs
+                # run that fires during the restart doesn't queue a second investigation.
+                mark_repair_hitl_sent(issue.issue_key)
 
                 try:
                     success = await execute_ha_core_restart(

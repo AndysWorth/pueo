@@ -5195,7 +5195,7 @@ class TestExecuteHaReboot:
         assert result is True
         assert api_calls[0] == 1
         assert len(notifier.sent) == 1
-        assert "succeeded" in notifier.sent[0]["subject"].lower()
+        assert "rebooted" in notifier.sent[0]["subject"].lower()
 
     def test_sends_failure_card_when_api_poll_times_out(self, tmp_path, monkeypatch):
         from agents.ha_update_manager import execute_ha_reboot
@@ -5242,7 +5242,7 @@ class TestExecuteHaReboot:
 
         assert result is False
         assert len(notifier.sent) == 1
-        assert "timed out" in notifier.sent[0]["subject"].lower()
+        assert "reboot failed" in notifier.sent[0]["subject"].lower()
 
     def test_skips_api_poll_when_tcp_poll_fails(self, tmp_path, monkeypatch):
         """If TCP poll times out, _api_poll must not be called."""
@@ -14364,6 +14364,9 @@ class TestFinishRepairIssueAutoRestart:
         monkeypatch.setattr(
             "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
         )
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
+        )
 
         result = asyncio.run(
             executor._finish_repair_issue(
@@ -14396,6 +14399,9 @@ class TestFinishRepairIssueAutoRestart:
         monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
         monkeypatch.setattr(
             "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
         )
 
         result = asyncio.run(
@@ -14440,6 +14446,42 @@ class TestFinishRepairIssueAutoRestart:
         assert notifier.sent[0]["payload"]["action"] == "restart"
         assert _um.is_restart_pending_after_update() is False
 
+    def test_auto_restart_marks_hitl_sent_before_restart(self, monkeypatch):
+        """Auto-restart calls mark_repair_hitl_sent so concurrent poll_for_repairs
+        sees already_sent=True and skips a second investigation (#884)."""
+        from utils.hitl.notify import FakeNotifier
+        import agents.ha_update_manager as _um
+
+        _um.set_restart_pending_after_update(True)
+
+        executor = self._make_executor(notifier=FakeNotifier())
+        executor._pending_repair_issue = self._make_issue()
+
+        hitl_sent_keys: list = []
+
+        async def fake_restart(ssh, notif, **kwargs):
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent",
+            lambda key: hitl_sent_keys.append(key),
+        )
+
+        asyncio.run(
+            executor._finish_repair_issue(
+                human_explanation="Restart required",
+                recommended_action="Restart",
+                requires_hitl=True,
+                action="restart",
+            )
+        )
+
+        assert "homeassistant/restart-001" in hitl_sent_keys
+
     def test_auto_restart_uses_post_update_ssh_client(self, monkeypatch):
         """Auto-restart must use post_update_ssh_client, not the inert ha_ssh (#846)."""
         from utils.agent.autonomy import FakeAutonomyGate
@@ -14467,6 +14509,9 @@ class TestFinishRepairIssueAutoRestart:
         monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
         monkeypatch.setattr(
             "agents.ha_agent_advanced.mark_repair_resolved", lambda key: None
+        )
+        monkeypatch.setattr(
+            "agents.ha_agent_advanced.mark_repair_hitl_sent", lambda key: None
         )
 
         asyncio.run(
@@ -14559,9 +14604,16 @@ class TestPostUpdateFlagTTL:
 
 
 class TestExecuteHaCoreRestartDownCheck:
-    """execute_ha_core_restart must confirm HA went down before reporting success (#846)."""
+    """execute_ha_core_restart confirms HA went down before reporting success (#846, #884).
 
-    def _run(self, monkeypatch, went_down: bool, api_ok: bool = True):
+    With the #884 fix, SSH exit 0 is itself evidence that HA went down and came
+    back (ha core restart is blocking and only returns 0 after HA is online).
+    went_down = (ssh_exit_code == 0) OR tcp_down_confirmed.
+    """
+
+    def _run(
+        self, monkeypatch, went_down: bool, api_ok: bool = True, ssh_exit: int = 0
+    ):
         import agents.ha_update_manager as _um
         from utils.hitl.notify import FakeNotifier
         from utils.ha.ssh_client import FakeSSHClient
@@ -14584,7 +14636,9 @@ class TestExecuteHaCoreRestartDownCheck:
             api_calls.append(1)
             return api_ok
 
-        ssh = FakeSSHClient()
+        ssh = FakeSSHClient(
+            command_results={"ha core restart": (ssh_exit, "", "")},
+        )
         result = asyncio.run(
             _um.execute_ha_core_restart(
                 ssh,
@@ -14603,8 +14657,19 @@ class TestExecuteHaCoreRestartDownCheck:
         assert api_calls == [1]
         assert cards == [True]
 
+    def test_ssh_exit_zero_counts_as_went_down(self, monkeypatch):
+        """SSH exit 0 means HA went down and came back; TCP confirmation not required."""
+        result, _ssh, api_calls, _ = self._run(
+            monkeypatch, went_down=False, api_ok=True, ssh_exit=0
+        )
+        assert result is True
+        assert api_calls == [1]
+
     def test_failure_when_ha_never_goes_down(self, monkeypatch):
-        result, _ssh, api_calls, cards = self._run(monkeypatch, went_down=False)
+        """SSH exit non-zero AND TCP never dropped → went_down=False → failure."""
+        result, _ssh, api_calls, cards = self._run(
+            monkeypatch, went_down=False, ssh_exit=1
+        )
         assert result is False
         assert api_calls == []
         assert cards == [False]
