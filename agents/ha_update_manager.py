@@ -181,6 +181,20 @@ _GITHUB_API_URL = (
     "https://api.github.com/repos/home-assistant/core/releases/tags/{version}"
 )
 
+# Match github.com HTML release URLs and rewrite them to the API form so the
+# JSON body field (release notes) is directly accessible.
+_GITHUB_RELEASE_HTML_RE = re.compile(
+    r"https?://github\.com/([^/]+/[^/]+)/releases/(?:tag/)?([^/?\s]+)"
+)
+
+
+def _rewrite_github_release_url(url: str) -> str:
+    """Rewrite a github.com HTML release URL to its GitHub API counterpart."""
+    m = _GITHUB_RELEASE_HTML_RE.match(url)
+    if m:
+        return f"https://api.github.com/repos/{m.group(1)}/releases/tags/{m.group(2)}"
+    return url
+
 
 async def _fetch_github_release_notes(version: str) -> str:  # pragma: no cover
     """Fetch release notes body from the GitHub API for a given HA Core version."""
@@ -198,10 +212,21 @@ async def _fetch_github_release_notes(version: str) -> str:  # pragma: no cover
 async def _fetch_release_notes_from_url(url: str) -> str:  # pragma: no cover
     """Fetch release notes from an arbitrary URL (e.g. HACS or App release pages)."""
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url, headers={"Accept": "application/json"})
+        resp = await client.get(
+            url,
+            headers={
+                "Accept": "application/vnd.github.v3+json,application/json",
+            },
+        )
         if resp.status_code == 200:
-            data = resp.json()
-            return data.get("body") or data.get("description") or str(data)
+            try:
+                data = resp.json()
+                # GitHub API release JSON — return the body field directly.
+                if "tag_name" in data and "body" in data:
+                    return data.get("body") or "No release notes available."
+                return data.get("body") or data.get("description") or str(data)
+            except Exception:  # nosec B110
+                pass
         # Fall back to raw text for non-JSON responses (e.g. changelog pages).
         resp.raise_for_status()
         return resp.text
@@ -260,36 +285,44 @@ async def fetch_release_notes_cached(
             except Exception:  # nosec B110
                 pass
 
-        # 2. Try release_url HTTP fetch.
+        # 2. Try release_url HTTP fetch.  Rewrite HTML github.com release URLs to
+        # the API form so the JSON body field is directly accessible.
         if release_url:
+            _api_url = _rewrite_github_release_url(release_url)
             try:
-                notes = await _fetch_release_notes_from_url(release_url)
+                notes = await _fetch_release_notes_from_url(_api_url)
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(notes)
                 return notes
             except Exception:  # nosec B110
                 pass
 
-        # 3. Build a concrete CHANGELOG URL from the entity_id component name.
-        _component = ""
-        if entity_id:
-            # entity_id form: "update.<component>_update" → component is everything
-            # between "update." and the final "_update" suffix (if present).
+        # 3. Build a concrete CHANGELOG URL.  Use the owner/repo from release_url
+        # when available; fall back to home-assistant/addons only when the release_url
+        # itself comes from that repository (i.e. the entity is a real Supervisor
+        # add-on from the official store, not a HACS integration).
+        _changelog_url: Optional[str] = None
+        if release_url:
+            _m = _GITHUB_RELEASE_HTML_RE.match(release_url)
+            if _m:
+                _repo = _m.group(1)  # e.g. "basnijholt/spook"
+                _changelog_url = (
+                    f"https://raw.githubusercontent.com/{_repo}/main/CHANGELOG.md"
+                )
+        if _changelog_url is None and entity_id:
+            # No release_url or non-GitHub URL: suggest the HA add-ons CHANGELOG
+            # only for entities that appear to be official Supervisor add-ons.
             _eid_body = entity_id.removeprefix("update.")
             if _eid_body.endswith("_update"):
                 _component = _eid_body[: -len("_update")]
             else:
                 _component = _eid_body
-        if _component:
             _changelog_url = (
                 f"https://raw.githubusercontent.com/home-assistant/addons/master/"
                 f"{_component}/CHANGELOG.md"
             )
-        else:
-            _changelog_url = (
-                "https://raw.githubusercontent.com/home-assistant/addons/master/"
-                "<component>/CHANGELOG.md"
-            )
+        if _changelog_url is None:
+            return "Release notes unavailable via WebSocket or release URL."
         return (
             f"Release notes unavailable via WebSocket or release URL. "
             f"Fetch the changelog directly: {_changelog_url}"
@@ -779,9 +812,14 @@ async def _run_update_analysis(
         from utils.knowledge.runbook_signature import sig_update
 
         _SYSTEM_COMPONENTS = frozenset({"core", "os", "supervisor"})
-        _update_type = (
-            update.component if update.component in _SYSTEM_COMPONENTS else "addon"
-        )
+        if update.component in _SYSTEM_COMPONENTS:
+            _update_type = update.component
+        elif update.component.lower() == "hacs":
+            _update_type = "hacs"
+        elif "firmware" in update.entity_id.lower():
+            _update_type = "device"
+        else:
+            _update_type = "addon"
         _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:
@@ -790,6 +828,27 @@ async def _run_update_analysis(
                 knowledge_query=_knowledge_query,
                 signature=sig_update(_update_type, update.component),
             )
+        except Exception as _exc:
+            # An unhandled exception from loop.run leaves no suppression or analyzed
+            # key, so the next poll would immediately retry.  Write the same backoff
+            # row that a stuck/failed outcome would produce to enforce a 30-minute
+            # quiet period.
+            import sqlite3 as _sqlite3
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            _backoff_key = f"update_analysis_backoff:{update.entity_id}"
+            try:
+                with _sqlite3.connect(DB_PATH) as _conn:
+                    mark_investigation_backoff(_conn, _backoff_key)
+            except Exception:  # nosec B110
+                pass
+            log.error(
+                "update_analysis_exception_backoff",
+                component=update.component,
+                error=str(_exc),
+            )
+            raise
+        else:
             if _result.outcome != "success":
                 import sqlite3 as _sqlite3
                 from utils.hitl.hitl_tracker import mark_investigation_backoff

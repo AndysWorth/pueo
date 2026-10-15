@@ -1005,6 +1005,9 @@ async def poll_for_updates(
     _update_gone: dict[str, float] = (
         {}
     )  # suppression_key → time.monotonic() of first absence
+    _timeline_written: set[str] = (
+        set()
+    )  # "{entity_id}:{version}" already logged this run
 
     from .ha_update_manager import reconcile_stale_approved_cards
 
@@ -1073,24 +1076,27 @@ async def poll_for_updates(
                     installed=u.installed_version,
                     latest=u.latest_version,
                 )
-                try:  # pragma: no cover
-                    from utils.core.timeline import write_timeline_event
+                _tl_key = f"{u.entity_id}:{u.latest_version}"
+                if _tl_key not in _timeline_written:
+                    try:  # pragma: no cover
+                        from utils.core.timeline import write_timeline_event
 
-                    await asyncio.to_thread(
-                        write_timeline_event,
-                        "INFO",
-                        "update_check",
-                        f"Update available: {u.component}"
-                        f" {u.installed_version} → {u.latest_version}",
-                        {
-                            "component": u.component,
-                            "installed_version": u.installed_version,
-                            "latest_version": u.latest_version,
-                            "release_url": u.release_url,
-                        },
-                    )
-                except Exception:  # nosec B110
-                    pass
+                        await asyncio.to_thread(
+                            write_timeline_event,
+                            "INFO",
+                            "update_check",
+                            f"Update available: {u.component}"
+                            f" {u.installed_version} → {u.latest_version}",
+                            {
+                                "component": u.component,
+                                "installed_version": u.installed_version,
+                                "latest_version": u.latest_version,
+                                "release_url": u.release_url,
+                            },
+                        )
+                    except Exception:  # nosec B110
+                        pass
+                    _timeline_written.add(_tl_key)
             elif not u.update_available:
                 _is_pending = await asyncio.to_thread(
                     _update_check_pending, suppression_key

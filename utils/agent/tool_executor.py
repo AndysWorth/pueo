@@ -702,6 +702,11 @@ class ToolExecutor:
                     instance_impact=args.get("instance_impact", "none"),
                     proposed_config_fixes=args.get("proposed_config_fixes", []),
                     create_hitl_card=bool(args.get("create_hitl_card", True)),
+                    prerequisites=args.get("prerequisites"),
+                    deprecations=args.get("deprecations"),
+                    new_features=args.get("new_features"),
+                    risk_score=args.get("risk_score"),
+                    confidence=args.get("confidence"),
                 )
             if name == "finish_host_health":
                 self._capture_declared_runbook(args)
@@ -2399,7 +2404,25 @@ class ToolExecutor:
                 error=str(exc),
             )
 
-        text = raw.decode("utf-8", errors="replace")[:_MAX_FETCH_URL_CHARS]
+        text = raw.decode("utf-8", errors="replace")
+        # For GitHub API release JSON the full payload can be 80 KB+ with the
+        # assets array appearing before the body field.  Extract just the fields
+        # the agent needs so body is never truncated by the 8 000-char cap.
+        if hostname == "api.github.com":
+            import json as _json
+
+            try:
+                _data = _json.loads(text)
+                text = _json.dumps(
+                    {
+                        k: _data.get(k, "")
+                        for k in ("tag_name", "name", "published_at", "body")
+                    },
+                    indent=2,
+                )
+            except Exception:  # nosec B110
+                pass
+        text = text[:_MAX_FETCH_URL_CHARS]
         return ToolResult(tool_name="fetch_url", success=True, output=text)
 
     async def _search_ha_docs(self, query: str) -> ToolResult:
@@ -4741,7 +4764,13 @@ class ToolExecutor:
             _bare_version = target_version  # may be overridden below
             if self._pending_update_status is not None:
                 _pv = self._pending_update_status.latest_version or ""
-                if _pv and _pv in target_version:
+                # Normalise both sides by stripping any leading "v" prefix before
+                # comparing — the model may pass "5.11.1" while HA stores "v5.11.1".
+                _pv_norm = _pv.lstrip("v")
+                _tv_norm = target_version.lstrip("v")
+                if _pv and (
+                    _pv in target_version or (_pv_norm and _pv_norm in _tv_norm)
+                ):
                     _release_url = self._pending_update_status.release_url
                     _entity_id = self._pending_update_status.entity_id
                     _bare_version = _pv
@@ -5010,11 +5039,27 @@ class ToolExecutor:
                 ),
             )
 
-        advisory = "SAFE" if safe_to_update else "REVIEW REQUIRED"
+        # Use "UNVERIFIED" instead of "SAFE" when no release notes were obtained — the
+        # model's "no breaking changes" conclusion was not verified against the changelog.
+        _no_notes = (
+            self._pending_update_status is not None and not self._release_notes_obtained
+        )
+        advisory = (
+            "UNVERIFIED"
+            if (_no_notes and safe_to_update)
+            else ("SAFE" if safe_to_update else "REVIEW REQUIRED")
+        )
+        _component_risk = (
+            "CRITICAL"
+            if update.component in ("core", "os")
+            else "HIGH" if update.component == "supervisor" else "MEDIUM"
+        )
         body_parts = [
             f"Component: {update.component}",
-            f"Risk: {'CRITICAL' if update.component in ('core', 'os') else 'HIGH' if update.component == 'supervisor' else 'MEDIUM'}",
+            f"Risk: {_component_risk}",
         ]
+        if risk_score:
+            body_parts.append(f"Pueo assessment: {risk_score}")
         if update.release_summary:
             body_parts.append(f"Summary: {update.release_summary}")
         body_parts.append(f"Advisory: {advisory} — {recommendation}")
@@ -5056,16 +5101,8 @@ class ToolExecutor:
             "latest_version": update.latest_version,
             "release_url": update.release_url,
             "release_summary": update.release_summary,
-            "risk": (
-                "CRITICAL"
-                if update.component in ("core", "os")
-                else "HIGH" if update.component == "supervisor" else "MEDIUM"
-            ),
-            "severity": (
-                "CRITICAL"
-                if update.component in ("core", "os")
-                else "HIGH" if update.component == "supervisor" else "MEDIUM"
-            ),
+            "risk": _component_risk,
+            "severity": _component_risk,
             "breaking_changes": breaking_changes,
             "affected_config_keys": affected_config_keys,
             "pueo_command_risks": pueo_command_risks,
@@ -5094,7 +5131,6 @@ class ToolExecutor:
             version=update.latest_version,
             suppression_key=suppression_key,
         )
-        _advisory = "SAFE" if safe_to_update else "REVIEW REQUIRED"
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -5103,7 +5139,7 @@ class ToolExecutor:
                 "INFO",
                 "update_check",
                 f"Update analysis: {update.component} → {update.latest_version}"
-                f" — {_advisory}, approval card sent",
+                f" — {advisory}, approval card sent",
                 {"component": update.component, "version": update.latest_version},
             )
         except Exception:  # nosec B110
