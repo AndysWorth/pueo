@@ -45,7 +45,11 @@ class TestBuildEnvironmentProfileHappyPath:
         return FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\nlogger:\n"},
@@ -116,7 +120,11 @@ class TestBuildEnvironmentProfileErrors:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (1, "", "connection refused"),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -130,7 +138,11 @@ class TestBuildEnvironmentProfileErrors:
 
         raising_ssh = _RaisingSSH(
             command_results={
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -149,7 +161,11 @@ class TestBuildEnvironmentProfileErrors:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -168,7 +184,11 @@ class TestBuildEnvironmentProfileErrors:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={},  # no config file — read_file will raise FileNotFoundError
@@ -186,7 +206,11 @@ class TestBuildEnvironmentProfileErrors:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={},  # config_yaml_top_keys will fail
@@ -312,7 +336,11 @@ class TestConfigYamlTopKeysRegex:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": content},
@@ -428,7 +456,11 @@ class TestSpookDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -464,7 +496,11 @@ class TestSpookDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -496,7 +532,11 @@ class TestUpgradeAdvisorDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -557,7 +597,11 @@ class TestAiAgentHaDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -618,7 +662,11 @@ class TestMqttConfiguredDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -661,7 +709,11 @@ class TestSentinelInstalledDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -704,7 +756,11 @@ class TestBatteryNotesDetection:
         ssh = FakeSSHClient(
             command_results={
                 "ha core info": (0, "version: 2026.8.2\n", ""),
-                "ha os info": (0, "version: 14.1\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
                 "ha supervisor info": (0, "version: 2024.08.0\n", ""),
             },
             file_contents={"/config/configuration.yaml": "homeassistant:\n"},
@@ -800,3 +856,62 @@ class TestFormatProfileSummaryNewCompanions:
         # Spook is installed so it should not appear in the nudge line
         nudge_line = [l for l in summary.splitlines() if "Recommended" in l][0]
         assert "Spook" not in nudge_line
+
+
+# ---------------------------------------------------------------------------
+# os_version via ha os info --raw-json (inactive boot slot fix)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEnvironmentProfileOsVersionJson:
+    """os_version must come from data.version in --raw-json output (#889)."""
+
+    def _build(self, os_info_output: str):
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info --raw-json": (0, os_info_output, ""),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=FakeWsClient(),  # type: ignore[arg-type]
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: [],
+                _discover_hacs=lambda *a: [],
+            )
+        )
+
+    def test_parses_version_from_json(self):
+        import json
+
+        raw = json.dumps({"result": "ok", "data": {"version": "18.3", "board": "rpi5"}})
+        profile = self._build(raw)
+        assert profile.os_version == "18.3"
+
+    def test_version_from_data_key(self):
+        import json
+
+        # Simulate two-slot output where data.version is the ACTIVE slot
+        raw = json.dumps(
+            {
+                "result": "ok",
+                "data": {
+                    "version": "18.3",
+                    "version_latest": "18.3",
+                    "board": "yellow",
+                },
+            }
+        )
+        profile = self._build(raw)
+        assert profile.os_version == "18.3"
+
+    def test_error_leaves_version_empty(self):
+        profile = self._build("not valid json")
+        assert profile.os_version == ""
+        assert "os_version" in profile.fetch_errors

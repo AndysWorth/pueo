@@ -2365,6 +2365,26 @@ async def suppress(nid: str) -> RedirectResponse:
     return RedirectResponse(url="/queue", status_code=303)
 
 
+@app.post("/acknowledge/{nid}")
+async def acknowledge(nid: str) -> RedirectResponse:
+    """Acknowledge an informational card — stores fingerprint for change detection."""
+    from utils.hitl.hitl_tracker import mark_card_acknowledged
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        payload = data.get("payload", {})
+        suppression_key = payload.get("suppression_key", "")
+        fingerprint = str(payload.get("fingerprint", ""))
+        if suppression_key:
+            await asyncio.to_thread(
+                _hitl_write, mark_card_acknowledged, suppression_key, fingerprint
+            )
+        (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url="/queue", status_code=303)
+
+
 @app.get("/known-issues")
 async def known_issues() -> JSONResponse:
     """Return all active Known Issues as JSON."""
