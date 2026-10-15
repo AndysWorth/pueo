@@ -1120,7 +1120,9 @@ class TestHAEnvironmentProfile:
                 ha_url="http://homeassistant.local:8123",
                 config_remote_path="/config/configuration.yaml",
                 _discover_integrations=lambda url, token: ["zha", "mqtt"],
-                _discover_hacs=lambda url, token: [("hacs_integ", "owner/repo", "hacs_integ")],
+                _discover_hacs=lambda url, token: [
+                    ("hacs_integ", "owner/repo", "hacs_integ")
+                ],
             )
         )
 
