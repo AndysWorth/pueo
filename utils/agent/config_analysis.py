@@ -184,7 +184,7 @@ async def _analyze_one_shot(
     _t0_ca = __import__("time").monotonic()
     try:
         log.info("ollama_analyze_start", model=_config.OLLAMA_MODEL)
-        from utils.llm.model_options import one_shot_options
+        from utils.llm.model_options import one_shot_options, one_shot_think
 
         response = await client.chat(
             model=_config.OLLAMA_MODEL,
@@ -194,6 +194,7 @@ async def _analyze_one_shot(
             ],
             options=one_shot_options(_config.OLLAMA_MODEL),
             format=DiagnosticsReport.model_json_schema(),
+            think=one_shot_think(_config.OLLAMA_MODEL),
         )
         raw_output = response["message"]["content"]
         _dur_ca = (__import__("time").monotonic() - _t0_ca) * 1000

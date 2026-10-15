@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Literal, Union
 
 import config
 from utils.core.logging import get_logger
@@ -186,6 +186,7 @@ class ClaudeAPIClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> Any:
         """Structured output via Anthropic tool-forcing.
 

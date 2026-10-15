@@ -443,9 +443,10 @@ async def distill_and_persist(
     )
 
     # Derive structured-output call options (one-shot: temp=0, num_predict=1024).
-    from utils.llm.model_options import one_shot_options
+    from utils.llm.model_options import one_shot_options, one_shot_think
 
     _options = await asyncio.to_thread(one_shot_options, model)
+    _think = await asyncio.to_thread(one_shot_think, model)
 
     _client = llm_client if llm_client is not None else make_llm_client()
 
@@ -456,6 +457,7 @@ async def distill_and_persist(
                 messages=[{"role": "user", "content": prompt}],
                 options=_options,
                 format=DistilledRunbook.model_json_schema(),
+                think=_think,
             ),
             timeout=timeout_secs,
         )

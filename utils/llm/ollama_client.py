@@ -27,6 +27,7 @@ class OllamaClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> Any:
         t0 = time.monotonic()
         log.debug(
@@ -34,6 +35,7 @@ class OllamaClient:
             model=model,
             call_type="chat",
             messages_count=len(messages),
+            think=think,
             last_user_msg=(
                 str(messages[-1].get("content", ""))[:300] if messages else ""
             ),
@@ -44,14 +46,12 @@ class OllamaClient:
         )
         if log._logger.isEnabledFor(logging.DEBUG):
             log.debug("llm_request_full", messages=messages, tools=[])
-        resp = await asyncio.to_thread(
-            lambda: self._client.chat(
-                model=model,
-                messages=messages,
-                options=options,
-                format=format,
-            )
+        call_kwargs: dict = dict(
+            model=model, messages=messages, options=options, format=format
         )
+        if think is not None:
+            call_kwargs["think"] = think
+        resp = await asyncio.to_thread(lambda: self._client.chat(**call_kwargs))
         content = str(getattr(getattr(resp, "message", None), "content", "") or "")
         duration_ms = round((time.monotonic() - t0) * 1000)
         log.debug(
@@ -61,6 +61,17 @@ class OllamaClient:
             content_preview=content[:300],
             duration_ms=duration_ms,
         )
+        done_reason = getattr(resp, "done_reason", None)
+        if done_reason == "length":
+            thinking_raw = getattr(getattr(resp, "message", None), "thinking", None)
+            log.warning(
+                "one_shot_truncated",
+                model=model,
+                eval_count=getattr(resp, "eval_count", None),
+                num_predict=options.get("num_predict") if options else None,
+                content_len=len(content),
+                thinking_len=len(thinking_raw) if thinking_raw else 0,
+            )
         if log._logger.isEnabledFor(logging.DEBUG):
             thinking = getattr(getattr(resp, "message", None), "thinking", None)
             if thinking is None and "<think>" in content:
@@ -202,8 +213,9 @@ class FakeLLMClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> dict:
-        self.calls.append({"model": model, "messages": messages})
+        self.calls.append({"model": model, "messages": messages, "think": think})
         return {"message": {"content": self._response_json}}
 
     async def chat_with_tools(
@@ -241,8 +253,9 @@ class FakeToolCallingLLMClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> dict:
-        self.calls.append({"model": model, "messages": messages})
+        self.calls.append({"model": model, "messages": messages, "think": think})
         return {"message": {"content": "{}"}}
 
     async def chat_with_tools(

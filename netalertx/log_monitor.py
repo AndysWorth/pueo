@@ -268,7 +268,7 @@ async def analyze_log_line_with_ai(
     except Exception:  # nosec B110
         pass
     try:
-        from utils.llm.model_options import one_shot_options
+        from utils.llm.model_options import one_shot_options, one_shot_think
 
         response = await client.chat(
             model=model,
@@ -278,6 +278,7 @@ async def analyze_log_line_with_ai(
             ],
             options=one_shot_options(model),
             format=LogEvaluation.model_json_schema(),
+            think=one_shot_think(model),
         )
         raw_output = response["message"]["content"]
         _dur_nlm = (time.monotonic() - _t0_nlm) * 1000

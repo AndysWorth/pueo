@@ -138,6 +138,29 @@ def derive_call_options(
     )
 
 
+def one_shot_think(model_name: str | None = None) -> ThinkValue:
+    """Return the ``think`` value for a one-shot structured-output call.
+
+    One-shot calls must never think: thinking tokens consume the ``num_predict``
+    budget before any content is written, producing ``done_reason=length`` and
+    empty JSON.  For thinking-capable models we explicitly pass ``think=False``;
+    for non-thinking models or openai_compat we pass ``None`` (omit the param).
+    """
+    import config as _cfg
+
+    if _cfg.LLM_PROVIDER == "openai_compat":
+        return None  # openai_compat ignores think; don't pass it
+
+    from utils.disk.hardware import list_ollama_models
+
+    name = model_name or _cfg.OLLAMA_MODEL
+    models = list_ollama_models()
+    info = next((m for m in models if m.name == name), None)
+    if info is not None and info.has_thinking:
+        return False
+    return None  # non-thinking model: omit the param
+
+
 def one_shot_options(model_name: str | None = None) -> dict:
     """Return an options dict for a one-shot structured output call.
 
