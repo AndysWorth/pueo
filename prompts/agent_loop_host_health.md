@@ -72,5 +72,6 @@ Phase 6 — REPORT: Call {terminal_tool} with:
   outcome: "resolved" if auto-fixed, "monitoring" if benign, "needs_action" if user must act,
             "escalated" if request_escalation was called
   recommended_actions: concrete steps for the user (empty if resolved or monitoring)
+  runbook_followed: the [id=…] value of the runbook you followed, or "none"
 
   If you exhaust all reasonable paths, call request_escalation(reason) before {terminal_tool}.

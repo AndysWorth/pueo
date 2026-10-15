@@ -482,6 +482,11 @@ def _migrate_v36(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE agent_strategies ADD COLUMN kb_id TEXT")
 
 
+def _migrate_v37(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE runbook_usage ADD COLUMN verified_at TEXT")
+    cursor.execute("ALTER TABLE runbook_usage ADD COLUMN verification TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -519,6 +524,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (34, _migrate_v34),
     (35, _migrate_v35),
     (36, _migrate_v36),
+    (37, _migrate_v37),
 ]
 
 
@@ -696,6 +702,50 @@ def mark_repair_resolved(issue_key: str) -> None:
             (time.time(), issue_key),
         )
         conn.commit()
+
+
+def verify_pending_runbook_usage(signature: str, verification: str) -> None:
+    """Mark pending runbook_usage rows for *signature* with the given verification outcome.
+
+    verification should be 'success' or 'failure'.  Only rows with no existing
+    verification are updated (i.e., still pending).
+    """
+    if not signature:
+        return
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE runbook_usage SET verification = ?, verified_at = ?"
+                " WHERE signature = ? AND (verification IS NULL OR verification = '')",
+                (verification, now, signature),
+            )
+            conn.commit()
+    except Exception:  # nosec B110
+        pass
+
+
+def sweep_stale_pending_usage() -> None:
+    """Mark runbook_usage rows still pending after 48 h as 'unverified'.
+
+    Called periodically so old pending rows don't linger and eventually
+    skew auto-validation counts.
+    """
+    threshold_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600)
+    )
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE runbook_usage SET verification = 'unverified', verified_at = ?"
+                " WHERE (verification IS NULL OR verification = '')"
+                "   AND created_at < ?",
+                (now, threshold_iso),
+            )
+            conn.commit()
+    except Exception:  # nosec B110
+        pass
 
 
 def record_log_triage_seen(

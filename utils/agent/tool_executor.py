@@ -333,6 +333,8 @@ class ToolExecutor:
         self._query_knowledge_had_results: bool = False
         # Per-session runbook usage tracking: strategy_ids seen in pre-inject or query_knowledge
         self._injected_strategy_ids: set[str] = set()
+        # Declared by the model in a finish_* terminal tool call (strategy_id or "none")
+        self._declared_runbook_id: Optional[str] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -342,6 +344,7 @@ class ToolExecutor:
         self._sandbox_output = ""
         self._query_knowledge_had_results = False
         self._injected_strategy_ids = set()
+        self._declared_runbook_id = None
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -429,18 +432,21 @@ class ToolExecutor:
             if name == "verify_fix":
                 return await self._verify_fix()
             if name == "finish_repair":
+                self._capture_declared_runbook(args)
                 return ToolResult(
                     tool_name="finish_repair",
                     success=True,
                     output=args.get("summary", "Repair complete"),
                 )
             if name == "finish_chat":
+                self._capture_declared_runbook(args)
                 return ToolResult(
                     tool_name="finish_chat",
                     success=True,
                     output=args.get("summary", ""),
                 )
             if name == "finish_investigation":
+                self._capture_declared_runbook(args)
                 return ToolResult(
                     tool_name="finish_investigation",
                     success=True,
@@ -642,10 +648,12 @@ class ToolExecutor:
                     units=args.get("units") or None,
                 )
             if name == "finish_lovelace_investigation":
+                self._capture_declared_runbook(args)
                 return await self._finish_lovelace_investigation(
                     args.get("findings", [])
                 )
             if name == "finish_repair_issue":
+                self._capture_declared_runbook(args)
                 return await self._finish_repair_issue(
                     human_explanation=args.get("human_explanation", ""),
                     recommended_action=args.get("recommended_action", ""),
@@ -653,6 +661,7 @@ class ToolExecutor:
                     action=args.get("action", "dismiss"),
                 )
             if name == "finish_notification_investigation":
+                self._capture_declared_runbook(args)
                 return await self._finish_notification_investigation(
                     human_explanation=args.get("human_explanation", ""),
                     recommended_action=args.get("recommended_action", ""),
@@ -678,6 +687,7 @@ class ToolExecutor:
                     breaking_change_desc=args.get("breaking_change_desc", ""),
                 )
             if name == "finish_update_analysis":
+                self._capture_declared_runbook(args)
                 return await self._finish_update_analysis(
                     safe_to_update=bool(args.get("safe_to_update", True)),
                     breaking_changes=args.get("breaking_changes", []),
@@ -689,6 +699,7 @@ class ToolExecutor:
                     create_hitl_card=bool(args.get("create_hitl_card", True)),
                 )
             if name == "finish_host_health":
+                self._capture_declared_runbook(args)
                 return await self._finish_host_health(
                     summary=args.get("summary", ""),
                     root_cause=args.get("root_cause", ""),
@@ -946,10 +957,19 @@ class ToolExecutor:
             )
 
     @staticmethod
-    def _knowledge_authority_label(collection: str, metadata: dict) -> str:
-        """Return a human-readable trust label for a knowledge chunk."""
+    def _knowledge_authority_label(
+        collection: str, metadata: dict, chunk_id: str = ""
+    ) -> str:
+        """Return a human-readable trust label for a knowledge chunk.
+
+        For strategies chunks, appends [id=<chunk_id>] so the model can declare
+        which runbook it followed in the runbook_followed terminal-tool field.
+        """
         if metadata.get("exact_match"):
-            return "[RUNBOOK FOR THIS EXACT SYMPTOM]"
+            label = "[RUNBOOK FOR THIS EXACT SYMPTOM]"
+            if chunk_id:
+                label += f" [id={chunk_id}]"
+            return label
         if collection in (
             "ha_integration_docs",
             "ha_concepts",
@@ -962,20 +982,25 @@ class ToolExecutor:
             runbook_type = metadata.get("runbook_type", "")
             kb_type = metadata.get("kb_type", "")
             if runbook_type == "gap" or kb_type == "gap":
-                return "[KNOWN GAP – prior attempt unresolved]"
-            if src == "home_profile" or runbook_type == "instance_profile":
-                return "[HA INSTANCE PROFILE]"
-            if src == "seed_prompt" or runbook_type == "seed":
-                return "[SEED RUNBOOK]"
-            if runbook_type == "validated":
-                return "[VALIDATED RUNBOOK]"
-            if runbook_type == "candidate":
-                return "[CANDIDATE RUNBOOK – unreviewed]"
-            if src == "pueo_kb":
+                label = "[KNOWN GAP – prior attempt unresolved]"
+            elif src == "home_profile" or runbook_type == "instance_profile":
+                label = "[HA INSTANCE PROFILE]"
+            elif src == "seed_prompt" or runbook_type == "seed":
+                label = "[SEED RUNBOOK]"
+            elif runbook_type == "validated":
+                label = "[VALIDATED RUNBOOK]"
+            elif runbook_type == "candidate":
+                label = "[CANDIDATE RUNBOOK – unreviewed]"
+            elif src == "pueo_kb":
                 if metadata.get("kb_state") == "candidate":
-                    return "[COMMUNITY CANDIDATE]"
-                return "[COMMUNITY RUNBOOK]"
-            return "[CANDIDATE RUNBOOK – unreviewed]"
+                    label = "[COMMUNITY CANDIDATE]"
+                else:
+                    label = "[COMMUNITY RUNBOOK]"
+            else:
+                label = "[CANDIDATE RUNBOOK – unreviewed]"
+            if chunk_id and runbook_type != "gap" and kb_type != "gap":
+                label += f" [id={chunk_id}]"
+            return label
         if collection == "repair_history":
             return "[PAST REPAIR]"
         if collection == "ha_best_practices":
@@ -1141,7 +1166,7 @@ class ToolExecutor:
         ordered = runbook_chunks + other_chunks
 
         output = "\n\n".join(
-            f"{self._knowledge_authority_label(c.collection, c.metadata)} "
+            f"{self._knowledge_authority_label(c.collection, c.metadata, getattr(c, 'chunk_id', ''))} "
             f"[{c.collection} | {c.source}]\n{c.text}"
             for c in ordered
         )
@@ -3309,33 +3334,61 @@ class ToolExecutor:
                 error=str(exc),
             )
 
+    def _capture_declared_runbook(self, args: dict) -> None:
+        """Store the runbook_followed value from a terminal tool call."""
+        val = args.get("runbook_followed")
+        if val and isinstance(val, str):
+            self._declared_runbook_id = val.strip() or None
+
     def record_runbook_usage(
         self,
         strategy_ids: set[str],
         outcome: str,
         episode_id: str,
         signature: str,
+        declared_runbook_id: "Optional[str]" = None,
     ) -> None:
-        """Write runbook_usage rows and trigger auto-validate for each strategy seen.
+        """Write runbook_usage rows for the declared runbook (and exact-sig match).
+
+        When the model declares a runbook via runbook_followed, only that id (plus
+        any exact-signature match already in strategy_ids) is written.  Rows start
+        with outcome='pending'; a separate verifier sweep resolves them to
+        'success', 'failure', or 'unverified' after the condition is checked.
 
         Called synchronously from asyncio.to_thread at session end.
         """
-        if not strategy_ids or not self._db_path:
+        if not self._db_path:
             return
+
+        # Determine which ids to write.
+        # declared_runbook_id is the model's explicit declaration ("none" means no runbook).
+        # Fall back to all seen ids only when the model gave no declaration at all
+        # (old behaviour, for sessions that don't yet supply the field).
+        if declared_runbook_id and declared_runbook_id.lower() != "none":
+            ids_to_write = {declared_runbook_id}
+        elif declared_runbook_id == "none":
+            ids_to_write = set()
+        else:
+            # No declaration — fall back to all seen ids for backwards compatibility.
+            ids_to_write = strategy_ids
+
+        if not ids_to_write:
+            return
+
         import config as _cfg
 
         min_successes = _cfg.RUNBOOK_VALIDATE_MIN_SUCCESSES
         try:
             with sqlite3.connect(self._db_path) as conn:
-                for sid in strategy_ids:
+                for sid in ids_to_write:
                     conn.execute(
                         "INSERT INTO runbook_usage"
                         " (strategy_id, episode_id, signature, outcome)"
                         " VALUES (?, ?, ?, ?)",
-                        (sid, episode_id or "", signature, outcome),
+                        (sid, episode_id or "", signature, "pending"),
                     )
                 conn.commit()
-                for sid in strategy_ids:
+                for sid in ids_to_write:
                     self._auto_validate_if_eligible(conn, sid, min_successes)
         except Exception as exc:  # nosec B110
             log.warning("record_runbook_usage_failed", error=str(exc))
@@ -3355,14 +3408,15 @@ class ToolExecutor:
         if not row or row[0] != "candidate":
             return
 
+        # Count verified successes and failures only; pending/unverified rows don't count.
         success_count = conn.execute(
             "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-            " WHERE strategy_id = ? AND outcome = 'success' AND episode_id != ''",
+            " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
             (strategy_id,),
         ).fetchone()[0]
         failure_count = conn.execute(
             "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
-            " WHERE strategy_id = ? AND outcome != 'success' AND episode_id != ''",
+            " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
             (strategy_id,),
         ).fetchone()[0]
 

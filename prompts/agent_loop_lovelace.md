@@ -57,6 +57,7 @@ Phase 6 — REPORT: Call {terminal_tool} with a findings list. Each finding cove
     suggested_actions: list of concrete action strings
     chat_needed: bool — true if root cause is unclear or advice is complex
     initial_chat_message: pre-filled message for chat agent (include card_key for resolution)
+  Also pass runbook_followed: the [id=…] value of the runbook you followed, or "none".
 
   Omit benign sub-platform and legacy entities from findings entirely — no card, no noise.
   For YAML-no-unique-id: include in findings with specific YAML advice.

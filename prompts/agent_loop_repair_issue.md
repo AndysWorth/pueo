@@ -41,6 +41,7 @@ Phase 6 — REPORT: Call {terminal_tool} with:
   recommended_action: what the user should do (specific steps, not just "check it")
   requires_hitl: true if immediate user action is needed
   action: "reboot" if a reboot is needed, "restart" if a restart suffices, "dismiss" otherwise
+  runbook_followed: the [id=…] value of the runbook you followed, or "none"
 
   If you exhaust all reasonable investigative paths without a clear answer, call
   request_escalation(reason) and then call {terminal_tool} with requires_hitl=true and

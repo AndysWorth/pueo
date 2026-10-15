@@ -50,3 +50,4 @@ Phase 6 — REPORT: Call {terminal_tool} with:
   severity_override: "CRITICAL" only if escalating beyond the default severity (e.g. unknown
     device login); omit or set null to keep the default severity
   dismiss_now: true to auto-dismiss the notification from HA (use for benign/informational ones)
+  runbook_followed: the [id=…] value of the runbook you followed, or "none"

@@ -324,6 +324,14 @@ FINISH_REPAIR = ToolDefinition(
                     "action would be needed to resolve the issue."
                 ),
             },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed during this session. "
+                    "Pass 'none' if no runbook was relevant or found."
+                ),
+            },
         },
         "required": ["summary", "action_taken"],
     },
@@ -908,7 +916,14 @@ FINISH_CHAT = ToolDefinition(
             "summary": {
                 "type": "string",
                 "description": "Plain-language summary of findings or actions taken",
-            }
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
         },
         "required": ["summary"],
     },
@@ -1791,6 +1806,13 @@ FINISH_LOVELACE_INVESTIGATION = ToolDefinition(
                 "type": "string",
                 "description": "One-sentence conclusion summarising the investigation outcome.",
             },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
         },
         "required": ["findings"],
     },
@@ -1826,6 +1848,13 @@ FINISH_REPAIR_ISSUE = ToolDefinition(
             "summary": {
                 "type": "string",
                 "description": "One-sentence conclusion summarising the investigation outcome.",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
             },
         },
         "required": [
@@ -1873,6 +1902,13 @@ FINISH_NOTIFICATION_INVESTIGATION = ToolDefinition(
             "summary": {
                 "type": "string",
                 "description": "One-sentence conclusion summarising the investigation outcome.",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
             },
         },
         "required": ["human_explanation", "recommended_action", "requires_hitl"],
@@ -2078,6 +2114,13 @@ FINISH_UPDATE_ANALYSIS = ToolDefinition(
                 "type": "number",
                 "description": "Your confidence in the safety assessment, 0.0–1.0. Provide honestly — this is used at autonomy level 4 to decide whether to auto-apply without asking.",
             },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
         },
         "required": [
             "safe_to_update",
@@ -2120,6 +2163,13 @@ FINISH_HOST_HEALTH = ToolDefinition(
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Concrete steps the user should take (empty if resolved or monitoring).",
+            },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
             },
         },
         "required": ["summary", "root_cause", "outcome", "recommended_actions"],
