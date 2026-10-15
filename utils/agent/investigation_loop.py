@@ -165,6 +165,13 @@ FINISH_INVESTIGATION = ToolDefinition(
                 "type": "number",
                 "description": "0.0–1.0 confidence in the diagnosis and recommendations",
             },
+            "runbook_followed": {
+                "type": "string",
+                "description": (
+                    "The strategy_id (shown as [id=…] on retrieved knowledge chunks) "
+                    "of the runbook you actually followed. Pass 'none' if none applied."
+                ),
+            },
         },
         "required": ["summary", "root_causes", "auto_actions", "hitl_actions"],
     },

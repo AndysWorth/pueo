@@ -4538,6 +4538,7 @@ class TestRunbookUsageTracking:
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "strategy_id TEXT NOT NULL, episode_id TEXT, "
                 "signature TEXT, outcome TEXT NOT NULL, "
+                "verified_at TEXT, verification TEXT, "
                 "created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))"
             )
             conn.commit()
@@ -4579,13 +4580,43 @@ class TestRunbookUsageTracking:
 
         executor, _, db_path = self._make_executor(tmp_path)
         self._insert_strategy(db_path, "s1")
+        # No declared_runbook_id → falls back to all seen ids; outcome='pending'.
         executor.record_runbook_usage({"s1"}, "success", "ep1", "update:core:x")
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT strategy_id, outcome, episode_id, signature"
                 " FROM runbook_usage WHERE strategy_id='s1'"
             ).fetchone()
-        assert row == ("s1", "success", "ep1", "update:core:x")
+        assert row == ("s1", "pending", "ep1", "update:core:x")
+
+    def test_record_runbook_usage_declared_id_only(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        self._insert_strategy(db_path, "s2")
+        # Declared s1 — only s1 should be written.
+        executor.record_runbook_usage(
+            {"s1", "s2"}, "success", "ep1", "repair:x:y", declared_runbook_id="s1"
+        )
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT strategy_id FROM runbook_usage ORDER BY strategy_id"
+            ).fetchall()
+        assert rows == [("s1",)]
+
+    def test_record_runbook_usage_none_declaration_writes_nothing(self, tmp_path):
+        import sqlite3
+
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "s1")
+        # Explicitly declaring "none" writes nothing.
+        executor.record_runbook_usage(
+            {"s1"}, "success", "ep1", "repair:x:y", declared_runbook_id="none"
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM runbook_usage").fetchone()[0]
+        assert count == 0
 
     def test_record_runbook_usage_no_rows_on_empty_ids(self, tmp_path):
         import sqlite3
@@ -4621,11 +4652,22 @@ class TestRunbookUsageTracking:
 
         executor, _, db_path = self._make_executor(tmp_path)
         self._insert_strategy(db_path, "s1")
-        # 3 successes on distinct episodes, 0 failures → should auto-validate
-        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
+        # Auto-validate now counts verification='success', not outcome.
+        # Insert verified success rows directly.
         with sqlite3.connect(db_path) as conn:
+            for ep in ("ep1", "ep2", "ep3"):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                    " VALUES ('s1', ?, 'pending', 'success')",
+                    (ep,),
+                )
+            conn.commit()
+        # Trigger auto-validate by calling _auto_validate_if_eligible directly.
+        with sqlite3.connect(db_path) as conn:
+            executor._auto_validate_if_eligible(
+                conn, "s1", min_successes=3  # type: ignore[arg-type]
+            )
+            conn.commit()
             state = conn.execute(
                 "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
             ).fetchone()[0]
@@ -4636,12 +4678,21 @@ class TestRunbookUsageTracking:
 
         executor, _, db_path = self._make_executor(tmp_path)
         self._insert_strategy(db_path, "s1")
-        # Insert the failure first so it's already present when successes arrive.
-        executor.record_runbook_usage({"s1"}, "failed", "ep0", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
         with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                " VALUES ('s1', 'ep0', 'pending', 'failure')"
+            )
+            for ep in ("ep1", "ep2", "ep3"):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                    " VALUES ('s1', ?, 'pending', 'success')",
+                    (ep,),
+                )
+            conn.commit()
+        with sqlite3.connect(db_path) as conn:
+            executor._auto_validate_if_eligible(conn, "s1", min_successes=3)  # type: ignore[arg-type]
+            conn.commit()
             state = conn.execute(
                 "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
             ).fetchone()[0]
@@ -4652,10 +4703,17 @@ class TestRunbookUsageTracking:
 
         executor, _, db_path = self._make_executor(tmp_path)
         self._insert_strategy(db_path, "s1", state="seed")
-        executor.record_runbook_usage({"s1"}, "success", "ep1", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep2", "sig")
-        executor.record_runbook_usage({"s1"}, "success", "ep3", "sig")
         with sqlite3.connect(db_path) as conn:
+            for ep in ("ep1", "ep2", "ep3"):
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, outcome, verification)"
+                    " VALUES ('s1', ?, 'pending', 'success')",
+                    (ep,),
+                )
+            conn.commit()
+        with sqlite3.connect(db_path) as conn:
+            executor._auto_validate_if_eligible(conn, "s1", min_successes=3)  # type: ignore[arg-type]
+            conn.commit()
             state = conn.execute(
                 "SELECT runbook_state FROM agent_strategies WHERE id='s1'"
             ).fetchone()[0]
@@ -4683,6 +4741,111 @@ class TestRunbookUsageTracking:
         )
         asyncio.run(executor._query_knowledge("disk space"))
         assert "sid-abc" in executor._injected_strategy_ids
+
+    def test_capture_declared_runbook_stores_value(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        executor._capture_declared_runbook({"runbook_followed": "rb_abc123"})
+        assert executor._declared_runbook_id == "rb_abc123"
+
+    def test_capture_declared_runbook_none_literal(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        executor._capture_declared_runbook({"runbook_followed": "none"})
+        assert executor._declared_runbook_id == "none"
+
+    def test_capture_declared_runbook_missing_key(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        executor._capture_declared_runbook({})
+        assert executor._declared_runbook_id is None
+
+    def test_capture_declared_runbook_reset_clears(self, tmp_path):
+        executor, _, _ = self._make_executor(tmp_path)
+        executor._capture_declared_runbook({"runbook_followed": "rb_abc123"})
+        executor.reset()
+        assert executor._declared_runbook_id is None
+
+    def _make_adv_db(self, tmp_path):
+        """Create a minimal DB matching ha_agent_advanced schema for verifier tests."""
+        import sqlite3
+
+        db_path = str(tmp_path / "adv_test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE runbook_usage ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "strategy_id TEXT NOT NULL, episode_id TEXT, "
+                "signature TEXT, outcome TEXT NOT NULL, "
+                "verified_at TEXT, verification TEXT, "
+                "created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))"
+            )
+            conn.commit()
+        return db_path
+
+    def test_verify_pending_runbook_usage(self, tmp_path):
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            sig = "http_login::ip_bans"
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome, created_at)"
+                    " VALUES ('s1', 'ep1', ?, 'pending', ?)",
+                    (sig, now_iso),
+                )
+                conn.commit()
+            adv.verify_pending_runbook_usage(sig, "success")
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT verification FROM runbook_usage WHERE episode_id='ep1'"
+                ).fetchone()
+            assert row[0] == "success"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_sweep_stale_pending_usage(self, tmp_path):
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            stale_iso = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 50 * 3600)
+            )
+            fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome, created_at)"
+                    " VALUES ('s1', 'ep_stale', 'sig', 'pending', ?)",
+                    (stale_iso,),
+                )
+                conn.execute(
+                    "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome, created_at)"
+                    " VALUES ('s1', 'ep_fresh', 'sig', 'pending', ?)",
+                    (fresh_iso,),
+                )
+                conn.commit()
+            adv.sweep_stale_pending_usage()
+            with sqlite3.connect(db_path) as conn:
+                stale_v = conn.execute(
+                    "SELECT verification FROM runbook_usage WHERE episode_id='ep_stale'"
+                ).fetchone()[0]
+                fresh_v = conn.execute(
+                    "SELECT verification FROM runbook_usage WHERE episode_id='ep_fresh'"
+                ).fetchone()[0]
+            assert stale_v == "unverified"
+            assert fresh_v is None  # still pending
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
 
 
 class TestRunbookAuthorityScores:

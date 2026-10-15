@@ -88,6 +88,8 @@ STOPPING CONDITION: Do not give up because you have hit an arbitrary call count.
   user can route to a stronger model.
 
 Phase 6 — REPORT: Call {terminal_tool} with a complete, data-driven answer.
+  If you followed a runbook from Phase 1, pass its id (shown as [id=…] in the knowledge
+  block) as the runbook_followed field. If no runbook was relevant, pass "none".
 
 SELF-KNOWLEDGE: Call read_source("utils/agent/tool_registry.py") when uncertain which tools
   are available. Call fetch_ha_docs(domain, filename) to look up HA component source

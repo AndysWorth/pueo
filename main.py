@@ -1228,6 +1228,14 @@ async def supervisor_main(config_path: Path) -> None:
             except Exception as _re:  # nosec B110
                 _log.warning("episode_rotation_failed", error=str(_re))
 
+            # Sweep runbook_usage rows still pending after 48 h → unverified.
+            try:
+                from agents.ha_agent_advanced import sweep_stale_pending_usage as _spu
+
+                await asyncio.to_thread(_spu)
+            except Exception as _spe:  # nosec B110
+                _log.warning("runbook_usage_sweep_failed", error=str(_spe))
+
     supervisor.start("backup_sync", _backup_reconcile_loop, interval_seconds=1800)
 
     # Ollama real-time model monitor (15-second poll of /api/ps)

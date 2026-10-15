@@ -296,3 +296,36 @@ every new candidate.
   (`[COMMUNITY RUNBOOK]`).  The ingester re-ingests on state change (ingest key encodes
   `id:sha256:state`).  Local auto-validation (`_auto_validate_if_eligible`) and local
   authority tiers are unchanged.
+
+## Amendment — Declared and verified usage attribution (2026-10-14, PR #880)
+
+**Problem:** `runbook_usage` rows were written for every strategy *seen* during a
+session regardless of whether the agent actually followed it, using the loop outcome as
+a proxy for success.  This made auto-validation unreliable (e.g. `diagnose_netalertx`
+accumulated "success" credits from unrelated host-health sessions).
+
+**Changes:**
+
+1. **`runbook_followed` terminal-tool field** — every finish_* tool now accepts an
+   optional `runbook_followed: str` (a `strategy_id` shown as `[id=…]` in retrieved
+   chunks, or `"none"`).  Agent prompts instruct the model to declare it in Phase 6.
+
+2. **Declared-only writes** — `record_runbook_usage` writes a row only for the declared
+   id (and any exact-signature match in the seen set).  When no declaration is present,
+   it falls back to all seen ids for backwards compatibility.  All rows start with
+   `outcome='pending'`.
+
+3. **V37 schema migration** — `runbook_usage` gains `verified_at TEXT` and
+   `verification TEXT` columns.  `verification` can be `'success'`, `'failure'`, or
+   `'unverified'`; NULL means still pending.
+
+4. **Verifier sweep** — `verify_pending_runbook_usage(signature, 'success')` is called
+   when a repair issue resolves (disappears from the HA repairs list).  A
+   `sweep_stale_pending_usage()` function marks rows still pending after 48 h as
+   `'unverified'`; it runs in the backup_sync cadence (~30 min).
+
+5. **`_auto_validate_if_eligible` counts only `verification='success'`** — pending and
+   unverified rows no longer contribute to the promotion threshold.
+
+**Rollback:** revert the commit.  The V37 columns are nullable; older code ignores them.
+Schema revert target: version 36.

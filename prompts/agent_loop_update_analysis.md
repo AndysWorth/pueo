@@ -54,4 +54,5 @@ Optional fields (populate when you have the information):
 
 If the release notes are unavailable or too short to analyse, say so explicitly in your recommendation and set `create_hitl_card=true` — Pueo will request human approval. Never claim the notes contain no breaking changes when you have not actually read them. Do not repeat a `fetch_url` call for a URL that already returned a 404.
 
-The terminal tool for this session is `{terminal_tool}`.
+The terminal tool for this session is `{terminal_tool}`. When calling it, pass
+runbook_followed as the [id=…] of the runbook you followed from Phase 1, or "none".

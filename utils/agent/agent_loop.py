@@ -100,7 +100,8 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
     parts = ["Relevant context (use as reference, verify before applying):"]
     for chunk in chunks:
         col = getattr(chunk, "collection", "")
-        label = _TE._knowledge_authority_label(col, getattr(chunk, "metadata", {}))
+        cid = getattr(chunk, "chunk_id", "")
+        label = _TE._knowledge_authority_label(col, getattr(chunk, "metadata", {}), cid)
         source = getattr(chunk, "source", "")
         body = truncate_to_budget(chunk.text, _PRE_INJECT_CHUNK_TOKENS, "head")
         if len(body) < len(chunk.text):
@@ -773,23 +774,26 @@ class AgentLoop:
             except Exception as exc:  # nosec B110
                 log.error("repair_episode_record_failed", error=str(exc))
 
-        # Record runbook usage for every strategy seen during this session.
-        if (
-            self._db_path is not None
-            and self._executor is not None
-            and self._executor._injected_strategy_ids
-        ):
-            _signature = self._signature
-            try:
-                await asyncio.to_thread(
-                    self._executor.record_runbook_usage,
-                    set(self._executor._injected_strategy_ids),
-                    outcome,
-                    self._episode_id,
-                    _signature,
-                )
-            except Exception as exc:  # nosec B110
-                log.warning("runbook_usage_record_failed", error=str(exc))
+        # Record runbook usage for the declared runbook (or fallback to all seen).
+        # Use getattr to stay safe when executor is a replay stub without these attrs.
+        if self._db_path is not None and self._executor is not None:
+            _seen_ids: set = getattr(self._executor, "_injected_strategy_ids", set())
+            _declared: "Optional[str]" = getattr(
+                self._executor, "_declared_runbook_id", None
+            )
+            if _seen_ids or _declared:
+                _signature = self._signature
+                try:
+                    await asyncio.to_thread(
+                        self._executor.record_runbook_usage,
+                        set(_seen_ids),
+                        outcome,
+                        self._episode_id,
+                        _signature,
+                        _declared,
+                    )
+                except Exception as exc:  # nosec B110
+                    log.warning("runbook_usage_record_failed", error=str(exc))
 
         _duration = round(time.monotonic() - start_time, 2)
         self._messages = None  # loop finished; disable inject_context
