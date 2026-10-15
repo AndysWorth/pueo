@@ -487,6 +487,10 @@ def _migrate_v37(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE runbook_usage ADD COLUMN verification TEXT")
 
 
+def _migrate_v38(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN backup_type TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -525,6 +529,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (35, _migrate_v35),
     (36, _migrate_v36),
     (37, _migrate_v37),
+    (38, _migrate_v38),
 ]
 
 
@@ -849,8 +854,12 @@ def is_reboot_required_active() -> bool:
 
 
 def _parse_backup_list(output: str) -> list[dict]:
-    """Parse JSON from `ha backups list --raw-json`. Returns list of {slug, size_bytes, name, ha_created_at}."""
-    from datetime import datetime, timezone
+    """Parse JSON from `ha backups list --raw-json`.
+
+    Returns list of {slug, size_bytes, name, ha_created_at, backup_type}.
+    backup_type is "full", "partial", or "" when absent from the JSON.
+    """
+    from datetime import datetime
 
     def _parse_date(date_str: str) -> Optional[float]:
         if not date_str:
@@ -870,6 +879,7 @@ def _parse_backup_list(output: str) -> list[dict]:
                 "size_bytes": b.get("size_bytes", 0),
                 "name": b.get("name", ""),
                 "ha_created_at": _parse_date(b.get("date", "")),
+                "backup_type": b.get("type", ""),
             }
             for b in backups
             if "slug" in b
@@ -907,6 +917,7 @@ async def reconcile_backup_inventory(
             "size_bytes": b["size_bytes"],
             "name": b.get("name", ""),
             "ha_created_at": b.get("ha_created_at"),
+            "backup_type": b.get("backup_type", ""),
         }
         for b in ha_backups
     }
@@ -933,24 +944,34 @@ async def reconcile_backup_inventory(
             size_bytes = info["size_bytes"]
             ha_name = info["name"]
             ha_created_at = info["ha_created_at"]
+            backup_type = info["backup_type"]
             if slug not in db_slugs_all:
                 log.info("backup_inventory_add", slug=slug, size_bytes=size_bytes)
                 cursor.execute(
                     "INSERT INTO backup_registry"
-                    " (timestamp, backup_slug, status, size_bytes, location, name, ha_created_at)"
-                    " VALUES (?, ?, 'ACTIVE', ?, 'ha', ?, ?)",
-                    (int(time.time()), slug, size_bytes, ha_name, ha_created_at),
+                    " (timestamp, backup_slug, status, size_bytes, location, name,"
+                    "  ha_created_at, backup_type)"
+                    " VALUES (?, ?, 'ACTIVE', ?, 'ha', ?, ?, ?)",
+                    (
+                        int(time.time()),
+                        slug,
+                        size_bytes,
+                        ha_name,
+                        ha_created_at,
+                        backup_type,
+                    ),
                 )
                 added += 1
             else:
-                # Back-fill size_bytes, name, and ha_created_at for rows with missing data
+                # Back-fill size_bytes, name, ha_created_at, and backup_type for rows with missing data
                 cursor.execute(
                     "UPDATE backup_registry"
                     " SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END,"
                     "     name = CASE WHEN name IS NULL OR name = '' THEN ? ELSE name END,"
-                    "     ha_created_at = CASE WHEN ha_created_at IS NULL THEN ? ELSE ha_created_at END"
+                    "     ha_created_at = CASE WHEN ha_created_at IS NULL THEN ? ELSE ha_created_at END,"
+                    "     backup_type = CASE WHEN backup_type IS NULL OR backup_type = '' THEN ? ELSE backup_type END"
                     " WHERE backup_slug = ?",
-                    (size_bytes, ha_name, ha_created_at, slug),
+                    (size_bytes, ha_name, ha_created_at, backup_type, slug),
                 )
 
         for slug in db_slugs_active:
@@ -1143,13 +1164,28 @@ async def enforce_ha_retention(
     most_recent_slug = ha_rows[0][0]
     to_delete_count = ha_count - effective_floor
 
+    # Also protect the newest full backup so the Supervisor's no_current_backup
+    # health check is never triggered by Pueo's own retention.
     with sqlite3.connect(DB_PATH) as conn:
-        candidates = conn.execute(
+        full_row = conn.execute(
+            "SELECT backup_slug FROM backup_registry"
+            " WHERE deleted_from_ha_at IS NULL AND backup_type = 'full'"
+            " ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+    newest_full_slug = full_row[0] if full_row else None
+
+    protected = {most_recent_slug}
+    if newest_full_slug:
+        protected.add(newest_full_slug)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        placeholders = ",".join("?" * len(protected))
+        _q = (
             "SELECT backup_slug FROM backup_registry"
             " WHERE deleted_from_ha_at IS NULL AND location = 'both'"
-            " AND backup_slug != ? ORDER BY timestamp ASC",
-            (most_recent_slug,),
-        ).fetchall()
+            f" AND backup_slug NOT IN ({placeholders}) ORDER BY timestamp ASC"  # nosec B608
+        )
+        candidates = conn.execute(_q, tuple(protected)).fetchall()
 
     to_delete = [r[0] for r in candidates[:to_delete_count]]
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)

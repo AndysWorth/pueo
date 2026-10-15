@@ -42,14 +42,51 @@ or low-RAM device with many integrations loaded.
 
 **Fixes:** Usually needs_action. If OOM, recommend reducing recorder history or upgrading RAM.
 
-## Supervisor resolution issue
+## Supervisor resolution issue — no_current_backup
+
+**Why it triggers:** The HA Supervisor requires a recent *full* backup to be present on the
+HA host. Automatic HA backups are *partial* — only the Core config. Pueo's own backups are
+full, but the retention policy may have deleted them all from HA.
+
+**Evidence:**
+- `ha resolution info --raw-json` → confirm the issue type is `no_current_backup`
+- `ha backups list --raw-json` → check `type` field; count backups where `type == "full"`
+
+**Fix:**
+1. If a full backup already exists on HA: apply the suggestion `create_full_backup` via
+   `ha resolution suggestion apply <uuid>` (MEDIUM) to point the Supervisor at it, then
+   `ha resolution healthcheck` (LOW) to clear the issue.
+2. If no full backup exists on HA: the suggestion still applies and the Supervisor will
+   create one after the healthcheck. Apply `create_full_backup` suggestion and confirm.
+3. Set outcome="resolved" only after confirming via `ha resolution info --raw-json` that
+   the issue UUID is no longer present.
+
+## Supervisor resolution issue — rpi_firmware_update_blocked
+
+**What it means:** The Raspberry Pi firmware is at an older version than the HA Yellow /
+Raspberry Pi 4 bootloader expects. **This is informational** — no suggestion is available
+to apply programmatically; the suggestions list will be empty for this issue type.
+
+**Do NOT fabricate causes** like "boot partition management" or "NVMe compatibility".
+The actual cause is always: the RPi firmware predates the bundled HA OS expectations.
+
+**Evidence:**
+- `ha resolution info --raw-json` → confirm `suggestions` is empty for this issue
+- `ha os info --raw-json` → note the OS version for context
+
+**Fix:**
+1. Since no suggestion is available: `remember(key="rpi_firmware_blocked", content="...")`
+   so this fact survives across sessions and Pueo does not re-investigate it.
+2. Set outcome="needs_action" with the note that this is informational and requires a
+   future OS update to resolve; no current action is available.
+
+## Supervisor resolution issue — general
 
 **Evidence:**
 - `ha resolution info --raw-json` → issues[] and suggestions[]
 - Match the issue uuid against the suggestions list
 
 **Key types:**
-- `rpi_firmware_update_blocked`: Pi firmware is outdated. Apply matching suggestion.
 - `reboot_required`: OS update pending. Apply matching suggestion.
 - `dns_server_failed`: Check network/DNS. Apply healthcheck suggestion.
 - `free_space`: Low disk space. Handled by disk recovery path — outcome="monitoring".
