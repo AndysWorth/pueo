@@ -560,29 +560,31 @@ async def _run_repair_issue_investigation(
     knowledge_store: Optional[Any] = None,
     ha_rest_client: Optional[HARestClientProtocol] = None,
     ssh_client: Optional[SSHClientProtocol] = None,
+    gate: Optional[AutonomyGate] = None,
 ) -> None:
     """Run an AgentLoop to investigate an HA repair issue and create a HITL card.
 
-    The investigation runs under an auto-approving gate, so its own tools get
-    a ``ReadOnlySSHClient`` (ADR 043): real reads, every write raises.
-    The unwrapped ``ssh_client`` is used only for the post-update
-    auto-reboot/restart in ``finish_repair_issue``.
+    Runs through ``AutonomyGate(AUTONOMY_LEVEL)`` so REST write tools
+    (``call_service``, ``reload_integration``) route through the real gate and
+    produce HITL cards at lower autonomy levels.  SSH reads use
+    ``ReadOnlySSHClient`` (ADR 043); every SSH write raises.  The unwrapped
+    ``ssh_client`` is used only for the post-update auto-reboot/restart in
+    ``finish_repair_issue``.
     """
     from utils.agent.agent_loop import AgentLoop
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_ha_tool_registry
-    from utils.agent.autonomy import FakeAutonomyGate
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
-    gate = FakeAutonomyGate(auto_execute_result=True)
+    gate = gate or AutonomyGate(AUTONOMY_LEVEL)
     ssh = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
 
     executor = ToolExecutor(
         ha_ssh_client=ReadOnlySSHClient(ssh),
-        gate=gate,  # type: ignore[arg-type]
+        gate=gate,
         notifier=notifier,
         ha_rest_client=ha_rest_client,
         knowledge_store=knowledge_store,

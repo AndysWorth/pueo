@@ -28,6 +28,7 @@ from utils.core.logging import get_logger
 
 if TYPE_CHECKING:
     from utils.hitl.notify import NotifierProtocol
+    from utils.agent.autonomy import AutonomyGate
 
 log = get_logger("ha_notification_manager")
 
@@ -279,23 +280,25 @@ async def _run_notification_investigation(
     knowledge_store: Optional[object] = None,
     ha_rest_client: Optional["HARestClientProtocol"] = None,
     ssh_client: Optional["SSHClientProtocol"] = None,
+    gate: Optional["AutonomyGate"] = None,
 ) -> None:
     """Run an AgentLoop to investigate an HA persistent notification and create a HITL card.
 
-    Runs under an auto-approving gate, so tools get a ``ReadOnlySSHClient``
-    (ADR 043): real reads, every write raises.
+    Runs through ``AutonomyGate(AUTONOMY_LEVEL)`` so REST write tools route
+    through the real gate and produce HITL cards at lower autonomy levels.
+    SSH reads use ``ReadOnlySSHClient`` (ADR 043); every SSH write raises.
     """
     from utils.agent.agent_loop import AgentLoop
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_notification_investigation_registry
-    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
     category, severity = classify_notification(notification_id)
     llm = llm_client or make_llm_client()  # pragma: no cover
-    gate = FakeAutonomyGate(auto_execute_result=True)
+    gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
     if ssh_client is None:
         from utils.ha.ssh_client import AsyncSSHClient
 
@@ -313,7 +316,7 @@ async def _run_notification_investigation(
 
     executor = ToolExecutor(
         ha_ssh_client=ReadOnlySSHClient(ssh_client),
-        gate=gate,  # type: ignore[arg-type]
+        gate=gate,
         notifier=notifier,
         netalertx_api_client=netalertx_client,  # type: ignore[arg-type]
         ha_ws_client=ws_client,

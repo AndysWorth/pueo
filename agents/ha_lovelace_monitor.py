@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 from typing import Optional, TYPE_CHECKING
 
+import config as _config
 from interfaces import (
     HAWebSocketClientProtocol,
     LLMClientProtocol,
@@ -17,6 +18,7 @@ from utils.hitl.notify import NotifierProtocol
 
 if TYPE_CHECKING:
     from interfaces import HARestClientProtocol, KnowledgeStoreClientProtocol
+    from utils.agent.autonomy import AutonomyGate
 
 log = get_logger("ha_lovelace_monitor")
 
@@ -65,13 +67,14 @@ async def _run_lovelace_investigation(
     knowledge_store: Optional["KnowledgeStoreClientProtocol"] = None,
     ha_rest_client: Optional["HARestClientProtocol"] = None,
     ssh_client: Optional["SSHClientProtocol"] = None,
+    gate: Optional["AutonomyGate"] = None,
 ) -> None:
     """Run an AgentLoop to investigate unregistered Lovelace entities.
 
     The agent uses check_entity_status, get_config_entries_all, get_ha_components,
     and read_logs to classify each entity, then calls finish_lovelace_investigation
-    with findings (or an empty list when all entities are benign). Runs under an
-    auto-approving gate, so tools get a ``ReadOnlySSHClient`` (ADR 043).
+    with findings (or an empty list when all entities are benign). Runs through
+    ``AutonomyGate(AUTONOMY_LEVEL)``; SSH reads use ``ReadOnlySSHClient`` (ADR 043).
     """
     if not suspicious:
         return
@@ -79,13 +82,13 @@ async def _run_lovelace_investigation(
     from utils.agent.agent_loop import AgentLoop
     from utils.agent.tool_executor import ToolExecutor
     from utils.agent.tool_registry import build_lovelace_investigation_registry
-    from utils.agent.autonomy import FakeAutonomyGate
+    from utils.agent.autonomy import AutonomyGate
     from utils.ha.read_only_ssh import ReadOnlySSHClient
     from utils.llm.llm_factory import make_llm_client
     from utils.core.prompts import load_prompt
 
     llm = llm_client or make_llm_client()  # pragma: no cover
-    gate = FakeAutonomyGate(auto_execute_result=True)
+    gate = gate or AutonomyGate(_config.AUTONOMY_LEVEL)
     if ssh_client is None:
         from utils.ha.ssh_client import AsyncSSHClient
 
@@ -93,7 +96,7 @@ async def _run_lovelace_investigation(
 
     executor = ToolExecutor(
         ha_ssh_client=ReadOnlySSHClient(ssh_client),
-        gate=gate,  # type: ignore[arg-type]
+        gate=gate,
         notifier=notifier,
         ha_ws_client=ws_client,
         ha_rest_client=ha_rest_client,

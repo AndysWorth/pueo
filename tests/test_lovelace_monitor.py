@@ -2037,3 +2037,59 @@ class TestPrefilterBenign:
             any(e["entity_id"] == "sensor.high_tide" for e in call)
             for call in investigation_calls
         )
+
+
+# ---------------------------------------------------------------------------
+# Gate injection — Codecov branch coverage
+# ---------------------------------------------------------------------------
+
+
+class TestLovelaceInvestigationGateInjection:
+    """_run_lovelace_investigation accepts an injected gate (Codecov branch coverage)."""
+
+    def test_injected_gate_is_used(self, tmp_path):
+        """Passing gate= explicitly covers the 'gate is not None' branch."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_hitl_db(tmp_path)
+        suspicious = [{"entity_id": "sensor.gate_test", "has_state": False}]
+        fake_result = AgentLoopResult(outcome="success")
+        injected_gate = FakeAutonomyGate(auto_execute_result=True)
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_lovelace_monitor import _run_lovelace_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_lovelace_investigation(
+                    suspicious=suspicious,
+                    ws_client=MagicMock(),
+                    db_path=db_path,
+                    notifier=FakeNotifier(),
+                    gate=injected_gate,
+                )
+            )
+
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._gate is injected_gate
