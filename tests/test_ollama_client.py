@@ -231,6 +231,126 @@ class TestOllamaClientChatWithToolsLogging:
         assert "llm_response_full" not in events
 
 
+class TestOllamaClientChatThink:
+    """OllamaClient.chat() passes think when set, omits it when None."""
+
+    def _make_client(self, monkeypatch):
+        import ollama
+
+        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        import importlib
+        import utils.llm.ollama_client as mod
+
+        importlib.reload(mod)
+        client = mod.OllamaClient()
+        fake_resp = unittest.mock.MagicMock()
+        fake_resp.message.content = '{"ok": true}'
+        fake_resp.done_reason = "stop"
+        client._client.chat.return_value = fake_resp
+        return client
+
+    def test_think_false_passed_to_ollama(self, monkeypatch):
+        """chat() passes think=False when specified."""
+        client = self._make_client(monkeypatch)
+        asyncio.run(
+            client.chat(
+                model="qwen3:8b",
+                messages=[{"role": "user", "content": "hi"}],
+                options={"temperature": 0.0},
+                format={},
+                think=False,
+            )
+        )
+        call_kwargs = client._client.chat.call_args[1]
+        assert call_kwargs.get("think") is False
+
+    def test_think_none_not_passed_to_ollama(self, monkeypatch):
+        """chat() omits think entirely when think=None."""
+        client = self._make_client(monkeypatch)
+        asyncio.run(
+            client.chat(
+                model="llama3:8b",
+                messages=[{"role": "user", "content": "hi"}],
+                options={"temperature": 0.0},
+                format={},
+                think=None,
+            )
+        )
+        call_kwargs = client._client.chat.call_args[1]
+        assert "think" not in call_kwargs
+
+    def test_truncation_logs_one_shot_truncated(self, monkeypatch, caplog):
+        """chat() logs one_shot_truncated at WARNING when done_reason='length'."""
+        import ollama
+
+        monkeypatch.setattr(ollama, "Client", lambda host: unittest.mock.MagicMock())
+        import importlib
+        import utils.llm.ollama_client as mod
+
+        importlib.reload(mod)
+        client = mod.OllamaClient()
+        fake_resp = unittest.mock.MagicMock()
+        fake_resp.message.content = ""
+        fake_resp.message.thinking = "lots of thinking..."
+        fake_resp.done_reason = "length"
+        fake_resp.eval_count = 1024
+        client._client.chat.return_value = fake_resp
+
+        monkeypatch.setattr(logging.getLogger("pueo"), "propagate", True)
+        with caplog.at_level(logging.WARNING, logger="pueo.llm.ollama"):
+            asyncio.run(
+                client.chat(
+                    model="qwen3:8b",
+                    messages=[{"role": "user", "content": "hi"}],
+                    options={"temperature": 0.0, "num_predict": 1024},
+                    format={},
+                    think=False,
+                )
+            )
+
+        events = [r.msg for r in caplog.records]
+        assert "one_shot_truncated" in events
+        trunc = next(r for r in caplog.records if r.msg == "one_shot_truncated")
+        assert trunc.eval_count == 1024  # type: ignore[attr-defined]
+        assert trunc.num_predict == 1024  # type: ignore[attr-defined]
+
+
+class TestFakeLLMClientChat:
+    """FakeLLMClient.chat() records think in calls list."""
+
+    def test_think_false_recorded(self):
+        """FakeLLMClient records think=False when passed."""
+        from utils.llm.ollama_client import FakeLLMClient
+
+        client = FakeLLMClient('{"is_valid": true}')
+        asyncio.run(
+            client.chat(
+                model="qwen3:8b",
+                messages=[{"role": "user", "content": "hi"}],
+                options={},
+                format={},
+                think=False,
+            )
+        )
+        assert client.calls[0]["think"] is False
+
+    def test_think_none_recorded(self):
+        """FakeLLMClient records think=None when omitted (non-thinking model)."""
+        from utils.llm.ollama_client import FakeLLMClient
+
+        client = FakeLLMClient('{"is_valid": true}')
+        asyncio.run(
+            client.chat(
+                model="llama3:8b",
+                messages=[{"role": "user", "content": "hi"}],
+                options={},
+                format={},
+                think=None,
+            )
+        )
+        assert client.calls[0]["think"] is None
+
+
 class TestOllamaClientTokenCounts:
     """OllamaClient.chat_with_tools() exposes token counts in _ollama_timing."""
 

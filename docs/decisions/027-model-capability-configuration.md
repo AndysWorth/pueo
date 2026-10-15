@@ -54,6 +54,8 @@ class ModelCallOptions:
 
 **`num_predict`**: `1024` for one-shot triage/analysis calls (caps runaway generation in structured output calls); `None` (unlimited) for agent loops.
 
+**One-shot `think` rule**: one-shot calls (those using `one_shot_options()`) **always** pass `think=False` for thinking-capable models, regardless of `OLLAMA_THINK_MODE` or `DEBUG_LEVEL`. Thinking tokens consume the `num_predict=1024` budget before any content is written, producing `done_reason=length` and empty JSON. `one_shot_think(model)` returns `False` for thinking models, `None` (omit) for non-thinking models and openai_compat. This is enforced in `OllamaClient.chat()`, which now accepts a `think` parameter (previously only `chat_with_tools` had it).
+
 ### Dynamic model scoring
 
 `CANDIDATE_MODELS` is removed entirely. `recommend_model()` is replaced with:

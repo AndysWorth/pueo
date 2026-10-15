@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import types
+import unittest.mock
+
 import pytest
 
 from utils.llm.model_options import ModelCallOptions, _safe_ctx, derive_call_options
@@ -206,3 +209,74 @@ class TestDeriveNumPredict:
             seed=42,
         )
         assert opts.seed == 42
+
+
+# ---------------------------------------------------------------------------
+# one_shot_think
+# ---------------------------------------------------------------------------
+
+
+def _make_model_info(name: str, has_thinking: bool):
+    from utils.disk.hardware import OllamaModelInfo
+
+    return OllamaModelInfo(
+        name=name,
+        size_gb=4.0,
+        context_length=32768,
+        has_tools=True,
+        has_thinking=has_thinking,
+    )
+
+
+class TestOneShotThink:
+    def test_thinking_model_returns_false(self, monkeypatch):
+        """one_shot_think returns False for a thinking-capable model."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "ollama")
+        monkeypatch.setattr(_cfg, "OLLAMA_MODEL", "qwen3:8b")
+        import utils.disk.hardware as hw
+
+        monkeypatch.setattr(
+            hw, "list_ollama_models", lambda: [_make_model_info("qwen3:8b", True)]
+        )
+        from utils.llm.model_options import one_shot_think
+
+        assert one_shot_think("qwen3:8b") is False
+
+    def test_non_thinking_model_returns_none(self, monkeypatch):
+        """one_shot_think returns None (omit param) for a non-thinking model."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "ollama")
+        monkeypatch.setattr(_cfg, "OLLAMA_MODEL", "llama3:8b")
+        import utils.disk.hardware as hw
+
+        monkeypatch.setattr(
+            hw, "list_ollama_models", lambda: [_make_model_info("llama3:8b", False)]
+        )
+        from utils.llm.model_options import one_shot_think
+
+        assert one_shot_think("llama3:8b") is None
+
+    def test_openai_compat_returns_none(self, monkeypatch):
+        """one_shot_think returns None for openai_compat — think is not applicable."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "openai_compat")
+        from utils.llm.model_options import one_shot_think
+
+        assert one_shot_think("any-model") is None
+
+    def test_unknown_model_returns_none(self, monkeypatch):
+        """one_shot_think returns None when the model isn't in the Ollama list."""
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "LLM_PROVIDER", "ollama")
+        monkeypatch.setattr(_cfg, "OLLAMA_MODEL", "unknown:latest")
+        import utils.disk.hardware as hw
+
+        monkeypatch.setattr(hw, "list_ollama_models", lambda: [])
+        from utils.llm.model_options import one_shot_think
+
+        assert one_shot_think("unknown:latest") is None

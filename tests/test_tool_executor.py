@@ -37,7 +37,12 @@ class _CapturingFakeLLMClient:
         self.calls: list[list[dict]] = []
 
     async def chat(
-        self, model: str, messages: list[dict], options: dict, format: dict
+        self,
+        model: str,
+        messages: list[dict],
+        options: dict,
+        format: dict,
+        think=None,
     ) -> dict:
         self.calls.append(list(messages))
         return {"message": {"content": self._response}}

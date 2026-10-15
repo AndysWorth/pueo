@@ -22,6 +22,7 @@ class LLMClientProtocol(Protocol):
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> Any: ...
 
     async def chat_with_tools(

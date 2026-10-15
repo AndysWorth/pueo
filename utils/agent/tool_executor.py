@@ -2800,7 +2800,7 @@ class ToolExecutor:
         try:
             import config as _cfg
             import time as _time_te
-            from utils.llm.model_options import one_shot_options
+            from utils.llm.model_options import one_shot_options, one_shot_think
 
             _t0_te = _time_te.monotonic()
             response = await self._llm_client.chat(
@@ -2808,6 +2808,7 @@ class ToolExecutor:
                 messages=[{"role": "user", "content": prompt}],
                 options=one_shot_options(_cfg.OLLAMA_MODEL),
                 format=FixEnrichment.model_json_schema(),
+                think=one_shot_think(_cfg.OLLAMA_MODEL),
             )
             content = response.get("message", {}).get("content", "")
             _dur_te = (_time_te.monotonic() - _t0_te) * 1000

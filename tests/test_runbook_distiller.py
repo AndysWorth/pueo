@@ -439,7 +439,7 @@ class _FakeLLMWithRunbook:
             pitfalls=["apply_filter=True causes a 400 error"],
         )
 
-    async def chat(self, model, messages, options, format):  # noqa: A002
+    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
         return {"message": {"content": self._runbook.model_dump_json()}}
 
     async def chat_with_tools(self, *a, **kw):  # pragma: no cover
@@ -642,11 +642,11 @@ class TestDistillAndPersist:
             def __init__(self):
                 self._rb = _FakeLLMWithRunbook()
 
-            async def chat(self, model, messages, options, format):  # noqa: A002
+            async def chat(self, model, messages, options, format, think=None):  # noqa: A002
                 for m in messages:
                     if m.get("role") == "user":
                         captured_prompts.append(m["content"])
-                return await self._rb.chat(model, messages, options, format)
+                return await self._rb.chat(model, messages, options, format, think=think)
 
             async def chat_with_tools(self, *a, **kw):  # pragma: no cover
                 raise NotImplementedError

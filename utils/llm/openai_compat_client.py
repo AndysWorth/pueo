@@ -47,6 +47,7 @@ class OpenAICompatClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> Any:
         """Structured one-shot call; returns {"message": {"content": "<json>"}}."""
         t0 = time.monotonic()
@@ -269,6 +270,7 @@ class FakeOpenAICompatClient:
         messages: list[dict],
         options: dict,
         format: dict,
+        think: Union[bool, Literal["low", "medium", "high"], None] = None,
     ) -> dict:
         self.calls.append({"model": model, "messages": messages, "type": "chat"})
         return {"message": {"content": "{}"}}
