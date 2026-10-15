@@ -512,6 +512,10 @@ def _migrate_v37(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE runbook_usage ADD COLUMN verification TEXT")
 
 
+def _migrate_v38(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE backup_registry ADD COLUMN backup_type TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -550,6 +554,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (35, _migrate_v35),
     (36, _migrate_v36),
     (37, _migrate_v37),
+    (38, _migrate_v38),
 ]
 
 

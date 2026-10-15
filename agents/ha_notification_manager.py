@@ -96,6 +96,34 @@ async def _get_default_gateway() -> Optional[str]:
     return None
 
 
+def _get_local_interface_addresses() -> set:
+    """Return all IPv4 addresses assigned to local network interfaces (sync, for to_thread)."""
+    addrs: set = set()
+    try:
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            for addr in adapter.ips:
+                if isinstance(addr.ip, str):
+                    addrs.add(addr.ip)
+    except ImportError:
+        import subprocess  # nosec B404
+
+        try:
+            out = subprocess.check_output(  # nosec B603 B607
+                ["ifconfig"], text=True, stderr=subprocess.DEVNULL
+            )
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("inet ") and not line.startswith("inet6"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        addrs.add(parts[1])
+        except Exception:  # nosec B110
+            pass
+    return addrs
+
+
 async def _get_arp_info(ip: str) -> dict:
     """Return MAC address and vendor info from the local ARP table."""
     result: dict = {
@@ -179,6 +207,7 @@ async def enrich_http_login(
         "netalertx_name": None,
         "ha_device_name": None,
         "is_known_device": False,
+        "is_pueo_host": False,
         "mac_address": None,
         "mac_is_randomized": None,
         "mac_vendor": None,
@@ -189,6 +218,14 @@ async def enrich_http_login(
         hostname, _, _ = await asyncio.to_thread(socket.gethostbyaddr, ip)
         context["hostname"] = hostname
         context["is_known_device"] = True
+    except Exception:  # nosec B110
+        pass
+
+    try:
+        local_addrs = await asyncio.to_thread(_get_local_interface_addresses)
+        if ip in local_addrs:
+            context["is_pueo_host"] = True
+            context["is_known_device"] = True
     except Exception:  # nosec B110
         pass
 

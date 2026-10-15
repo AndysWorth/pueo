@@ -57,7 +57,7 @@ class TestTriggerBackupChain:
                 "CREATE TABLE backup_registry "
                 "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
                 "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
-                "deleted_from_ha_at REAL)"
+                "deleted_from_ha_at REAL, backup_type TEXT)"
             )
         return db
 
@@ -198,7 +198,7 @@ class TestOffloadPendingBackups:
                 "CREATE TABLE backup_registry "
                 "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
                 "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
-                "deleted_from_ha_at REAL)"
+                "deleted_from_ha_at REAL, backup_type TEXT)"
             )
             conn.executemany(
                 "INSERT INTO backup_registry"
@@ -315,7 +315,7 @@ class TestPurgeLocalBackupsLocation:
                 "CREATE TABLE backup_registry "
                 "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
                 "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
-                "deleted_from_ha_at REAL)"
+                "deleted_from_ha_at REAL, backup_type TEXT)"
             )
         return db
 
@@ -429,7 +429,7 @@ class TestEnforceHaRetentionForceCritical:
                 "CREATE TABLE backup_registry "
                 "(id INTEGER PRIMARY KEY, timestamp INTEGER, backup_slug TEXT, "
                 "status TEXT, size_bytes INTEGER, location TEXT, offloaded_at REAL, "
-                "deleted_from_ha_at REAL)"
+                "deleted_from_ha_at REAL, backup_type TEXT)"
             )
         return db
 

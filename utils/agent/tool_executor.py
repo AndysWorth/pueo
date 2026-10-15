@@ -5101,6 +5101,20 @@ class ToolExecutor:
             output=f"Update approval card sent for {update.component} {update.latest_version}.",
         )
 
+    async def _verify_resolution_issue_cleared(self, uuid: str) -> bool:
+        """Return True when the resolution issue UUID is no longer present in ha resolution info."""
+        if self._ha_ssh is None:
+            return True
+        try:
+            _, stdout, _ = await self._ha_ssh.run(
+                "ha resolution info --raw-json", check=False
+            )
+            data = json.loads(stdout.strip())
+            issues = data.get("data", data).get("issues") or []
+            return not any(str(issue.get("uuid", "")) == uuid for issue in issues)
+        except Exception:  # nosec B110
+            return True
+
     async def _finish_host_health(
         self,
         summary: str,
@@ -5108,7 +5122,12 @@ class ToolExecutor:
         outcome: str,
         recommended_actions: list,
     ) -> ToolResult:
-        """Send a host-health investigation card and mark it as sent."""
+        """Send a host-health investigation card and mark it as sent.
+
+        When outcome='resolved' and the finding is a resolution_issue, re-checks
+        ha resolution info to confirm the issue is actually gone before accepting
+        the verdict. A still-present issue is downgraded to 'needs_action'.
+        """
         import sqlite3 as _sqlite3
 
         import config as _cfg
@@ -5122,6 +5141,27 @@ class ToolExecutor:
                 success=True,
                 output=summary or "Host health investigation complete.",
             )
+
+        if outcome == "resolved" and finding.kind == "resolution_issue":
+            uuid = finding.evidence.get("uuid", "")
+            if uuid:
+                still_present = not await self._verify_resolution_issue_cleared(uuid)
+                if still_present:
+                    outcome = "needs_action"
+                    summary = (
+                        f"[Re-check: issue {uuid[:8]}… still present in ha resolution info] "
+                        + summary
+                    )
+                    if not recommended_actions:
+                        recommended_actions = [
+                            "The resolution issue was not cleared. Check ha resolution info"
+                            " manually and verify the applied action succeeded."
+                        ]
+                    log.warning(
+                        "host_health_resolved_claim_overridden",
+                        uuid=uuid,
+                        finding_key=finding.key,
+                    )
 
         card_key = f"host_health:{finding.key}"
         _db = self._db_path

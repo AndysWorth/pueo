@@ -883,7 +883,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 37
+        assert version == 38
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -893,7 +893,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 37
+        assert rows[0][0] == 38
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -922,7 +922,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 37
+        assert version == 38
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1305,6 +1305,26 @@ class TestBackupInventory:
         assert result[0]["size_bytes"] == 0
         assert result[0]["name"] == ""
         assert result[0]["ha_created_at"] is None
+
+    def test_parse_backup_list_captures_backup_type(self):
+        from agents import ha_agent_advanced
+
+        output = (
+            '{"result":"ok","data":{"backups":['
+            '{"slug":"full-slug","size_bytes":1000,"type":"full"},'
+            '{"slug":"partial-slug","size_bytes":500,"type":"partial"}'
+            "]}}"
+        )
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result[0]["backup_type"] == "full"
+        assert result[1]["backup_type"] == "partial"
+
+    def test_parse_backup_list_backup_type_defaults_empty(self):
+        from agents import ha_agent_advanced
+
+        output = '{"result":"ok","data":{"backups":[{"slug":"xyz","size_bytes":0}]}}'
+        result = ha_agent_advanced._parse_backup_list(output)
+        assert result[0]["backup_type"] == ""
 
     def test_reconcile_inserts_ha_only_slug(self, db_path):
         from agents import ha_agent_advanced
@@ -1860,7 +1880,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 37
+        assert version == 38
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1870,7 +1890,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 37
+        assert rows[0][0] == 38
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1898,7 +1918,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 37
+        assert version == 38
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -8298,6 +8318,8 @@ class TestEnrichHttpLogin:
         gethostbyaddr runs in an asyncio.to_thread executor — the thread cannot be
         cancelled, so asyncio.run() blocks until the OS resolver times out (30 s+
         on CI).  ARP, gateway, and router-SSH lookups have similar problems.
+        Individual tests that need to control _get_local_interface_addresses monkeypatch
+        it themselves; this fixture supplies an empty set as the safe default.
         """
         import socket as _socket
         import agents.ha_notification_manager as notif_mod
@@ -8305,6 +8327,7 @@ class TestEnrichHttpLogin:
         monkeypatch.setattr(
             _socket, "gethostbyaddr", lambda ip: (_ for _ in ()).throw(_socket.herror())
         )
+        monkeypatch.setattr(notif_mod, "_get_local_interface_addresses", lambda: set())
 
         # Subprocess-level patch so _get_arp_info / _get_default_gateway return fast.
         # Individual ARP tests override this with their own monkeypatch, which takes
@@ -8521,6 +8544,41 @@ class TestEnrichHttpLogin:
         )
         result = asyncio.run(_try_router_dhcp_hostname("10.0.0.1", "10.0.0.99"))
         assert result is None
+
+    def test_is_pueo_host_true_when_ip_matches_local(self, monkeypatch):
+        """is_pueo_host is set when the source IP matches a local interface address."""
+        import agents.ha_notification_manager as notif_mod
+        from agents.ha_notification_manager import enrich_http_login
+
+        monkeypatch.setattr(
+            notif_mod,
+            "_get_local_interface_addresses",
+            lambda: {"192.168.1.10", "127.0.0.1"},
+        )
+        ctx = asyncio.run(enrich_http_login("192.168.1.10"))
+        assert ctx["is_pueo_host"] is True
+        assert ctx["is_known_device"] is True
+
+    def test_is_pueo_host_false_when_ip_not_local(self, monkeypatch):
+        """is_pueo_host is False when the IP does not match any local interface."""
+        import agents.ha_notification_manager as notif_mod
+        from agents.ha_notification_manager import enrich_http_login
+
+        monkeypatch.setattr(
+            notif_mod,
+            "_get_local_interface_addresses",
+            lambda: {"192.168.1.10", "127.0.0.1"},
+        )
+        ctx = asyncio.run(enrich_http_login("10.0.0.99"))
+        assert ctx["is_pueo_host"] is False
+
+    def test_is_pueo_host_false_by_default(self):
+        """is_pueo_host defaults to False when interface lookup raises."""
+        from agents.ha_notification_manager import enrich_http_login
+
+        ctx = asyncio.run(enrich_http_login("192.168.1.5"))
+        assert "is_pueo_host" in ctx
+        assert ctx["is_pueo_host"] is False
 
 
 # ── ha_notification_manager — _run_notification_investigation ────────────────────
@@ -14610,6 +14668,77 @@ class TestEnforceHaRetentionReturnsCount:
         ssh = FakeSSHClient(command_results={"ha backups remove": (0, "", "")})
         result = asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=ssh))
         assert result == 1
+
+    def test_newest_full_backup_not_deleted(self, db_path, monkeypatch):
+        """The newest full backup is protected even when the retention floor would allow deletion."""
+        from agents import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        with sqlite3.connect(db_path) as conn:
+            # slug-partial is the newest overall (timestamp 3000)
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location, backup_type)"
+                " VALUES (?, ?, ?, ?)",
+                ("slug-partial", 3000, "both", "partial"),
+            )
+            # slug-full is an older full backup (timestamp 2000) — must be protected
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location, backup_type)"
+                " VALUES (?, ?, ?, ?)",
+                ("slug-full", 2000, "both", "full"),
+            )
+            # slug-old is the oldest partial (timestamp 1000) — should be deleted
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location, backup_type)"
+                " VALUES (?, ?, ?, ?)",
+                ("slug-old", 1000, "both", "partial"),
+            )
+
+        deleted: list = []
+
+        class _TrackingSSH(FakeSSHClient):
+            async def run(self, cmd, check=False):
+                if "backups remove" in cmd:
+                    deleted.append(cmd.split()[-1])
+                    return (0, "", "")
+                return await super().run(cmd, check=check)
+
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=_TrackingSSH()))
+
+        assert "slug-full" not in deleted, "newest full backup must not be deleted"
+        assert "slug-partial" not in deleted, "most-recent backup must not be deleted"
+        assert "slug-old" in deleted, "oldest partial should have been deleted"
+
+    def test_full_backup_protection_when_already_newest(self, db_path, monkeypatch):
+        """When the full backup is also the newest, it is already protected and result is unchanged."""
+        from agents import ha_agent_advanced
+
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_RETAIN_ON_HA", 1)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location, backup_type)"
+                " VALUES (?, ?, ?, ?)",
+                ("slug-full-newest", 2000, "both", "full"),
+            )
+            conn.execute(
+                "INSERT INTO backup_registry (backup_slug, timestamp, location, backup_type)"
+                " VALUES (?, ?, ?, ?)",
+                ("slug-old-partial", 1000, "both", "partial"),
+            )
+
+        deleted: list = []
+
+        class _TrackingSSH(FakeSSHClient):
+            async def run(self, cmd, check=False):
+                if "backups remove" in cmd:
+                    deleted.append(cmd.split()[-1])
+                    return (0, "", "")
+                return await super().run(cmd, check=check)
+
+        asyncio.run(ha_agent_advanced.enforce_ha_retention(ssh_client=_TrackingSSH()))
+
+        assert "slug-full-newest" not in deleted
+        assert "slug-old-partial" in deleted
 
 
 _MEMINFO_SAMPLE = "MemAvailable: 524288 kB\nMemTotal: 1048576 kB\n"

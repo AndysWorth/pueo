@@ -1094,6 +1094,128 @@ class TestFinishHostHealth:
         assert result.success is True
         assert len(notifier.sent) == 0
 
+    def test_resolved_resolution_issue_downgraded_when_still_present(self, tmp_path):
+        """outcome='resolved' on a resolution_issue is overridden to 'needs_action'
+        when ha resolution info still reports the issue UUID."""
+        import asyncio
+        import json
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.disk.host_health import HostHealthFinding
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        uuid = "aaaa-bbbb-cccc-dddd"
+        res_json = json.dumps(
+            {"data": {"issues": [{"uuid": uuid, "type": "no_current_backup"}]}}
+        )
+        ssh = FakeSSHClient(command_results={"ha resolution info": (0, res_json, "")})
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=db,
+        )
+        finding = HostHealthFinding(
+            key=f"resolution_issue:{uuid}",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"uuid": uuid, "type": "no_current_backup"},
+        )
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Issue dismissed.",
+                root_cause="no full backup",
+                outcome="resolved",
+                recommended_actions=[],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert (
+            payload["outcome"] == "needs_action"
+        ), "still-present issue must not be resolved"
+        assert "[Re-check:" in notifier.sent[0]["body"]
+
+    def test_resolved_resolution_issue_accepted_when_cleared(self, tmp_path):
+        """outcome='resolved' is kept when ha resolution info confirms the issue is gone."""
+        import asyncio
+        import json
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.disk.host_health import HostHealthFinding
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        uuid = "aaaa-bbbb-cccc-dddd"
+        # No issues in the response — issue has been cleared
+        res_json = json.dumps({"data": {"issues": []}})
+        ssh = FakeSSHClient(command_results={"ha resolution info": (0, res_json, "")})
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        executor = ToolExecutor(
+            ha_ssh_client=ssh,
+            gate=FakeAutonomyGate(),
+            notifier=notifier,
+            db_path=db,
+        )
+        finding = HostHealthFinding(
+            key=f"resolution_issue:{uuid}",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"uuid": uuid, "type": "no_current_backup"},
+        )
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Issue resolved.",
+                root_cause="no full backup",
+                outcome="resolved",
+                recommended_actions=[],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["outcome"] == "resolved"
+
+    def test_resolved_non_resolution_issue_not_rechecked(self, tmp_path):
+        """Non-resolution-issue findings skip the re-check and keep outcome='resolved'."""
+        import asyncio
+
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        db = _make_hitl_db(tmp_path)
+        from utils.disk.host_health import HostHealthFinding
+
+        executor = self._make_executor(db, notifier=notifier)
+        finding = HostHealthFinding(
+            key="disk_wear",
+            kind="disk_wear",
+            severity="WARN",
+            evidence={"disk_life_used_pct": 85.0},
+        )
+        executor.set_host_health_finding(finding)
+
+        asyncio.run(
+            executor._finish_host_health(
+                summary="Disk wear resolved.",
+                root_cause="user replaced disk",
+                outcome="resolved",
+                recommended_actions=[],
+            )
+        )
+
+        payload = notifier.sent[0]["payload"]
+        assert payload["outcome"] == "resolved"
+
 
 # ---------------------------------------------------------------------------
 # run_host_health_investigation
