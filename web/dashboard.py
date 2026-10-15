@@ -56,6 +56,33 @@ from utils.hitl.card_types import (
 log = get_logger("dashboard")
 
 app = FastAPI(title="Pueo Dashboard")
+
+
+@app.middleware("http")
+async def _private_network_access(request: Request, call_next):
+    # Chrome's Private Network Access (PNA) preflight for iframe navigation from
+    # HTTPS/public origins (e.g. Nabu Casa).  Respond to the OPTIONS probe so
+    # the sidebar panel can load regardless of how HA is accessed.
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("access-control-request-private-network") == "true"
+    ):
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": request.headers.get(
+                    "access-control-request-headers", "*"
+                ),
+                "Access-Control-Allow-Private-Network": "true",
+            },
+        )
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).parent / "static")),

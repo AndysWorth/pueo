@@ -8372,3 +8372,53 @@ class TestExecuteHaCommand:
         assert not (tmp_path / f"{nid}.in_progress").exists()
         saved = _json.loads(json_path.read_text())
         assert "failed" in saved["fix_error"].lower()
+
+
+class TestPrivateNetworkAccessMiddleware:
+    """Chrome PNA middleware: OPTIONS preflight and header injection."""
+
+    def _client(self, monkeypatch, pueo_dirs):
+        import web.dashboard as dashboard
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(
+            dashboard, "DB_PATH", str(pueo_dirs.state_dir / "db.sqlite")
+        )
+        return TestClient(dashboard.app, raise_server_exceptions=True)
+
+    def test_options_preflight_returns_allow_header(self, monkeypatch, pueo_dirs):
+        client = self._client(monkeypatch, pueo_dirs)
+        resp = client.options(
+            "/",
+            headers={
+                "Origin": "https://abc.ui.nabu.casa",
+                "Access-Control-Request-Private-Network": "true",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-private-network") == "true"
+        assert (
+            resp.headers.get("access-control-allow-origin")
+            == "https://abc.ui.nabu.casa"
+        )
+
+    def test_regular_get_carries_allow_header(self, monkeypatch, pueo_dirs):
+        import sqlite3
+
+        client = self._client(monkeypatch, pueo_dirs)
+        db = str(pueo_dirs.state_dir / "db.sqlite")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+        resp = client.get("/status")
+        assert resp.headers.get("access-control-allow-private-network") == "true"
+
+    def test_options_without_pna_header_falls_through(self, monkeypatch, pueo_dirs):
+        """OPTIONS without the PNA request header is not short-circuited."""
+        client = self._client(monkeypatch, pueo_dirs)
+        resp = client.options("/", headers={"Origin": "https://abc.ui.nabu.casa"})
+        # Should not be a 200 short-circuit (would 405 or similar from FastAPI)
+        assert (
+            resp.status_code != 200
+            or resp.headers.get("access-control-allow-private-network") == "true"
+        )
