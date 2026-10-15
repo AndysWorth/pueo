@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "host_health") or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create") or (ct == "host_health" and not r.payload.get("informational")) or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -510,11 +510,21 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       {% endif %}
       {% else %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
+        {% if ct == "host_health" and r.payload.get("informational") %}
+        <strong style="color:#222;">Acknowledge</strong> — Mark as Known Issue; Pueo will re-investigate if the underlying data changes
+        {% else %}
         <strong style="color:#222;">Acknowledge</strong> — Mark as seen and remove from queue; full details remain in the Timeline
+        {% endif %}
       </p>
+      {% if ct == "host_health" and r.payload.get("informational") %}
+      <form method="POST" action="/acknowledge/{{ r.notification_id }}">
+        <button class="btn btn-approve" type="submit">Acknowledge</button>
+      </form>
+      {% else %}
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>
+      {% endif %}
       {% endif %}
       {% endif %}
     </div>

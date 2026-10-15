@@ -3,7 +3,7 @@
 import hashlib
 import sqlite3
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 def stable_nid(suppression_key: str) -> str:
@@ -205,6 +205,16 @@ def mark_card_auto_applied(
         (card_key, card_type, description, now, now, now),
     )
     conn.commit()
+
+
+def get_known_issue_note(conn: sqlite3.Connection, card_key: str) -> Optional[str]:
+    """Return the stored known_issue_note for an active Known Issue, or None."""
+    row = conn.execute(
+        "SELECT known_issue_note FROM hitl_suppression"
+        " WHERE card_key = ? AND known_issue = 1 AND resolved_at IS NULL",
+        (card_key,),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def mark_card_resolved(conn: sqlite3.Connection, card_key: str) -> None:

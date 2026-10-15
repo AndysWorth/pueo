@@ -92,10 +92,32 @@ def _resolution_json(issues: list | None = None) -> str:
     )
 
 
+def _rpi_firmware_json(
+    current: str = "2021-12-02",
+    latest: str = "2021-12-02",
+    update_available: bool = False,
+    update_blocked: bool = True,
+    blocked_reason: str = "eeprom_update_unavailable",
+) -> str:
+    return json.dumps(
+        {
+            "result": "ok",
+            "data": {
+                "current": current,
+                "latest": latest,
+                "update_available": update_available,
+                "update_blocked": update_blocked,
+                "blocked_reason": blocked_reason,
+            },
+        }
+    )
+
+
 def _batch_ssh(
     host_raw: str = "",
     res_raw: str = "",
     mem_raw: str = "",
+    fw_raw: str = "",
     glued: bool = False,
 ):
     from utils.ha.ssh_client import FakeSSHClient
@@ -104,6 +126,7 @@ def _batch_ssh(
         "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
         "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
         "echo; echo '@@mem'; cat /proc/meminfo",
+        "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
     ]
     batch_cmd = "; ".join(parts)
     if glued:
@@ -124,6 +147,8 @@ def _batch_ssh(
         output += f"@@res\n{res_raw}\n"
     if mem_raw:
         output += f"@@mem\n{mem_raw}\n"
+    if fw_raw:
+        output += f"@@fw\n{fw_raw}\n"
     return FakeSSHClient(command_results={batch_cmd: (0, output, "")})
 
 
@@ -279,10 +304,15 @@ class TestFetchHostHealth:
         host_raw: str = "",
         res_raw: str = "",
         mem_raw: str = "",
+        fw_raw: str = "",
         glued: bool = False,
     ):
         return _batch_ssh(
-            host_raw=host_raw, res_raw=res_raw, mem_raw=mem_raw, glued=glued
+            host_raw=host_raw,
+            res_raw=res_raw,
+            mem_raw=mem_raw,
+            fw_raw=fw_raw,
+            glued=glued,
         )
 
     def test_full_fetch(self):
@@ -365,6 +395,7 @@ class TestFetchHostHealth:
             "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
             "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
             "echo; echo '@@mem'; cat /proc/meminfo",
+            "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
         ]
         batch_cmd = "; ".join(parts)
         output = (
@@ -1387,3 +1418,467 @@ class TestRunHostHealthInvestigation:
         )
 
         assert 2 in captured_levels
+
+
+# ---------------------------------------------------------------------------
+# _parse_rpi_firmware_json
+# ---------------------------------------------------------------------------
+
+
+class TestParseRpiFirmwareJson:
+    def test_valid_blocked(self):
+        from utils.disk.host_health import _parse_rpi_firmware_json
+
+        raw = _rpi_firmware_json()
+        result = _parse_rpi_firmware_json(raw)
+        assert result is not None
+        assert result["current"] == "2021-12-02"
+        assert result["latest"] == "2021-12-02"
+        assert result["update_blocked"] is True
+        assert result["blocked_reason"] == "eeprom_update_unavailable"
+
+    def test_invalid_json_returns_none(self):
+        from utils.disk.host_health import _parse_rpi_firmware_json
+
+        assert _parse_rpi_firmware_json("not json") is None
+
+    def test_empty_returns_none(self):
+        from utils.disk.host_health import _parse_rpi_firmware_json
+
+        assert _parse_rpi_firmware_json("") is None
+
+    def test_no_data_wrapper(self):
+        from utils.disk.host_health import _parse_rpi_firmware_json
+
+        raw = json.dumps(
+            {
+                "current": "2023-01-01",
+                "latest": "2024-06-01",
+                "update_available": True,
+                "update_blocked": False,
+                "blocked_reason": "",
+            }
+        )
+        result = _parse_rpi_firmware_json(raw)
+        assert result is not None
+        assert result["current"] == "2023-01-01"
+        assert result["update_blocked"] is False
+
+
+# ---------------------------------------------------------------------------
+# fetch_host_health — RPi firmware section
+# ---------------------------------------------------------------------------
+
+
+class TestFetchHostHealthFirmware:
+    def test_rpi_firmware_parsed_when_present(self):
+        from utils.disk.host_health import fetch_host_health
+
+        ssh = _batch_ssh(
+            host_raw=_host_info_json(),
+            res_raw=_resolution_json(),
+            mem_raw=_meminfo(),
+            fw_raw=_rpi_firmware_json(
+                current="2021-12-02",
+                latest="2021-12-02",
+                update_blocked=True,
+                blocked_reason="eeprom_update_unavailable",
+            ),
+        )
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert hh.rpi_firmware is not None
+        assert hh.rpi_firmware["update_blocked"] is True
+        assert hh.rpi_firmware["blocked_reason"] == "eeprom_update_unavailable"
+
+    def test_rpi_firmware_none_when_absent(self):
+        from utils.disk.host_health import fetch_host_health
+
+        ssh = _batch_ssh(
+            host_raw=_host_info_json(),
+            res_raw=_resolution_json(),
+            mem_raw=_meminfo(),
+        )
+        hh = asyncio.run(fetch_host_health(ssh))
+        assert hh.rpi_firmware is None
+
+
+# ---------------------------------------------------------------------------
+# evaluate_host_health — informational / firmware enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateHostHealthFirmwareEnrichment:
+    def _eval(self, health, **kwargs):
+        from utils.disk.host_health import evaluate_host_health
+
+        defaults = dict(
+            status=_make_status(),
+            last_boot_ts=None,
+            pueo_reboot_recent=False,
+            known_repair_uuids=set(),
+            swap_warn_pct=80.0,
+            disk_life_warn_pct=70.0,
+            mem_warn_mb=256.0,
+        )
+        defaults.update(kwargs)
+        return evaluate_host_health(health=health, **defaults)
+
+    def test_rpi_firmware_finding_is_informational(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        uuid = "abc123def456abc123def456abc12345"
+        h = _make_health(
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "rpi_firmware_update_blocked"}]
+            )
+        )
+        h.rpi_firmware = {
+            "current": "2021-12-02",
+            "latest": "2021-12-02",
+            "update_available": False,
+            "update_blocked": True,
+            "blocked_reason": "eeprom_update_unavailable",
+        }
+        findings = self._eval(h)
+        rf = [f for f in findings if f.kind == "resolution_issue"]
+        assert len(rf) == 1
+        assert rf[0].informational is True
+        assert rf[0].evidence["blocked_reason"] == "eeprom_update_unavailable"
+        assert rf[0].evidence["current"] == "2021-12-02"
+
+    def test_other_resolution_issue_not_informational(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        uuid = "abc123def456abc123def456abc12345"
+        h = _make_health(
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "reboot_required"}]
+            )
+        )
+        findings = self._eval(h)
+        rf = [f for f in findings if f.kind == "resolution_issue"]
+        assert len(rf) == 1
+        assert rf[0].informational is False
+
+    def test_rpi_firmware_no_fw_data_not_informational(self):
+        from utils.disk.host_health import ResolutionInfo
+
+        uuid = "abc123def456abc123def456abc12345"
+        h = _make_health(
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "rpi_firmware_update_blocked"}]
+            )
+        )
+        # No rpi_firmware data fetched
+        findings = self._eval(h)
+        rf = [f for f in findings if f.kind == "resolution_issue"]
+        assert len(rf) == 1
+        assert rf[0].informational is False
+
+
+# ---------------------------------------------------------------------------
+# compute_finding_fingerprint
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFindingFingerprint:
+    def test_informational_returns_string(self):
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            compute_finding_fingerprint,
+        )
+
+        f = HostHealthFinding(
+            key="resolution_issue:abc",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"type": "rpi_firmware_update_blocked", "current": "2021-12-02"},
+            informational=True,
+        )
+        fp = compute_finding_fingerprint(f)
+        assert fp is not None
+        assert len(fp) == 16
+        assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_non_informational_returns_none(self):
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            compute_finding_fingerprint,
+        )
+
+        f = HostHealthFinding(
+            key="swap_pressure",
+            kind="swap_pressure",
+            severity="WARN",
+            evidence={"swap_pct": 85.0},
+            informational=False,
+        )
+        assert compute_finding_fingerprint(f) is None
+
+    def test_fingerprint_stable_for_same_evidence(self):
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            compute_finding_fingerprint,
+        )
+
+        evidence = {"type": "rpi_firmware_update_blocked", "current": "2021-12-02"}
+        f1 = HostHealthFinding(
+            key="x",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence=evidence,
+            informational=True,
+        )
+        f2 = HostHealthFinding(
+            key="x",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence=evidence,
+            informational=True,
+        )
+        assert compute_finding_fingerprint(f1) == compute_finding_fingerprint(f2)
+
+    def test_fingerprint_changes_when_evidence_changes(self):
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            compute_finding_fingerprint,
+        )
+
+        f1 = HostHealthFinding(
+            key="x",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"current": "2021-12-02"},
+            informational=True,
+        )
+        f2 = HostHealthFinding(
+            key="x",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"current": "2024-06-01"},
+            informational=True,
+        )
+        assert compute_finding_fingerprint(f1) != compute_finding_fingerprint(f2)
+
+
+# ---------------------------------------------------------------------------
+# get_known_issue_note
+# ---------------------------------------------------------------------------
+
+
+class TestGetKnownIssueNote:
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE hitl_suppression"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+                " description TEXT NOT NULL DEFAULT '',"
+                " first_sent_at REAL NOT NULL DEFAULT 0,"
+                " last_sent_at REAL NOT NULL DEFAULT 0,"
+                " send_count INTEGER NOT NULL DEFAULT 1,"
+                " last_action TEXT, last_action_at REAL,"
+                " rejection_count INTEGER NOT NULL DEFAULT 0,"
+                " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+                " known_issue_note TEXT, resolved_at REAL)"
+            )
+        return db
+
+    def test_returns_none_when_no_row(self, tmp_path):
+        import sqlite3
+
+        from utils.hitl.hitl_tracker import get_known_issue_note
+
+        db = self._make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            assert get_known_issue_note(conn, "host_health:x") is None
+
+    def test_returns_note_for_active_known_issue(self, tmp_path):
+        import sqlite3
+        import time
+
+        from utils.hitl.hitl_tracker import get_known_issue_note, mark_card_acknowledged
+
+        db = self._make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            mark_card_acknowledged(conn, "host_health:x", note="deadbeef12345678")
+        with sqlite3.connect(db) as conn:
+            result = get_known_issue_note(conn, "host_health:x")
+        assert result == "deadbeef12345678"
+
+    def test_returns_none_after_resolved(self, tmp_path):
+        import sqlite3
+
+        from utils.hitl.hitl_tracker import (
+            get_known_issue_note,
+            mark_card_acknowledged,
+            mark_card_resolved,
+        )
+
+        db = self._make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            mark_card_acknowledged(conn, "host_health:x", note="deadbeef12345678")
+            mark_card_resolved(conn, "host_health:x")
+        with sqlite3.connect(db) as conn:
+            assert get_known_issue_note(conn, "host_health:x") is None
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint-based re-investigation in _check_host_health
+# ---------------------------------------------------------------------------
+
+
+class TestCheckHostHealthFingerprintReopen:
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        db = str(tmp_path / "state.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_prefs (key TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS timeline_events"
+                " (id INTEGER PRIMARY KEY, timestamp REAL, event_type TEXT,"
+                " event_category TEXT, message TEXT, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ha_repair_history"
+                " (issue_key TEXT PRIMARY KEY, first_seen_at REAL,"
+                " hitl_sent_at REAL, resolved_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS hitl_suppression"
+                " (card_key TEXT PRIMARY KEY, card_type TEXT NOT NULL DEFAULT '',"
+                " description TEXT NOT NULL DEFAULT '',"
+                " first_sent_at REAL NOT NULL DEFAULT 0,"
+                " last_sent_at REAL NOT NULL DEFAULT 0,"
+                " send_count INTEGER NOT NULL DEFAULT 1,"
+                " last_action TEXT, last_action_at REAL,"
+                " rejection_count INTEGER NOT NULL DEFAULT 0,"
+                " next_allowed_at REAL, known_issue INTEGER NOT NULL DEFAULT 0,"
+                " known_issue_note TEXT, resolved_at REAL)"
+            )
+        return db
+
+    def test_same_fingerprint_stays_suppressed(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import config as _cfg
+        from utils.disk.host_health import (
+            HostHealthFinding,
+            compute_finding_fingerprint,
+        )
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.hitl_tracker import mark_card_acknowledged, should_send_card
+        from utils.hitl.notify import FakeNotifier
+
+        db = self._make_db(tmp_path)
+        monkeypatch.setattr(_cfg, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(_cfg, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(_cfg, "HOST_DISK_LIFE_WARN_PCT", 70.0)
+
+        finding = HostHealthFinding(
+            key="resolution_issue:abc123",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence={"type": "rpi_firmware_update_blocked", "current": "2021-12-02"},
+            informational=True,
+        )
+        fp = compute_finding_fingerprint(finding)
+        card_key = f"host_health:{finding.key}"
+
+        # Acknowledge the card with the current fingerprint
+        with sqlite3.connect(db) as conn:
+            mark_card_acknowledged(conn, card_key, note=fp)
+
+        # Still suppressed when fingerprint matches
+        with sqlite3.connect(db) as conn:
+            assert not should_send_card(conn, card_key)
+
+    def test_changed_fingerprint_clears_known_issue(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+
+        import config as _cfg
+        from utils.disk.host_health import (
+            HostHealth,
+            HostHealthFinding,
+            ResolutionInfo,
+            compute_finding_fingerprint,
+            update_host_health,
+        )
+        from utils.disk.resource import ResourcePoller
+        from utils.hitl.hitl_tracker import mark_card_acknowledged, should_send_card
+        from utils.hitl.notify import FakeNotifier
+
+        db = self._make_db(tmp_path)
+        monkeypatch.setattr(_cfg, "HOST_HEALTH_INVESTIGATION_ENABLED", False)
+        monkeypatch.setattr(_cfg, "HOST_SWAP_WARN_PCT", 80.0)
+        monkeypatch.setattr(_cfg, "HOST_DISK_LIFE_WARN_PCT", 70.0)
+        monkeypatch.setattr(_cfg, "DB_PATH", db)
+
+        uuid = "abc123def456abc123def456abc12345"
+        old_evidence = {"type": "rpi_firmware_update_blocked", "current": "2021-12-02"}
+        old_finding = HostHealthFinding(
+            key=f"resolution_issue:{uuid}",
+            kind="resolution_issue",
+            severity="WARN",
+            evidence=old_evidence,
+            informational=True,
+        )
+        old_fp = compute_finding_fingerprint(old_finding)
+        card_key = f"host_health:{old_finding.key}"
+
+        # Acknowledge with old fingerprint
+        with sqlite3.connect(db) as conn:
+            mark_card_acknowledged(conn, card_key, note=old_fp)
+
+        # Now evidence changes (firmware updated, current date changed)
+        new_firmware = {
+            "current": "2024-06-01",
+            "latest": "2024-06-01",
+            "update_available": False,
+            "update_blocked": True,
+            "blocked_reason": "eeprom_update_unavailable",
+        }
+        health = HostHealth(
+            swap_total_mb=1024.0,
+            swap_used_mb=100.0,
+            disk_life_used_pct=None,
+            boot_ts=1_700_000_000.0,
+            uptime_seconds=3600.0,
+            resolution=ResolutionInfo(
+                issues=[{"uuid": uuid, "type": "rpi_firmware_update_blocked"}]
+            ),
+            fetched_at=1.0,
+            rpi_firmware=new_firmware,
+        )
+        update_host_health(health)
+
+        notifier = FakeNotifier()
+        poller = ResourcePoller(
+            ssh_client=object(),
+            notifier=notifier,
+            interval_seconds=300,
+            disk_warn_gb=5.0,
+            disk_critical_gb=3.0,
+            mem_warn_mb=256.0,
+            db_path=db,
+        )
+        status = _make_status()
+        asyncio.run(poller._check_host_health(status))
+
+        # known_issue must be cleared (fingerprint mismatch re-opens investigation)
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT known_issue FROM hitl_suppression WHERE card_key = ?",
+                (card_key,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == 0
+
+        # A new notification was dispatched
+        assert len(notifier.sent) > 0

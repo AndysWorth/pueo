@@ -74,12 +74,13 @@ async def build_environment_profile(
         log.warning("ha_profile_field_failed", field="ha_version", exc=str(e))
         profile.fetch_errors["ha_version"] = str(e)
 
-    # 2. os_version from `ha os info`
+    # 2. os_version from `ha os info --raw-json` (text output lists inactive boot slot first)
     try:
-        _, stdout, _ = await ssh_client.run("ha os info")
-        m = _VERSION_RE.search(stdout)
-        if m:
-            profile.os_version = m.group(1)
+        _, stdout, _ = await ssh_client.run("ha os info --raw-json")
+        _data = json.loads(stdout.strip()).get("data", {})
+        _ver = str(_data.get("version", ""))
+        if _ver:
+            profile.os_version = _ver
     except Exception as e:  # nosec B110
         log.warning("ha_profile_field_failed", field="os_version", exc=str(e))
         profile.fetch_errors["os_version"] = str(e)

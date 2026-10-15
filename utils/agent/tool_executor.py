@@ -76,6 +76,11 @@ _HA_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
         "ha backups list",
         "ha apps list",
         "ha os info",
+        "ha os info --raw-json",
+        "ha os boards rpi firmware",
+        "ha os boards rpi firmware --raw-json",
+        "ha os boards raspberrypi firmware",
+        "ha os boards raspberrypi firmware --raw-json",
         "ha supervisor repair",
         "ha su repair",
     }
@@ -5181,21 +5186,29 @@ class ToolExecutor:
                 f"Host health: {finding.kind}",
             )
 
+        import hashlib as _hashlib
+
+        _payload: dict = {
+            "notification_id": stable_nid(card_key),
+            "card_type": CARD_TYPE_HOST_HEALTH,
+            "suppression_key": card_key,
+            "type": "host_health",
+            "severity": finding.severity,
+            "kind": finding.kind,
+            "root_cause": root_cause,
+            "outcome": outcome,
+            "recommended_actions": recommended_actions,
+            "evidence": finding.evidence,
+        }
+        if outcome in ("informational", "monitoring") and not recommended_actions:
+            _payload["informational"] = True
+            _payload["fingerprint"] = _hashlib.sha256(
+                (finding.kind + json.dumps(finding.evidence, sort_keys=True)).encode()
+            ).hexdigest()[:16]
         await self._notifier.send(
             subject=f"Pueo: Host health — {finding.kind}",
             body=summary,
-            payload={
-                "notification_id": stable_nid(card_key),
-                "card_type": CARD_TYPE_HOST_HEALTH,
-                "suppression_key": card_key,
-                "type": "host_health",
-                "severity": finding.severity,
-                "kind": finding.kind,
-                "root_cause": root_cause,
-                "outcome": outcome,
-                "recommended_actions": recommended_actions,
-                "evidence": finding.evidence,
-            },
+            payload=_payload,
         )
         try:
             from utils.core.timeline import write_timeline_event

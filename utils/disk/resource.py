@@ -972,7 +972,25 @@ class ResourcePoller:
                 continue
             import sqlite3 as _sqlite3
 
-            from utils.hitl.hitl_tracker import should_send_card as _ssc
+            from utils.disk.host_health import compute_finding_fingerprint
+            from utils.hitl.hitl_tracker import (
+                get_known_issue_note,
+                mark_card_resolved as _resolve,
+                should_send_card as _ssc,
+            )
+
+            # Fingerprint-based re-investigation: if evidence changed since
+            # the user last acknowledged an informational finding, clear the
+            # Known Issue so a fresh investigation fires.
+            _fp = compute_finding_fingerprint(finding)
+            if _fp is not None:
+                with _sqlite3.connect(_db) as _fp_conn:
+                    _stored = get_known_issue_note(
+                        _fp_conn, f"host_health:{finding.key}"
+                    )
+                    if _stored is not None and _stored != _fp:
+                        _resolve(_fp_conn, f"host_health:{finding.key}")
+                        self._alerted_host.discard(finding.key)
 
             with _sqlite3.connect(_db) as _ssc_conn:
                 allowed = _ssc(_ssc_conn, f"host_health:{finding.key}")

@@ -19,6 +19,7 @@ Read-only (run directly):
 run_ha_command("ha core check")                  # Validate config (exit 0 = valid)
 run_ha_command("ha core info")                   # Core version, version_latest, state, boot
 run_ha_command("ha os info")                     # OS version, version_latest, board, boot slot
+run_ha_command("ha os boards rpi firmware --raw-json")  # RPi EEPROM firmware: current, latest, update_blocked, blocked_reason
 run_ha_command("ha host info")                   # Hostname, kernel, disk, uptime
 run_ha_command("ha resolution info --raw-json")  # Supervisor issues, suggestions, unhealthy
 run_ha_command("ha backups list")                # Backups with slug, type (full/partial), date

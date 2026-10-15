@@ -1,5 +1,6 @@
 """Host-level health indicators fetched via SSH: swap, eMMC wear, uptime, Supervisor resolution."""
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -32,6 +33,9 @@ class HostHealth:
     resolution: Optional[ResolutionInfo]
     fetched_at: float
     errors: list = field(default_factory=list)  # list[str] — which sections failed
+    rpi_firmware: Optional[dict] = (
+        None  # parsed from ha os boards rpi firmware --raw-json
+    )
 
 
 def _parse_swap(meminfo: str) -> tuple[float, float]:
@@ -101,6 +105,23 @@ def _parse_resolution_json(raw: str) -> Optional[ResolutionInfo]:
         return None
 
 
+def _parse_rpi_firmware_json(raw: str) -> Optional[dict]:
+    """Return parsed RPi firmware dict from 'ha os boards rpi firmware --raw-json', or None."""
+    try:
+        obj = json.loads(raw.strip())
+        data = obj.get("data", obj)
+        return {
+            "current": str(data.get("current", "")),
+            "latest": str(data.get("latest", "")),
+            "update_available": bool(data.get("update_available", False)),
+            "update_blocked": bool(data.get("update_blocked", False)),
+            "blocked_reason": str(data.get("blocked_reason", "")),
+        }
+    except Exception as exc:
+        log.warning("host_health_rpi_firmware_parse_failed", error=str(exc)[:200])
+        return None
+
+
 async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
     """Fetch host health indicators in one batched SSH call."""
     from utils.disk.memory_usage import split_marker_sections
@@ -109,6 +130,7 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
         "echo; echo '@@host'; ha host info --raw-json 2>/dev/null",
         "echo; echo '@@res'; ha resolution info --raw-json 2>/dev/null",
         "echo; echo '@@mem'; cat /proc/meminfo",
+        "echo; echo '@@fw'; ha os boards rpi firmware --raw-json 2>/dev/null",
     ]
     _, batch_out, _ = await ssh.run("; ".join(parts), check=False)
 
@@ -148,6 +170,10 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
         resolution = None
         errors.append("res")
 
+    # Parse RPi firmware info (absent on non-RPi boards; non-fatal)
+    fw_raw = sections.get("fw", "")
+    rpi_firmware = _parse_rpi_firmware_json(fw_raw) if fw_raw else None
+
     return HostHealth(
         swap_total_mb=round(swap_total_mb, 1),
         swap_used_mb=round(swap_used_mb, 1),
@@ -157,6 +183,7 @@ async def fetch_host_health(ssh: SSHClientProtocol) -> HostHealth:
         resolution=resolution,
         fetched_at=time.time(),
         errors=errors,
+        rpi_firmware=rpi_firmware,
     )
 
 
@@ -188,6 +215,9 @@ class HostHealthFinding:
     kind: str  # finding type: "swap_pressure", "memory_low", "disk_wear", etc.
     severity: str  # "WARN", "HIGH", "CRITICAL"
     evidence: dict = field(default_factory=dict)
+    informational: bool = (
+        False  # True when no action is possible (e.g. rpi_firmware_update_blocked)
+    )
 
 
 def evaluate_host_health(
@@ -311,18 +341,38 @@ def evaluate_host_health(
             if uuid in known_repair_uuids:
                 continue
             issue_type = str(issue.get("type", ""))
+            evidence: dict = {
+                "uuid": uuid,
+                "type": issue_type,
+                "context": issue.get("context"),
+                "reference": issue.get("reference"),
+            }
+            # Enrich RPi firmware findings with EEPROM data fetched earlier
+            is_informational = False
+            if issue_type == "rpi_firmware_update_blocked" and health.rpi_firmware:
+                evidence.update(health.rpi_firmware)
+                is_informational = True
             findings.append(
                 HostHealthFinding(
                     key=f"resolution_issue:{uuid}",
                     kind="resolution_issue",
                     severity="WARN",
-                    evidence={
-                        "uuid": uuid,
-                        "type": issue_type,
-                        "context": issue.get("context"),
-                        "reference": issue.get("reference"),
-                    },
+                    evidence=evidence,
+                    informational=is_informational,
                 )
             )
 
     return findings
+
+
+def compute_finding_fingerprint(finding: HostHealthFinding) -> Optional[str]:
+    """Return a short fingerprint for informational findings, or None.
+
+    Used to detect when underlying evidence changed after the user acknowledged
+    a known-informational card — prompts a fresh investigation.
+    """
+    if not finding.informational:
+        return None
+    return hashlib.sha256(
+        (finding.kind + json.dumps(finding.evidence, sort_keys=True)).encode()
+    ).hexdigest()[:16]

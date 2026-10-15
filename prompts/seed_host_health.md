@@ -63,22 +63,29 @@ full, but the retention policy may have deleted them all from HA.
 
 ## Supervisor resolution issue — rpi_firmware_update_blocked
 
-**What it means:** The Raspberry Pi firmware is at an older version than the HA Yellow /
-Raspberry Pi 4 bootloader expects. **This is informational** — no suggestion is available
-to apply programmatically; the suggestions list will be empty for this issue type.
+**What it means:** The Raspberry Pi EEPROM firmware version is older than what HA OS
+expects. On Compute Module 4 (CM4) based boards (HA Yellow, etc.), the EEPROM is
+read-only — `update_blocked=true` with `blocked_reason=eeprom_update_unavailable`. This
+is a hardware limitation; no Supervisor action can resolve it.
 
 **Do NOT fabricate causes** like "boot partition management" or "NVMe compatibility".
-The actual cause is always: the RPi firmware predates the bundled HA OS expectations.
+The actual cause is always: CM4 EEPROM is read-only; no Supervisor action can update it.
 
-**Evidence:**
-- `ha resolution info --raw-json` → confirm `suggestions` is empty for this issue
-- `ha os info --raw-json` → note the OS version for context
+**Do NOT claim this will self-resolve.** It will not resolve unless a future HAOS
+release changes the expectation or the user replaces the CM4 module.
+
+**Investigation:**
+1. `run_ha_command("ha os boards rpi firmware --raw-json")` — read `current`, `latest`,
+   `update_blocked`, `blocked_reason` directly.
+2. If `blocked_reason == "eeprom_update_unavailable"`: hardware limitation, informational.
+3. If `blocked_reason` is empty or different: note it and set outcome="needs_action".
 
 **Fix:**
-1. Since no suggestion is available: `remember(key="rpi_firmware_blocked", content="...")`
-   so this fact survives across sessions and Pueo does not re-investigate it.
-2. Set outcome="needs_action" with the note that this is informational and requires a
-   future OS update to resolve; no current action is available.
+1. `remember(key="rpi_firmware_blocked", content="rpi_firmware_update_blocked present;
+   blocked_reason=eeprom_update_unavailable; CM4 EEPROM is read-only; no Supervisor fix
+   exists; informational only.")` so this persists across sessions.
+2. Set `outcome="informational"` with the EEPROM dates and `blocked_reason` in the
+   summary. Do **not** include `recommended_actions`.
 
 ## Supervisor resolution issue — general
 

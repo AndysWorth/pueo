@@ -6873,6 +6873,29 @@ class TestStrategySeeder:
         assert _stored_seed_approaches("") == {}
 
 
+class TestHaCommandAllowlistFirmware:
+    """Firmware and OS-info commands must be in the allowlist; update must stay blocked."""
+
+    def test_rpi_firmware_read_allowed(self):
+        from utils.agent.tool_executor import _is_ha_command_allowed
+
+        assert _is_ha_command_allowed("ha os boards rpi firmware")
+        assert _is_ha_command_allowed("ha os boards rpi firmware --raw-json")
+        assert _is_ha_command_allowed("ha os boards raspberrypi firmware")
+        assert _is_ha_command_allowed("ha os boards raspberrypi firmware --raw-json")
+
+    def test_firmware_update_blocked(self):
+        from utils.agent.tool_executor import _is_ha_command_allowed
+
+        assert not _is_ha_command_allowed("ha os boards raspberrypi firmware update")
+        assert not _is_ha_command_allowed("ha os boards rpi firmware update")
+
+    def test_ha_os_info_raw_json_allowed(self):
+        from utils.agent.tool_executor import _is_ha_command_allowed
+
+        assert _is_ha_command_allowed("ha os info --raw-json")
+
+
 class TestPromptCommandAllowlist:
     """Every run_ha_command("…") a prompt recommends must pass the allowlist (#871)."""
 
