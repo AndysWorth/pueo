@@ -2969,7 +2969,43 @@ class TestDiscoverHacsWsFiltering:
         ]
         self._mock_ws(payload, monkeypatch)
         result = _discover_via_hacs_ws("http://ha:8123", "tok")
-        assert result == [("pycync", "dmamontov/hass-pycync")]
+        slugs = [s for s, _, _ in result]
+        repos = [r for _, r, _ in result]
+        assert slugs == ["pycync"]
+        assert repos == ["dmamontov/hass-pycync"]
+
+    def test_domain_field_captured(self, monkeypatch):
+        """The HACS API domain field is used when present; slug is fallback."""
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
+
+        payload = [
+            {
+                "slug": "pycync",
+                "installed": True,
+                "category": "integration",
+                "full_name": "dmamontov/hass-pycync",
+                "domain": "pycync_light",
+            },
+        ]
+        self._mock_ws(payload, monkeypatch)
+        result = _discover_via_hacs_ws("http://ha:8123", "tok")
+        assert result == [("pycync", "dmamontov/hass-pycync", "pycync_light")]
+
+    def test_domain_falls_back_to_slug_when_absent(self, monkeypatch):
+        """When HACS omits domain, slug is used as the domain."""
+        from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
+
+        payload = [
+            {
+                "slug": "browser_mod",
+                "installed": True,
+                "category": "integration",
+                "full_name": "thomasloven/browser_mod",
+            },
+        ]
+        self._mock_ws(payload, monkeypatch)
+        result = _discover_via_hacs_ws("http://ha:8123", "tok")
+        assert result == [("browser_mod", "thomasloven/browser_mod", "browser_mod")]
 
     def test_excludes_non_integration_categories(self, monkeypatch):
         from utils.knowledge.hacs_scraper import _discover_via_hacs_ws
@@ -2990,7 +3026,8 @@ class TestDiscoverHacsWsFiltering:
         ]
         self._mock_ws(payload, monkeypatch)
         result = _discover_via_hacs_ws("http://ha:8123", "tok")
-        assert result == [("myint", "someone/myint")]
+        slugs = [s for s, _, _ in result]
+        assert slugs == ["myint"]
 
     def test_returns_empty_on_connection_error(self, monkeypatch):
         from unittest.mock import MagicMock
@@ -3055,7 +3092,7 @@ class TestDiscoverHacsIntegrationsEntityFallback:
         self._mock_ws_failed(monkeypatch)
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen_states(states))
         result = discover_hacs_integrations("http://ha:8123", "tok")
-        repos = [r for _, r in result]
+        repos = [r for _, r, _ in result]
         assert "hacs/integration" not in repos
         assert "dmamontov/hass-pycync" in repos
 

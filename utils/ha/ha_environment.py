@@ -37,6 +37,7 @@ class HAEnvironmentProfile:
     mqtt_configured: bool = False
     sentinel_installed: bool = False
     battery_notes_installed: bool = False
+    hacs_unloaded_domains: list[str] = field(default_factory=list)
 
 
 async def build_environment_profile(
@@ -104,13 +105,19 @@ async def build_environment_profile(
         )
         profile.fetch_errors["installed_integrations"] = str(e)
 
-    # 4. hacs_integrations — extract slugs from (slug, repo) pairs
+    # 4. hacs_integrations — extract slugs from (slug, repo, domain) triples;
+    #    compute hacs_unloaded_domains = HACS domains not present as loaded components
+    _hacs_triples: list[tuple[str, str, str]] = []
     try:
-        pairs = _discover_hacs(ha_url, ha_token)
-        profile.hacs_integrations = [slug for slug, _ in pairs]
+        _hacs_triples = _discover_hacs(ha_url, ha_token)
+        profile.hacs_integrations = [slug for slug, _, _ in _hacs_triples]
     except Exception as e:  # nosec B110
         log.warning("ha_profile_field_failed", field="hacs_integrations", exc=str(e))
         profile.fetch_errors["hacs_integrations"] = str(e)
+    _installed_set = set(profile.installed_integrations)
+    profile.hacs_unloaded_domains = sorted(
+        {domain for _, _, domain in _hacs_triples if domain} - _installed_set
+    )
 
     # 4b. Companion-integration flags — derived from installed_integrations (no extra network call)
     profile.spook_installed = "spook" in profile.installed_integrations
@@ -160,7 +167,13 @@ def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
         "HA environment:",
         f"  Core: {profile.ha_version or '?'}  |  OS: {profile.os_version or '?'}  |  Supervisor: {profile.supervisor_version or '?'}",
         f"  Config keys: {keys_str}",
-        f"  Integrations: {len(profile.installed_integrations)} installed  |  {len(profile.hacs_integrations)} via HACS",
+        f"  Integrations: {len(profile.installed_integrations)} installed  |  {len(profile.hacs_integrations)} via HACS"
+        + (
+            f"  ({len(profile.hacs_unloaded_domains)} downloaded but not set up: "
+            f"{', '.join(profile.hacs_unloaded_domains)})"
+            if profile.hacs_unloaded_domains
+            else ""
+        ),
         f"  Config entries: {len(profile.config_entries)}",
         '  (use get_ha_profile field="installed_integrations"|"hacs_integrations"|"config_entries" for full lists)',
     ]

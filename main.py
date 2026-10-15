@@ -207,14 +207,14 @@ def run_rag_refresh(
     _log.info("rag_refresh_step", step="discover_hacs")
     if ha_token:
         hacs_pairs = discover_hacs_integrations(ha_url, ha_token)
-        slugs = [s for s, _ in hacs_pairs]
+        slugs = [s for s, _, _ in hacs_pairs]
         _log.info(
             "rag_refresh_step_done",
             step="discover_hacs",
             count=len(hacs_pairs),
             integrations=slugs,
         )
-        for slug, repo in hacs_pairs:
+        for slug, repo, _ in hacs_pairs:
             fetch_hacs_changelog(slug, repo, config.RAG_HACS_CACHE_DIR)
     else:
         _log.info(
@@ -1072,6 +1072,69 @@ async def supervisor_main(config_path: Path) -> None:
         _shared_executor.set_ws_client(_profile_ws)
         _shared_executor.set_rest_client(_profile_rest)
 
+        async def _notify_hacs_unloaded(p) -> None:
+            """Send one-time info cards for HACS integrations downloaded but not set up."""
+            from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+            from utils.hitl.hitl_tracker import (
+                mark_card_resolved,
+                mark_card_sent,
+                should_send_card,
+            )
+
+            unloaded_set = set(p.hacs_unloaded_domains)
+            try:
+
+                def _db_work() -> list[str]:
+                    import sqlite3 as _sqlite3
+
+                    to_send: list[str] = []
+                    with _sqlite3.connect(cfg.DB_PATH) as conn:
+                        rows = conn.execute(
+                            "SELECT card_key FROM hitl_suppression"
+                            " WHERE card_key LIKE 'hacs_unloaded:%'"
+                        ).fetchall()
+                        for (card_key,) in rows:
+                            domain = card_key[len("hacs_unloaded:") :]
+                            if domain and domain not in unloaded_set:
+                                mark_card_resolved(conn, card_key)
+                        for domain in sorted(unloaded_set):
+                            if should_send_card(conn, f"hacs_unloaded:{domain}"):
+                                to_send.append(domain)
+                    return to_send
+
+                to_send_domains = await asyncio.to_thread(_db_work)
+                for domain in to_send_domains:
+                    card_key = f"hacs_unloaded:{domain}"
+                    await notifier.send(
+                        subject=f"HACS integration downloaded but not set up: {domain}",
+                        body=(
+                            f"The {domain} integration is installed via HACS but has "
+                            "no config entry — it has no effect on your HA instance "
+                            "until set up. No action required; this is informational."
+                        ),
+                        payload={
+                            "card_type": CARD_TYPE_HOST_HEALTH,
+                            "informational": True,
+                            "suppression_key": card_key,
+                            "fingerprint": domain,
+                            "domain": domain,
+                        },
+                    )
+
+                    def _mark_sent(k: str = card_key) -> None:
+                        import sqlite3 as _sqlite3
+
+                        with _sqlite3.connect(cfg.DB_PATH) as conn:
+                            mark_card_sent(
+                                conn, k, CARD_TYPE_HOST_HEALTH, f"hacs_unloaded:{k}"
+                            )
+
+                    await asyncio.to_thread(_mark_sent)
+            except Exception as exc:  # pragma: no cover  # nosec B110
+                from utils.core.logging import get_logger as _gl
+
+                _gl("main").warning("hacs_unloaded_notify_failed", exc=str(exc))
+
         async def _profile_refresh_loop() -> None:
             while True:
                 _p = None
@@ -1085,6 +1148,7 @@ async def supervisor_main(config_path: Path) -> None:
                     )
                     _shared_executor.set_ha_profile(_p)
                     save_environment_profile(_p, cfg.DB_PATH)
+                    await _notify_hacs_unloaded(_p)
                 except Exception as exc:  # pragma: no cover  # nosec B110
                     from utils.core.logging import get_logger as _gl
 
@@ -1114,6 +1178,7 @@ async def supervisor_main(config_path: Path) -> None:
             )
             _shared_executor.set_ha_profile(_p_initial)
             save_environment_profile(_p_initial, cfg.DB_PATH)
+            await _notify_hacs_unloaded(_p_initial)
         except Exception as _exc:  # pragma: no cover  # nosec B110
             from utils.core.logging import get_logger as _gl
 

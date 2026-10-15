@@ -4080,6 +4080,19 @@ class ToolExecutor:
                 log.warning("spook_component_check_failed", error=str(exc))
 
         if spook_installed is False:
+            _spook_hacs_unloaded = self._ha_profile is not None and "spook" in (
+                self._ha_profile.hacs_unloaded_domains or []
+            )
+            if _spook_hacs_unloaded:
+                return ToolResult(
+                    tool_name="get_spook_issues",
+                    success=True,
+                    output=(
+                        "Spook is downloaded via HACS but not set up (no config entry). "
+                        "It has no effect on this HA instance until configured. "
+                        "To enable: add the Spook integration in Settings → Integrations."
+                    ),
+                )
             return ToolResult(
                 tool_name="get_spook_issues",
                 success=True,
