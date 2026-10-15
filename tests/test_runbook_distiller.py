@@ -642,11 +642,15 @@ class TestDistillAndPersist:
             def __init__(self):
                 self._rb = _FakeLLMWithRunbook()
 
-            async def chat(self, model, messages, options, format, think=None):  # noqa: A002
+            async def chat(
+                self, model, messages, options, format, think=None
+            ):  # noqa: A002
                 for m in messages:
                     if m.get("role") == "user":
                         captured_prompts.append(m["content"])
-                return await self._rb.chat(model, messages, options, format, think=think)
+                return await self._rb.chat(
+                    model, messages, options, format, think=think
+                )
 
             async def chat_with_tools(self, *a, **kw):  # pragma: no cover
                 raise NotImplementedError
