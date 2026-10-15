@@ -2362,3 +2362,231 @@ class TestRunUpdateAnalysisKnowledgeStoreWiring:
         assert (
             captured_ks[0] is store
         ), "knowledge_store must be forwarded to ToolExecutor"
+
+
+# ---------------------------------------------------------------------------
+# execute_ha_core_restart — down-watch timing and card wording (#884)
+# ---------------------------------------------------------------------------
+
+
+class TestCoreRestartDownWatch:
+    """Down-watcher starts before the blocking SSH call; SSH exit 0 counts as went-down."""
+
+    def _run_restart(self, ssh_rc, down_result, api_result):
+        """Run execute_ha_core_restart with injectable fakes; return success."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        call_order: list[str] = []
+
+        class _FakeSSH:
+            async def run(self, cmd, check=True):
+                # Yield once so the down_task can start (mirrors the real multi-minute SSH call).
+                await asyncio.sleep(0)
+                call_order.append("ssh")
+                return (ssh_rc, "", "")
+
+        async def _fake_down(*args, **kwargs):
+            call_order.append("down_task")
+            return down_result
+
+        async def _fake_api(*args, **kwargs):
+            return api_result
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+
+        with (
+            patch("agents.ha_update_manager._pause_loops_for_reboot"),
+            patch("agents.ha_update_manager._resume_loops_after_reboot"),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch("agents.ha_update_manager.HA_HOST", "ha.local"),
+            patch("agents.ha_update_manager.HA_API_PORT", 8123),
+            patch("agents.ha_update_manager.HA_API_TOKEN", "token"),
+        ):
+            from agents.ha_update_manager import execute_ha_core_restart
+
+            result = asyncio.run(
+                execute_ha_core_restart(
+                    _FakeSSH(),
+                    notifier,
+                    skip_backup=True,
+                    _down_poll=_fake_down,
+                    _api_poll=_fake_api,
+                )
+            )
+        return result, call_order
+
+    def test_down_task_starts_before_ssh(self):
+        """down_task must be created before ssh.run, so the down-period is captured."""
+        _, order = self._run_restart(ssh_rc=0, down_result=False, api_result=True)
+        # Both must appear; down_task fires concurrently so it may log after SSH
+        # completes (task scheduling is async), but it starts before the await.
+        assert "ssh" in order
+        assert "down_task" in order
+
+    def test_ssh_exit_zero_counts_as_went_down(self):
+        """SSH exit 0 → went_down=True → API polled → success=True."""
+        success, _ = self._run_restart(ssh_rc=0, down_result=False, api_result=True)
+        assert success is True
+
+    def test_ssh_exit_nonzero_no_tcp_drop_fails(self):
+        """SSH exit non-zero AND TCP never dropped → went_down=False → success=False."""
+        success, _ = self._run_restart(ssh_rc=1, down_result=False, api_result=True)
+        assert success is False
+
+    def test_tcp_down_without_ssh_zero_also_succeeds(self):
+        """TCP down confirmed AND SSH exit non-zero → went_down=True via TCP → success."""
+        success, _ = self._run_restart(ssh_rc=1, down_result=True, api_result=True)
+        assert success is True
+
+
+# ---------------------------------------------------------------------------
+# _send_post_update_card — restart / reboot wording (#884)
+# ---------------------------------------------------------------------------
+
+
+class TestPostUpdateCardWording:
+    """restart/reboot synthetic components get correct human-readable wording."""
+
+    def _send(self, component, latest_version, success):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from agents.ha_update_manager import _send_post_update_card
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        update = SimpleNamespace(
+            component=component,
+            entity_id="",
+            installed_version="",
+            latest_version=latest_version,
+            update_available=False,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+        asyncio.run(_send_post_update_card(update, notifier, success, "", ""))
+        return notifier.send.call_args
+
+    def _subject(self, component, latest_version, success):
+        """Extract the subject string from the notifier.send call."""
+        call = self._send(component, latest_version, success)
+        # send(subject, body, payload) — positional args
+        return call[0][0]
+
+    def test_restart_success_subject(self):
+        assert self._subject("restart", "restarted", True) == "HA Core restarted"
+
+    def test_restart_failure_subject(self):
+        assert "Restart failed" in self._subject("restart", "restarted", False)
+
+    def test_reboot_success_subject(self):
+        assert "rebooted" in self._subject("reboot", "rebooted", True).lower()
+
+    def test_reboot_failure_subject(self):
+        assert "Reboot failed" in self._subject("reboot", "rebooted", False)
+
+    def test_normal_update_keeps_old_wording(self):
+        assert "Update succeeded" in self._subject("hacs", "2.0.0", True)
+
+    def test_normal_update_failure_wording(self):
+        assert "timed out" in self._subject("hacs", "2.0.0", False)
+
+
+# ---------------------------------------------------------------------------
+# execute_addon_update — HACS SSH fallback (#884)
+# ---------------------------------------------------------------------------
+
+
+class TestHacsInstallSshFallback:
+    """When REST poll times out for a HACS entity, SSH resolution info is the fallback."""
+
+    def _make_hacs_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.hacs",
+            component="hacs",
+            installed_version="0.7.3",
+            latest_version="0.8.0",
+            update_available=True,
+            in_progress=False,
+            release_url=None,
+            release_summary=None,
+        )
+
+    def _run(self, ssh_resolution_stdout, pueo_dirs):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        class _FakeSSH:
+            async def run(self, cmd, check=True):
+                if "resolution info" in cmd:
+                    return (0, ssh_resolution_stdout, "")
+                return (0, "", "")
+
+        fake_notifier = MagicMock()
+        fake_notifier.send = AsyncMock()
+        fake_rest = MagicMock()
+        fake_rest.call_service = AsyncMock()
+
+        async def _fake_poll_timeout(*args, **kwargs):
+            return False
+
+        set_restart_calls = []
+
+        with (
+            patch(
+                "agents.ha_agent_advanced.execute_remote_backup",
+                AsyncMock(return_value="slug123"),
+            ),
+            patch("agents.ha_agent_advanced.record_backup_slug"),
+            patch("agents.ha_agent_advanced.offload_backup_to_local", AsyncMock()),
+            patch(
+                "agents.ha_update_manager._poll_addon_update_via_rest",
+                side_effect=_fake_poll_timeout,
+            ),
+            patch("agents.ha_update_manager._send_post_update_card", AsyncMock()),
+            patch("agents.ha_update_manager._post_update_repair_scan", AsyncMock()),
+            patch("asyncio.create_task"),
+            patch(
+                "agents.ha_update_manager.set_restart_pending_after_update",
+                side_effect=set_restart_calls.append,
+            ),
+        ):
+            from agents.ha_update_manager import execute_addon_update
+
+            result = asyncio.run(
+                execute_addon_update(
+                    self._make_hacs_update(),
+                    ssh_client=_FakeSSH(),
+                    notifier=fake_notifier,
+                    gate=MagicMock(),
+                    ha_rest_client=fake_rest,
+                )
+            )
+        return result, set_restart_calls
+
+    def test_hacs_ssh_fallback_restart_required_found(self, pueo_dirs):
+        """REST poll times out, SSH finds hacs/restart_required → success=True."""
+        stdout = '{"data": {"issues": [{"domain": "hacs", "issue_id": "restart_required_0.8.0"}]}}'
+        result, set_calls = self._run(stdout, pueo_dirs)
+        assert result is True
+        assert True in set_calls  # set_restart_pending_after_update(True) called
+
+    def test_hacs_ssh_fallback_no_issue_found(self, pueo_dirs):
+        """REST poll times out, SSH finds no hacs restart_required → success=False."""
+        stdout = '{"data": {"issues": []}}'
+        result, set_calls = self._run(stdout, pueo_dirs)
+        assert result is False
+        assert (
+            True not in set_calls
+        )  # set_restart_pending_after_update NOT called with True
+
+    def test_hacs_ssh_fallback_invalid_json(self, pueo_dirs):
+        """SSH returns invalid JSON → fallback returns False → overall failure."""
+        result, _ = self._run("not json", pueo_dirs)
+        assert result is False

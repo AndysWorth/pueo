@@ -1186,6 +1186,31 @@ async def _poll_addon_update_via_rest(
     return False
 
 
+async def _check_hacs_install_via_ssh(
+    ssh_client: "SSHClientProtocol",
+) -> bool:
+    """Return True if ha resolution info shows a hacs/restart_required issue.
+
+    HACS downloads complete in seconds but leave a restart_required repair
+    instead of flipping the update entity to "off". This is the reliable
+    install-success signal when the REST poll times out.
+    """
+    try:
+        _, stdout, _ = await ssh_client.run(
+            "ha resolution info --raw-json", check=False
+        )
+        data = json.loads(stdout.strip())
+        issues = data.get("data", data).get("issues") or []
+        return any(
+            issue.get("domain") == "hacs"
+            and "restart_required" in (issue.get("issue_id") or "")
+            for issue in issues
+        )
+    except Exception as exc:
+        log.warning("hacs_install_ssh_check_failed", error=str(exc))
+        return False
+
+
 async def _send_post_update_card(
     update: UpdateStatus,
     notifier: "NotifierProtocol",
@@ -1198,8 +1223,15 @@ async def _send_post_update_card(
 ) -> None:
     """Send an informational result card after an update attempt."""
     nid = notification_id or str(uuid.uuid4())
-    outcome = "succeeded" if success else "timed out — check HA UI"
-    subject = f"Update {outcome}: {update.component} → {update.latest_version}"
+    if update.component == "restart":
+        subject = "HA Core restarted" if success else "Restart failed — check HA UI"
+        outcome = "restarted" if success else "did not come back online"
+    elif update.component == "reboot":
+        subject = "HA host rebooted" if success else "Reboot failed — check HA UI"
+        outcome = "rebooted" if success else "did not come back online"
+    else:
+        outcome = "succeeded" if success else "timed out — check HA UI"
+        subject = f"Update {outcome}: {update.component} → {update.latest_version}"
     body_lines = [
         f"Component: {update.component}",
         f"Version: {update.installed_version} → {update.latest_version}",
@@ -1556,6 +1588,19 @@ async def execute_addon_update(
             timeout_seconds=_ADDON_UPDATE_TIMEOUT,
         )
 
+    # HACS-specific fallback: a successful HACS download produces a
+    # hacs/restart_required_* repair within seconds instead of flipping the
+    # update entity to "off". The REST poll always times out in this case;
+    # check ha resolution info over SSH as the true install-success signal.
+    if not success and "hacs" in update.entity_id.lower() and _poll is None:
+        success = await _check_hacs_install_via_ssh(ssh_client)
+        if success:
+            log.info(
+                "hacs_install_success_via_ssh_fallback",
+                slug=update.component,
+                version=update.latest_version,
+            )
+
     if success:
         set_restart_pending_after_update(True)
         asyncio.create_task(_post_update_repair_scan())
@@ -1757,21 +1802,41 @@ async def execute_ha_core_restart(
         log.info("ha_core_restart_backup_complete", slug=backup_slug)
 
     _emit_step("Sending restart command to HA Core…", activity="restart_execution")
-    await ssh_client.run("ha core restart", check=False)
+    down_fn = _down_poll or _wait_for_ha_down
 
+    # Pause loops and start the TCP down-watcher BEFORE the blocking SSH call.
+    # `ha core restart` does not return until HA is back online, so anything
+    # started after it always sees HA already up and misreports "never went down".
     _pause_loops_for_reboot()
+    down_task: "asyncio.Task[bool]" = asyncio.create_task(
+        down_fn(HA_HOST, HA_API_PORT, timeout_seconds=60)
+    )
+
     success = False
     try:
-        # Confirm HA Core actually went down before polling the API — otherwise a
-        # restart command that never ran is indistinguishable from a fast restart
-        # (the still-running instance answers /api/ immediately) (#846).
+        rc, _, _ = await ssh_client.run("ha core restart", check=False)
+        # SSH exit 0 is direct evidence that HA went down and came back.
+        ssh_exited_zero = rc == 0
+
+        if not down_task.done():
+            down_task.cancel()
+            try:
+                await down_task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            tcp_went_down = not down_task.cancelled() and bool(down_task.result())
+        except Exception:
+            tcp_went_down = False
+
+        went_down = ssh_exited_zero or tcp_went_down
+
         _emit_step("Waiting for HA Core to restart…", activity="restart_execution")
-        down_fn = _down_poll or _wait_for_ha_down
-        went_down = await down_fn(HA_HOST, HA_API_PORT, timeout_seconds=60)
         if not went_down:
             log.warning(
                 "ha_core_restart_never_went_down",
-                detail="HA Core kept accepting connections — restart did not happen",
+                detail="ha core restart returned non-zero and TCP never dropped",
             )
         else:
             api_fn = _api_poll or _poll_ha_api_ready
