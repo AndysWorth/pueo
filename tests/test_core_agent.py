@@ -1120,7 +1120,7 @@ class TestHAEnvironmentProfile:
                 ha_url="http://homeassistant.local:8123",
                 config_remote_path="/config/configuration.yaml",
                 _discover_integrations=lambda url, token: ["zha", "mqtt"],
-                _discover_hacs=lambda url, token: [("hacs_integ", "owner/repo")],
+                _discover_hacs=lambda url, token: [("hacs_integ", "owner/repo", "hacs_integ")],
             )
         )
 
@@ -13009,6 +13009,36 @@ class TestGetSpookIssues:
         result = self._run(ex)
         assert result.success is True
         assert "not installed" in result.output.lower()
+
+    def test_spook_downloaded_but_not_set_up(self):
+        """When spook is in hacs_unloaded_domains, report 'downloaded but not set up'."""
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        profile = HAEnvironmentProfile(
+            spook_installed=False,
+            hacs_unloaded_domains=["spook"],
+        )
+        ex = self._make_executor(ws_client=FakeHAWebSocketClient(), ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "downloaded via HACS but not set up" in result.output
+        assert "https://spook.boo" not in result.output
+
+    def test_spook_not_installed_when_not_in_hacs(self):
+        """When spook is absent from both installed and HACS, report 'not installed'."""
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        profile = HAEnvironmentProfile(
+            spook_installed=False,
+            hacs_unloaded_domains=[],
+        )
+        ex = self._make_executor(ws_client=FakeHAWebSocketClient(), ha_profile=profile)
+        result = self._run(ex)
+        assert result.success is True
+        assert "not installed" in result.output
+        assert "https://spook.boo" in result.output
 
 
 class TestGetSentinelIssues:

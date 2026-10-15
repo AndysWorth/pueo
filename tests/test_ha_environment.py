@@ -269,9 +269,10 @@ class TestLoadEnvironmentProfile:
                 "(id INTEGER PRIMARY KEY, profile_json TEXT, last_updated REAL)"
             )
             data = {f.name: f.default for f in dataclasses.fields(HAEnvironmentProfile)}
-            # Patch defaults that are not simple values
+            # Patch defaults that are not simple values (field(default_factory=...))
             data["installed_integrations"] = []
             data["hacs_integrations"] = []
+            data["hacs_unloaded_domains"] = []
             data["config_yaml_top_keys"] = []
             data["config_entries"] = []
             data["fetch_errors"] = {}
@@ -314,6 +315,7 @@ class TestLoadEnvironmentProfile:
             data = {f.name: f.default for f in dataclasses.fields(HAEnvironmentProfile)}
             data["installed_integrations"] = []
             data["hacs_integrations"] = []
+            data["hacs_unloaded_domains"] = []
             data["config_yaml_top_keys"] = []
             data["config_entries"] = []
             data["fetch_errors"] = {}
@@ -915,3 +917,105 @@ class TestBuildEnvironmentProfileOsVersionJson:
         profile = self._build("not valid json")
         assert profile.os_version == ""
         assert "os_version" in profile.fetch_errors
+
+
+# ---------------------------------------------------------------------------
+# hacs_unloaded_domains computation
+# ---------------------------------------------------------------------------
+
+
+class TestHacsUnloadedDomains:
+    """hacs_unloaded_domains = HACS domains not present in installed_integrations."""
+
+    def _run(
+        self, installed: list[str], hacs_triples: list[tuple]
+    ) -> "HAEnvironmentProfile":
+        ssh = FakeSSHClient(
+            command_results={
+                "ha core info": (0, "version: 2026.8.2\n", ""),
+                "ha os info --raw-json": (
+                    0,
+                    '{"result":"ok","data":{"version":"14.1"}}',
+                    "",
+                ),
+                "ha supervisor info": (0, "version: 2024.08.0\n", ""),
+            },
+            file_contents={"/config/configuration.yaml": "homeassistant:\n"},
+        )
+        ws = FakeWsClient()
+        return asyncio.run(
+            build_environment_profile(
+                ssh_client=ssh,
+                ws_client=ws,  # type: ignore[arg-type]
+                ha_token="tok",
+                ha_url="http://ha.local:8123",
+                config_remote_path="/config/configuration.yaml",
+                _discover_integrations=lambda *a: installed,
+                _discover_hacs=lambda *a: hacs_triples,
+            )
+        )
+
+    def test_unloaded_domain_detected(self):
+        """A HACS integration whose domain is not in installed_integrations is unloaded."""
+        profile = self._run(
+            installed=["zha", "mqtt"],
+            hacs_triples=[("spook", "tetele/spook", "spook")],
+        )
+        assert "spook" in profile.hacs_unloaded_domains
+
+    def test_loaded_domain_not_in_unloaded(self):
+        """A HACS integration whose domain IS in installed_integrations is not unloaded."""
+        profile = self._run(
+            installed=["zha", "spook"],
+            hacs_triples=[("spook", "tetele/spook", "spook")],
+        )
+        assert profile.hacs_unloaded_domains == []
+
+    def test_multiple_domains_partial_unloaded(self):
+        profile = self._run(
+            installed=["zha", "browser_mod"],
+            hacs_triples=[
+                ("browser_mod", "thomasloven/browser_mod", "browser_mod"),
+                ("spook", "tetele/spook", "spook"),
+            ],
+        )
+        assert profile.hacs_unloaded_domains == ["spook"]
+
+    def test_empty_hacs_gives_empty_unloaded(self):
+        profile = self._run(installed=["zha"], hacs_triples=[])
+        assert profile.hacs_unloaded_domains == []
+
+    def test_unloaded_domains_sorted(self):
+        profile = self._run(
+            installed=[],
+            hacs_triples=[
+                ("z_pkg", "org/z_pkg", "z_pkg"),
+                ("a_pkg", "org/a_pkg", "a_pkg"),
+            ],
+        )
+        assert profile.hacs_unloaded_domains == ["a_pkg", "z_pkg"]
+
+    def test_domain_field_used_not_slug(self):
+        """When HACS domain differs from slug, use the domain field for unloaded check."""
+        profile = self._run(
+            installed=["actual_domain"],
+            hacs_triples=[("repo_slug", "org/repo", "actual_domain")],
+        )
+        assert profile.hacs_unloaded_domains == []
+
+    def test_unloaded_domain_shown_in_format_summary(self):
+        profile = self._run(
+            installed=["zha"],
+            hacs_triples=[("spook", "tetele/spook", "spook")],
+        )
+        summary = format_profile_summary(profile)
+        assert "downloaded but not set up" in summary
+        assert "spook" in summary
+
+    def test_no_unloaded_note_when_all_loaded(self):
+        profile = self._run(
+            installed=["zha", "spook"],
+            hacs_triples=[("spook", "tetele/spook", "spook")],
+        )
+        summary = format_profile_summary(profile)
+        assert "downloaded but not set up" not in summary

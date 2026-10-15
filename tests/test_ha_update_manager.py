@@ -1029,6 +1029,37 @@ class TestUpdateAnalysisContextBuilding:
         ctx = self._run(tmp_path, ha_rest_client=rest)
         assert "Available update" in ctx  # still runs fine
 
+    def test_hacs_unloaded_note_added_when_component_unloaded(
+        self, tmp_path, pueo_dirs
+    ):
+        """initial_context includes a zero-impact note when the update target is unloaded."""
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        # _FakeUpdateBasic.component = "Home Assistant Core"; match it exactly
+        profile = HAEnvironmentProfile(
+            ha_version="2026.9.0",
+            hacs_unloaded_domains=["Home Assistant Core"],
+        )
+        ctx = self._run(tmp_path, ha_profile=profile)
+        assert "no config entry" in ctx
+        assert "no runtime effect" in ctx
+
+    def test_hacs_unloaded_note_absent_when_component_loaded(self, tmp_path, pueo_dirs):
+        """No extra note when the update target IS loaded (not in hacs_unloaded_domains)."""
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        profile = HAEnvironmentProfile(
+            ha_version="2026.9.0",
+            hacs_unloaded_domains=["some_other_domain"],
+        )
+        ctx = self._run(tmp_path, ha_profile=profile)
+        assert "no config entry" not in ctx
+
+    def test_hacs_unloaded_note_absent_without_profile(self, tmp_path, pueo_dirs):
+        """No error and no note when profile is None."""
+        ctx = self._run(tmp_path)
+        assert "no config entry" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # execute_core_update — post-upgrade advisor verification

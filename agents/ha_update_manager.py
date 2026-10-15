@@ -719,6 +719,16 @@ async def _run_update_analysis(
         if env_summary:
             initial_context += f"\n\n{env_summary}"
 
+        # Inform the agent when a HACS integration has no config entry so it can
+        # set safe_to_update=True without requiring a backup (zero runtime impact).
+        if _profile is not None and update.component in (
+            _profile.hacs_unloaded_domains or []
+        ):
+            initial_context += (
+                f"\nNote: {update.component} is downloaded via HACS but has no "
+                "config entry — updating has no runtime effect until set up."
+            )
+
         # Best-effort: trigger and read upgrade-advisor sensor (brianegge/ha-upgrade-advisor)
         _rest = ha_rest_client
         if _rest is not None:
