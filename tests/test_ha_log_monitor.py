@@ -441,3 +441,61 @@ class TestRepairIssueExecutorHaProfile:
             executor._ha_profile is not None
         ), "executor._ha_profile must be set after _run_repair_issue_investigation"
         assert executor._ha_profile.ha_version == "2026.9.2"
+
+
+class TestRepairIssueGateInjection:
+    """_run_repair_issue_investigation accepts an injected gate (Codecov branch coverage)."""
+
+    def test_injected_gate_is_used(self, tmp_path, pueo_dirs):
+        """Passing gate= explicitly covers the 'gate is not None' branch."""
+        import asyncio
+        from unittest import mock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_registry import AgentLoopResult
+
+        db_path = _make_repair_db(tmp_path)
+        fake_result = AgentLoopResult(outcome="success")
+        injected_gate = FakeAutonomyGate(auto_execute_result=True)
+
+        class _FakeIssue:
+            issue_key = "gate-inject-uuid"
+            issue_id = "gate-inject-uuid"
+            domain = "homeassistant"
+            severity = "warning"
+            translation_key = None
+            breaks_in_ha_version = None
+            data: dict = {}
+
+        with (
+            mock.patch("utils.agent.agent_loop.AgentLoop") as MockLoop,
+            mock.patch("utils.agent.supervisor.increment_active_agent"),
+            mock.patch("utils.agent.supervisor.decrement_active_agent"),
+            mock.patch("utils.agent.supervisor.publish_activity_done"),
+            mock.patch(
+                "utils.agent.supervisor.make_activity_timeline_callback",
+                return_value=None,
+            ),
+            mock.patch(
+                "utils.llm.llm_factory.make_llm_client", return_value=MagicMock()
+            ),
+        ):
+            mock_instance = MagicMock()
+            mock_instance.run = AsyncMock(return_value=fake_result)
+            MockLoop.return_value = mock_instance
+
+            from agents.ha_log_monitor import _run_repair_issue_investigation
+            from utils.hitl.notify import FakeNotifier
+
+            asyncio.run(
+                _run_repair_issue_investigation(
+                    issue=_FakeIssue(),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                    gate=injected_gate,
+                )
+            )
+
+        executor = MockLoop.call_args.kwargs["tool_executor"]
+        assert executor._gate is injected_gate

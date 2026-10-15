@@ -39,5 +39,5 @@ Also: `run_ha_command` now reports a non-zero exit as `success=False, error="exi
 - State-changing SSH commands cannot run in these sessions, even when auto-approved. The agent has to recommend them in its terminal tool, which produces a card.
 - Each investigation opens real SSH connections (one per tool call), as chat already does.
 - Adding a new internal read command to a tool used by these registries means adding a pattern to `_READ_ONLY_COMMAND_PATTERNS`. Otherwise the tool fails closed with an explicit error.
-- **Residual risk (#874):** the repair-issue registry still includes REST-backed `call_service` and `reload_integration`. These are auto-approved by the fake gate, so this ADR does not close the REST write path. It is tracked separately.
+- REST write tools (`call_service`, `reload_integration` in the repair-issue registry) now route through `AutonomyGate(AUTONOMY_LEVEL)`, consistent with `_run_host_health_investigation`. They produce HITL cards at lower autonomy levels instead of being silently auto-approved. Residual risk #874 is closed.
 - Security review: `known_hosts=None` (ADR 004) still applies to the inner client.
