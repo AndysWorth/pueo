@@ -1,8 +1,9 @@
 """Post-session runbook distillation.
 
 Turns a completed AgentLoop session into a structured candidate runbook or gap.
-Enqueued as a low-priority WorkItem after each session so the model never needs
-to call save_runbook manually — learning becomes infrastructure.
+Enqueued after verification (success confirmed or failure + correction) so the model
+never distills unverified conclusions.  Non-success sessions still write gaps
+immediately after the session ends.
 """
 
 from __future__ import annotations
@@ -32,51 +33,35 @@ def make_llm_client():  # pragma: no cover
 
 log = get_logger(__name__)
 
-# Evidence-gathering tools — at least this many calls are required.
-_EVIDENCE_TOOLS: frozenset[str] = frozenset(
-    {
-        "read_config",
-        "read_logs",
-        "read_file",
-        "run_ha_command",
-        "get_entity_history",
-        "get_logbook",
-        "render_ha_template",
-        "search_integrations",
-        "get_integration_diagnostics",
-        "fetch_ha_docs",
-        "search_ha_docs",
-        "fetch_url",
-        "investigate_device",
-        "get_ha_profile",
-        "get_spook_issues",
-        "get_statistics",
-        "get_recent_events",
-        "get_area_layout",
-        "get_automation_traces",
-        "get_system_error_log",
-        "get_ollama_status",
-        "get_dashboard_entity_health",
-        "check_entity_status",
-        "search_log",
-        "summarize_log_window",
-        "read_pueo_log",
-        "list_log_sources",
-        "recall",
-        "remember",
-        "get_update_release_notes",
-        "check_config_against_breaking_change",
-        "get_pueo_command_catalog",
-    }
-)
-
-_MIN_EVIDENCE_CALLS: int = 3
-
 # Per-call initial-context budget for the distillation prompt.
 _INITIAL_CONTEXT_TOKENS: int = 400
 
 # Per-step tool output budget in the trace (characters, not tokens).
 _STEP_OUTPUT_MAX_CHARS: int = 800
+
+
+def _sig_specificity(pattern: str, query: str) -> tuple[bool, int]:
+    """Return (matches, specificity) for a stored pattern against a query signature.
+
+    Both are colon-delimited strings.  A stored part of ``*`` is a wildcard that
+    matches any single query part.  Specificity = number of exact (non-wildcard)
+    parts that matched; higher is more specific.  Part counts must match exactly.
+
+    Defined here (not in agent_loop) so runbook_distiller can use it for seed lookup
+    without creating a circular import.
+    """
+    pp = pattern.split(":")
+    qp = query.split(":")
+    if len(pp) != len(qp):
+        return False, 0
+    score = 0
+    for p, q in zip(pp, qp):
+        if p == "*":
+            continue
+        if p != q:
+            return False, 0
+        score += 1
+    return True, score
 
 
 def _distillation_timeout_seconds(db_path: str, model: str) -> float:
@@ -125,22 +110,28 @@ class DistilledRunbook(BaseModel):
         default_factory=list,
         description="Pitfalls, surprises, or things that did not work",
     )
-
-
-def _count_evidence_calls(steps: list[AgentStep]) -> int:
-    """Count evidence-gathering calls with successful, non-empty output."""
-    return sum(
-        1
-        for s in steps
-        if s.tool_call.name in _EVIDENCE_TOOLS
-        and s.tool_result.success
-        and s.tool_result.output.strip()
+    instance_facts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Instance-specific facts not in the seed: device quirks, entity naming, "
+            "known-wrong states, user preferences relevant to this symptom"
+        ),
     )
-
-
-def qualifies_for_distillation(outcome: str, steps: list[AgentStep]) -> bool:
-    """Return True if this session warrants a candidate distillation LLM call."""
-    return outcome == "success" and _count_evidence_calls(steps) >= _MIN_EVIDENCE_CALLS
+    decision_rule: str = Field(
+        default="",
+        description=(
+            "One sentence rule-of-thumb for future agents: "
+            "the decisive factor that determined the right action"
+        ),
+    )
+    no_new_knowledge: bool = Field(
+        default=False,
+        description=(
+            "True when the session adds nothing beyond the seed: "
+            "no instance facts, no novel decision rule, no pitfall not already listed. "
+            "Record usage only; do not write a runbook."
+        ),
+    )
 
 
 def _format_step_trace(steps: list[AgentStep]) -> str:
@@ -176,6 +167,65 @@ def _get_existing_by_signature(
     except Exception:  # nosec B110
         pass
     return None
+
+
+def _fetch_seed_text_for_signature(db_path: str, signature: str) -> str:
+    """Return the approach text of the most specific matching seed for *signature*.
+
+    Uses the same wildcard matching as _sig_specificity.  Returns empty string when
+    no matching seed is found or the DB is unavailable.
+    """
+    if not db_path or not signature or ":" not in signature:
+        return ""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT title, approach, signature FROM agent_strategies"
+                " WHERE signature IS NOT NULL AND runbook_state = 'seed'"
+            ).fetchall()
+    except Exception:  # nosec B110
+        return ""
+
+    best: Optional[tuple[int, sqlite3.Row]] = None
+    for row in rows:
+        stored_sig = row["signature"] or ""
+        matches, spec = _sig_specificity(stored_sig, signature)
+        if not matches:
+            continue
+        if best is None or spec > best[0]:
+            best = (spec, row)
+
+    if best is None:
+        return ""
+    _, row = best
+    title = row["title"] or signature
+    approach = row["approach"] or ""
+    return f"# {title}\n\n{approach}".strip()
+
+
+def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
+    """Read the stashed distill_payload_json and signature from session_outcomes.
+
+    Returns a dict with keys: steps, initial_context, episode_stub, signature.
+    Returns None when the row is missing, already cleared, or the DB is unavailable.
+    """
+    if not db_path or not episode_id:
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT distill_payload_json, signature FROM session_outcomes"
+                " WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        if row is None or not row[0]:
+            return None
+        payload: dict = json.loads(row[0])
+        payload["signature"] = row[1] or payload.get("signature", "")
+        return payload
+    except Exception:  # nosec B110
+        return None
 
 
 def _merge_in_sqlite(
@@ -300,11 +350,17 @@ def resolve_gap(db_path: str, signature: str, episode_id: str) -> None:
 def _build_approach(runbook: DistilledRunbook) -> str:
     hypotheses_block = "\n".join(f"- {h}" for h in runbook.hypotheses) or "None noted."
     pitfalls_block = "\n".join(f"- {p}" for p in runbook.pitfalls) or "None noted."
+    instance_facts_block = (
+        "\n".join(f"- {f}" for f in runbook.instance_facts) or "None noted."
+    )
+    decision_rule_block = runbook.decision_rule or "(none)"
     return (
         f"## When to use\n{runbook.when_to_use}\n\n"
         f"## Recommended tools\n{', '.join(runbook.recommended_tools)}\n\n"
         f"## Hypotheses\n{hypotheses_block}\n\n"
         f"## Fix summary\n{runbook.fix_summary or '(none)'}\n\n"
+        f"## Instance facts\n{instance_facts_block}\n\n"
+        f"## Decision rule\n{decision_rule_block}\n\n"
         f"## Pitfalls\n{pitfalls_block}"
     )
 
@@ -318,6 +374,9 @@ def _build_prompt(
     episode_stub: Optional[dict],
     existing_approach: str,
     step_trace: str,
+    seed_text: str = "",
+    verification: Optional[str] = None,
+    correction: Optional[str] = None,
 ) -> str:
     ctx_trimmed = truncate_to_budget(
         initial_context, _INITIAL_CONTEXT_TOKENS, strategy="head"
@@ -347,18 +406,39 @@ def _build_prompt(
             + existing_approach
         )
 
+    seed_section = ""
+    if seed_text.strip():
+        seed_section = (
+            "Seed runbook for this symptom (baseline knowledge for this exact signature):\n"
+            + seed_text
+        )
+
+    correction_section = ""
+    if correction:
+        correction_section = (
+            f"User correction (ground truth — the correct action was):\n{correction}"
+        )
+
+    outcome_line = outcome
+    if verification:
+        outcome_line = f"{outcome} (verified: {verification})"
+
     parts_prompt = [
         "You are distilling a Home Assistant diagnostic session into a reusable runbook.",
         "",
         f"Session signature: {signature}",
         f"Trigger: {trigger}",
-        f"Outcome: {outcome}",
+        f"Outcome: {outcome_line}",
         "",
         "Initial context:",
         ctx_trimmed,
     ]
     if terminal_section:
         parts_prompt += ["", terminal_section]
+    if correction_section:
+        parts_prompt += ["", correction_section]
+    if seed_section:
+        parts_prompt += ["", seed_section]
     if existing_section:
         parts_prompt += ["", existing_section]
     parts_prompt += [
@@ -366,11 +446,11 @@ def _build_prompt(
         "Tool trace (FAILED = tool error, EMPTY = no output returned):",
         step_trace,
         "",
-        "Write a concise, reusable runbook at the most general level that still captures "
-        "the diagnostic approach. Use the specific trigger as an example, not as the scope. "
-        "A runbook titled 'Diagnosing transient cloud integration connectivity errors' is "
-        "reusable across all polling integrations; one scoped to a single component only "
-        "helps that one case.",
+        "Write a runbook scoped to this exact symptom signature. "
+        "Focus on the delta from the seed: instance-specific facts (device quirks, "
+        "entity naming, known-wrong states), the decisive decision rule, and any pitfalls "
+        "not already in the seed. "
+        "If this session adds nothing beyond the seed, set no_new_knowledge=true.",
     ]
     return "\n".join(parts_prompt)
 
@@ -387,37 +467,63 @@ async def distill_and_persist(
     initial_context: str = "",
     episode_stub: Optional[dict] = None,
     llm_client: Optional[LLMClientProtocol] = None,
+    verification: Optional[str] = None,
+    correction: Optional[str] = None,
+    seed_text: str = "",
 ) -> None:
     """Orchestrate post-session distillation.
 
-    On success with enough evidence: make a structured LLM call, merge or insert
-    the candidate into strategies, resolve any open gap for this signature.
-    On non-success or thin evidence: write a gap.
+    Two call paths:
+    - Non-success with no verification: write a gap (called immediately after session ends).
+    - Success or failure-with-correction after verification: make a structured LLM call
+      and merge or insert the candidate.  Set verification="success"/"failure" to trigger
+      the LLM path.  Unverified success sessions are skipped.
     """
-    if not qualifies_for_distillation(outcome, steps):
-        if outcome != "success":
-            await asyncio.to_thread(
-                write_gap,
-                db_path,
-                knowledge_store,
-                signature,
-                trigger,
-                steps,
-                outcome,
-                episode_id,
-            )
-            log.info(
-                "distillation_gap_written",
-                signature=signature,
-                outcome=outcome,
-            )
-        else:
-            log.debug(
-                "distillation_skipped",
-                signature=signature,
-                outcome=outcome,
-                evidence_calls=_count_evidence_calls(steps),
-            )
+    if outcome != "success" and verification is None:
+        # Immediate gap for non-success sessions (no verification needed).
+        await asyncio.to_thread(
+            write_gap,
+            db_path,
+            knowledge_store,
+            signature,
+            trigger,
+            steps,
+            outcome,
+            episode_id,
+        )
+        log.info(
+            "distillation_gap_written",
+            signature=signature,
+            outcome=outcome,
+        )
+        return
+
+    if verification is None:
+        # Success session but no verification yet — defer.
+        log.info(
+            "distillation_skipped",
+            reason="pending_verification",
+            signature=signature,
+            episode_id=episode_id,
+        )
+        return
+
+    if verification == "failure" and not correction:
+        log.info(
+            "distillation_skipped",
+            reason="failure_no_correction",
+            signature=signature,
+            episode_id=episode_id,
+        )
+        return
+
+    if verification not in ("success", "failure"):
+        log.info(
+            "distillation_skipped",
+            reason=f"unrecognised_verification_{verification}",
+            signature=signature,
+            episode_id=episode_id,
+        )
         return
 
     # Resolve any existing gap for this signature first.
@@ -436,6 +542,9 @@ async def distill_and_persist(
         episode_stub=episode_stub,
         existing_approach=existing_approach,
         step_trace=step_trace,
+        seed_text=seed_text,
+        verification=verification,
+        correction=correction,
     )
 
     timeout_secs = await asyncio.to_thread(
@@ -470,6 +579,15 @@ async def distill_and_persist(
             error=str(exc),
             error_type=type(exc).__name__,
             timeout_secs=round(timeout_secs, 1),
+        )
+        return
+
+    if runbook.no_new_knowledge:
+        log.info(
+            "distillation_skipped",
+            reason="no_new_knowledge",
+            signature=signature,
+            episode_id=episode_id,
         )
         return
 
@@ -559,3 +677,104 @@ async def distill_and_persist(
             signature=signature,
             strategy_id=strategy_id,
         )
+
+
+async def enqueue_distillation_after_verification(
+    episode_id: str,
+    verification: str,
+    correction: Optional[str],
+    db_path: str,
+    knowledge_store: KnowledgeStoreClientProtocol,
+    model: str,
+    llm_client: Optional[LLMClientProtocol] = None,
+) -> bool:
+    """Read the stashed session payload and enqueue a distillation WorkItem.
+
+    Called after resolve_session_outcome[_by_episode_id] completes.
+    Returns True when a WorkItem was submitted.
+    No-op (returns False) when: no work queue, failure without correction,
+    payload cleared/missing, or blank signature.
+    """
+    from utils.agent.work_queue import PRIORITY_LOW, WorkItem, get_work_queue_or_none
+
+    if verification not in ("success", "failure"):
+        return False
+    if verification == "failure" and not correction:
+        return False
+
+    queue = get_work_queue_or_none()
+    if queue is None:
+        return False
+
+    payload = await asyncio.to_thread(_read_distillation_payload, db_path, episode_id)
+    if not payload:
+        log.info(
+            "distillation_payload_missing",
+            episode_id=episode_id,
+            reason="cleared_or_absent",
+        )
+        return False
+
+    sig = payload.get("signature", "")
+    if not sig:
+        return False
+
+    steps_raw = payload.get("steps", [])
+    initial_ctx = payload.get("initial_context", "")
+    episode_stub = payload.get("episode_stub")
+
+    from utils.agent.tool_registry import AgentStep
+
+    steps: list[AgentStep] = []
+    for s in steps_raw:
+        try:
+            steps.append(AgentStep.model_validate(s))
+        except Exception:  # nosec B110
+            pass
+
+    seed_text = await asyncio.to_thread(_fetch_seed_text_for_signature, db_path, sig)
+
+    _correction = correction
+    _verification = verification
+    _ep = episode_id
+    _db = db_path
+    _store = knowledge_store
+    _model = model
+    _llm = llm_client
+
+    async def _run_distill() -> None:
+        await distill_and_persist(
+            trigger=sig,
+            signature=sig,
+            steps=steps,
+            outcome="success" if _verification == "success" else "failure",
+            episode_id=_ep,
+            db_path=_db,
+            knowledge_store=_store,
+            model=_model,
+            initial_context=initial_ctx,
+            episode_stub=episode_stub,
+            llm_client=_llm,
+            seed_text=seed_text,
+            verification=_verification,
+            correction=_correction,
+        )
+
+    submitted = await queue.submit(
+        WorkItem(
+            priority=PRIORITY_LOW,
+            activity_type="runbook_distillation",
+            description=f"Distill {sig} ({_verification})",
+            dedup_key=f"distill_after_verify_{_ep}",
+            suppress_while_running=frozenset(),
+            coro_factory=_run_distill,
+        )
+    )
+    if submitted:
+        log.info(
+            "distillation_enqueued_after_verification",
+            signature=sig,
+            episode_id=_ep,
+            verification=_verification,
+        )
+    return bool(submitted)

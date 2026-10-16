@@ -172,7 +172,9 @@ def export_single_episode_yaml(episode: RepairEpisode, description: str = "") ->
     )
 
 
-def format_episode_for_embedding(episode: RepairEpisode) -> str:
+def format_episode_for_embedding(
+    episode: RepairEpisode, correction: "Optional[str]" = None
+) -> str:
     """Serialize a repair episode as a searchable text chunk for ChromaDB embedding."""
     parts = [f"trigger: {episode.trigger}"]
     if episode.symptoms:
@@ -185,6 +187,8 @@ def format_episode_for_embedding(episode: RepairEpisode) -> str:
         f"verification: {'success' if episode.verification_result else 'failed'}"
     )
     parts.append(f"model: {episode.model_used}")
+    if correction:
+        parts.append(f"user correction: {correction}")
     return "\n".join(parts)
 
 

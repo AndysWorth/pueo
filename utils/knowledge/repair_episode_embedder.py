@@ -39,8 +39,8 @@ def embed_repair_episodes(store: "KnowledgeStoreClientProtocol", db_path: str) -
     documents: list[str] = []
     metadatas: list[dict] = []
 
-    for ep in episodes:
-        text = format_episode_for_embedding(ep)
+    for ep, correction in episodes:
+        text = format_episode_for_embedding(ep, correction=correction)
         ids.append(f"episode_{ep.id}")
         documents.append(text)
         metadatas.append(
@@ -60,7 +60,7 @@ def embed_repair_episodes(store: "KnowledgeStoreClientProtocol", db_path: str) -
         return 0
 
     now = time.time()
-    embedded_ids = [ep.id for ep in episodes]
+    embedded_ids = [ep.id for ep, _ in episodes]
     try:
         _mark_episodes_embedded(db_path, embedded_ids, now)
     except Exception as exc:
@@ -71,7 +71,15 @@ def embed_repair_episodes(store: "KnowledgeStoreClientProtocol", db_path: str) -
 
 
 def _load_unembedded_episodes(db_path: str) -> list:
-    """Load repair episodes that have not yet been embedded (embedded_at IS NULL)."""
+    """Load verified repair episodes that have not yet been embedded.
+
+    Only embeds episodes that have a session_outcomes row with verification in
+    ('success', 'failure') — i.e. confirmed by the system or a user action.
+    Pre-S2 episodes that have no session_outcomes row at all are embedded as
+    before (left-join NULL rows pass through).
+
+    Returns a list of (RepairEpisode, correction: str | None) tuples.
+    """
     import json
 
     from utils.repair.repair_episode import RepairEpisode
@@ -80,7 +88,12 @@ def _load_unembedded_episodes(db_path: str) -> list:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM repair_episodes WHERE embedded_at IS NULL"
+            "SELECT r.*, s.correction"
+            " FROM repair_episodes r"
+            " LEFT JOIN session_outcomes s ON r.id = s.episode_id"
+            " WHERE r.embedded_at IS NULL"
+            "   AND (s.episode_id IS NULL"
+            "     OR s.verification IN ('success', 'failure'))"
         ).fetchall()
 
     episodes = []
@@ -94,30 +107,28 @@ def _load_unembedded_episodes(db_path: str) -> list:
             summary = tc.pop("result_summary", "")
             tool_sequence.append(ToolCall(**tc))
             tool_result_summaries.append(summary)
-        episodes.append(
-            RepairEpisode(
-                id=row["id"],
-                timestamp=row["timestamp"],
-                trigger=row["trigger"],
-                symptoms=json.loads(row["symptoms"]),
-                tool_sequence=tool_sequence,
-                tool_result_summaries=tool_result_summaries,
-                hypothesis_chain=json.loads(row["hypothesis_chain"]),
-                fix_applied=row["fix_applied"],
-                verification_result=bool(row["verification_result"]),
-                model_used=row["model_used"],
-                escalated=bool(row["escalated"]),
-                duration_seconds=row["duration_seconds"],
-                submitted_at=row["submitted_at"] if "submitted_at" in keys else None,
-                pr_url=row["pr_url"] if "pr_url" in keys else None,
-                initial_context=(
-                    row["initial_context"] if "initial_context" in keys else None
-                ),
-                activity_type=(
-                    row["activity_type"] if "activity_type" in keys else None
-                ),
-            )
+        ep = RepairEpisode(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            trigger=row["trigger"],
+            symptoms=json.loads(row["symptoms"]),
+            tool_sequence=tool_sequence,
+            tool_result_summaries=tool_result_summaries,
+            hypothesis_chain=json.loads(row["hypothesis_chain"]),
+            fix_applied=row["fix_applied"],
+            verification_result=bool(row["verification_result"]),
+            model_used=row["model_used"],
+            escalated=bool(row["escalated"]),
+            duration_seconds=row["duration_seconds"],
+            submitted_at=row["submitted_at"] if "submitted_at" in keys else None,
+            pr_url=row["pr_url"] if "pr_url" in keys else None,
+            initial_context=(
+                row["initial_context"] if "initial_context" in keys else None
+            ),
+            activity_type=(row["activity_type"] if "activity_type" in keys else None),
         )
+        correction = row["correction"] if "correction" in keys else None
+        episodes.append((ep, correction))
     return episodes
 
 
