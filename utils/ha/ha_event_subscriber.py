@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from utils.core.logging import get_logger
+from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS, host_sleep_seconds
 
 _log = get_logger("ha_event_subscriber")
 
@@ -42,6 +43,11 @@ _SUB_EVENTS = [
 ]
 _NOTIF_SUB_TYPE = "persistent_notification/subscribe"
 _NOTIF_EVENT_LABEL = "persistent_notification_event"
+
+
+def _classify_drop(slept_s: float) -> str:
+    """Classify a WS drop as ``'sleep'`` or ``'error'`` based on inferred host sleep."""
+    return "sleep" if slept_s >= HOST_SLEEP_THRESHOLD_SECONDS else "error"
 
 
 def _is_interesting_state_change(data: dict) -> bool:
@@ -79,6 +85,9 @@ class HAEventSubscriber:  # pragma: no cover
         self._token = token
         self._buffer: collections.deque[dict] = collections.deque(maxlen=buffer_size)
         self._connected = False
+        self._session_count: int = 0
+        self._last_rx_wall: float = 0.0
+        self._last_rx_mono: float = 0.0
 
     def get_events(
         self,
@@ -98,6 +107,10 @@ class HAEventSubscriber:  # pragma: no cover
     def is_connected(self) -> bool:
         return self._connected
 
+    def session_count(self) -> int:
+        """Number of successfully established WS sessions since startup."""
+        return self._session_count
+
     async def run_forever(self) -> None:
         """Reconnect loop with exponential backoff.  Intended as a supervisor task."""
         backoff = 2.0
@@ -113,11 +126,28 @@ class HAEventSubscriber:  # pragma: no cover
                 if self._connected:
                     backoff = 2.0
                 self._connected = False
-                _log.warning(
-                    "ha_event_subscriber_error",
-                    error=str(exc),
-                    retry_in=backoff,
-                )
+                # Classify the drop: if the host slept since the last message,
+                # log at INFO (expected) rather than WARNING (unexpected error).
+                _slept_s = 0.0
+                if self._last_rx_wall > 0:
+                    _slept_s = host_sleep_seconds(
+                        self._last_rx_wall,
+                        self._last_rx_mono,
+                        time.time(),
+                        time.monotonic(),
+                    )
+                if _classify_drop(_slept_s) == "sleep":
+                    _log.info(
+                        "ha_event_subscriber_reconnect_after_sleep",
+                        slept_s=round(_slept_s, 1),
+                        error=str(exc),
+                    )
+                else:
+                    _log.warning(
+                        "ha_event_subscriber_error",
+                        error=str(exc),
+                        retry_in=backoff,
+                    )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300.0)
 
@@ -159,6 +189,9 @@ class HAEventSubscriber:  # pragma: no cover
                 sub_id_map[notif_id] = _NOTIF_EVENT_LABEL
 
             self._connected = True
+            self._session_count += 1
+            self._last_rx_wall = time.time()
+            self._last_rx_mono = time.monotonic()
             _log.info(
                 "ha_event_subscriber_connected",
                 host=self._host,
@@ -166,6 +199,8 @@ class HAEventSubscriber:  # pragma: no cover
             )
 
             async for raw in ws:
+                self._last_rx_wall = time.time()
+                self._last_rx_mono = time.monotonic()
                 msg = json.loads(raw)
                 if msg.get("type") == "event":
                     self._handle_event(msg, sub_id_map)
@@ -211,9 +246,11 @@ class FakeHAEventSubscriber:
         self,
         events: list[dict] | None = None,
         connected: bool = True,
+        session_count: int = 0,
     ) -> None:
         self._events: list[dict] = events or []
         self._connected = connected
+        self._session_count: int = session_count
 
     async def run_forever(self) -> None:
         """Sleep indefinitely — cancelled quickly in tests."""
@@ -234,3 +271,6 @@ class FakeHAEventSubscriber:
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def session_count(self) -> int:
+        return self._session_count

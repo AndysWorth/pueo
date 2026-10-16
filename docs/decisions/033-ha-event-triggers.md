@@ -84,6 +84,34 @@ lengthening their sleep interval.
 - `supervised_sleep` gains an extra `asyncio.wait_for` call per sleep; overhead is
   negligible (one coroutine awaited per loop iteration).
 - A new supervisor task `ha_event_wake_dispatch` appears on the Overview page.
+
+### Addendum — Host sleep and catch-up wakes (2026-10-16)
+
+macOS asyncio timers use `time.monotonic()`, which does not advance during system sleep.
+While the Mac sleeps, the entire supervisor is frozen; HA closes the idle WebSocket
+connection and the three poll loops are stretched by the sleep duration.  To handle this:
+
+1. **Sleep detection.** The wake dispatcher compares wall-clock elapsed (`time.time()`)
+   with monotonic elapsed (`time.monotonic()`) on every 1-second tick.
+   `host_sleep_seconds()` returns the difference; a result ≥ `HOST_SLEEP_THRESHOLD_SECONDS`
+   (30 s) means the host slept.  All three time-sensitive loops are woken immediately,
+   bypassing the 5-second debounce.  The event `host_sleep_detected` is logged at INFO.
+
+2. **Reconnect-triggered catch-up.** `HAEventSubscriber.session_count()` increments after
+   each successful WS handshake.  When the dispatcher sees the count rise above a previous
+   non-zero value (a reconnect, not the first connect), it wakes all three loops.  The
+   event `ha_event_subscriber_reconnect_catchup` is logged at INFO.
+
+3. **Sleep-aware drop classification.** `run_forever` now computes how long the host may
+   have slept since the last received message (using `_last_rx_wall` and `_last_rx_mono`
+   set in `_connect_and_subscribe`).  Drops inferred to follow a host sleep are logged at
+   INFO as `ha_event_subscriber_reconnect_after_sleep`; unexpected drops remain WARNING
+   `ha_event_subscriber_error`.  The classification uses the pure function
+   `_classify_drop(slept_s) -> str` in `ha_event_subscriber.py`.
+
+Together these ensure that notifications, repairs, and updates that arrived while the host
+was asleep are checked within one poll cycle after wake, rather than waiting up to 60 min
+for the next scheduled fallback poll.
 - `update.*` state changes are filtered by `_is_update_wake_worthy` (`main.py`) before
   waking `update_check`.  Attribute-only mutations such as `in_progress` and
   `update_percentage` — emitted every few seconds during an install — are ignored so the
