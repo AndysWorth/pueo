@@ -491,6 +491,28 @@ def _migrate_v38(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE backup_registry ADD COLUMN backup_type TEXT")
 
 
+def _migrate_v39(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "  episode_id TEXT PRIMARY KEY,"
+        "  signature TEXT,"
+        "  session_type TEXT,"
+        "  subject_key TEXT,"
+        "  conclusion_json TEXT,"
+        "  distill_payload_json TEXT,"
+        "  created_at TEXT,"
+        "  verification TEXT,"
+        "  verified_at TEXT,"
+        "  verified_by TEXT,"
+        "  correction TEXT"
+        ")"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_key"
+        " ON session_outcomes(subject_key)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -530,6 +552,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (36, _migrate_v36),
     (37, _migrate_v37),
     (38, _migrate_v38),
+    (39, _migrate_v39),
 ]
 
 
@@ -709,32 +732,169 @@ def mark_repair_resolved(issue_key: str) -> None:
         conn.commit()
 
 
-def verify_pending_runbook_usage(signature: str, verification: str) -> None:
-    """Mark pending runbook_usage rows for *signature* with the given verification outcome.
+def write_session_outcome(
+    episode_id: str,
+    signature: str,
+    session_type: str,
+    subject_key: str,
+    conclusion_json: str,
+    distill_payload_json: str,
+) -> None:
+    """Persist a session_outcomes row with verification='pending'.
 
-    verification should be 'success' or 'failure'.  Only rows with no existing
-    verification are updated (i.e., still pending).
+    Called synchronously from asyncio.to_thread at the end of every AgentLoop session.
+    Subject_key is the domain-specific identifier used by system verifiers (e.g. the
+    issue_key for repairs, the entity_id for updates).
     """
-    if not signature:
-        return
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
-                "UPDATE runbook_usage SET verification = ?, verified_at = ?"
-                " WHERE signature = ? AND (verification IS NULL OR verification = '')",
-                (verification, now, signature),
+                "INSERT OR IGNORE INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key,"
+                "  conclusion_json, distill_payload_json, created_at, verification)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (
+                    episode_id,
+                    signature,
+                    session_type,
+                    subject_key,
+                    conclusion_json,
+                    distill_payload_json,
+                    now,
+                ),
             )
             conn.commit()
     except Exception:  # nosec B110
         pass
 
 
-def sweep_stale_pending_usage() -> None:
-    """Mark runbook_usage rows still pending after 48 h as 'unverified'.
+def resolve_session_outcome(
+    subject_key: str,
+    verification: str,
+    by: str,
+    correction: "Optional[str]" = None,
+) -> None:
+    """Mark pending session_outcomes rows for *subject_key* and update runbook_usage.
 
-    Called periodically so old pending rows don't linger and eventually
-    skew auto-validation counts.
+    - Updates all pending session_outcomes rows for the given subject_key.
+    - Updates matching runbook_usage rows by episode_id (not by signature), fixing
+      the historical bug where the wrong delimiter was used when reconstructing signatures.
+    - Runs _auto_validate_if_eligible for affected strategy_ids.
+    - The distillation hook is a no-op until S5 wires it to verification.
+
+    verification should be 'success' or 'failure'.
+    by should be 'system' or 'user'.
+    """
+    if not subject_key:
+        return
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            # Find all pending episode_ids for this subject_key.
+            rows = conn.execute(
+                "SELECT episode_id FROM session_outcomes"
+                " WHERE subject_key = ?"
+                "   AND (verification IS NULL OR verification = 'pending')",
+                (subject_key,),
+            ).fetchall()
+            if not rows:
+                return
+            episode_ids = [r[0] for r in rows]
+
+            # Update session_outcomes.
+            for eid in episode_ids:
+                conn.execute(
+                    "UPDATE session_outcomes"
+                    " SET verification = ?, verified_at = ?, verified_by = ?, correction = ?"
+                    " WHERE episode_id = ?",
+                    (verification, now, by, correction, eid),
+                )
+
+            # Update runbook_usage rows that share these episode_ids.
+            placeholders = ",".join("?" * len(episode_ids))
+            conn.execute(
+                f"UPDATE runbook_usage SET verification = ?, verified_at = ?"  # nosec B608
+                f" WHERE episode_id IN ({placeholders})"
+                f"   AND (verification IS NULL OR verification = '' OR verification = 'pending')",
+                [verification, now] + episode_ids,
+            )
+
+            conn.commit()
+
+            # Auto-validate candidates that now have enough verified successes.
+            import config as _cfg
+
+            min_successes = _cfg.RUNBOOK_VALIDATE_MIN_SUCCESSES
+            strategy_rows = conn.execute(
+                f"SELECT DISTINCT strategy_id FROM runbook_usage"  # nosec B608
+                f" WHERE episode_id IN ({placeholders})",
+                episode_ids,
+            ).fetchall()
+            for (sid,) in strategy_rows:
+                _auto_validate_if_eligible_standalone(conn, sid, min_successes)
+
+    except Exception:  # nosec B110
+        pass
+
+
+def _auto_validate_if_eligible_standalone(
+    conn: sqlite3.Connection, strategy_id: str, min_successes: int
+) -> None:
+    """Promote candidate→validated when success threshold is met with no failures.
+
+    Standalone version (no Chroma sync) used from resolve_session_outcome where we
+    don't have a knowledge_store reference.  Chroma sync is deferred to the next
+    RAG refresh.
+    """
+    import structlog as _sl
+
+    _log = _sl.get_logger()
+
+    row = conn.execute(
+        "SELECT runbook_state FROM agent_strategies WHERE id = ?",
+        (strategy_id,),
+    ).fetchone()
+    if not row or row[0] != "candidate":
+        return
+
+    success_count = conn.execute(
+        "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+        " WHERE strategy_id = ? AND verification = 'success' AND episode_id != ''",
+        (strategy_id,),
+    ).fetchone()[0]
+    failure_count = conn.execute(
+        "SELECT COUNT(DISTINCT episode_id) FROM runbook_usage"
+        " WHERE strategy_id = ? AND verification = 'failure' AND episode_id != ''",
+        (strategy_id,),
+    ).fetchone()[0]
+
+    if failure_count >= 2 and success_count == 0:
+        _log.warning(
+            "runbook_high_failure_rate",
+            strategy_id=strategy_id,
+            failures=failure_count,
+        )
+        return
+
+    if success_count >= min_successes and failure_count == 0:
+        conn.execute(
+            "UPDATE agent_strategies SET runbook_state = 'validated' WHERE id = ?",
+            (strategy_id,),
+        )
+        conn.commit()
+        _log.info(
+            "runbook_auto_validated",
+            strategy_id=strategy_id,
+            successes=success_count,
+        )
+
+
+def sweep_stale_pending_usage() -> None:
+    """Mark runbook_usage and session_outcomes rows still pending after 48 h as 'unverified'.
+
+    For session_outcomes, the distill_payload_json is also cleared to free space.
+    Called periodically so old pending rows don't linger and skew auto-validation counts.
     """
     threshold_iso = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600)
@@ -745,6 +905,13 @@ def sweep_stale_pending_usage() -> None:
             conn.execute(
                 "UPDATE runbook_usage SET verification = 'unverified', verified_at = ?"
                 " WHERE (verification IS NULL OR verification = '')"
+                "   AND created_at < ?",
+                (now, threshold_iso),
+            )
+            conn.execute(
+                "UPDATE session_outcomes"
+                " SET verification = 'unverified', verified_at = ?, distill_payload_json = NULL"
+                " WHERE (verification IS NULL OR verification = 'pending')"
                 "   AND created_at < ?",
                 (now, threshold_iso),
             )

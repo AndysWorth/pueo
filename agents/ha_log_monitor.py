@@ -648,6 +648,7 @@ async def _run_repair_issue_investigation(
             initial_context=initial_context,
             knowledge_query=_repair_issue_knowledge_query(issue),
             signature=sig_repair(issue.domain, issue.translation_key or ""),
+            subject_key=issue.issue_key,
         )
         publish_activity_done("repair_issue", result.outcome)
         if result.outcome != "success":
@@ -1403,7 +1404,7 @@ async def poll_for_repairs(
     from .ha_agent_advanced import (
         mark_repair_resolved,
         record_repair_seen,
-        verify_pending_runbook_usage,
+        resolve_session_outcome,
     )
     from utils.ha.ha_rest_client import get_ha_repair_issues
     from utils.ha.ha_ws_client import HAWebSocketClient
@@ -1534,14 +1535,11 @@ async def poll_for_repairs(
             if issue_key not in active_keys:
                 mark_repair_resolved(issue_key)
                 log.info("repair_resolved", issue_key=issue_key)
-                # Mark any pending runbook_usage rows for this symptom as verified.
+                # Resolve session outcomes and runbook_usage rows by issue_key (subject_key).
+                # This fixes the historic bug where partition(":") failed on keys using "/".
                 try:
-                    from utils.knowledge.runbook_signature import sig_repair
-
-                    _domain, _, _tk = issue_key.partition(":")
-                    _sig = sig_repair(_domain, translation_key or _tk)
                     await asyncio.to_thread(
-                        verify_pending_runbook_usage, _sig, "success"
+                        resolve_session_outcome, issue_key, "success", "system"
                     )
                 except Exception:  # nosec B110
                     pass

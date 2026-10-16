@@ -516,6 +516,28 @@ def _migrate_v38(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE backup_registry ADD COLUMN backup_type TEXT")
 
 
+def _migrate_v39(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "  episode_id TEXT PRIMARY KEY,"
+        "  signature TEXT,"
+        "  session_type TEXT,"
+        "  subject_key TEXT,"
+        "  conclusion_json TEXT,"
+        "  distill_payload_json TEXT,"
+        "  created_at TEXT,"
+        "  verification TEXT,"
+        "  verified_at TEXT,"
+        "  verified_by TEXT,"
+        "  correction TEXT"
+        ")"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_key"
+        " ON session_outcomes(subject_key)"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -555,6 +577,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (36, _migrate_v36),
     (37, _migrate_v37),
     (38, _migrate_v38),
+    (39, _migrate_v39),
 ]
 
 
