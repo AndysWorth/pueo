@@ -1482,18 +1482,32 @@ async def supervisor_main(config_path: Path) -> None:
             _last_checked = _time.time()
             _prev_wall = _time.time()
             _prev_mono = _time.monotonic()
+            _prev_sessions = 0
             while True:
                 await asyncio.sleep(_POLL)
                 now = _time.time()
                 now_mono = _time.monotonic()
-                from utils.system.sleep_guard import host_sleep_seconds
+                from utils.system.sleep_guard import (
+                    host_sleep_seconds,
+                    HOST_SLEEP_THRESHOLD_SECONDS,
+                )
 
                 _slept = host_sleep_seconds(_prev_wall, _prev_mono, now, now_mono)
                 _prev_wall = now
                 _prev_mono = now_mono
-                catchup = _catchup_wake_targets(0, 0, _slept)
+                _cur_sessions = _esub_wd.session_count()
+                catchup = _catchup_wake_targets(_prev_sessions, _cur_sessions, _slept)
+                _prev_sessions = _cur_sessions
                 if catchup:
-                    _gl_wd("main").info("host_sleep_detected", slept_s=round(_slept, 1))
+                    if _slept >= HOST_SLEEP_THRESHOLD_SECONDS:
+                        _gl_wd("main").info(
+                            "host_sleep_detected", slept_s=round(_slept, 1)
+                        )
+                    else:
+                        _gl_wd("main").info(
+                            "ha_event_subscriber_reconnect_catchup",
+                            session_count=_cur_sessions,
+                        )
                     for _ct in catchup:
                         _last_wake[_ct] = now
                         try:

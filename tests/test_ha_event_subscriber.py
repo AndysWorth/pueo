@@ -577,13 +577,11 @@ class TestHAEventSubscriberProtocol:
     def test_fake_satisfies_protocol(self):
         """FakeHAEventSubscriber satisfies HAEventSubscriberProtocol structurally."""
         from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
-        from interfaces import HAEventSubscriberProtocol
-        from typing import runtime_checkable, Protocol
 
-        # Verify required methods are present
         fake = FakeHAEventSubscriber()
         assert callable(fake.get_events)
         assert callable(fake.is_connected)
+        assert callable(fake.session_count)
 
     def test_real_subscriber_has_required_methods(self):
         from utils.ha.ha_event_subscriber import HAEventSubscriber
@@ -592,3 +590,57 @@ class TestHAEventSubscriberProtocol:
         assert callable(sub.get_events)
         assert callable(sub.is_connected)
         assert callable(sub.run_forever)
+        assert callable(sub.session_count)
+
+
+# ---------------------------------------------------------------------------
+# _classify_drop
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyDrop:
+    def _fn(self, slept_s: float) -> str:
+        from utils.ha.ha_event_subscriber import _classify_drop
+
+        return _classify_drop(slept_s)
+
+    def test_below_threshold_returns_error(self):
+        from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS
+
+        assert self._fn(HOST_SLEEP_THRESHOLD_SECONDS - 1.0) == "error"
+
+    def test_at_threshold_returns_sleep(self):
+        from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS
+
+        assert self._fn(HOST_SLEEP_THRESHOLD_SECONDS) == "sleep"
+
+    def test_above_threshold_returns_sleep(self):
+        assert self._fn(3600.0) == "sleep"
+
+    def test_zero_returns_error(self):
+        assert self._fn(0.0) == "error"
+
+
+# ---------------------------------------------------------------------------
+# FakeHAEventSubscriber.session_count
+# ---------------------------------------------------------------------------
+
+
+class TestFakeHAEventSubscriberSessionCount:
+    def test_default_session_count_is_zero(self):
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        assert FakeHAEventSubscriber().session_count() == 0
+
+    def test_session_count_set_via_constructor(self):
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        fake = FakeHAEventSubscriber(session_count=3)
+        assert fake.session_count() == 3
+
+    def test_session_count_settable_directly(self):
+        from utils.ha.ha_event_subscriber import FakeHAEventSubscriber
+
+        fake = FakeHAEventSubscriber()
+        fake._session_count = 5
+        assert fake.session_count() == 5
