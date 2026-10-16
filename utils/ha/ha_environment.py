@@ -38,6 +38,9 @@ class HAEnvironmentProfile:
     sentinel_installed: bool = False
     battery_notes_installed: bool = False
     hacs_unloaded_domains: list[str] = field(default_factory=list)
+    hacs_repo_map: dict = field(
+        default_factory=dict
+    )  # repo_id → (full_name, domain, is_loaded)
 
 
 async def build_environment_profile(
@@ -105,19 +108,25 @@ async def build_environment_profile(
         )
         profile.fetch_errors["installed_integrations"] = str(e)
 
-    # 4. hacs_integrations — extract slugs from (slug, repo, domain) triples;
-    #    compute hacs_unloaded_domains = HACS domains not present as loaded components
-    _hacs_triples: list[tuple[str, str, str]] = []
+    # 4. hacs_integrations — extract slugs from (slug, repo, domain, repo_id) 4-tuples;
+    #    compute hacs_unloaded_domains = HACS domains not present as loaded components;
+    #    build hacs_repo_map = {repo_id: (full_name, domain, is_loaded)}
+    _hacs_triples: list[tuple[str, str, str, str]] = []
     try:
         _hacs_triples = _discover_hacs(ha_url, ha_token)
-        profile.hacs_integrations = [slug for slug, _, _ in _hacs_triples]
+        profile.hacs_integrations = [slug for slug, _, _, _ in _hacs_triples]
     except Exception as e:  # nosec B110
         log.warning("ha_profile_field_failed", field="hacs_integrations", exc=str(e))
         profile.fetch_errors["hacs_integrations"] = str(e)
     _installed_set = set(profile.installed_integrations)
     profile.hacs_unloaded_domains = sorted(
-        {domain for _, _, domain in _hacs_triples if domain} - _installed_set
+        {domain for _, _, domain, _ in _hacs_triples if domain} - _installed_set
     )
+    profile.hacs_repo_map = {
+        repo_id: (full_name, domain, domain in _installed_set)
+        for _, full_name, domain, repo_id in _hacs_triples
+        if repo_id
+    }
 
     # 4b. Companion-integration flags — derived from installed_integrations (no extra network call)
     profile.spook_installed = "spook" in profile.installed_integrations

@@ -273,6 +273,7 @@ class TestLoadEnvironmentProfile:
             data["installed_integrations"] = []
             data["hacs_integrations"] = []
             data["hacs_unloaded_domains"] = []
+            data["hacs_repo_map"] = {}
             data["config_yaml_top_keys"] = []
             data["config_entries"] = []
             data["fetch_errors"] = {}
@@ -316,6 +317,7 @@ class TestLoadEnvironmentProfile:
             data["installed_integrations"] = []
             data["hacs_integrations"] = []
             data["hacs_unloaded_domains"] = []
+            data["hacs_repo_map"] = {}
             data["config_yaml_top_keys"] = []
             data["config_entries"] = []
             data["fetch_errors"] = {}
@@ -959,7 +961,7 @@ class TestHacsUnloadedDomains:
         """A HACS integration whose domain is not in installed_integrations is unloaded."""
         profile = self._run(
             installed=["zha", "mqtt"],
-            hacs_triples=[("spook", "tetele/spook", "spook")],
+            hacs_triples=[("spook", "tetele/spook", "spook", "605635573")],
         )
         assert "spook" in profile.hacs_unloaded_domains
 
@@ -967,7 +969,7 @@ class TestHacsUnloadedDomains:
         """A HACS integration whose domain IS in installed_integrations is not unloaded."""
         profile = self._run(
             installed=["zha", "spook"],
-            hacs_triples=[("spook", "tetele/spook", "spook")],
+            hacs_triples=[("spook", "tetele/spook", "spook", "605635573")],
         )
         assert profile.hacs_unloaded_domains == []
 
@@ -975,8 +977,8 @@ class TestHacsUnloadedDomains:
         profile = self._run(
             installed=["zha", "browser_mod"],
             hacs_triples=[
-                ("browser_mod", "thomasloven/browser_mod", "browser_mod"),
-                ("spook", "tetele/spook", "spook"),
+                ("browser_mod", "thomasloven/browser_mod", "browser_mod", "111"),
+                ("spook", "tetele/spook", "spook", "605635573"),
             ],
         )
         assert profile.hacs_unloaded_domains == ["spook"]
@@ -989,8 +991,8 @@ class TestHacsUnloadedDomains:
         profile = self._run(
             installed=[],
             hacs_triples=[
-                ("z_pkg", "org/z_pkg", "z_pkg"),
-                ("a_pkg", "org/a_pkg", "a_pkg"),
+                ("z_pkg", "org/z_pkg", "z_pkg", ""),
+                ("a_pkg", "org/a_pkg", "a_pkg", ""),
             ],
         )
         assert profile.hacs_unloaded_domains == ["a_pkg", "z_pkg"]
@@ -999,14 +1001,14 @@ class TestHacsUnloadedDomains:
         """When HACS domain differs from slug, use the domain field for unloaded check."""
         profile = self._run(
             installed=["actual_domain"],
-            hacs_triples=[("repo_slug", "org/repo", "actual_domain")],
+            hacs_triples=[("repo_slug", "org/repo", "actual_domain", "999")],
         )
         assert profile.hacs_unloaded_domains == []
 
     def test_unloaded_domain_shown_in_format_summary(self):
         profile = self._run(
             installed=["zha"],
-            hacs_triples=[("spook", "tetele/spook", "spook")],
+            hacs_triples=[("spook", "tetele/spook", "spook", "605635573")],
         )
         summary = format_profile_summary(profile)
         assert "downloaded but not set up" in summary
@@ -1015,7 +1017,7 @@ class TestHacsUnloadedDomains:
     def test_no_unloaded_note_when_all_loaded(self):
         profile = self._run(
             installed=["zha", "spook"],
-            hacs_triples=[("spook", "tetele/spook", "spook")],
+            hacs_triples=[("spook", "tetele/spook", "spook", "605635573")],
         )
         summary = format_profile_summary(profile)
         assert "downloaded but not set up" not in summary

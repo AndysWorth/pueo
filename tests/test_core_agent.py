@@ -1121,7 +1121,7 @@ class TestHAEnvironmentProfile:
                 config_remote_path="/config/configuration.yaml",
                 _discover_integrations=lambda url, token: ["zha", "mqtt"],
                 _discover_hacs=lambda url, token: [
-                    ("hacs_integ", "owner/repo", "hacs_integ")
+                    ("hacs_integ", "owner/repo", "hacs_integ", "12345")
                 ],
             )
         )
@@ -18055,3 +18055,397 @@ class TestGapRunbookAutoSave:
         assert executor._query_knowledge_had_results
         rows = self._gap_rows(db, "test_trigger")
         assert len(rows) == 0
+
+
+# ── S6: HACS repo id + DB-persisted post-update pending flags ─────────────────
+
+
+class TestHacsRepoIdFromIssue:
+    """Unit tests for _hacs_repo_id_from_issue helper."""
+
+    def test_extracts_repo_id_from_matching_issue(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            issue_id="restart_required_99887_pycync",
+            domain="hacs",
+            issue_key="hacs/restart_required_99887_pycync",
+            severity="warning",
+            breaks_in_ha_version=None,
+            translation_key="restart_required",
+        )
+        assert _hacs_repo_id_from_issue(issue) == "99887"
+
+    def test_returns_empty_for_non_hacs_domain(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            issue_id="restart_required_99887_pycync",
+            domain="zha",
+            issue_key="zha/restart_required_99887_pycync",
+            severity="warning",
+            breaks_in_ha_version=None,
+            translation_key="restart_required",
+        )
+        assert _hacs_repo_id_from_issue(issue) == ""
+
+    def test_returns_empty_for_unrelated_issue_key(self):
+        from agents.ha_log_monitor import _hacs_repo_id_from_issue
+        from utils.ha.ha_rest_client import HARepairIssue
+
+        issue = HARepairIssue(
+            issue_id="other_issue",
+            domain="hacs",
+            issue_key="hacs/other_issue",
+            severity="warning",
+            breaks_in_ha_version=None,
+            translation_key="other_issue",
+        )
+        assert _hacs_repo_id_from_issue(issue) == ""
+
+
+class TestPostUpdatePendingFlags:
+    """DB-backed post-update pending flags: set / get / clear / find_any / TTL expiry."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def test_set_and_get_pending(self, db_path):
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            get_post_update_pending,
+        )
+
+        set_post_update_pending("myplugin", "restart", db_path)
+        assert get_post_update_pending("myplugin", db_path) == "restart"
+
+    def test_get_returns_none_when_not_set(self, db_path):
+        from agents.ha_update_manager import get_post_update_pending
+
+        assert get_post_update_pending("nonexistent", db_path) is None
+
+    def test_clear_removes_flag(self, db_path):
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            get_post_update_pending,
+            clear_post_update_pending,
+        )
+
+        set_post_update_pending("myplugin", "restart", db_path)
+        clear_post_update_pending("myplugin", db_path)
+        assert get_post_update_pending("myplugin", db_path) is None
+
+    def test_find_any_returns_slug_for_matching_kind(self, db_path):
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            find_any_post_update_pending,
+        )
+
+        set_post_update_pending("pycync", "restart", db_path)
+        result = find_any_post_update_pending("restart", db_path)
+        assert result == "pycync"
+
+    def test_find_any_returns_none_for_wrong_kind(self, db_path):
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            find_any_post_update_pending,
+        )
+
+        set_post_update_pending("os", "reboot", db_path)
+        assert find_any_post_update_pending("restart", db_path) is None
+
+    def test_get_returns_none_after_ttl_expired(self, db_path, monkeypatch):
+        import time as _time
+        import agents.ha_update_manager as _um
+
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            get_post_update_pending,
+        )
+
+        set_post_update_pending("myplugin", "restart", db_path)
+        # Patch time.time on the module's reference so TTL check sees expired value.
+        original = _time.time
+        monkeypatch.setattr(_um.time, "time", lambda: original() + 3600)
+        assert get_post_update_pending("myplugin", db_path) is None
+
+    def test_find_any_returns_none_after_ttl_expired(self, db_path, monkeypatch):
+        import time as _time
+        import agents.ha_update_manager as _um
+
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            find_any_post_update_pending,
+        )
+
+        set_post_update_pending("myplugin", "restart", db_path)
+        original = _time.time
+        monkeypatch.setattr(_um.time, "time", lambda: original() + 3600)
+        assert find_any_post_update_pending("restart", db_path) is None
+
+
+class TestHacsRestartRequiredShortCircuit:
+    """poll_for_repairs HACS restart_required short-circuit behavior."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _hacs_restart_issue(self, repo_id: str = "99887") -> dict:
+        # issue_key is built as f"{domain}/{issue_id}" by get_ha_repair_issues,
+        # so issue_id must carry the repo_id for the regex to match.
+        return {
+            "issue_id": f"restart_required_{repo_id}_pycync",
+            "domain": "hacs",
+            "severity": "warning",
+            "translation_key": "restart_required",
+        }
+
+    def _run_one_poll(
+        self,
+        db_path,
+        monkeypatch,
+        issues,
+        autonomy_level: int = 4,
+        set_pending: bool = True,
+        repo_id: str = "99887",
+    ):
+        """Run exactly one repair poll iteration and return the FakeNotifier."""
+        import asyncio as asyncio_mod
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        if set_pending:
+            from agents.ha_update_manager import set_post_update_pending
+
+            set_post_update_pending("pycync", "restart", db_path)
+
+        notifier = FakeNotifier()
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr("agents.ha_log_monitor.AUTONOMY_LEVEL", autonomy_level)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        fake_llm_calls: list = []
+        # Protocol-compliant fake that records calls then raises CancelledError.
+        _original_chat = FakeToolCallingLLMClient([]).chat_with_tools
+
+        fake_llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair_issue",
+                                "arguments": {
+                                    "human_explanation": "ok",
+                                    "recommended_action": "dismiss",
+                                    "requires_hitl": False,
+                                    "action": "dismiss",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        original_chat = fake_llm.chat_with_tools
+
+        async def recording_chat(*args, **kwargs):
+            fake_llm_calls.append(True)
+            return await original_chat(*args, **kwargs)
+
+        fake_llm.chat_with_tools = recording_chat  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(repair_issues=issues),
+                    notifier=notifier,
+                    db_path=db_path,
+                    llm_client=fake_llm,
+                )
+            )
+        return notifier, fake_llm_calls
+
+    def test_matching_pending_full_autonomous_auto_executes(self, db_path, monkeypatch):
+        """HACS restart issue + pending flag + FULL_AUTONOMOUS → auto-execute (no LLM)."""
+        import agents.ha_update_manager as _um
+
+        restart_called = []
+
+        async def fake_restart(ssh_client, notifier, skip_backup=False):
+            restart_called.append(True)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+
+        notifier, llm_calls = self._run_one_poll(
+            db_path,
+            monkeypatch,
+            issues=[self._hacs_restart_issue()],
+            autonomy_level=4,
+            set_pending=True,
+        )
+        assert len(llm_calls) == 0, "LLM should not be called on short-circuit path"
+        assert restart_called, "execute_ha_core_restart should have been called"
+
+    def test_matching_pending_lower_autonomy_sends_card(self, db_path, monkeypatch):
+        """HACS restart issue + pending flag + autonomy < FULL → repair card sent (no LLM)."""
+        import agents.ha_update_manager as _um
+
+        async def _noop_restart(*a, **kw):
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", _noop_restart)
+
+        notifier, llm_calls = self._run_one_poll(
+            db_path,
+            monkeypatch,
+            issues=[self._hacs_restart_issue()],
+            autonomy_level=2,
+            set_pending=True,
+        )
+        assert len(llm_calls) == 0, "LLM should not be called on short-circuit path"
+        payloads = [n.get("payload", {}) for n in notifier.sent]
+        restart_cards = [p for p in payloads if p.get("action") == "restart"]
+        assert restart_cards, "Expected a restart card to be sent"
+
+    def test_no_pending_flag_falls_through_to_llm(self, db_path, monkeypatch):
+        """HACS restart issue but no pending flag → normal LLM investigation triggered."""
+        from utils.llm.ollama_client import FakeToolCallingLLMClient
+
+        fake_llm = FakeToolCallingLLMClient(
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "finish_repair_issue",
+                                "arguments": {
+                                    "human_explanation": "No pending.",
+                                    "recommended_action": "Wait.",
+                                    "requires_hitl": False,
+                                    "action": "dismiss",
+                                },
+                            }
+                        }
+                    ]
+                },
+            ]
+        )
+        import asyncio as asyncio_mod
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        notifier = FakeNotifier()
+        iteration = [0]
+        llm_call_count = [0]
+
+        original_chat = fake_llm.chat_with_tools
+
+        async def counting_chat(*args, **kwargs):
+            llm_call_count[0] += 1
+            return await original_chat(*args, **kwargs)
+
+        fake_llm.chat_with_tools = counting_chat
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr("agents.ha_log_monitor.AUTONOMY_LEVEL", 4)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(
+                        repair_issues=[self._hacs_restart_issue()]
+                    ),
+                    notifier=notifier,
+                    db_path=db_path,
+                    llm_client=fake_llm,
+                )
+            )
+
+        assert llm_call_count[0] >= 1, "LLM should be called when no pending flag"
+
+    def test_pending_flag_cleared_after_short_circuit(self, db_path, monkeypatch):
+        """Pending flag is consumed (cleared) when the short-circuit fires."""
+        import agents.ha_update_manager as _um
+        from agents.ha_update_manager import (
+            set_post_update_pending,
+            get_post_update_pending,
+        )
+
+        set_post_update_pending("pycync", "restart", db_path)
+
+        restart_called = []
+
+        async def fake_restart(ssh_client, notifier, skip_backup=False):
+            restart_called.append(True)
+            return True
+
+        monkeypatch.setattr(_um, "execute_ha_core_restart", fake_restart)
+
+        import asyncio as asyncio_mod
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr("agents.ha_log_monitor.AUTONOMY_LEVEL", 4)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(
+                        repair_issues=[self._hacs_restart_issue()]
+                    ),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # Flag should be cleared after short-circuit fires
+        assert get_post_update_pending("pycync", db_path) is None

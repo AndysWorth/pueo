@@ -73,7 +73,7 @@ def chunk_changelog(
 def _discover_via_hacs_ws(  # pragma: no cover
     ha_url: str,
     ha_token: str,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     """Query the HACS WebSocket API for installed integrations.
 
     Sends ``hacs/repositories/list`` over the HA WebSocket API using the
@@ -81,9 +81,10 @@ def _discover_via_hacs_ws(  # pragma: no cover
     sync and async contexts (no asyncio.run() needed).  Returns [] on any
     error so the caller can fall back to the entity-scan path.
 
-    Returns a list of (slug, full_name, domain) triples.  ``domain`` is the
-    HA integration domain as reported by HACS; falls back to ``slug`` when the
-    field is absent (legacy HACS versions).
+    Returns a list of (slug, full_name, domain, repo_id) 4-tuples.  ``domain``
+    is the HA integration domain as reported by HACS; falls back to ``slug``
+    when the field is absent (legacy HACS versions).  ``repo_id`` is the HACS
+    numeric repository id as a string (empty string if absent).
     """
     import json
     from urllib.parse import urlparse
@@ -116,7 +117,7 @@ def _discover_via_hacs_ws(  # pragma: no cover
         get_logger("hacs_scraper").warning("discover_hacs_failed", error=str(exc))
         return []
 
-    triples: list[tuple[str, str, str]] = []
+    triples: list[tuple[str, str, str, str]] = []
     for repo in repos:
         if not isinstance(repo, dict):
             continue
@@ -129,23 +130,26 @@ def _discover_via_hacs_ws(  # pragma: no cover
         if not slug or not full_name or "/" not in full_name:
             continue
         domain: str = repo.get("domain", "") or slug
-        triples.append((slug, full_name, domain))
+        repo_id: str = str(repo.get("id", "")) if repo.get("id") else ""
+        triples.append((slug, full_name, domain, repo_id))
     return triples
 
 
 def discover_hacs_integrations(  # pragma: no cover
     ha_url: str,
     ha_token: str,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     """Discover HACS-managed integrations installed on HA.
 
     Tries the HACS WebSocket API first (hacs/repositories/list), then falls
     back to scanning update.* entities from /api/states.  The HACS manager
     itself (hacs/integration) is excluded from both paths.
 
-    Returns a list of (slug, github_repo, domain) triples.  ``domain`` is the
-    HA integration domain; the fallback path uses slug as the domain proxy.
-    Falls back to [] if HA is unreachable or the token is missing.
+    Returns a list of (slug, github_repo, domain, repo_id) 4-tuples.
+    ``domain`` is the HA integration domain; the fallback path uses slug as
+    the domain proxy.  ``repo_id`` is the HACS numeric id as a string (empty
+    string on the fallback path).  Falls back to [] if HA is unreachable or
+    the token is missing.
     """
     import json
     import urllib.request
@@ -195,7 +199,9 @@ def discover_hacs_integrations(  # pragma: no cover
         if repo == "hacs/integration":
             continue
         slug = repo.split("/")[-1]
-        triples.append((slug, repo, slug))  # fallback: slug as domain proxy
+        triples.append(
+            (slug, repo, slug, "")
+        )  # fallback: slug as domain proxy, no repo_id
     return triples
 
 
