@@ -108,6 +108,10 @@ class HAEventSubscriber:  # pragma: no cover
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # A healthy session always ends by raising (e.g. "no close
+                # frame"), so reset here too or backoff ratchets to 300 s (#897).
+                if self._connected:
+                    backoff = 2.0
                 self._connected = False
                 _log.warning(
                     "ha_event_subscriber_error",
