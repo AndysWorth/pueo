@@ -224,7 +224,7 @@ def find_any_post_update_pending(
         for key, value in rows:
             try:
                 data = json.loads(value)
-            except Exception:  # nosec B110
+            except Exception:  # nosec B112
                 continue
             if data.get("kind") == kind and (
                 now - data.get("set_at", 0) < _POST_UPDATE_FLAG_TTL_SECONDS
