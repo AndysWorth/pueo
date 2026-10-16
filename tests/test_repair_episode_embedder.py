@@ -33,7 +33,7 @@ def _make_episode(**kwargs: Any) -> RepairEpisode:
 
 
 def _create_db(path: str) -> None:
-    """Minimal repair_episodes schema for tests."""
+    """Minimal repair_episodes + session_outcomes schema for tests."""
     with sqlite3.connect(path) as conn:
         conn.execute(
             """
@@ -54,6 +54,23 @@ def _create_db(path: str) -> None:
                 embedded_at REAL DEFAULT NULL,
                 initial_context TEXT DEFAULT NULL,
                 activity_type TEXT DEFAULT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_outcomes (
+                episode_id TEXT PRIMARY KEY,
+                signature TEXT,
+                session_type TEXT,
+                subject_key TEXT,
+                conclusion_json TEXT,
+                distill_payload_json TEXT,
+                created_at TEXT,
+                verification TEXT,
+                verified_at TEXT,
+                verified_by TEXT,
+                correction TEXT
             )
             """
         )

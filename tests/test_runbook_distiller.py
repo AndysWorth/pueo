@@ -12,11 +12,11 @@ from pydantic import ValidationError
 from utils.knowledge.runbook_distiller import (
     DistilledRunbook,
     _build_prompt,
-    _count_evidence_calls,
     _distillation_timeout_seconds,
     _get_existing_by_signature,
+    _read_distillation_payload,
     distill_and_persist,
-    qualifies_for_distillation,
+    enqueue_distillation_after_verification,
     resolve_gap,
     write_gap,
 )
@@ -68,6 +68,21 @@ def _make_db(tmp_path):
             "episode_refs TEXT, "
             "resolved_at TEXT, "
             "resolved_by TEXT"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE session_outcomes ("
+            "episode_id TEXT PRIMARY KEY, "
+            "signature TEXT, "
+            "session_type TEXT, "
+            "subject_key TEXT, "
+            "conclusion_json TEXT, "
+            "distill_payload_json TEXT, "
+            "created_at TEXT, "
+            "verification TEXT, "
+            "verified_at TEXT, "
+            "verified_by TEXT, "
+            "correction TEXT"
             ")"
         )
         conn.commit()
@@ -128,88 +143,6 @@ class TestDistilledRunbookSchema:
         restored = DistilledRunbook.model_validate_json(as_json)
         assert restored.title == rb.title
         assert restored.pitfalls == rb.pitfalls
-
-
-# ---------------------------------------------------------------------------
-# Qualifying rule
-# ---------------------------------------------------------------------------
-
-
-class TestQualifiesForDistillation:
-    def test_success_with_enough_evidence_qualifies(self):
-        steps = _make_steps("read_config", "read_logs", "run_ha_command")
-        assert qualifies_for_distillation("success", steps)
-
-    def test_success_with_fewer_than_3_evidence_calls_does_not_qualify(self):
-        steps = _make_steps("read_config", "read_logs", "query_knowledge")
-        # query_knowledge is not an evidence tool
-        assert not qualifies_for_distillation("success", steps)
-
-    def test_non_success_does_not_qualify(self):
-        steps = _make_steps("read_config", "read_logs", "run_ha_command")
-        assert not qualifies_for_distillation("exhausted", steps)
-
-    def test_failed_does_not_qualify(self):
-        steps = _make_steps("read_config", "read_logs", "run_ha_command", "fetch_url")
-        assert not qualifies_for_distillation("failed", steps)
-
-    def test_empty_steps_do_not_qualify(self):
-        assert not qualifies_for_distillation("success", [])
-
-    def test_count_evidence_tools_correct(self):
-        # Terminal tools, query_knowledge, and save_runbook are not evidence tools
-        steps = _make_steps(
-            "read_config",  # evidence
-            "query_knowledge",  # not evidence
-            "finish_repair",  # not evidence
-            "read_logs",  # evidence
-            "run_ha_command",  # evidence
-        )
-        assert _count_evidence_calls(steps) == 3
-
-    def test_failed_evidence_calls_not_counted(self):
-        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
-
-        steps = [
-            _make_step("read_config", 1),  # success, non-empty → counts
-            AgentStep(
-                step_number=2,
-                tool_call=ToolCall(name="read_logs", arguments={}),
-                tool_result=ToolResult(
-                    tool_name="read_logs",
-                    success=False,
-                    output="",
-                    error="exit 1",
-                ),
-                timestamp=0.0,
-            ),  # failed → does not count
-            AgentStep(
-                step_number=3,
-                tool_call=ToolCall(name="run_ha_command", arguments={}),
-                tool_result=ToolResult(
-                    tool_name="run_ha_command",
-                    success=True,
-                    output="",  # empty → does not count
-                ),
-                timestamp=0.0,
-            ),
-        ]
-        assert _count_evidence_calls(steps) == 1
-
-    def test_empty_success_does_not_qualify(self):
-        """3 evidence calls but all empty — thin evidence, should not qualify."""
-        from utils.agent.tool_registry import AgentStep, ToolCall, ToolResult
-
-        steps = [
-            AgentStep(
-                step_number=i + 1,
-                tool_call=ToolCall(name=name, arguments={}),
-                tool_result=ToolResult(tool_name=name, success=True, output=""),
-                timestamp=0.0,
-            )
-            for i, name in enumerate(["read_config", "read_logs", "run_ha_command"])
-        ]
-        assert not qualifies_for_distillation("success", steps)
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +423,7 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=store,
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
 
@@ -521,6 +455,7 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=store,
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
 
@@ -562,6 +497,7 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=store,
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
         # Second distillation → merge (bumps version, updates approach + title)
@@ -575,6 +511,7 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=store,
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
 
@@ -624,6 +561,7 @@ class TestDistillAndPersist:
                 knowledge_store=store,
                 model="qwen2.5:7b",
                 llm_client=_FakeLLMWithRunbook(),
+                verification="success",
             )
         )
         assert not fallback_called
@@ -676,6 +614,7 @@ class TestDistillAndPersist:
                     "recommendation": "Monitor logs",
                 },
                 llm_client=_CapturingLLM(),
+                verification="success",
             )
         )
         assert captured_prompts, "LLM should have been called"
@@ -717,6 +656,7 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=store,
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
 
@@ -750,9 +690,227 @@ class TestDistillAndPersist:
                 db_path=db_path,
                 knowledge_store=FakeKnowledgeStore(),
                 model="qwen2.5:7b",
+                verification="success",
             )
         )
         # No crash, no row inserted
         with sqlite3.connect(db_path) as conn:
             count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
         assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# distill_and_persist — verification gating
+# ---------------------------------------------------------------------------
+
+
+class TestDistillVerificationGating:
+    def test_unverified_success_skips(self, tmp_path):
+        """Success with verification=None → skipped, no row written."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        steps = _make_steps("read_config", "read_logs", "run_ha_command")
+        asyncio.run(
+            distill_and_persist(
+                trigger="repair",
+                signature="repair:zha:device_offline",
+                steps=steps,
+                outcome="success",
+                episode_id="ep_unverified",
+                db_path=db_path,
+                knowledge_store=store,
+                model="qwen2.5:7b",
+                # no verification= → skipped
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0
+
+    def test_failure_without_correction_skips(self, tmp_path):
+        """Failure + verification="failure" but no correction → skipped."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+        steps = _make_steps("read_config", "read_logs", "run_ha_command")
+        asyncio.run(
+            distill_and_persist(
+                trigger="repair",
+                signature="repair:zha:device_offline",
+                steps=steps,
+                outcome="failed",
+                episode_id="ep_fail_nocorrect",
+                db_path=db_path,
+                knowledge_store=store,
+                model="qwen2.5:7b",
+                verification="failure",
+                correction=None,
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0
+
+    def test_no_new_knowledge_skips_write(self, tmp_path, monkeypatch):
+        """LLM returns no_new_knowledge=True → no row inserted."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = _make_db(tmp_path)
+        store = FakeKnowledgeStore()
+
+        class _NoNewKnowledgeLLM:
+            async def chat(
+                self, model, messages, options, format, think=None
+            ):  # noqa: A002
+                rb = DistilledRunbook(
+                    title="T",
+                    when_to_use="W",
+                    recommended_tools=["read_logs"],
+                    hypotheses=["H"],
+                    fix_summary="F",
+                    no_new_knowledge=True,
+                )
+                return {"message": {"content": rb.model_dump_json()}}
+
+            async def chat_with_tools(self, *a, **kw):  # pragma: no cover
+                raise NotImplementedError
+
+        steps = _make_steps("read_config", "read_logs", "run_ha_command")
+        asyncio.run(
+            distill_and_persist(
+                trigger="repair",
+                signature="repair:zha:device_offline",
+                steps=steps,
+                outcome="success",
+                episode_id="ep_nnk",
+                db_path=db_path,
+                knowledge_store=store,
+                model="qwen2.5:7b",
+                verification="success",
+                llm_client=_NoNewKnowledgeLLM(),
+            )
+        )
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# enqueue_distillation_after_verification
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueDistillationAfterVerification:
+    def test_returns_false_when_no_queue(self, tmp_path, monkeypatch):
+        """No work queue → returns False without crashing."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: None,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        result = asyncio.run(
+            enqueue_distillation_after_verification(
+                episode_id="ep1",
+                verification="success",
+                correction=None,
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is False
+
+    def test_returns_false_for_missing_payload(self, tmp_path, monkeypatch):
+        """Payload not in DB → returns False."""
+        from utils.agent.work_queue import PueoWorkQueue
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        q = PueoWorkQueue()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: q,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        # No session_outcomes row → payload missing
+        result = asyncio.run(
+            enqueue_distillation_after_verification(
+                episode_id="ep_missing",
+                verification="success",
+                correction=None,
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is False
+
+    def test_enqueues_when_payload_present(self, tmp_path, monkeypatch):
+        """Valid payload in DB → submits WorkItem, returns True."""
+        import json as _json
+
+        from utils.agent.work_queue import PueoWorkQueue
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        q = PueoWorkQueue()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: q,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        payload = _json.dumps(
+            {
+                "steps": [],
+                "initial_context": "ctx",
+                "episode_stub": None,
+            }
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, distill_payload_json, created_at)"
+                " VALUES (?, ?, ?, datetime('now'))",
+                ("ep_ok", "repair:zha:device_offline", payload),
+            )
+            conn.commit()
+
+        result = asyncio.run(
+            enqueue_distillation_after_verification(
+                episode_id="ep_ok",
+                verification="success",
+                correction=None,
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is True
+
+    def test_returns_false_for_failure_without_correction(self, tmp_path, monkeypatch):
+        """failure + no correction → returns False before reading payload."""
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none",
+            lambda: None,
+            raising=False,
+        )
+        db_path = _make_db(tmp_path)
+        result = asyncio.run(
+            enqueue_distillation_after_verification(
+                episode_id="ep_fail",
+                verification="failure",
+                correction=None,
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+            )
+        )
+        assert result is False

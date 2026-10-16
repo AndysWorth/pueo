@@ -196,10 +196,7 @@ validated and candidate runbooks plus open gaps back via
 are anonymized before contribution. Seed runbooks in `prompts/seed_*.md` are the
 human-curated baseline.
 
-Runbook lifecycle (ADR 038): seed → candidate (distilled post-session) → validated
-(auto after `RUNBOOK_VALIDATE_MIN_SUCCESSES` successes, default 3) → seed (human
-promotes). Gaps move to `knowledge_gaps` (never retrieved). Manage via the
-`/runbooks` dashboard tab (`development_mode: true` required).
+Runbook lifecycle (ADR 038, ADR 044): seed → candidate (distilled **after verification**, not immediately at session end) → validated (auto after `RUNBOOK_VALIDATE_MIN_SUCCESSES` successes, default 3) → seed (human promotes). Non-success sessions produce a gap immediately; success sessions stash a `distill_payload_json` in `session_outcomes` and wait. System verifiers (repair reconcile loop, update install result) and card actions (approve, acknowledge, apply-fixes, "Pueo got this wrong") call `enqueue_distillation_after_verification`, which reads the stashed payload and submits a PRIORITY_LOW `WorkItem`. Failure sessions without a correction are never distilled. Gaps move to `knowledge_gaps` (never retrieved). Manage via the `/runbooks` dashboard tab (`development_mode: true` required).
 
 Federation (ADR 039): contributed runbooks carry a `kb_id` (`rb_` + sha256 of
 signature). The pueo-kb CI (`build-manifest.yml`) aggregates evidence files from

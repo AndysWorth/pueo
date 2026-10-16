@@ -17947,20 +17947,17 @@ class TestGapRunbookAutoSave:
                 (trigger,),
             ).fetchall()
 
-    def test_empty_kb_saves_gap_runbook(self, tmp_path, monkeypatch):
-        """Empty KB results trigger auto-save even on success outcome."""
+    def test_empty_kb_success_does_not_save_gap(self, tmp_path, monkeypatch):
+        """Success outcome never writes a gap — distillation deferred to verification."""
         monkeypatch.setattr(
             "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
         )
-        from utils.agent.tool_registry import build_ha_tool_registry
-        from utils.llm.ollama_client import FakeToolCallingLLMClient
         from utils.knowledge.knowledge_store import FakeKnowledgeStore
 
         store = FakeKnowledgeStore()  # empty — all queries return nothing
         loop, executor, db = self._make_loop(
             tmp_path,
             knowledge_store=store,
-            # Model calls query_knowledge then finish_repair (success, no results)
             call_sequence=[
                 {
                     "tool_calls": [
@@ -17990,8 +17987,9 @@ class TestGapRunbookAutoSave:
         result = asyncio.run(loop.run("fix disk"))
         assert result.outcome == "success"
         assert not executor._query_knowledge_had_results
+        # Success sessions do not write a gap — distillation waits for verification.
         rows = self._gap_rows(db, "test_trigger")
-        assert len(rows) == 1
+        assert len(rows) == 0
 
     def test_failed_outcome_saves_gap_runbook(self, tmp_path, monkeypatch):
         """Non-success outcome triggers auto-save when no runbook was saved."""

@@ -120,25 +120,7 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
     return "\n".join(parts)
 
 
-def _sig_specificity(pattern: str, query: str) -> tuple[bool, int]:
-    """Return (matches, specificity) for a stored pattern against a query signature.
-
-    Both are colon-delimited strings.  A stored part of ``*`` is a wildcard that
-    matches any single query part.  Specificity = number of exact (non-wildcard)
-    parts that matched; higher is more specific.  Part counts must match exactly.
-    """
-    pp = pattern.split(":")
-    qp = query.split(":")
-    if len(pp) != len(qp):
-        return False, 0
-    score = 0
-    for p, q in zip(pp, qp):
-        if p == "*":
-            continue
-        if p != q:
-            return False, 0
-        score += 1
-    return True, score
+from utils.knowledge.runbook_distiller import _sig_specificity  # noqa: E402
 
 
 def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
@@ -1036,7 +1018,6 @@ class AgentLoop:
             return
 
         from utils.knowledge.runbook_distiller import (
-            qualifies_for_distillation,
             write_gap,
         )
         from utils.agent.work_queue import (
@@ -1130,12 +1111,9 @@ class AgentLoop:
                     episode_id=_ep,
                 )
         else:
-            # Standalone / test mode: write gap directly when no LLM is needed.
-            if outcome != "success" or (
-                not qualifies_for_distillation(outcome, steps)
-                and self._executor is not None
-                and not self._executor._query_knowledge_had_results
-            ):
+            # Standalone / test mode: write gap for non-success sessions only.
+            # Success distillation requires verification (no queue = skip).
+            if outcome != "success":
                 try:
                     await asyncio.to_thread(
                         write_gap,

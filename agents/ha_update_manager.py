@@ -55,6 +55,42 @@ _POST_UPDATE_FLAG_TTL_SECONDS = 30 * 60
 _reboot_pending_after_update: Optional[float] = None
 
 
+async def _enqueue_distillation_for_subject(
+    subject_key: str, verification: str
+) -> None:
+    """Read session_outcomes rows for subject_key and enqueue distillation for each."""
+    import sqlite3 as _sql
+    import config as _cfg
+    from utils.agent.supervisor import get_supervisor_instance
+    from utils.knowledge.runbook_distiller import (
+        enqueue_distillation_after_verification,
+    )
+
+    _sv = get_supervisor_instance()
+    _ks = getattr(getattr(_sv, "_tool_executor", None), "_knowledge_store", None)
+    if _ks is None:
+        return
+    try:
+        with _sql.connect(_cfg.DB_PATH) as _conn:
+            _rows = _conn.execute(
+                "SELECT episode_id FROM session_outcomes"
+                " WHERE subject_key = ? AND verification = ?",
+                (subject_key, verification),
+            ).fetchall()
+        for (ep_id,) in _rows:
+            if ep_id:
+                await enqueue_distillation_after_verification(
+                    episode_id=ep_id,
+                    verification=verification,
+                    correction=None,
+                    db_path=_cfg.DB_PATH,
+                    knowledge_store=_ks,
+                    model=_cfg.OLLAMA_MODEL,
+                )
+    except Exception:  # nosec B110
+        pass
+
+
 def _flag_is_fresh(set_at: Optional[float]) -> bool:
     return (
         set_at is not None
@@ -930,6 +966,10 @@ async def _run_update_analysis(
                                 _verif,
                                 "system",
                             )
+                            if _verif == "success":
+                                await _enqueue_distillation_for_subject(
+                                    update.entity_id, "success"
+                                )
                         except Exception:  # nosec B110
                             pass
                     except Exception as _exc:

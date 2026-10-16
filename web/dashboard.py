@@ -517,6 +517,36 @@ def _resolve_card_outcome(
     )
 
 
+async def _trigger_post_verify_distillation(
+    episode_id: str,
+    verification: str,
+    correction: str = "",
+) -> None:
+    """Enqueue a distillation WorkItem after a card action resolves a session outcome."""
+    if not episode_id:
+        return
+    from utils.agent.supervisor import get_supervisor_instance
+    from utils.knowledge.runbook_distiller import (
+        enqueue_distillation_after_verification,
+    )
+    import config as _cfg
+
+    sv = get_supervisor_instance()
+    if sv is None:
+        return
+    ks = getattr(getattr(sv, "_tool_executor", None), "_knowledge_store", None)
+    if ks is None:
+        return
+    await enqueue_distillation_after_verification(
+        episode_id=episode_id,
+        verification=verification,
+        correction=correction or None,
+        db_path=_cfg.DB_PATH,
+        knowledge_store=ks,
+        model=_cfg.OLLAMA_MODEL,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
     from utils.disk.resource import get_resource_status
@@ -2160,6 +2190,7 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
         _episode_id = payload.get("episode_id", "")
         if _episode_id:
             await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
+            await _trigger_post_verify_distillation(_episode_id, "success")
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2298,6 +2329,7 @@ async def apply_fixes(nid: str) -> RedirectResponse:
     _episode_id = payload.get("episode_id", "")
     if _episode_id:
         await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
+        await _trigger_post_verify_distillation(_episode_id, "success")
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2435,6 +2467,7 @@ async def acknowledge(nid: str) -> RedirectResponse:
         _episode_id = payload.get("episode_id", "")
         if _episode_id:
             await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
+            await _trigger_post_verify_distillation(_episode_id, "success")
         (watch_dir / f"{nid}.approved").touch()
     return RedirectResponse(url="/queue", status_code=303)
 
@@ -2456,6 +2489,7 @@ async def wrong(nid: str, request: Request) -> RedirectResponse:
             await asyncio.to_thread(
                 _resolve_card_outcome, _episode_id, "failure", correction
             )
+            await _trigger_post_verify_distillation(_episode_id, "failure", correction)
         suppression_key = payload.get("suppression_key", "")
         fingerprint = str(payload.get("fingerprint", ""))
         if suppression_key:

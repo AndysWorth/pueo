@@ -1544,6 +1544,41 @@ async def poll_for_repairs(
                 except Exception:  # nosec B110
                     pass
                 try:
+                    from utils.knowledge.runbook_distiller import (
+                        enqueue_distillation_after_verification,
+                        _fetch_seed_text_for_signature,
+                    )
+                    import config as _cfg
+                    from utils.agent.supervisor import get_supervisor_instance
+
+                    _sv = get_supervisor_instance()
+                    _ks = getattr(
+                        getattr(_sv, "_tool_executor", None), "_knowledge_store", None
+                    )
+                    if _ks is not None:
+                        import sqlite3 as _sql
+
+                        _ep_ids = []
+                        with _sql.connect(_cfg.DB_PATH) as _conn:
+                            _rows = _conn.execute(
+                                "SELECT episode_id FROM session_outcomes"
+                                " WHERE subject_key = ?"
+                                "   AND verification = 'success'",
+                                (issue_key,),
+                            ).fetchall()
+                            _ep_ids = [r[0] for r in _rows if r[0]]
+                        for _ep_id in _ep_ids:
+                            await enqueue_distillation_after_verification(
+                                episode_id=_ep_id,
+                                verification="success",
+                                correction=None,
+                                db_path=_cfg.DB_PATH,
+                                knowledge_store=_ks,
+                                model=_cfg.OLLAMA_MODEL,
+                            )
+                except Exception:  # nosec B110
+                    pass
+                try:
                     from utils.core.timeline import write_timeline_event
 
                     await asyncio.to_thread(
