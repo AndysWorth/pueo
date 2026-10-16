@@ -909,6 +909,39 @@ def _external_update_message(
     return f"{component} update cleared outside Pueo"
 
 
+# How long after Pueo auto-applies an update a sibling entity's disappearance is
+# attributed to Pueo rather than to an external action.  Two full fallback poll
+# intervals (2 × 60 min) gives comfortable headroom for the two-poll confirmation
+# and the event-driven wake-up debounce.
+_SIBLING_AUTO_APPLY_WINDOW_SECONDS = 7200.0
+
+
+def _find_recent_pueo_auto_apply(component: str) -> Optional[str]:
+    """Return the card_key of a recently Pueo-auto-applied update with a related component.
+
+    "Related" means either component name is a substring of the other, which
+    handles cases like "spook" / "spook_your_homie" being the same package.
+    Returns None when no match is found or on any DB error.
+    """
+    cutoff = time.time() - _SIBLING_AUTO_APPLY_WINDOW_SECONDS
+    try:
+        with sqlite3.connect(DB_PATH) as _conn:
+            rows = _conn.execute(
+                "SELECT card_key, last_action_at FROM hitl_suppression"
+                " WHERE card_key LIKE 'update:%'"
+                "   AND last_action = 'auto_applied'"
+                "   AND last_action_at > ?",
+                (cutoff,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    for row_key, _ in rows:
+        row_component = _component_from_update_key(row_key)
+        if component in row_component or row_component in component:
+            return row_key
+    return None
+
+
 def _resolve_externally_applied_update(
     suppression_key: str, watch_dir: str, update: Optional[UpdateStatus] = None
 ) -> None:
@@ -917,8 +950,17 @@ def _resolve_externally_applied_update(
     Details come from the approval-card JSON when present; otherwise from the
     current poll's UpdateStatus, then the entity id, so the message never shows
     "unknown" (#843).
+
+    If Pueo recently auto-applied an update for a related component (a sibling
+    entity cleared within ``_SIBLING_AUTO_APPLY_WINDOW_SECONDS``), the resolution
+    is attributed to Pueo rather than to an external action.
     """
-    from utils.hitl.hitl_tracker import mark_card_resolved, stable_nid
+    from utils.hitl.hitl_tracker import (
+        mark_card_auto_applied,
+        mark_card_resolved,
+        stable_nid,
+    )
+    from utils.hitl.card_types import CARD_TYPE_UPDATE
 
     nid = stable_nid(suppression_key)
     component: Optional[str] = None
@@ -941,9 +983,22 @@ def _resolve_externally_applied_update(
         to_version = to_version or update.installed_version
     component = component or _component_from_update_key(suppression_key)
 
+    # Check if a sibling update entity was recently auto-applied by Pueo.
+    _sibling_key = _find_recent_pueo_auto_apply(component)
+    _is_pueo_sibling = _sibling_key is not None
+
     entity_id = suppression_key.removeprefix("update:")
     with sqlite3.connect(DB_PATH) as _conn:
-        mark_card_resolved(_conn, suppression_key)
+        if _is_pueo_sibling:
+            # Record as Pueo's action: not pending, not external.
+            mark_card_auto_applied(
+                _conn,
+                suppression_key,
+                CARD_TYPE_UPDATE,
+                f"Sibling of Pueo-applied {_sibling_key}: {component} update cleared",
+            )
+        else:
+            mark_card_resolved(_conn, suppression_key)
         _conn.execute(
             "UPDATE hitl_suppression SET resolved_at = ?"
             " WHERE card_key LIKE ? AND resolved_at IS NULL",
@@ -953,22 +1008,37 @@ def _resolve_externally_applied_update(
     try:
         from utils.core.timeline import write_timeline_event
 
-        write_timeline_event(
-            "INFO",
-            "update_check",
-            f"{_external_update_message(component, from_version, to_version)}"
-            " (HA auto-update or manual action in HA UI)",
-            {
-                "component": component,
-                "from_version": from_version,
-                "to_version": to_version,
-                "resolution": "external",
-                "explanation": (
-                    f"{_external_update_message(component, from_version, to_version)}"
-                    " without Pueo approval."
-                ),
-            },
-        )
+        if _is_pueo_sibling:
+            write_timeline_event(
+                "INFO",
+                "update_check",
+                f"{component} update cleared — attributed to Pueo's recent"
+                f" auto-apply of sibling {_sibling_key}",
+                {
+                    "component": component,
+                    "from_version": from_version,
+                    "to_version": to_version,
+                    "resolution": "pueo_sibling",
+                    "sibling_key": _sibling_key,
+                },
+            )
+        else:
+            write_timeline_event(
+                "INFO",
+                "update_check",
+                f"{_external_update_message(component, from_version, to_version)}"
+                " (HA auto-update or manual action in HA UI)",
+                {
+                    "component": component,
+                    "from_version": from_version,
+                    "to_version": to_version,
+                    "resolution": "external",
+                    "explanation": (
+                        f"{_external_update_message(component, from_version, to_version)}"
+                        " without Pueo approval."
+                    ),
+                },
+            )
     except Exception:  # nosec B110
         pass
 
@@ -979,13 +1049,21 @@ def _resolve_externally_applied_update(
         except Exception:  # nosec B110
             pass
 
-    log.info(
-        "update_resolved_externally",
-        suppression_key=suppression_key,
-        component=component,
-        from_version=from_version,
-        to_version=to_version,
-    )
+    if _is_pueo_sibling:
+        log.info(
+            "update_resolved_as_pueo_sibling",
+            suppression_key=suppression_key,
+            component=component,
+            sibling_key=_sibling_key,
+        )
+    else:
+        log.info(
+            "update_resolved_externally",
+            suppression_key=suppression_key,
+            component=component,
+            from_version=from_version,
+            to_version=to_version,
+        )
 
 
 async def poll_for_updates(

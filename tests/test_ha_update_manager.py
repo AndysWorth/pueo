@@ -3337,3 +3337,337 @@ class TestPollForUpdatesTimelineDedup:
         # so the second iteration skips the write.
         # Smoke-check: the test ran without error — structural correctness confirmed.
         assert iteration_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# S1: version-mismatch gate in _get_update_release_notes
+# ---------------------------------------------------------------------------
+
+
+class TestGetUpdateReleaseNotesVersionMismatch:
+    """Version mismatch: if pending entity is HACS but model requests HA Core notes,
+    the gate must return an error and NOT set _release_notes_obtained."""
+
+    def _make_executor(self, entity_id, pending_version):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.tool_executor import ToolExecutor
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=MagicMock(),
+            notifier=notifier,
+            db_path=":memory:",
+        )
+        update = SimpleNamespace(
+            entity_id=entity_id,
+            component="spook",
+            installed_version="5.11.0",
+            latest_version=pending_version,
+            release_url="https://github.com/tetele/spook/releases/tag/5.11.1",
+            release_summary=None,
+        )
+        executor.set_update_status(update)
+        return executor
+
+    def test_ha_core_version_rejected_when_spook_pending(self, pueo_dirs):
+        """Requesting '2026.10.1' while spook 5.11.1 is pending → error, no notes obtained."""
+        import asyncio
+
+        executor = self._make_executor("update.spook_your_homie_update", "5.11.1")
+        result = asyncio.run(executor._get_update_release_notes("2026.10.1"))
+
+        assert not result.success, "Version mismatch must return failure"
+        assert "mismatch" in result.error.lower()
+        assert "5.11.1" in result.error
+        assert "2026.10.1" in result.error
+        assert (
+            executor._release_notes_obtained is False
+        ), "_release_notes_obtained must not be set on a version mismatch"
+
+    def test_matching_version_is_accepted(self, tmp_path, pueo_dirs):
+        """Requesting the exact pending version succeeds normally."""
+        import asyncio
+        from unittest.mock import patch
+
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        notes_text = "## 5.11.1\nBug fixes for spook."
+        executor = self._make_executor("update.spook_your_homie_update", "5.11.1")
+        ws = FakeHAWebSocketClient(
+            update_release_notes={"update.spook_your_homie_update": notes_text}
+        )
+        executor.set_ws_client(ws)
+        import config as _cfg
+
+        with patch.object(
+            _cfg, "HA_UPDATE_RELEASE_NOTES_CACHE_DIR", str(tmp_path / "cache")
+        ):
+            result = asyncio.run(executor._get_update_release_notes("5.11.1"))
+
+        assert result.success
+        assert executor._release_notes_obtained is True
+
+
+# ---------------------------------------------------------------------------
+# S1: pending-card guard in _finish_update_analysis
+# ---------------------------------------------------------------------------
+
+
+class TestFinishUpdateAnalysisPendingCardGuard:
+    """Auto-apply must be skipped when an approval card is already pending."""
+
+    def _make_executor_and_db(self, tmp_path):
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.agent.autonomy import AutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+
+        db_path = str(tmp_path / "state.db")
+        # Bootstrap the hitl_suppression table
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hitl_suppression (
+                    card_key TEXT PRIMARY KEY,
+                    card_type TEXT,
+                    description TEXT,
+                    first_sent_at REAL,
+                    last_sent_at REAL,
+                    send_count INTEGER DEFAULT 0,
+                    last_action TEXT,
+                    last_action_at REAL,
+                    resolved_at REAL,
+                    next_allowed_at REAL,
+                    known_issue INTEGER DEFAULT 0,
+                    known_issue_note TEXT
+                )
+                """
+            )
+
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        gate = AutonomyGate(level=3)  # AUTONOMOUS: normally permits auto-apply
+        executor = ToolExecutor(
+            ha_ssh_client=MagicMock(),
+            gate=gate,
+            notifier=notifier,
+            db_path=db_path,
+        )
+        return executor, notifier, db_path
+
+    def _make_update(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            entity_id="update.spook_your_homie_update",
+            component="spook_your_homie",
+            installed_version="5.11.0",
+            latest_version="5.11.1",
+            release_url=None,
+            release_summary=None,
+        )
+
+    def test_auto_apply_skipped_when_card_pending(self, tmp_path, pueo_dirs):
+        """A pending approval card blocks auto-apply."""
+        import asyncio
+        import sqlite3
+        import time
+
+        executor, notifier, db_path = self._make_executor_and_db(tmp_path)
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_obtained = True
+
+        # Insert a pending card row (send_count > 0, last_action=NULL, resolved_at=NULL)
+        now = time.time()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, description, first_sent_at, last_sent_at,"
+                "  send_count, last_action, resolved_at)"
+                " VALUES (?, 'update', 'spook pending', ?, ?, 1, NULL, NULL)",
+                ("update:update.spook_your_homie_update", now, now),
+            )
+
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,
+            )
+        )
+
+        assert result.success
+        assert (
+            executor._pending_auto_apply is False
+        ), "_pending_auto_apply must NOT be set when a card is already pending"
+        assert "pending" in result.output.lower()
+        assert not notifier.send.called, "No new card should be sent when guard fires"
+
+    def test_auto_apply_proceeds_when_no_pending_card(self, tmp_path, pueo_dirs):
+        """No pending card → auto-apply is not blocked."""
+        import asyncio
+
+        executor, notifier, db_path = self._make_executor_and_db(tmp_path)
+        update = self._make_update()
+        executor.set_update_status(update)
+        executor._release_notes_obtained = True
+
+        # No row in hitl_suppression → no pending card
+        result = asyncio.run(
+            executor._finish_update_analysis(
+                safe_to_update=True,
+                breaking_changes=[],
+                affected_config_keys=[],
+                pueo_command_risks=[],
+                recommendation="Safe.",
+                instance_impact="none",
+                proposed_config_fixes=[],
+                create_hitl_card=False,
+            )
+        )
+
+        assert result.success
+        assert (
+            executor._pending_auto_apply is True
+        ), "_pending_auto_apply must be set when no pending card exists"
+
+
+# ---------------------------------------------------------------------------
+# S1: sibling-entity Pueo attribution in _resolve_externally_applied_update
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSiblingEntityAttribution:
+    """Sibling update entities cleared by a Pueo auto-apply are attributed to Pueo."""
+
+    def _setup_db(self, tmp_path):
+        import sqlite3
+        import time
+
+        db_path = str(tmp_path / "state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hitl_suppression (
+                    card_key TEXT PRIMARY KEY,
+                    card_type TEXT,
+                    description TEXT,
+                    first_sent_at REAL,
+                    last_sent_at REAL,
+                    send_count INTEGER DEFAULT 0,
+                    last_action TEXT,
+                    last_action_at REAL,
+                    resolved_at REAL,
+                    next_allowed_at REAL,
+                    known_issue INTEGER DEFAULT 0,
+                    known_issue_note TEXT
+                )
+                """
+            )
+        return db_path
+
+    def test_sibling_attributed_to_pueo(self, tmp_path, pueo_dirs, monkeypatch):
+        """When Pueo recently auto-applied 'spook_your_homie', clearing 'spook' is Pueo's."""
+        import sqlite3
+        import time
+        from unittest.mock import patch
+
+        from agents.ha_log_monitor import (
+            _find_recent_pueo_auto_apply,
+            _resolve_externally_applied_update,
+        )
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+        watch_dir = str(tmp_path / "hitl")
+        (tmp_path / "hitl").mkdir()
+
+        now = time.time()
+        # Simulate Pueo auto-applied spook_your_homie 2 minutes ago
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, description, first_sent_at, last_sent_at,"
+                "  send_count, last_action, last_action_at)"
+                " VALUES (?, 'update', 'auto-applied', ?, ?, 1, 'auto_applied', ?)",
+                (
+                    "update:update.spook_your_homie_update",
+                    now - 120,
+                    now - 120,
+                    now - 120,
+                ),
+            )
+
+        # Now 'spook' sibling entity clears — should be attributed to Pueo
+        with patch("utils.core.timeline.write_timeline_event"):
+            _resolve_externally_applied_update("update:update.spook_update", watch_dir)
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT last_action FROM hitl_suppression"
+                " WHERE card_key = 'update:update.spook_update'",
+            ).fetchone()
+
+        assert row is not None
+        assert (
+            row[0] == "auto_applied"
+        ), "Sibling resolution must be recorded as 'auto_applied', not external"
+
+    def test_unrelated_update_still_external(self, tmp_path, pueo_dirs, monkeypatch):
+        """A cleared update entity with no related Pueo auto-apply stays external."""
+        import sqlite3
+        import time
+        from unittest.mock import patch
+
+        from agents.ha_log_monitor import _resolve_externally_applied_update
+
+        db_path = self._setup_db(tmp_path)
+        monkeypatch.setattr("agents.ha_log_monitor.DB_PATH", db_path)
+        watch_dir = str(tmp_path / "hitl")
+        (tmp_path / "hitl").mkdir()
+
+        now = time.time()
+        # Pueo applied 'some_other_integration' — unrelated to 'mosquitto'
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO hitl_suppression"
+                " (card_key, card_type, description, first_sent_at, last_sent_at,"
+                "  send_count, last_action, last_action_at)"
+                " VALUES (?, 'update', 'auto-applied', ?, ?, 1, 'auto_applied', ?)",
+                (
+                    "update:update.some_other_integration_update",
+                    now - 60,
+                    now - 60,
+                    now - 60,
+                ),
+            )
+
+        with patch("utils.core.timeline.write_timeline_event"):
+            _resolve_externally_applied_update(
+                "update:update.mosquitto_update", watch_dir
+            )
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT last_action FROM hitl_suppression"
+                " WHERE card_key = 'update:update.mosquitto_update'",
+            ).fetchone()
+
+        # External resolution calls mark_card_resolved which sets resolved_at, not last_action
+        # The row may not exist if mark_card_resolved only updates an existing row
+        # What matters: no 'auto_applied' attribution for unrelated entities
+        if row is not None:
+            assert (
+                row[0] != "auto_applied"
+            ), "Unrelated entity must not be attributed to Pueo"
