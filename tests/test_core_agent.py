@@ -18449,3 +18449,207 @@ class TestHacsRestartRequiredShortCircuit:
 
         # Flag should be cleared after short-circuit fires
         assert get_post_update_pending("pycync", db_path) is None
+
+
+# ── Spook digest routing ──────────────────────────────────────────────────────
+
+
+class TestSpookDigestRouting:
+    """poll_for_repairs groups Spook issues by translation_key into digest investigations.
+
+    Dispatch-routing tests patch ``_run_spook_digest_investigation`` and
+    ``_run_repair_issue_investigation`` to no-ops so they only verify which
+    investigations are queued, not AgentLoop internals.
+    """
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        from agents import ha_agent_advanced
+
+        path = str(tmp_path / "test.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        return path
+
+    def _spook_issue(self, issue_id: str, tkey: str) -> dict:
+        return {
+            "domain": "spook",
+            "issue_id": issue_id,
+            "severity": "warning",
+            "translation_key": tkey,
+        }
+
+    def _run_one_poll_patched(self, db_path, monkeypatch, issues):
+        """Run one poll iteration with both investigation functions patched to no-ops.
+
+        Returns (digest_tkeys, repair_issue_keys):
+          digest_tkeys:     list of translation_keys passed to _run_spook_digest_investigation
+          repair_issue_keys: list of issue_keys passed to _run_repair_issue_investigation
+        """
+        import asyncio as asyncio_mod
+        import agents.ha_log_monitor as lm
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        digest_tkeys: list[str] = []
+        repair_issue_keys: list[str] = []
+
+        async def fake_digest(translation_key="", **kw):
+            digest_tkeys.append(translation_key)
+
+        async def fake_repair(issue, **kw):
+            repair_issue_keys.append(issue.issue_key)
+
+        monkeypatch.setattr(lm, "_run_spook_digest_investigation", fake_digest)
+        monkeypatch.setattr(lm, "_run_repair_issue_investigation", fake_repair)
+
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(repair_issues=issues),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+        return digest_tkeys, repair_issue_keys
+
+    def test_n_spook_issues_same_tkey_produce_one_digest(self, db_path, monkeypatch):
+        """N Spook issues sharing a translation_key → exactly 1 digest investigation."""
+        issues = [
+            self._spook_issue("uuid-001", "dead_entity"),
+            self._spook_issue("uuid-002", "dead_entity"),
+            self._spook_issue("uuid-003", "dead_entity"),
+        ]
+        digest_tkeys, repair_keys = self._run_one_poll_patched(
+            db_path, monkeypatch, issues
+        )
+        assert digest_tkeys == ["dead_entity"]
+        assert repair_keys == []
+
+    def test_m_tkeys_produce_m_digests(self, db_path, monkeypatch):
+        """N Spook issues across M translation_keys → exactly M digest investigations."""
+        issues = [
+            self._spook_issue("uuid-001", "dead_entity"),
+            self._spook_issue("uuid-002", "dead_entity"),
+            self._spook_issue("uuid-003", "missing_entity"),
+            self._spook_issue("uuid-004", "missing_entity"),
+            self._spook_issue("uuid-005", "domain_deprecated"),
+        ]
+        digest_tkeys, repair_keys = self._run_one_poll_patched(
+            db_path, monkeypatch, issues
+        )
+        assert sorted(digest_tkeys) == [
+            "dead_entity",
+            "domain_deprecated",
+            "missing_entity",
+        ]
+        assert repair_keys == []
+
+    def test_non_spook_issues_unaffected(self, db_path, monkeypatch):
+        """Non-Spook issues each dispatch their own investigation, not a digest."""
+        issues = [
+            {
+                "domain": "pycync",
+                "issue_id": "abc-001",
+                "severity": "warning",
+                "translation_key": "config_entry_reauth",
+            },
+            {
+                "domain": "homeassistant",
+                "issue_id": "abc-002",
+                "severity": "warning",
+                "translation_key": "device_registry_split",
+            },
+        ]
+        digest_tkeys, repair_keys = self._run_one_poll_patched(
+            db_path, monkeypatch, issues
+        )
+        assert digest_tkeys == []
+        assert len(repair_keys) == 2
+        assert "pycync/abc-001" in repair_keys
+        assert "homeassistant/abc-002" in repair_keys
+
+    def test_already_sent_digest_not_redispatched(self, db_path, monkeypatch):
+        """If the digest key already has hitl_sent_at, no second investigation is queued."""
+        import sqlite3
+
+        digest_key = "spook/digest:dead_entity"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at, hitl_sent_at)"
+                " VALUES (?, ?, ?)",
+                (digest_key, 1.0, 2.0),
+            )
+
+        issues = [self._spook_issue("uuid-001", "dead_entity")]
+        digest_tkeys, _ = self._run_one_poll_patched(db_path, monkeypatch, issues)
+        assert digest_tkeys == []
+
+    def test_spook_issues_added_to_active_keys(self, db_path, monkeypatch):
+        """Individual Spook issue keys reach active_keys so stale sent keys get reconciled."""
+        import sqlite3
+        import asyncio as asyncio_mod
+        import agents.ha_log_monitor as lm
+        from agents.ha_log_monitor import poll_for_repairs
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+
+        # Mark a Spook issue as previously sent (individual key, not digest).
+        stale_key = "spook/uuid-stale"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO ha_repair_history (issue_key, first_seen_at, hitl_sent_at)"
+                " VALUES (?, ?, ?)",
+                (stale_key, 1.0, 2.0),
+            )
+
+        async def _noop_digest(**kw):
+            pass
+
+        monkeypatch.setattr(lm, "_run_spook_digest_investigation", _noop_digest)
+        iteration = [0]
+
+        async def one_shot_sleep(_seconds):
+            iteration[0] += 1
+            if iteration[0] >= 2:
+                raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio_mod, "sleep", one_shot_sleep)
+        monkeypatch.setattr(
+            "utils.core.timeline.write_timeline_event", lambda *a, **kw: None
+        )
+
+        # Return only a NEW Spook issue — stale key is absent from current HA list.
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                poll_for_repairs(
+                    ha_ws_client=FakeHAWebSocketClient(
+                        repair_issues=[self._spook_issue("uuid-new", "dead_entity")]
+                    ),
+                    notifier=FakeNotifier(),
+                    db_path=db_path,
+                )
+            )
+
+        # Stale key (no longer in HA's issue list) should now be marked resolved.
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT resolved_at FROM ha_repair_history WHERE issue_key = ?",
+                (stale_key,),
+            ).fetchone()
+        assert (
+            row is not None and row[0] is not None
+        ), "Stale Spook key must be reconciled"
