@@ -59,6 +59,39 @@
       {% endif %}
     </div>
     {% endif %}
+    {% if group.name == "Host" %}
+    <div style="margin-bottom:0.85rem;font-size:0.82rem;color:#555;line-height:1.55;background:#f8f8ff;border:1px solid #e0e0f0;border-radius:5px;padding:0.65rem 0.85rem;">
+      <div style="margin-bottom:0.4rem;">
+        <strong>On (keep awake):</strong> Pueo holds a <code>caffeinate -i</code> assertion — idle sleep is blocked
+        and monitoring, log tailing, the HA event stream, and repairs run continuously.
+        The display can still sleep. Closing a laptop lid still sleeps the Mac unless it is on
+        power with an external display. The assertion is released automatically when Pueo stops.
+      </div>
+      <div style="margin-bottom:0.4rem;">
+        <strong>Off (allow sleep):</strong> macOS may sleep when idle. While asleep, Pueo is fully
+        paused — no log monitoring, no polls, no repairs. On wake, Pueo reconnects and runs a
+        catch-up check of notifications, repairs, and updates, so problems are found late but not
+        lost. Choose this for a laptop you carry around, or if Energy settings already keep the
+        Mac awake.
+      </div>
+      <div>
+        <strong>Docker / Linux:</strong> not applicable — the container host's power settings decide.
+        This toggle is a no-op on non-macOS hosts.
+      </div>
+    </div>
+    <div style="margin-bottom:0.75rem;font-size:0.82rem;">
+      Sleep assertion:
+      {% if sleep_guard_status == "active" %}
+      <span style="color:#16a34a;font-weight:700;">active ✓</span>
+      <span style="color:#888;margin-left:0.35rem;">caffeinate is running</span>
+      {% elif sleep_guard_status == "inactive" %}
+      <span style="color:#888;font-weight:600;">inactive</span>
+      <span style="color:#888;margin-left:0.35rem;">idle sleep is allowed</span>
+      {% else %}
+      <span style="color:#888;font-weight:600;">unsupported on this platform</span>
+      {% endif %}
+    </div>
+    {% endif %}
     {% if group.name == "Model Selection" %}
     <div style="margin-bottom:0.85rem;font-size:0.82rem;color:#555;line-height:1.5;">
       <strong>Hardware:</strong> {{ model_info.chip }} — {{ model_info.ram_gb }} GB RAM

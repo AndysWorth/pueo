@@ -5064,6 +5064,7 @@ class TestConfigEditor:
             "Notifications",
             "HA Connection",
             "LLM Provider",
+            "Host",
         ):
             assert (
                 group_name in html
@@ -5401,6 +5402,90 @@ class TestConfigEditor:
         for name, spec in _EDITABLE_PARAMS.items():
             missing = required - spec.keys()
             assert not missing, f"{name} missing keys: {missing}"
+
+    def test_settings_renders_host_group(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "Host" in html
+        assert "prevent_idle_sleep" in html
+        assert "Sleep assertion" in html
+
+    def test_settings_sleep_guard_status_active(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.system.sleep_guard import SleepGuard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        fake_guard = SleepGuard.__new__(SleepGuard)
+        fake_guard._proc = object()  # type: ignore[assignment]  # truthy → is_active True
+        monkeypatch.setattr(
+            "utils.system.sleep_guard._guard", fake_guard, raising=False
+        )
+        monkeypatch.setattr(SleepGuard, "supported", lambda self: True)
+        monkeypatch.setattr(SleepGuard, "is_active", lambda self: True)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "active" in html
+
+    def test_settings_sleep_guard_status_unsupported(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        from utils.system.sleep_guard import SleepGuard
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        monkeypatch.setattr(SleepGuard, "supported", lambda self: False)
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        html = client.get("/settings").text
+        assert "unsupported" in html
+
+    def test_prevent_idle_sleep_update_calls_apply_sleep_policy(
+        self, cfg_path, tmp_path, monkeypatch
+    ):
+        """Toggling prevent_idle_sleep via /config invokes apply_sleep_policy live."""
+        import asyncio
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        calls: list[bool] = []
+
+        def _fake_apply(enabled: bool) -> None:
+            calls.append(enabled)
+
+        monkeypatch.setattr("utils.system.sleep_guard.apply_sleep_policy", _fake_apply)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "prevent_idle_sleep", "value": "true"}
+        )
+        assert response.status_code == 200
+        assert calls == [True]
+
+    def test_prevent_idle_sleep_update_false_calls_apply_sleep_policy(
+        self, cfg_path, tmp_path, monkeypatch
+    ):
+        import yaml
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+
+        calls: list[bool] = []
+
+        def _fake_apply(enabled: bool) -> None:
+            calls.append(enabled)
+
+        monkeypatch.setattr("utils.system.sleep_guard.apply_sleep_policy", _fake_apply)
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(tmp_path))
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        response = client.post(
+            "/config", json={"key": "prevent_idle_sleep", "value": "false"}
+        )
+        assert response.status_code == 200
+        assert calls == [False]
+        cfg = yaml.safe_load(cfg_path.read_text())
+        assert cfg["agent"]["prevent_idle_sleep"] is False
 
 
 # ── launchd service helpers ───────────────────────────────────────────────────────
