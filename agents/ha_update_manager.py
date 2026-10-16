@@ -138,6 +138,103 @@ def is_restart_pending_after_update() -> bool:
     return _flag_is_fresh(_restart_pending_after_update)
 
 
+# ── DB-persisted post-update pending flags ────────────────────────────────────
+# Supplement the in-memory flags above with rows in the ``user_prefs`` table so
+# the pending state survives a Pueo restart.  Key format:
+# ``post_update_pending:<slug_or_id>``; value: JSON {"kind": "restart"|"reboot",
+# "set_at": <unix timestamp>}.  The same 30-minute TTL applies, enforced at
+# read time.  These are used by ``poll_for_repairs`` to short-circuit the LLM
+# investigation for HACS-triggered ``restart_required`` issues when a matching
+# pending flag exists.
+
+
+def set_post_update_pending(
+    slug_or_id: str, kind: str, db_path: Optional[str] = None
+) -> None:
+    """Write a post-update pending flag to user_prefs."""
+    import json
+    import sqlite3 as _sql
+
+    _db = db_path or DB_PATH
+    value = json.dumps({"kind": kind, "set_at": time.time()})
+    try:
+        with _sql.connect(_db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_prefs (key, value) VALUES (?, ?)",
+                (f"post_update_pending:{slug_or_id}", value),
+            )
+    except Exception:  # nosec B110
+        pass
+
+
+def get_post_update_pending(
+    slug_or_id: str, db_path: Optional[str] = None
+) -> Optional[str]:
+    """Return the kind ("restart"|"reboot") if a fresh flag exists for this id, else None."""
+    import json
+    import sqlite3 as _sql
+
+    _db = db_path or DB_PATH
+    try:
+        with _sql.connect(_db) as conn:
+            row = conn.execute(
+                "SELECT value FROM user_prefs WHERE key = ?",
+                (f"post_update_pending:{slug_or_id}",),
+            ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row[0])
+        if time.time() - data.get("set_at", 0) < _POST_UPDATE_FLAG_TTL_SECONDS:
+            return data.get("kind")
+        return None
+    except Exception:  # nosec B110
+        return None
+
+
+def clear_post_update_pending(slug_or_id: str, db_path: Optional[str] = None) -> None:
+    """Remove the post-update pending flag for this id."""
+    import sqlite3 as _sql
+
+    _db = db_path or DB_PATH
+    try:
+        with _sql.connect(_db) as conn:
+            conn.execute(
+                "DELETE FROM user_prefs WHERE key = ?",
+                (f"post_update_pending:{slug_or_id}",),
+            )
+    except Exception:  # nosec B110
+        pass
+
+
+def find_any_post_update_pending(
+    kind: str, db_path: Optional[str] = None
+) -> Optional[str]:
+    """Return the first slug_or_id with a fresh pending flag of the given kind, or None."""
+    import json
+    import sqlite3 as _sql
+
+    _db = db_path or DB_PATH
+    now = time.time()
+    try:
+        with _sql.connect(_db) as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM user_prefs"
+                " WHERE key LIKE 'post_update_pending:%'",
+            ).fetchall()
+        for key, value in rows:
+            try:
+                data = json.loads(value)
+            except Exception:  # nosec B112
+                continue
+            if data.get("kind") == kind and (
+                now - data.get("set_at", 0) < _POST_UPDATE_FLAG_TTL_SECONDS
+            ):
+                return key.split(":", 1)[1]
+        return None
+    except Exception:  # nosec B110
+        return None
+
+
 # ── Loop pause/resume during reboot ──────────────────────────────────────────
 _REBOOT_PAUSE_LOOPS = [
     "ha_log_monitor",
@@ -1594,6 +1691,7 @@ async def execute_os_update(
     if success:
         _emit_step("HA is back online")
         set_reboot_pending_after_update(True)
+        set_post_update_pending("os", "reboot")
         asyncio.create_task(_post_update_repair_scan())
         _os_reboot_note = (
             "HA requires a reboot to complete this update. "
@@ -1738,6 +1836,7 @@ async def execute_addon_update(
 
     if success:
         set_restart_pending_after_update(True)
+        set_post_update_pending(update.component, "restart")
         asyncio.create_task(_post_update_repair_scan())
         log.info("addon_update_restart_pending_flag_set", slug=update.component)
         _restart_note = (

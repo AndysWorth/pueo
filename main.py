@@ -207,14 +207,14 @@ def run_rag_refresh(
     _log.info("rag_refresh_step", step="discover_hacs")
     if ha_token:
         hacs_pairs = discover_hacs_integrations(ha_url, ha_token)
-        slugs = [s for s, _, _ in hacs_pairs]
+        slugs = [s for s, _, _, _ in hacs_pairs]
         _log.info(
             "rag_refresh_step_done",
             step="discover_hacs",
             count=len(hacs_pairs),
             integrations=slugs,
         )
-        for slug, repo, _ in hacs_pairs:
+        for slug, repo, _, _ in hacs_pairs:
             fetch_hacs_changelog(slug, repo, config.RAG_HACS_CACHE_DIR)
     else:
         _log.info(
