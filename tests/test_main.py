@@ -246,3 +246,45 @@ class TestIsAiAgentHaAutomationEvent:
     def test_unrelated_event_returns_false(self):
         ev = {"event_type": "state_changed", "entity_id": "light.bedroom"}
         assert not self._fn(ev)
+
+
+# ---------------------------------------------------------------------------
+# _catchup_wake_targets
+# ---------------------------------------------------------------------------
+
+
+class TestCatchupWakeTargets:
+    def _fn(self, prev_sessions, cur_sessions, slept_s):
+        import main
+
+        return main._catchup_wake_targets(prev_sessions, cur_sessions, slept_s)
+
+    def test_no_sleep_no_reconnect_returns_empty(self):
+        assert self._fn(0, 0, 0.0) == []
+
+    def test_sleep_detected_returns_all_targets(self):
+        result = self._fn(0, 0, 60.0)
+        assert set(result) == {"notification_poll", "repair_poll", "update_check"}
+
+    def test_sleep_at_threshold_returns_targets(self):
+        from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS
+
+        result = self._fn(0, 0, HOST_SLEEP_THRESHOLD_SECONDS)
+        assert len(result) == 3
+
+    def test_sleep_below_threshold_returns_empty(self):
+        from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS
+
+        result = self._fn(0, 0, HOST_SLEEP_THRESHOLD_SECONDS - 1.0)
+        assert result == []
+
+    def test_reconnect_detected_returns_all_targets(self):
+        result = self._fn(1, 2, 0.0)
+        assert set(result) == {"notification_poll", "repair_poll", "update_check"}
+
+    def test_first_connect_not_a_reconnect(self):
+        # prev=0, cur=1: first connection, not a reconnect
+        assert self._fn(0, 1, 0.0) == []
+
+    def test_same_session_count_returns_empty(self):
+        assert self._fn(2, 2, 0.0) == []

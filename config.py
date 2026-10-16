@@ -274,6 +274,10 @@ DEBUG_LEVEL: int = int(_agent.get("debug_level", 0))
 # How long to keep episode HTML files before rotating (days).
 DEBUG_EPISODE_RETENTION_DAYS: int = int(_agent.get("debug_episode_retention_days", 30))
 
+# Block macOS idle sleep while Pueo is running.
+# Default is False (not breaking on upgrade). See utils/system/sleep_guard.py.
+PREVENT_IDLE_SLEEP: bool = bool(_agent.get("prevent_idle_sleep", False))
+
 # NetAlertX integration
 _nax = _cfg.get("netalertx", {})
 

@@ -616,6 +616,7 @@ if $WRITE_CONFIG; then
     LOG_THRESHOLD="0.7"
     SELF_HEALING="true"
     DEVELOPMENT_MODE="false"
+    PREVENT_IDLE_SLEEP="false"
     DEBUG_LEVEL="0"
     DEBUG_MODE="false"
     DEBUG_VERBOSE="false"
@@ -669,6 +670,32 @@ if $WRITE_CONFIG; then
     else
         ask "Approval watch directory"  "$NOTIFY_WATCH_DIR_DEFAULT"  NOTIFY_WATCH_DIR
         NOTIFIER_TYPE="file"
+    fi
+
+    # ── Idle-sleep guard (macOS only) ─────────────────────────────────────────────
+    if [[ "$DEPLOY_MODE" == "macos" || "$DEPLOY_MODE" == "both" ]]; then
+        echo
+        echo "  ── Idle sleep ──"
+        echo "  While Pueo runs on macOS, the system may idle-sleep.  During sleep,"
+        echo "  Pueo is fully paused: no log monitoring, no polls, no repairs, and"
+        echo "  HA events that fire during sleep are missed.  On wake, Pueo reconnects"
+        echo "  and runs a catch-up check of notifications, repairs, and updates."
+        echo
+        echo "  Keeping the Mac awake (recommended for always-on monitoring) blocks"
+        echo "  idle sleep only — the display can still sleep.  Closing a laptop lid"
+        echo "  still sleeps the Mac unless it is on power with an external display."
+        echo "  The sleep assertion is released automatically when Pueo stops."
+        echo
+        ask "Keep this Mac awake while Pueo runs? (y/n)"  "y"  _PREVENT_SLEEP_RAW
+        if [[ "${_PREVENT_SLEEP_RAW,,}" =~ ^y ]]; then
+            PREVENT_IDLE_SLEEP="true"
+        else
+            PREVENT_IDLE_SLEEP="false"
+        fi
+    else
+        # Docker-only: container host's power settings decide; no caffeinate
+        PREVENT_IDLE_SLEEP="false"
+        info "Docker mode: host power settings control sleep — prevent_idle_sleep set to false."
     fi
 
     # ── SSH connectivity, HA version, and log file check ─────────────────────────
@@ -906,6 +933,7 @@ agent:
   dashboard_port: ${DASHBOARD_PORT}
   timeline_page_size: 25             # Number of events shown per page on the Timeline tab
   development_mode: ${DEVELOPMENT_MODE}
+  prevent_idle_sleep: ${PREVENT_IDLE_SLEEP}
   debug_level: ${DEBUG_LEVEL}         # 0=off 1=debug 2=verbose 3=ultra; debug_mode/debug_verbose below are legacy
   debug_mode: ${DEBUG_MODE}
   debug_verbose: ${DEBUG_VERBOSE}

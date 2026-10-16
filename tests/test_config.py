@@ -1552,6 +1552,19 @@ class TestFederatedCasesRepoConfig:
 
         assert config.DEBUG_EPISODE_RETENTION_DAYS == 7
 
+    def test_prevent_idle_sleep_default_false(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PREVENT_IDLE_SLEEP is False
+
+    def test_prevent_idle_sleep_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"prevent_idle_sleep": True}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.PREVENT_IDLE_SLEEP is True
+
     def test_ollama_think_mode_default(self, isolated_config):
         importlib.reload(sys.modules["config"])
         import config
