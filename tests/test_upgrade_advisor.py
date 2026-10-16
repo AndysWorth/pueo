@@ -15,6 +15,8 @@ from utils.ha.upgrade_advisor import (
     _DEFAULT_STATUS_ENTITY,
     _MAX_REPORT_CHARS,
     _MAX_REGRESSIONS,
+    _extract_component_section,
+    _parse_iso_timestamp,
     _resolve_entity_ids,
     read_advisor_report,
     read_post_upgrade_report,
@@ -570,3 +572,321 @@ class TestRequestAdvisorAnalysis:
         # If resolution succeeded, the poll used the custom entity ID
         # (get_state called with "sensor.custom_advisor_status", which contains "status")
         assert rest._status_call_count >= 1
+
+    def test_default_timeout_is_1800(self):
+        """Default timeout must be 1800 s (stuck-only ceiling, ADR 022)."""
+        import inspect
+
+        sig = inspect.signature(request_advisor_analysis)
+        assert sig.parameters["timeout_seconds"].default == 1800.0
+
+
+# ---------------------------------------------------------------------------
+# _parse_iso_timestamp
+# ---------------------------------------------------------------------------
+
+
+class TestParseIsoTimestamp:
+    def test_parses_utc_string(self):
+        ts = _parse_iso_timestamp("2026-10-16T12:00:00+00:00")
+        assert ts is not None
+        assert ts > 0.0
+
+    def test_parses_naive_string_as_utc(self):
+        ts_naive = _parse_iso_timestamp("2026-10-16T12:00:00")
+        ts_utc = _parse_iso_timestamp("2026-10-16T12:00:00+00:00")
+        assert ts_naive == ts_utc
+
+    def test_returns_none_on_invalid(self):
+        assert _parse_iso_timestamp("not-a-date") is None
+        assert _parse_iso_timestamp("") is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_component_section
+# ---------------------------------------------------------------------------
+
+
+class TestExtractComponentSection:
+    def test_extracts_matching_section(self):
+        report = "## homeassistant\nCore change.\n## my_component\nCustom change.\n## other\nOther."
+        result = _extract_component_section(report, "my_component")
+        assert "Custom change." in result
+        assert "Core change." not in result
+        assert "Other." not in result
+
+    def test_returns_full_report_when_no_match(self):
+        report = "## homeassistant\nCore change."
+        result = _extract_component_section(report, "missing_component")
+        assert result == report
+
+    def test_case_insensitive_match(self):
+        report = "## My_Component\nFound it."
+        result = _extract_component_section(report, "my_component")
+        assert "Found it." in result
+
+    def test_subsection_stops_at_next_same_level_heading(self):
+        report = "## comp_a\nSection A.\n## comp_b\nSection B."
+        result = _extract_component_section(report, "comp_a")
+        assert "Section A." in result
+        assert "Section B." not in result
+
+    def test_deeper_heading_not_treated_as_section_boundary(self):
+        report = "## comp_a\n### details\nDetail text.\n## comp_b\nSection B."
+        result = _extract_component_section(report, "comp_a")
+        assert "Detail text." in result
+        assert "Section B." not in result
+
+
+# ---------------------------------------------------------------------------
+# read_advisor_report — HACS component matching (Fix 3)
+# ---------------------------------------------------------------------------
+
+
+class TestReadAdvisorReportHacsMatching:
+    """For non-Core component_type, version check is replaced by last_analysis freshness."""
+
+    def _make_hacs_status(
+        self,
+        state: str = "report_ready",
+        available_version: str = "2026.10.0",
+        last_analysis: str = "",
+        report: str = "## my_hacs_comp\nNo breaking changes.",
+    ) -> dict:
+        attrs: dict = {
+            "available_version": available_version,
+            "breaking_change_count": 0,
+            "report": report,
+        }
+        if last_analysis:
+            attrs["last_analysis"] = last_analysis
+        return {"state": state, "attributes": attrs}
+
+    def test_hacs_component_skips_version_check(self):
+        """Non-Core: available_version mismatch is ignored."""
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(available_version="2026.10.0"),
+            risk_entity=_make_risk("low"),
+        )
+        # target_version is a HACS component version, not Core
+        result = asyncio.run(
+            read_advisor_report(rest, "1.2.3", component_type="my_hacs_comp")
+        )
+        assert result is not None
+
+    def test_hacs_fresh_last_analysis_accepted(self):
+        """Non-Core: last_analysis after trigger_time → report accepted."""
+        import time
+
+        trigger = time.time() - 10  # triggered 10 s ago
+        last_analysis = "2099-01-01T00:00:00+00:00"  # far future = fresh
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(last_analysis=last_analysis),
+            risk_entity=_make_risk("low"),
+        )
+        result = asyncio.run(
+            read_advisor_report(
+                rest,
+                "1.2.3",
+                component_type="my_hacs_comp",
+                trigger_time=trigger,
+            )
+        )
+        assert result is not None
+
+    def test_hacs_stale_last_analysis_rejected(self):
+        """Non-Core: last_analysis before trigger_time → report rejected (stale)."""
+        trigger = 9999999999.0  # far future trigger
+        last_analysis = "2000-01-01T00:00:00+00:00"  # clearly before trigger
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(last_analysis=last_analysis),
+            risk_entity=_make_risk("low"),
+        )
+        result = asyncio.run(
+            read_advisor_report(
+                rest,
+                "1.2.3",
+                component_type="my_hacs_comp",
+                trigger_time=trigger,
+            )
+        )
+        assert result is None
+
+    def test_hacs_absent_last_analysis_accepted(self):
+        """Non-Core: last_analysis attribute absent → gracefully accept the report."""
+        trigger = 9999999999.0  # far future trigger, but no attr to check
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(last_analysis=""),
+            risk_entity=_make_risk("low"),
+        )
+        result = asyncio.run(
+            read_advisor_report(
+                rest,
+                "1.2.3",
+                component_type="my_hacs_comp",
+                trigger_time=trigger,
+            )
+        )
+        assert result is not None
+
+    def test_hacs_no_trigger_time_accepted(self):
+        """Non-Core: no trigger_time provided → accept any ready report."""
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(
+                last_analysis="2000-01-01T00:00:00+00:00"
+            ),
+            risk_entity=_make_risk("medium"),
+        )
+        result = asyncio.run(
+            read_advisor_report(rest, "1.2.3", component_type="my_hacs_comp")
+        )
+        assert result is not None
+
+    def test_hacs_section_extracted_from_report(self):
+        """Non-Core: the component's section is extracted from the full report."""
+        report = (
+            "## homeassistant\nCore changes.\n"
+            "## my_hacs_comp\nNo breaking changes here.\n"
+            "## other_comp\nSomething else."
+        )
+        rest = _FakeRest(
+            status_entity=self._make_hacs_status(report=report),
+            risk_entity=_make_risk("low"),
+        )
+        result = asyncio.run(
+            read_advisor_report(rest, "1.2.3", component_type="my_hacs_comp")
+        )
+        assert result is not None
+        assert "No breaking changes here." in result.report
+        assert "Core changes." not in result.report
+
+    def test_core_component_type_still_checks_version(self):
+        """Core: available_version mismatch still rejects the report."""
+        rest = _FakeRest(
+            status_entity=_make_status(available_version="2026.9.0"),
+            risk_entity=_make_risk(),
+        )
+        result = asyncio.run(
+            read_advisor_report(rest, "2026.10.0", component_type="homeassistant")
+        )
+        assert result is None
+
+    def test_empty_component_type_falls_back_to_core_logic(self):
+        """Default empty component_type uses Core (available_version) check."""
+        rest = _FakeRest(
+            status_entity=_make_status(available_version="2026.9.0"),
+            risk_entity=_make_risk(),
+        )
+        result = asyncio.run(read_advisor_report(rest, "2026.10.0"))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# read_post_upgrade_report — freshness check (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestReadPostUpgradeReportFreshness:
+    def _make_post_status_with_check(
+        self,
+        post_upgrade_status: str = "ok",
+        last_post_upgrade_check: str = "",
+    ) -> dict:
+        attrs: dict = {"post_upgrade_status": post_upgrade_status}
+        if last_post_upgrade_check:
+            attrs["last_post_upgrade_check"] = last_post_upgrade_check
+        return {"state": "report_ready", "attributes": attrs}
+
+    def test_fresh_report_accepted(self):
+        """last_post_upgrade_check after update_completed_at → report returned."""
+        completed = 1000.0
+        last_check = "2099-01-01T00:00:00+00:00"  # far future = fresh
+        rest = _FakeRest(
+            status_entity=self._make_post_status_with_check(
+                last_post_upgrade_check=last_check
+            )
+        )
+        result = asyncio.run(
+            read_post_upgrade_report(rest, update_completed_at=completed)
+        )
+        assert result is not None
+        assert result.post_upgrade_status == "ok"
+        assert result.last_post_upgrade_check == last_check
+
+    def test_stale_report_rejected(self):
+        """last_post_upgrade_check before update_completed_at → None."""
+        completed = 9999999999.0
+        last_check = "2000-01-01T00:00:00+00:00"  # clearly before completed
+        rest = _FakeRest(
+            status_entity=self._make_post_status_with_check(
+                last_post_upgrade_check=last_check
+            )
+        )
+        result = asyncio.run(
+            read_post_upgrade_report(rest, update_completed_at=completed)
+        )
+        assert result is None
+
+    def test_absent_last_check_attribute_accepted(self):
+        """last_post_upgrade_check absent → gracefully return report."""
+        completed = 9999999999.0  # far future; no attr to compare
+        rest = _FakeRest(
+            status_entity=self._make_post_status_with_check()  # no last_check attr
+        )
+        result = asyncio.run(
+            read_post_upgrade_report(rest, update_completed_at=completed)
+        )
+        assert result is not None
+
+    def test_no_update_completed_at_skips_check(self):
+        """No update_completed_at → freshness check skipped, report returned."""
+        last_check = "2000-01-01T00:00:00+00:00"
+        rest = _FakeRest(
+            status_entity=self._make_post_status_with_check(
+                last_post_upgrade_check=last_check
+            )
+        )
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.last_post_upgrade_check == last_check
+
+    def test_last_post_upgrade_check_stored_in_result(self):
+        """last_post_upgrade_check is populated on the returned dataclass."""
+        last_check = "2026-10-16T12:00:00+00:00"
+        rest = _FakeRest(
+            status_entity=self._make_post_status_with_check(
+                last_post_upgrade_check=last_check
+            )
+        )
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.last_post_upgrade_check == last_check
+
+    def test_last_post_upgrade_check_none_when_absent(self):
+        """When the attribute is absent, last_post_upgrade_check is None on the result."""
+        rest = _FakeRest(status_entity=_make_post_status("ok"))
+        result = asyncio.run(read_post_upgrade_report(rest))
+        assert result is not None
+        assert result.last_post_upgrade_check is None
+
+
+# ---------------------------------------------------------------------------
+# PostUpgradeReport — updated dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestPostUpgradeReportUpdated:
+    def test_last_post_upgrade_check_field_exists(self):
+        r = PostUpgradeReport(post_upgrade_status="ok")
+        assert hasattr(r, "last_post_upgrade_check")
+        assert r.last_post_upgrade_check is None
+
+    def test_json_round_trip_with_last_check(self):
+        r = PostUpgradeReport(
+            post_upgrade_status="ok",
+            regressions=["a"],
+            last_post_upgrade_check="2026-10-16T00:00:00+00:00",
+        )
+        data = asdict(r)
+        r2 = PostUpgradeReport(**data)
+        assert r2 == r

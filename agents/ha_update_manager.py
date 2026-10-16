@@ -850,14 +850,14 @@ async def _run_update_analysis(
         executor.set_update_status(update)
 
         # Inject a WS client so the executor can call update/release_notes directly.
+        _ws_client = None
         if HA_API_TOKEN:
             from utils.ha.ha_ws_client import HAWebSocketClient
 
-            executor.set_ws_client(
-                HAWebSocketClient(
-                    HA_HOST, HA_API_PORT, HA_API_TOKEN
-                )  # pragma: no cover
+            _ws_client = HAWebSocketClient(  # pragma: no cover
+                HA_HOST, HA_API_PORT, HA_API_TOKEN
             )
+            executor.set_ws_client(_ws_client)  # pragma: no cover
 
         # Profile fallback: use the persisted profile when none is passed in
         from utils.ha.ha_environment import load_environment_profile
@@ -907,14 +907,23 @@ async def _run_update_analysis(
                 # Trigger analysis when the integration is installed, so the report
                 # is fresh for this exact version.  Add-ons are skipped inside
                 # request_advisor_analysis because upstream does not support them.
+                _trigger_time: Optional[float] = None
                 if _profile is not None and _profile.upgrade_advisor_installed:
+                    _trigger_time = time.time()
                     await request_advisor_analysis(
                         _rest,
                         update.latest_version,
                         update.component,
+                        ws_client=_ws_client,
                     )
 
-                advisor = await read_advisor_report(_rest, update.latest_version)
+                advisor = await read_advisor_report(
+                    _rest,
+                    update.latest_version,
+                    ws_client=_ws_client,
+                    component_type=update.component,
+                    trigger_time=_trigger_time,
+                )
                 if advisor is not None:
                     lines = [
                         "Third-party upgrade-advisor report"
@@ -1555,6 +1564,7 @@ async def execute_core_update(
     success = await poll_fn(
         update.latest_version, ssh_client, timeout_seconds=_CORE_UPDATE_TIMEOUT
     )
+    _update_completed_at = time.time() if success else None
 
     config_check_output = ""
     log_triage_summary = ""
@@ -1601,7 +1611,10 @@ async def execute_core_update(
             try:
                 from utils.ha.upgrade_advisor import read_post_upgrade_report
 
-                post_report = await read_post_upgrade_report(ha_rest_client)
+                post_report = await read_post_upgrade_report(
+                    ha_rest_client,
+                    update_completed_at=_update_completed_at,
+                )
                 if post_report is not None:
                     advisor_regressions = post_report.regressions
                     log.info(
