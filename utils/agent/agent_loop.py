@@ -315,6 +315,9 @@ class AgentLoop:
         self._messages: Optional[list] = None  # set during run(), cleared after
         self._episode_id: str = ""  # set at start of run()
         self._signature: str = ""  # set at start of run() from the signature= argument
+        self._subject_key: str = (
+            ""  # set at start of run() from the subject_key= argument
+        )
         self._raw_initial_context: str = (
             ""  # pre-injection context, set at start of run()
         )
@@ -642,6 +645,7 @@ class AgentLoop:
         initial_messages: Optional[list[dict]] = None,
         knowledge_query: str = "",
         signature: str = "",
+        subject_key: str = "",
     ) -> AgentLoopResult:
         """Run the agent loop and return a result describing what happened.
 
@@ -669,6 +673,7 @@ class AgentLoop:
         self._tool_call_records = []
         self._episode_id = str(uuid.uuid4())
         self._signature = signature or self._trigger
+        self._subject_key = subject_key
         self._raw_initial_context = initial_context
 
         # Use the caller-supplied knowledge_query for a more targeted ChromaDB search
@@ -875,18 +880,19 @@ class AgentLoop:
         steps: list[AgentStep],
         episode_stub: Optional[dict],
     ) -> None:
-        """Enqueue a post-session distillation WorkItem via the supervisor queue.
+        """Write a session_outcomes row and enqueue gap writing for non-success sessions.
 
-        In supervisor mode the distiller runs as a low-priority WorkItem, honouring
-        the no-concurrent-LLM rule.  Outside the supervisor (standalone runs, tests)
-        the queue is absent and distillation is skipped — gaps are written only when
-        an LLM call is not required (non-success, thin evidence).
+        session_outcomes records the stashed distillation payload so that S5 can trigger
+        full LLM-based distillation after verification.  In supervisor mode, LLM-based
+        candidate distillation is no longer queued immediately for success sessions —
+        the hook fires after verification instead.  Non-success sessions still write gaps
+        (no LLM needed).  Outside the supervisor (standalone runs, tests) the queue is
+        absent; gap writing still happens for non-success.
         """
         if self._knowledge_store is None or self._db_path is None:
             return
 
         from utils.knowledge.runbook_distiller import (
-            distill_and_persist,
             qualifies_for_distillation,
             write_gap,
         )
@@ -905,38 +911,81 @@ class AgentLoop:
         _llm = self._llm
         _initial_ctx = self._raw_initial_context
 
+        # Write session_outcomes row with stashed distillation payload.
+        # Distillation will be triggered after verification (S5).
+        if _ep and self._activity_type not in ("chat", ""):
+            try:
+                import json as _json
+
+                from agents.ha_agent_advanced import write_session_outcome
+
+                _conclusion = _json.dumps(dict(episode_stub) if episode_stub else {})
+                _payload = _json.dumps(
+                    {
+                        "steps": [s.model_dump() for s in steps],
+                        "initial_context": _initial_ctx,
+                        "episode_stub": dict(episode_stub) if episode_stub else None,
+                    }
+                )
+                await asyncio.to_thread(
+                    write_session_outcome,
+                    _ep,
+                    sig,
+                    self._activity_type,
+                    getattr(self, "_subject_key", ""),
+                    _conclusion,
+                    _payload,
+                )
+            except Exception as exc:  # nosec B110
+                log.warning("session_outcome_write_failed", error=str(exc))
+
         if queue is not None:
-            # Supervisor mode: full distillation (may include LLM call).
-            _steps_snap = list(steps)
-            _outcome = outcome
-            _stub = dict(episode_stub) if episode_stub else None
+            # Supervisor mode: only queue gap writing for non-success (no LLM).
+            # Success sessions are deferred until S5 wires distillation to verification.
+            if outcome != "success":
+                _steps_snap = list(steps)
+                _outcome = outcome
+                _stub = dict(episode_stub) if episode_stub else None
 
-            async def _run_distillation() -> None:
-                await distill_and_persist(
-                    trigger=sig,
+                async def _run_gap() -> None:
+                    from utils.knowledge.runbook_distiller import distill_and_persist
+
+                    await distill_and_persist(
+                        trigger=sig,
+                        signature=sig,
+                        steps=_steps_snap,
+                        outcome=_outcome,
+                        episode_id=_ep,
+                        db_path=_db,
+                        knowledge_store=_store,
+                        model=_model,
+                        initial_context=_initial_ctx,
+                        episode_stub=_stub,
+                        llm_client=_llm,
+                    )
+
+                submitted = await queue.submit(
+                    WorkItem(
+                        priority=PRIORITY_LOW,
+                        activity_type="runbook_distillation",
+                        description=f"Distill {sig}",
+                        dedup_key=f"distill_{sig}_{_ep}",
+                        suppress_while_running=frozenset(),
+                        coro_factory=_run_gap,
+                    )
+                )
+                log.debug(
+                    "gap_distillation_enqueued",
                     signature=sig,
-                    steps=_steps_snap,
-                    outcome=_outcome,
+                    outcome=outcome,
+                    submitted=submitted,
+                )
+            else:
+                log.debug(
+                    "distillation_deferred_pending_verification",
+                    signature=sig,
                     episode_id=_ep,
-                    db_path=_db,
-                    knowledge_store=_store,
-                    model=_model,
-                    initial_context=_initial_ctx,
-                    episode_stub=_stub,
-                    llm_client=_llm,
                 )
-
-            submitted = await queue.submit(
-                WorkItem(
-                    priority=PRIORITY_LOW,
-                    activity_type="runbook_distillation",
-                    description=f"Distill {sig}",
-                    dedup_key=f"distill_{sig}_{_ep}",
-                    suppress_while_running=frozenset(),
-                    coro_factory=_run_distillation,
-                )
-            )
-            log.debug("distillation_enqueued", signature=sig, submitted=submitted)
         else:
             # Standalone / test mode: write gap directly when no LLM is needed.
             if outcome != "success" or (

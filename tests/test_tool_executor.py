@@ -4782,10 +4782,55 @@ class TestRunbookUsageTracking:
                 "verified_at TEXT, verification TEXT, "
                 "created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))"
             )
+            conn.execute(
+                "CREATE TABLE agent_strategies ("
+                "id TEXT PRIMARY KEY, title TEXT, trigger_pattern TEXT,"
+                " approach TEXT, runbook_state TEXT, kb_id TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE session_outcomes ("
+                "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+                " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+                " created_at TEXT, verification TEXT, verified_at TEXT,"
+                " verified_by TEXT, correction TEXT)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_key"
+                " ON session_outcomes(subject_key)"
+            )
             conn.commit()
         return db_path
 
-    def test_verify_pending_runbook_usage(self, tmp_path):
+    def test_write_session_outcome(self, tmp_path):
+        import sqlite3
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.write_session_outcome(
+                "ep1",
+                "repair:hacs:restart_required",
+                "repair_issue",
+                "hacs/restart_required_123/v1.0",
+                '{"summary": "restart needed"}',
+                '{"steps": []}',
+            )
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT signature, session_type, subject_key, verification"
+                    " FROM session_outcomes WHERE episode_id='ep1'"
+                ).fetchone()
+            assert row[0] == "repair:hacs:restart_required"
+            assert row[1] == "repair_issue"
+            assert row[2] == "hacs/restart_required_123/v1.0"
+            assert row[3] == "pending"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_resolve_session_outcome_updates_runbook_usage(self, tmp_path):
         import sqlite3
         import time
 
@@ -4795,21 +4840,63 @@ class TestRunbookUsageTracking:
         original = adv.DB_PATH
         adv.DB_PATH = db_path  # type: ignore[assignment]
         try:
-            sig = "http_login::ip_bans"
             now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             with sqlite3.connect(db_path) as conn:
                 conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, signature, session_type, subject_key, created_at, verification)"
+                    " VALUES ('ep1', 'repair:hacs:restart_required', 'repair_issue',"
+                    "  'hacs/restart_required_123/v1.0', ?, 'pending')",
+                    (now_iso,),
+                )
+                conn.execute(
                     "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome, created_at)"
-                    " VALUES ('s1', 'ep1', ?, 'pending', ?)",
-                    (sig, now_iso),
+                    " VALUES ('s1', 'ep1', 'repair:hacs:restart_required', 'pending', ?)",
+                    (now_iso,),
                 )
                 conn.commit()
-            adv.verify_pending_runbook_usage(sig, "success")
+            adv.resolve_session_outcome(
+                "hacs/restart_required_123/v1.0", "success", "system"
+            )
             with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
+                so_row = conn.execute(
+                    "SELECT verification, verified_by FROM session_outcomes WHERE episode_id='ep1'"
+                ).fetchone()
+                ru_row = conn.execute(
                     "SELECT verification FROM runbook_usage WHERE episode_id='ep1'"
                 ).fetchone()
-            assert row[0] == "success"
+            assert so_row[0] == "success"
+            assert so_row[1] == "system"
+            assert ru_row[0] == "success"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_resolve_session_outcome_no_op_when_already_resolved(self, tmp_path):
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification)"
+                    " VALUES ('ep2', 'some_key', ?, 'success')",
+                    (now_iso,),
+                )
+                conn.commit()
+            # Second resolve should not change the already-resolved row.
+            adv.resolve_session_outcome("some_key", "failure", "system")
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT verification FROM session_outcomes WHERE episode_id='ep2'"
+                ).fetchone()
+            assert row[0] == "success"  # unchanged
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
@@ -4838,6 +4925,18 @@ class TestRunbookUsageTracking:
                     " VALUES ('s1', 'ep_fresh', 'sig', 'pending', ?)",
                     (fresh_iso,),
                 )
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
+                    " VALUES ('so_stale', 'k', ?, 'pending', 'payload')",
+                    (stale_iso,),
+                )
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
+                    " VALUES ('so_fresh', 'k2', ?, 'pending', 'payload')",
+                    (fresh_iso,),
+                )
                 conn.commit()
             adv.sweep_stale_pending_usage()
             with sqlite3.connect(db_path) as conn:
@@ -4847,8 +4946,18 @@ class TestRunbookUsageTracking:
                 fresh_v = conn.execute(
                     "SELECT verification FROM runbook_usage WHERE episode_id='ep_fresh'"
                 ).fetchone()[0]
+                so_stale = conn.execute(
+                    "SELECT verification, distill_payload_json FROM session_outcomes"
+                    " WHERE episode_id='so_stale'"
+                ).fetchone()
+                so_fresh = conn.execute(
+                    "SELECT verification FROM session_outcomes WHERE episode_id='so_fresh'"
+                ).fetchone()
             assert stale_v == "unverified"
             assert fresh_v is None  # still pending
+            assert so_stale[0] == "unverified"
+            assert so_stale[1] is None  # payload dropped
+            assert so_fresh[0] == "pending"  # fresh row untouched
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 

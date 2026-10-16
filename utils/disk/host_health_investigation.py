@@ -110,6 +110,7 @@ async def run_host_health_investigation(
             initial_context=initial_context,
             knowledge_query=host_health_knowledge_query(finding),
             signature=sig_host_health(finding.kind, finding.evidence.get("type", "")),
+            subject_key=finding.key,
         )
         publish_activity_done("host_health", result.outcome)
         if result.outcome != "success":

@@ -160,6 +160,7 @@ async def _run_lovelace_investigation(
             initial_context=initial_context,
             knowledge_query=_lovelace_knowledge_query(suspicious),
             signature=sig_lovelace(_first_domain, "unregistered"),
+            subject_key=suspicious[0]["entity_id"] if suspicious else "",
         )
         publish_activity_done("lovelace_investigation", result.outcome)
         if result.outcome != "success":

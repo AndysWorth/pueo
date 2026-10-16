@@ -1028,6 +1028,13 @@ class ResourcePoller:
                     )
                 except Exception:  # nosec B110
                     pass
+                # Resolve any pending session outcome for this finding.
+                try:
+                    from agents.ha_agent_advanced import resolve_session_outcome
+
+                    resolve_session_outcome(key, "success", "system")
+                except Exception:  # nosec B110
+                    pass
                 self._alerted_host.discard(key)
 
     async def _submit_host_health_investigation(

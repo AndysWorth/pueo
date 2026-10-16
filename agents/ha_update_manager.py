@@ -837,6 +837,7 @@ async def _run_update_analysis(
                 initial_context,
                 knowledge_query=_knowledge_query,
                 signature=sig_update(_update_type, update.component),
+                subject_key=update.entity_id,
             )
         except Exception as _exc:
             # An unhandled exception from loop.run leaves no suppression or analyzed
@@ -906,7 +907,7 @@ async def _run_update_analysis(
                         version=update.latest_version,
                     )
                     try:
-                        await execute_update(update, _ssh, _notifier, gate)
+                        _update_ok = await execute_update(update, _ssh, _notifier, gate)
                         from agents.ha_log_monitor import _update_mark_auto_applied
                         from utils.hitl.card_types import CARD_TYPE_UPDATE
 
@@ -917,12 +918,36 @@ async def _run_update_analysis(
                             CARD_TYPE_UPDATE,
                             f"Auto-applied: {update.component} {update.latest_version}",
                         )
+                        # Verify the analysis session outcome by install result.
+                        try:
+                            from agents.ha_agent_advanced import resolve_session_outcome
+
+                            _verif = "success" if _update_ok else "failure"
+                            await asyncio.to_thread(
+                                resolve_session_outcome,
+                                update.entity_id,
+                                _verif,
+                                "system",
+                            )
+                        except Exception:  # nosec B110
+                            pass
                     except Exception as _exc:
                         log.error(
                             "update_auto_apply_failed",
                             component=update.component,
                             error=str(_exc),
                         )
+                        try:
+                            from agents.ha_agent_advanced import resolve_session_outcome
+
+                            await asyncio.to_thread(
+                                resolve_session_outcome,
+                                update.entity_id,
+                                "failure",
+                                "system",
+                            )
+                        except Exception:  # nosec B110
+                            pass
                         await _notifier.send(
                             subject=f"Auto-update failed: {update.component} {update.latest_version}",
                             body=f"Error: {_exc}",

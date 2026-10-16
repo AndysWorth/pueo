@@ -407,7 +407,7 @@ class TestNetAlertXMigration:
 
         with sqlite3.connect(db) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 38
+        assert version == 39
 
 
 # ── netalertx/installer.py (steps 1–4) ───────────────────────────────────────

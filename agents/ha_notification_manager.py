@@ -378,6 +378,7 @@ async def _run_notification_investigation(
             initial_context=initial_context,
             knowledge_query=notification_knowledge_query(notification_id, title),
             signature=sig_notification(notification_id),
+            subject_key=notification_id,
         )
         publish_activity_done("notification", result.outcome)
         if result.outcome != "success":
