@@ -496,6 +496,61 @@ class TestReconnectBackoff:
 
         assert call_count == 2
 
+    @staticmethod
+    def _run_with_script(sub, script):
+        """Drive run_forever with scripted connect outcomes; return sleep delays.
+
+        Each script entry is "fail" (raise before connecting) or "drop"
+        (connect, then raise).  The loop is cancelled after the script ends.
+        """
+        steps = iter(script)
+        delays: list[float] = []
+        connected_at_sleep: list[bool] = []
+
+        async def _fake_connect():
+            step = next(steps, None)
+            if step is None:
+                raise asyncio.CancelledError
+            if step == "drop":
+                sub._connected = True
+                raise OSError("no close frame received or sent")
+            raise OSError("connection refused")
+
+        async def _fake_sleep(delay):
+            delays.append(delay)
+            connected_at_sleep.append(sub.is_connected())
+
+        sub._connect_and_subscribe = _fake_connect  # type: ignore[method-assign]
+
+        async def _run():
+            with patch("asyncio.sleep", new=AsyncMock(side_effect=_fake_sleep)):
+                await sub.run_forever()
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(_run())
+        return delays, connected_at_sleep
+
+    def test_backoff_resets_after_connected_session_drops(self):
+        from utils.ha.ha_event_subscriber import HAEventSubscriber
+
+        sub = HAEventSubscriber("host", 8123, "tok")
+        delays, _ = self._run_with_script(sub, ["fail", "fail", "fail", "drop"])
+        assert delays == [2.0, 4.0, 8.0, 2.0]
+
+    def test_backoff_grows_when_never_connected(self):
+        from utils.ha.ha_event_subscriber import HAEventSubscriber
+
+        sub = HAEventSubscriber("host", 8123, "tok")
+        delays, _ = self._run_with_script(sub, ["fail", "fail", "fail"])
+        assert delays == [2.0, 4.0, 8.0]
+
+    def test_connected_flag_cleared_on_drop(self):
+        from utils.ha.ha_event_subscriber import HAEventSubscriber
+
+        sub = HAEventSubscriber("host", 8123, "tok")
+        _, connected_at_sleep = self._run_with_script(sub, ["drop"])
+        assert connected_at_sleep == [False]
+
     def test_cancelled_error_propagates(self):
         from utils.ha.ha_event_subscriber import HAEventSubscriber
 
