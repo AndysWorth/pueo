@@ -84,8 +84,11 @@ def _format_step_trace(steps: list["AgentStep"]) -> str:
     return "\n".join(lines) if lines else "  (no tool calls)"
 
 
-# Per-chunk token budget for pre-injected knowledge (top_k=3 → ~900 tokens total).
+# Per-chunk token budget for pre-injected knowledge (semantic chunks, top_k=3 → ~900 total).
 _PRE_INJECT_CHUNK_TOKENS = 300
+# Per-runbook budget for exact-signature matches (seed + learned). Each gets this budget
+# so neither is truncated on common runbook lengths (~800–1200 tokens uncut).
+_PRE_INJECT_RUNBOOK_TOKENS = 1200
 
 
 def _format_knowledge_block(chunks: list[Any]) -> str:
@@ -103,53 +106,177 @@ def _format_knowledge_block(chunks: list[Any]) -> str:
         cid = getattr(chunk, "chunk_id", "")
         label = _TE._knowledge_authority_label(col, getattr(chunk, "metadata", {}), cid)
         source = getattr(chunk, "source", "")
-        body = truncate_to_budget(chunk.text, _PRE_INJECT_CHUNK_TOKENS, "head")
+        # Exact-signature runbooks (seed + learned) get a larger budget so they're not cut.
+        is_sig_match = getattr(chunk, "metadata", {}).get("exact_match") or getattr(
+            chunk, "metadata", {}
+        ).get("sig_match")
+        budget = (
+            _PRE_INJECT_RUNBOOK_TOKENS if is_sig_match else _PRE_INJECT_CHUNK_TOKENS
+        )
+        body = truncate_to_budget(chunk.text, budget, "head")
         if len(body) < len(chunk.text):
             body += " …[truncated]"
         parts.append(f"\n{label} [{col} | {source}]\n{body}")
     return "\n".join(parts)
 
 
-def _fetch_exact_signature_chunk(db_path: str, signature: str) -> "Optional[Any]":
-    """Query SQLite for the best live runbook matching *signature* exactly.
+def _sig_specificity(pattern: str, query: str) -> tuple[bool, int]:
+    """Return (matches, specificity) for a stored pattern against a query signature.
 
-    Returns a KnowledgeChunk with ``metadata["exact_match"]=True`` so
-    ``_knowledge_authority_label`` emits ``[RUNBOOK FOR THIS EXACT SYMPTOM]``.
-    Returns None when there is no match or on any error.
+    Both are colon-delimited strings.  A stored part of ``*`` is a wildcard that
+    matches any single query part.  Specificity = number of exact (non-wildcard)
+    parts that matched; higher is more specific.  Part counts must match exactly.
+    """
+    pp = pattern.split(":")
+    qp = query.split(":")
+    if len(pp) != len(qp):
+        return False, 0
+    score = 0
+    for p, q in zip(pp, qp):
+        if p == "*":
+            continue
+        if p != q:
+            return False, 0
+        score += 1
+    return True, score
+
+
+def _fetch_signature_chunks(db_path: str, signature: str) -> "list[Any]":
+    """Return up to two KnowledgeChunks for *signature*: best seed + best learned runbook.
+
+    Wildcard matching: stored patterns like ``repair:*:restart_required`` match a query
+    of ``repair:hacs:restart_required``.  Specificity = number of non-wildcard parts that
+    matched; most specific wins.  Within equal specificity, state priority is
+    seed > validated > candidate.
+
+    Returns a list (0–2 items).  Each chunk carries ``metadata["sig_match"]=True`` and
+    ``metadata["exact_match"]=True`` so ``_knowledge_authority_label`` emits
+    ``[RUNBOOK FOR THIS EXACT SYMPTOM]``.
     """
     import sqlite3
 
     from utils.knowledge.knowledge_store import KnowledgeChunk
 
+    if not db_path or not signature or ":" not in signature:
+        return []
+
+    _STATE_ORDER = {"seed": 0, "validated": 1, "candidate": 2}
+
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT id, title, approach, runbook_state FROM agent_strategies"
-                " WHERE signature = ?"
+            rows = conn.execute(
+                "SELECT id, title, approach, runbook_state, signature"
+                " FROM agent_strategies"
+                " WHERE signature IS NOT NULL"
                 "   AND runbook_state IN ('seed', 'validated', 'candidate')"
-                " ORDER BY CASE runbook_state"
-                "   WHEN 'seed' THEN 0 WHEN 'validated' THEN 1 ELSE 2 END,"
-                "   version DESC LIMIT 1",
-                (signature,),
-            ).fetchone()
+            ).fetchall()
     except Exception:  # nosec B110
-        return None
-    if row is None:
-        return None
-    title = row["title"] or signature
-    approach = row["approach"] or ""
-    runbook_state = row["runbook_state"] or "candidate"
-    text = f"# {title}\n\n{approach}".strip()
-    return KnowledgeChunk(
-        text=text,
-        source=f"exact:{row['id']}",
-        collection="strategies",
-        score=1.0,
-        metadata={"exact_match": True, "runbook_type": runbook_state},
-        authority_score=1.0,
-        chunk_id=row["id"],
+        return []
+
+    # Score each row; keep best seed and best learned runbook separately.
+    best_seed: Optional[tuple[int, int, sqlite3.Row]] = (
+        None  # (specificity, state, row)
     )
+    best_learned: Optional[tuple[int, int, sqlite3.Row]] = None
+
+    for row in rows:
+        stored_sig = row["signature"] or ""
+        matches, spec = _sig_specificity(stored_sig, signature)
+        if not matches:
+            continue
+        state_order = _STATE_ORDER.get(row["runbook_state"] or "", 99)
+        if row["runbook_state"] == "seed":
+            if best_seed is None or (spec, -state_order) > (
+                best_seed[0],
+                -best_seed[1],
+            ):
+                best_seed = (spec, state_order, row)
+        else:
+            if best_learned is None or (spec, -state_order) > (
+                best_learned[0],
+                -best_learned[1],
+            ):
+                best_learned = (spec, state_order, row)
+
+    chunks: list[Any] = []
+    for entry in (best_seed, best_learned):
+        if entry is None:
+            continue
+        _, _, row = entry
+        title = row["title"] or signature
+        approach = row["approach"] or ""
+        state = row["runbook_state"] or "candidate"
+        text = f"# {title}\n\n{approach}".strip()
+        chunks.append(
+            KnowledgeChunk(
+                text=text,
+                source=f"sig:{row['id']}",
+                collection="strategies",
+                score=1.0,
+                metadata={
+                    "exact_match": True,
+                    "sig_match": True,
+                    "runbook_type": state,
+                },
+                authority_score=1.0,
+                chunk_id=row["id"],
+            )
+        )
+    return chunks
+
+
+def _fetch_memory_chunks(db_path: str, signature: str) -> "list[Any]":
+    """Return agent_memory rows whose signature matches as [INSTANCE FACT] chunks.
+
+    Uses the same wildcard matching as _fetch_signature_chunks.  Returns at most 5
+    rows, ordered newest first.  Added in V40 (agent_memory.signature column).
+    Falls back gracefully if the column does not exist yet.
+    """
+    import sqlite3
+
+    from utils.knowledge.knowledge_store import KnowledgeChunk
+
+    if not db_path or not signature or ":" not in signature:
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    "SELECT key, content, source, ts, signature"
+                    " FROM agent_memory"
+                    " WHERE signature IS NOT NULL"
+                    " ORDER BY ts DESC LIMIT 50"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []  # column not yet added (pre-V40)
+    except Exception:  # nosec B110
+        return []
+
+    chunks: list[Any] = []
+    for row in rows:
+        stored_sig = row["signature"] or ""
+        matches, _ = _sig_specificity(stored_sig, signature)
+        if not matches:
+            continue
+        key = row["key"] or ""
+        content = row["content"] or ""
+        text = f"[{key}] {content}".strip()
+        chunks.append(
+            KnowledgeChunk(
+                text=text,
+                source=f"memory:{key}",
+                collection="agent_memory",
+                score=1.0,
+                metadata={"instance_fact": True},
+                authority_score=0.9,
+                chunk_id=f"mem:{key}",
+            )
+        )
+        if len(chunks) >= 5:
+            break
+    return chunks
 
 
 def _parse_content_as_tool_call(
@@ -449,31 +576,34 @@ class AgentLoop:
         """Query the knowledge store and append results to the initial context.
 
         Best-effort — any failure returns the original context unchanged.
-        Each chunk is head-truncated to _PRE_INJECT_CHUNK_TOKENS in rank order, so
-        the top hit always survives (a single tail-truncated block dropped it).
+        Semantic chunks are head-truncated to _PRE_INJECT_CHUNK_TOKENS in rank order.
+        Exact-signature runbooks (seed + best learned) use _PRE_INJECT_RUNBOOK_TOKENS
+        each so they are never cut.
         The query_text parameter should be the original user question so
         ChromaDB searches user intent rather than the injected HA profile.
         Sets executor._query_knowledge_had_results when chunks are found so that
         sessions benefiting from pre-injected context don't trigger the auto-gap.
 
-        When self._signature is set (and has a colon, meaning it is a real symptom
-        signature rather than a trigger name), the exact-matching runbook from
-        agent_strategies is prepended at the top of the injected block and labelled
-        [RUNBOOK FOR THIS EXACT SYMPTOM].  Semantic results follow.
+        When self._signature is set (with a colon), _fetch_signature_chunks returns up to
+        two runbooks (best seed + best learned) for the symptom using wildcard matching.
+        Both are prepended before semantic results and labelled
+        [RUNBOOK FOR THIS EXACT SYMPTOM].  Matching agent_memory rows are prepended as
+        [INSTANCE FACT] entries (V40: signature column on agent_memory).
         """
-        # Exact-signature lookup — runs before the semantic query so the best match
-        # always appears first regardless of ChromaDB relevance scoring.
-        exact_chunk = None
+        # Signature-matching lookup — runs before the semantic query so runbooks and
+        # instance facts always appear first regardless of ChromaDB relevance scoring.
+        sig_chunks: list[Any] = []
         _sig = getattr(self, "_signature", "")
         if _sig and ":" in _sig and self._db_path:
-            exact_chunk = await asyncio.to_thread(
-                _fetch_exact_signature_chunk, self._db_path, _sig
+            sig_chunks = await asyncio.to_thread(
+                _fetch_signature_chunks, self._db_path, _sig
             )
-            if exact_chunk is not None:
+            if sig_chunks:
                 log.debug(
-                    "pre_inject_exact_signature_match",
+                    "pre_inject_signature_match",
                     signature=_sig,
-                    chunk_id=exact_chunk.chunk_id,
+                    count=len(sig_chunks),
+                    ids=[getattr(c, "chunk_id", "") for c in sig_chunks],
                 )
 
         effective_query = (query_text or initial_context)[:500]
@@ -482,20 +612,29 @@ class AgentLoop:
                 self._knowledge_store.query,  # type: ignore[union-attr]
                 query_text=effective_query,
                 top_k=3,
-                min_score=0.35,
+                min_score=0.45,
             )
         except Exception as exc:
             log.warning("knowledge_injection_failed", error=str(exc))
             return initial_context
 
-        # Prepend the exact match (if any), deduplicating by non-empty chunk_id only.
-        if exact_chunk is not None:
-            exact_id = exact_chunk.chunk_id
-            if exact_id:
-                deduped = [c for c in chunks if getattr(c, "chunk_id", "") != exact_id]
-            else:
-                deduped = list(chunks)
-            chunks = [exact_chunk] + deduped
+        # Prepend signature matches, deduplicating semantic results by chunk_id.
+        sig_ids = {
+            getattr(c, "chunk_id", "") for c in sig_chunks if getattr(c, "chunk_id", "")
+        }
+        deduped_semantic = [
+            c for c in chunks if getattr(c, "chunk_id", "") not in sig_ids
+        ]
+        chunks = sig_chunks + deduped_semantic
+
+        # Fetch matching agent_memory rows as [INSTANCE FACT] chunks (V40).
+        if _sig and ":" in _sig and self._db_path:
+            memory_chunks = await asyncio.to_thread(
+                _fetch_memory_chunks, self._db_path, _sig
+            )
+            if memory_chunks:
+                log.debug("pre_inject_memory_facts", count=len(memory_chunks))
+                chunks = memory_chunks + chunks
 
         if not chunks:
             return initial_context
@@ -675,6 +814,8 @@ class AgentLoop:
         if self._executor is not None:
             self._executor.set_episode_id(self._episode_id)
         self._signature = signature or self._trigger
+        if self._executor is not None:
+            self._executor.set_signature(self._signature)
         self._subject_key = subject_key
         self._raw_initial_context = initial_context
 

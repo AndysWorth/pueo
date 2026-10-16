@@ -6910,6 +6910,322 @@ class TestStrategySeeder:
         assert _stored_seed_approaches("") == {}
 
 
+class TestPerSymptomSeeds:
+    """Per-symptom seed files with YAML front-matter signature are correct."""
+
+    def test_per_symptom_seeds_have_valid_front_matter_signature(self):
+        """Every seed file that declares a signature: front-matter value has a colon in it."""
+        import re
+        from pathlib import Path
+
+        from utils.knowledge.strategy_seeder import _parse_front_matter_signature
+
+        _SIG_KEY_RE = re.compile(r"^signature:", re.MULTILINE)
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        bad: list[str] = []
+        for path in sorted(prompts_dir.glob("seed_*.md")):
+            text = path.read_text("utf-8")
+            if not _SIG_KEY_RE.search(text):
+                continue  # no signature declared — method seed or different schema
+            sig = _parse_front_matter_signature(text)
+            if not sig or ":" not in sig:
+                bad.append(f"{path.name}: sig={sig!r}")
+        assert bad == [], f"Seeds with invalid signature: {bad}"
+
+    def test_strip_front_matter_removes_yaml_block(self):
+        """_strip_front_matter removes the YAML block, leaving only content."""
+        from utils.knowledge.strategy_seeder import _strip_front_matter
+
+        content = "---\nsignature: repair:*:restart_required\n---\n# Title\n\nBody."
+        stripped = _strip_front_matter(content)
+        assert "signature:" not in stripped
+        assert "# Title" in stripped
+
+    def test_per_symptom_seeds_registered_in_seed_prompts(self):
+        """Key per-symptom seeds are in _SEED_PROMPTS."""
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS
+
+        filenames = {f for f, _, _ in _SEED_PROMPTS}
+        for expected in (
+            "seed_repair_restart_required.md",
+            "seed_repair_reauth.md",
+            "seed_host_rpi_firmware.md",
+            "seed_notification_http_login.md",
+            "seed_update_hacs.md",
+        ):
+            assert expected in filenames, f"{expected} not in _SEED_PROMPTS"
+
+    def test_seed_strategies_writes_signature_to_db(self, tmp_path, monkeypatch):
+        """seed_strategies writes signature from front-matter to agent_strategies."""
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        seed_strategies(FakeKnowledgeStore(), db_path=db)
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT signature FROM agent_strategies"
+                " WHERE id='seed:seed_repair_restart_required.md'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "repair:*:restart_required"
+
+    def test_seed_strategies_no_signature_for_method_seed(self, tmp_path, monkeypatch):
+        """Method seeds (no front-matter) have NULL signature in agent_strategies."""
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+        from utils.knowledge.strategy_seeder import seed_strategies
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        seed_strategies(FakeKnowledgeStore(), db_path=db)
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT signature FROM agent_strategies"
+                " WHERE id='seed:seed_repair_issue.md'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None  # method seed has no signature
+
+
+class TestSigSpecificity:
+    """_sig_specificity wildcard matching logic."""
+
+    def test_exact_match(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, spec = _sig_specificity(
+            "repair:hacs:restart_required", "repair:hacs:restart_required"
+        )
+        assert matches is True
+        assert spec == 3
+
+    def test_wildcard_middle(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, spec = _sig_specificity(
+            "repair:*:restart_required", "repair:hacs:restart_required"
+        )
+        assert matches is True
+        assert spec == 2  # 2 exact parts
+
+    def test_wildcard_end(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, spec = _sig_specificity(
+            "update:hacs_integration:*", "update:hacs_integration:v5.11.1"
+        )
+        assert matches is True
+        assert spec == 2
+
+    def test_no_match_wrong_part(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, _ = _sig_specificity(
+            "repair:*:reboot_required", "repair:hacs:restart_required"
+        )
+        assert matches is False
+
+    def test_no_match_different_part_count(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, _ = _sig_specificity("repair:*", "repair:hacs:restart_required")
+        assert matches is False
+
+    def test_all_wildcards(self):
+        from utils.agent.agent_loop import _sig_specificity
+
+        matches, spec = _sig_specificity("repair:*:*", "repair:hacs:restart_required")
+        assert matches is True
+        assert spec == 1  # only 'repair' exact
+
+
+class TestFetchSignatureChunks:
+    """_fetch_signature_chunks returns seed + learned runbooks for a signature."""
+
+    def _init_db(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        return db
+
+    def _insert_row(
+        self, db: str, row_id: str, state: str, sig: str, approach: str
+    ) -> None:
+        import sqlite3
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_strategies"
+                " (id, title, trigger_pattern, approach, runbook_state, signature, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+                (row_id, "Test", "test", approach, state, sig),
+            )
+
+    def test_returns_seed_and_learned_for_wildcard(self, tmp_path, monkeypatch):
+        """Returns both matching seed and candidate when wildcards match."""
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        self._insert_row(
+            db,
+            "seed:restart_required",
+            "seed",
+            "repair:*:restart_required",
+            "Seed content",
+        )
+        self._insert_row(
+            db, "cand_001", "candidate", "repair:*:restart_required", "Learned content"
+        )
+
+        chunks = _fetch_signature_chunks(db, "repair:hacs:restart_required")
+        assert len(chunks) == 2
+        ids = [c.chunk_id for c in chunks]
+        assert "seed:restart_required" in ids
+        assert "cand_001" in ids
+
+    def test_prefers_more_specific_seed(self, tmp_path, monkeypatch):
+        """More specific pattern (2 exact parts) wins over less specific (1 exact part)."""
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        self._insert_row(db, "seed:generic", "seed", "repair:*:*", "Generic")
+        self._insert_row(
+            db, "seed:specific", "seed", "repair:*:restart_required", "Specific"
+        )
+
+        chunks = _fetch_signature_chunks(db, "repair:hacs:restart_required")
+        seed_chunks = [
+            c for c in chunks if c.chunk_id in ("seed:generic", "seed:specific")
+        ]
+        # Only best seed returned
+        assert len(seed_chunks) == 1
+        assert seed_chunks[0].chunk_id == "seed:specific"
+
+    def test_returns_empty_for_no_signature_column(self, tmp_path, monkeypatch):
+        """Gracefully returns [] when signature column does not exist (pre-V40)."""
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = str(tmp_path / "old.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE agent_strategies (id TEXT, runbook_state TEXT)")
+        # No signature column — should not raise
+        chunks = _fetch_signature_chunks(db, "repair:hacs:restart_required")
+        assert chunks == []
+
+    def test_chunks_have_sig_match_metadata(self, tmp_path, monkeypatch):
+        """Returned chunks have exact_match and sig_match metadata."""
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        self._insert_row(
+            db,
+            "seed:rpi",
+            "seed",
+            "host:resolution_issue:rpi_firmware_update_blocked",
+            "RPi content",
+        )
+
+        chunks = _fetch_signature_chunks(
+            db, "host:resolution_issue:rpi_firmware_update_blocked"
+        )
+        assert len(chunks) == 1
+        assert chunks[0].metadata.get("exact_match") is True
+        assert chunks[0].metadata.get("sig_match") is True
+
+    def test_empty_on_no_match(self, tmp_path, monkeypatch):
+        from utils.agent.agent_loop import _fetch_signature_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        self._insert_row(db, "seed:other", "seed", "host:*:disk_wear", "Disk wear")
+
+        chunks = _fetch_signature_chunks(db, "repair:hacs:restart_required")
+        assert chunks == []
+
+
+class TestFetchMemoryChunks:
+    """_fetch_memory_chunks returns matching [INSTANCE FACT] chunks from agent_memory."""
+
+    def _init_db(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        return db
+
+    def test_returns_matching_memories(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES ('rpi_quirk', 'CM4 EEPROM blocked', 'agent', 1.0,"
+                "         'host:resolution_issue:rpi_firmware_update_blocked')"
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES ('other_key', 'Unrelated fact', 'agent', 2.0, 'repair:*:restart_required')"
+            )
+
+        chunks = _fetch_memory_chunks(
+            db, "host:resolution_issue:rpi_firmware_update_blocked"
+        )
+        assert len(chunks) == 1
+        assert "CM4 EEPROM" in chunks[0].text
+        assert chunks[0].metadata.get("instance_fact") is True
+
+    def test_wildcard_memory_match(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = self._init_db(tmp_path, monkeypatch)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES ('hacs_quirk', 'Spook repo id 605635573', 'agent', 1.0,"
+                "         'repair:*:restart_required')"
+            )
+
+        chunks = _fetch_memory_chunks(db, "repair:hacs:restart_required")
+        assert len(chunks) == 1
+        assert "Spook" in chunks[0].text
+
+    def test_returns_empty_before_v40(self, tmp_path):
+        """Pre-V40 DB without signature column returns [] gracefully."""
+        import sqlite3
+
+        from utils.agent.agent_loop import _fetch_memory_chunks
+
+        db = str(tmp_path / "old.db")
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "CREATE TABLE agent_memory (id INTEGER PRIMARY KEY, key TEXT,"
+                " content TEXT, source TEXT, ts REAL)"
+            )
+
+        chunks = _fetch_memory_chunks(db, "repair:hacs:restart_required")
+        assert chunks == []
+
+
 class TestHaCommandAllowlistFirmware:
     """Firmware and OS-info commands must be in the allowlist; update must stay blocked."""
 

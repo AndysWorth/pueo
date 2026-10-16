@@ -57,6 +57,9 @@ class ReplayToolExecutor:
         """Accept episode_id from AgentLoop — no-op in replay context."""
         self._episode_id = episode_id
 
+    def set_signature(self, signature: str) -> None:
+        """Accept session signature from AgentLoop — no-op in replay context."""
+
     def get_ha_profile_summary(self) -> str:
         """Stub — profile injection is suppressed during replay."""
         return "HA environment profile not yet available."

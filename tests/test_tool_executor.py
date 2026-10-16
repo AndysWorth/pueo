@@ -5217,3 +5217,85 @@ class TestToolExecutorSetEpisodeId:
         ex.set_episode_id("some-id")
         ex.reset()
         assert ex._episode_id == ""
+
+
+class TestToolExecutorSetSignature:
+    """set_signature propagates to _session_signature; reset() clears it; _remember stamps it."""
+
+    def _make_executor(self, db_path: str):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),  # type: ignore[arg-type]
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+
+    def test_set_signature_stored(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        ex = self._make_executor(db)
+        assert ex._session_signature == ""
+        ex.set_signature("repair:hacs:restart_required")
+        assert ex._session_signature == "repair:hacs:restart_required"
+
+    def test_reset_clears_session_signature(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        ex = self._make_executor(db)
+        ex.set_signature("repair:*:restart_required")
+        ex.reset()
+        assert ex._session_signature == ""
+
+    def test_remember_stamps_signature(self, tmp_path, monkeypatch):
+        """_remember writes _session_signature to agent_memory.signature."""
+        import asyncio
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        ex = self._make_executor(db)
+        ex.set_signature("host:resolution_issue:rpi_firmware_update_blocked")
+
+        asyncio.run(ex._remember("rpi_key", "CM4 EEPROM blocked", "agent"))
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT signature FROM agent_memory WHERE key='rpi_key'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "host:resolution_issue:rpi_firmware_update_blocked"
+
+    def test_remember_null_signature_when_not_set(self, tmp_path, monkeypatch):
+        """_remember stores NULL signature when no signature is set."""
+        import asyncio
+        import sqlite3
+
+        import agents.ha_agent_advanced as haa
+
+        db = str(tmp_path / "test.db")
+        monkeypatch.setattr(haa, "DB_PATH", db)
+        haa.init_local_database()
+        ex = self._make_executor(db)
+
+        asyncio.run(ex._remember("chat_key", "Some chat fact", "agent"))
+
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT signature FROM agent_memory WHERE key='chat_key'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] is None

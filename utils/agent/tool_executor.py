@@ -361,6 +361,8 @@ class ToolExecutor:
         self._declared_runbook_id: Optional[str] = None
         # Episode ID for the current AgentLoop run (set via set_episode_id before each run)
         self._episode_id: str = ""
+        # Session signature (set via set_signature before each run; stamped on memory rows)
+        self._session_signature: str = ""
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -372,6 +374,7 @@ class ToolExecutor:
         self._injected_strategy_ids = set()
         self._declared_runbook_id = None
         self._episode_id = ""
+        self._session_signature = ""
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -424,6 +427,10 @@ class ToolExecutor:
     def set_episode_id(self, episode_id: str) -> None:
         """Set the current AgentLoop episode ID so finish_* cards can include it."""
         self._episode_id = episode_id
+
+    def set_signature(self, signature: str) -> None:
+        """Set the current session signature so remember() can stamp it on memory rows."""
+        self._session_signature = signature
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -1001,6 +1008,8 @@ class ToolExecutor:
         For strategies chunks, appends [id=<chunk_id>] so the model can declare
         which runbook it followed in the runbook_followed terminal-tool field.
         """
+        if metadata.get("instance_fact"):
+            return "[INSTANCE FACT]"
         if metadata.get("exact_match"):
             label = "[RUNBOOK FOR THIS EXACT SYMPTOM]"
             if chunk_id:
@@ -1214,11 +1223,13 @@ class ToolExecutor:
 
     async def _remember(self, key: str, content: str, source: str) -> ToolResult:
         log.debug("tool_remember", key=key, value_preview=str(content)[:200])
+        sig = self._session_signature or None
         try:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
-                    "INSERT INTO agent_memory (key, content, source, ts) VALUES (?, ?, ?, ?)",
-                    (key, content, source, time.time()),
+                    "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (key, content, source, time.time(), sig),
                 )
             return ToolResult(
                 tool_name="remember", success=True, output=f"Remembered: {key}"
