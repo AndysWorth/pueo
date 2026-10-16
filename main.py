@@ -897,6 +897,34 @@ def _is_update_wake_worthy(ev: dict) -> bool:
     return False
 
 
+_CATCHUP_WAKE_TARGETS = ("notification_poll", "repair_poll", "update_check")
+
+
+def _catchup_wake_targets(
+    prev_sessions: int,
+    cur_sessions: int,
+    slept_s: float,
+) -> list[str]:
+    """Return the poll-loop names that need a catch-up wake.
+
+    Two independent triggers:
+    - Host wake after sleep: ``slept_s >= HOST_SLEEP_THRESHOLD_SECONDS``
+    - Subscriber reconnect: ``cur_sessions > prev_sessions > 0``
+      (first connect is not a reconnect; increments handled in S2 when
+      session_count() is wired to the real subscriber).
+
+    Returns an empty list when nothing happened.  The returned set is the
+    same for both triggers — all three time-sensitive poll loops need a nudge.
+    """
+    from utils.system.sleep_guard import HOST_SLEEP_THRESHOLD_SECONDS
+
+    if slept_s >= HOST_SLEEP_THRESHOLD_SECONDS:
+        return list(_CATCHUP_WAKE_TARGETS)
+    if cur_sessions > prev_sessions > 0:
+        return list(_CATCHUP_WAKE_TARGETS)
+    return []
+
+
 async def supervisor_main(config_path: Path) -> None:
     """Start all monitoring loops and the dashboard in a single supervised asyncio process."""
     _write_pid_file()
@@ -1446,16 +1474,34 @@ async def supervisor_main(config_path: Path) -> None:
         async def _ha_event_wake_dispatcher() -> None:
             """Watch the event ring buffer and wake poll loops on relevant HA events."""
             import time as _time
+            from utils.core.logging import get_logger as _gl_wd
 
             _DEBOUNCE = 5.0
             _POLL = 1.0
             _last_wake: dict[str, float] = {}
             _last_checked = _time.time()
+            _prev_wall = _time.time()
+            _prev_mono = _time.monotonic()
             while True:
                 await asyncio.sleep(_POLL)
+                now = _time.time()
+                now_mono = _time.monotonic()
+                from utils.system.sleep_guard import host_sleep_seconds
+
+                _slept = host_sleep_seconds(_prev_wall, _prev_mono, now, now_mono)
+                _prev_wall = now
+                _prev_mono = now_mono
+                catchup = _catchup_wake_targets(0, 0, _slept)
+                if catchup:
+                    _gl_wd("main").info("host_sleep_detected", slept_s=round(_slept, 1))
+                    for _ct in catchup:
+                        _last_wake[_ct] = now
+                        try:
+                            _sv_wd.wake(_ct)
+                        except Exception:  # nosec B110
+                            pass
                 if not _esub_wd.is_connected():
                     continue
-                now = _time.time()
                 all_events = _esub_wd.get_events(limit=100)
                 new_events = [
                     e for e in all_events if e.get("time", 0) >= _last_checked
@@ -1565,6 +1611,9 @@ async def supervisor_main(config_path: Path) -> None:
         server.should_exit = True
         if _mcp_server_obj is not None:
             _mcp_server_obj.stop()
+        from utils.system.sleep_guard import get_sleep_guard
+
+        get_sleep_guard().stop()
         loop.call_later(3.0, sys.exit, 0)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1719,6 +1768,10 @@ def main() -> None:
         get_logger("main").info("fd_limit_raised", old=_fd_change[0], new=_fd_change[1])
 
     if args.mode == "supervisor":
+        import config as _cfg_sleep
+        from utils.system.sleep_guard import apply_sleep_policy
+
+        apply_sleep_policy(_cfg_sleep.PREVENT_IDLE_SLEEP)
         asyncio.run(supervisor_main(config_path))
     elif args.mode == "monitor":
         from agents import ha_log_monitor

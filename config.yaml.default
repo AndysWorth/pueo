@@ -159,6 +159,17 @@ agent:
   # development_mode: false  # Unlock dev-only surfaces: Runbook Review tab, cloud escalation cards, KB submission, code proposals, debug toggle
   # debug_level: 0         # 0=off, 1=debug (tool previews + LLM headers), 2=verbose (full payloads), 3=ultra (RAG internals).
   # debug_episode_retention_days: 30  # Delete episode HTML files older than this many days
+  # prevent_idle_sleep: false
+  #   Hold a caffeinate -i assertion so macOS does not idle-sleep while Pueo is running.
+  #   On (keep awake): monitoring, log tailing, and the HA event stream run without
+  #     interruption. Power use is higher; a laptop display can still sleep; closing the
+  #     lid still sleeps the Mac (unless on power with an external display — clamshell).
+  #     The assertion is released automatically when Pueo stops.
+  #   Off (allow sleep): macOS may sleep when idle. Pueo pauses completely during sleep;
+  #     events, log lines, and polls that fire during sleep are missed. On wake, Pueo
+  #     reconnects and runs a catch-up check of notifications, repairs, and updates —
+  #     problems are found late but not lost. Expect reconnect_after_sleep in the log.
+  #   Docker / Linux: this setting has no effect; the container host's power settings decide.
   # chat_allow_tool_registration: false  # Allow agent to write and register new Python tools (sandboxed + requires approval)
   # chromadb_path: ""           # ChromaDB vector store; default: ~/Library/Application Support/Pueo/chromadb (macOS)
   # rag_top_k: 5                # Number of knowledge chunks returned per query_knowledge call
