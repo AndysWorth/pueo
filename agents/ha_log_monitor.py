@@ -553,6 +553,119 @@ def _repair_issue_knowledge_query(issue: HARepairIssue) -> str:
     return f"HA repair issue {issue.domain} {issue.translation_key or ''}".strip()
 
 
+async def _run_spook_digest_investigation(
+    translation_key: str,
+    digest_key: str,
+    issues: "list[HARepairIssue]",
+    notifier: "NotifierProtocol",
+    db_path: str,
+    llm_client: Optional["LLMClientProtocol"] = None,
+    knowledge_store: Optional[Any] = None,
+    ha_rest_client: Optional["HARestClientProtocol"] = None,
+) -> None:
+    """Run one AgentLoop for all Spook issues sharing a translation_key.
+
+    Uses a synthetic HARepairIssue keyed as ``spook/digest:<translation_key>``
+    so deduplication works through the standard ``ha_repair_history`` table.
+    Subsequent polls skip individual Spook issues via the translation_key dedup
+    in ``_check_repair_already_sent`` once the digest row is marked sent.
+    """
+    from utils.agent.agent_loop import AgentLoop
+    from utils.agent.tool_executor import ToolExecutor
+    from utils.agent.tool_registry import build_ha_tool_registry
+    from utils.ha.read_only_ssh import ReadOnlySSHClient
+    from utils.llm.llm_factory import make_llm_client
+    from utils.core.prompts import load_prompt
+
+    llm = llm_client or make_llm_client()  # pragma: no cover
+    gate = AutonomyGate(AUTONOMY_LEVEL)
+    ssh = AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)  # pragma: no cover
+
+    synthetic_issue = HARepairIssue(
+        domain="spook",
+        issue_id=f"digest:{translation_key}",
+        severity=max((i.severity for i in issues), default="warning"),
+        issue_key=digest_key,
+        translation_key=translation_key or None,
+        breaks_in_ha_version=None,
+    )
+
+    executor = ToolExecutor(
+        ha_ssh_client=ReadOnlySSHClient(ssh),
+        gate=gate,
+        notifier=notifier,
+        ha_rest_client=ha_rest_client,
+        knowledge_store=knowledge_store,
+        db_path=db_path,
+        pending_repair_issue=synthetic_issue,
+        post_update_ssh_client=ssh,
+    )
+    try:
+        from utils.ha.ha_environment import load_environment_profile as _lep
+
+        _prof = await asyncio.to_thread(_lep, db_path)
+        if _prof is not None:
+            executor.set_ha_profile(_prof)
+    except Exception:  # nosec B110
+        pass
+
+    registry = build_ha_tool_registry()
+    system_prompt = load_prompt("agent_loop_repair_issue").format(
+        terminal_tool="finish_repair_issue"
+    )
+
+    issue_lines = "\n".join(f"  - issue_id: {i.issue_id}" for i in issues)
+    initial_context = (
+        f"Spook repair digest — translation_key: {translation_key or '(none)'}\n"
+        f"Issue count: {len(issues)}\n"
+        f"Issues:\n{issue_lines}\n\n"
+        "Call get_spook_issues to see full details including affected entities.\n"
+        "Produce one HITL card covering all issues with this translation_key."
+    )
+
+    from utils.agent.supervisor import (
+        decrement_active_agent,
+        increment_active_agent,
+        make_activity_timeline_callback,
+        publish_activity_done,
+    )
+
+    loop = AgentLoop(
+        llm_client=llm,
+        tool_executor=executor,
+        tool_registry=registry,
+        system_prompt=system_prompt,
+        terminal_tool_name="finish_repair_issue",
+        trigger="repair_poll",
+        activity_type="repair_issue",
+        db_path=db_path,
+        knowledge_store=knowledge_store,
+        timeline_callback=make_activity_timeline_callback(
+            "repair_issue", trigger=f"Spook digest: {translation_key}"
+        ),
+        capture_llm=True,
+    )
+    from utils.knowledge.runbook_signature import sig_repair
+
+    increment_active_agent()
+    try:
+        result = await loop.run(
+            initial_context=initial_context,
+            knowledge_query=f"Spook {translation_key} repair issue",
+            signature=sig_repair("spook", translation_key),
+            subject_key=digest_key,
+        )
+        publish_activity_done("repair_issue", result.outcome)
+        if result.outcome != "success":
+            import sqlite3 as _sqlite3_sd
+            from utils.hitl.hitl_tracker import mark_investigation_backoff
+
+            with _sqlite3_sd.connect(db_path) as _conn:
+                mark_investigation_backoff(_conn, f"repair_issue_backoff:{digest_key}")
+    finally:
+        decrement_active_agent()
+
+
 async def _run_repair_issue_investigation(
     issue: HARepairIssue,
     notifier: NotifierProtocol,
@@ -1450,6 +1563,7 @@ async def poll_for_repairs(
             continue
 
         active_keys: set[str] = set()
+        _spook_unsent_by_tkey: dict[str, list] = {}
         for issue in issues:
             active_keys.add(issue.issue_key)
             record_repair_seen(issue.issue_key, translation_key=issue.translation_key)
@@ -1483,6 +1597,15 @@ async def poll_for_repairs(
             )
 
             if not already_sent:
+                # ── Spook digest routing ──────────────────────────────────────
+                # Divert all new Spook issues into a per-translation_key digest
+                # dispatched after the main loop; one investigation per tkey.
+                if issue.domain == "spook":
+                    _tkey_s = issue.translation_key or ""
+                    _spook_unsent_by_tkey.setdefault(_tkey_s, []).append(issue)
+                    continue
+                # ── end Spook digest routing ──────────────────────────────────
+
                 _backoff_key = f"repair_issue_backoff:{issue.issue_key}"
                 from utils.hitl.hitl_tracker import should_send_card as _ssc
 
@@ -1739,6 +1862,95 @@ async def poll_for_repairs(
                     )
                 else:
                     await _run_investigation()
+
+        # ── Spook digest dispatch ─────────────────────────────────────────────
+        # For each translation_key that has at least one new Spook issue, dispatch
+        # a single digest investigation (or skip if a digest was already sent).
+        for _tkey_d, _tkey_d_issues in _spook_unsent_by_tkey.items():
+            _digest_key_d = f"spook/digest:{_tkey_d}" if _tkey_d else "spook/digest:"
+            active_keys.add(_digest_key_d)
+
+            def _check_digest_sent(_dk: str = _digest_key_d) -> bool:
+                with sqlite3.connect(db_path) as _conn:
+                    _row = _conn.execute(
+                        "SELECT hitl_sent_at FROM ha_repair_history"
+                        " WHERE issue_key = ? AND hitl_sent_at IS NOT NULL"
+                        " AND resolved_at IS NULL",
+                        (_dk,),
+                    ).fetchone()
+                    return _row is not None
+
+            if await asyncio.to_thread(_check_digest_sent):
+                continue
+
+            from utils.hitl.hitl_tracker import should_send_card as _ssc_d
+
+            with sqlite3.connect(db_path) as _conn:
+                if not _ssc_d(_conn, f"repair_issue_backoff:{_digest_key_d}"):
+                    continue
+
+            await asyncio.to_thread(
+                record_repair_seen, _digest_key_d, translation_key=_tkey_d or None
+            )
+
+            _tkey_snap_d = _tkey_d
+            _dkey_snap_d = _digest_key_d
+            _issues_snap_d = list(_tkey_d_issues)
+            _notifier_snap_d = _notifier
+            _llm_snap_d = llm_client
+            _db_snap_d = db_path
+            _rest_snap_d = _rest
+
+            async def _run_spook_digest_coro(
+                _tk: str = _tkey_snap_d,
+                _dk: str = _dkey_snap_d,
+                _is: "list[HARepairIssue]" = _issues_snap_d,
+                _n: NotifierProtocol = _notifier_snap_d,
+                _l: Optional[LLMClientProtocol] = _llm_snap_d,
+                _db: str = _db_snap_d,
+                _r: HARestClientProtocol = _rest_snap_d,
+            ) -> None:
+                await _run_spook_digest_investigation(
+                    translation_key=_tk,
+                    digest_key=_dk,
+                    issues=_is,
+                    notifier=_n,
+                    db_path=_db,
+                    llm_client=_l,
+                    knowledge_store=knowledge_store,
+                    ha_rest_client=_r,
+                )
+
+            from utils.agent.work_queue import (
+                PRIORITY_NORMAL as _PRIO_D,
+                WorkItem as _WI_D,
+                get_work_queue_or_none as _gwq_d,
+            )
+
+            _wq_d = _gwq_d()
+            log.info(
+                "spook_digest_dispatched",
+                translation_key=_tkey_d,
+                issue_count=len(_tkey_d_issues),
+                digest_key=_digest_key_d,
+            )
+            if _wq_d is not None:
+                await _wq_d.submit(
+                    _WI_D(
+                        priority=_PRIO_D,
+                        activity_type="repair_issue",
+                        description=(
+                            f"Spook digest: {_tkey_d or 'unknown'}"
+                            f" ({len(_tkey_d_issues)} issue(s))"
+                        ),
+                        dedup_key=f"repair_issue:{_digest_key_d}",
+                        suppress_while_running=frozenset(),
+                        coro_factory=_run_spook_digest_coro,
+                    )
+                )
+            else:
+                await _run_spook_digest_coro()
+        # ── end Spook digest dispatch ─────────────────────────────────────────
 
         # Reconcile: mark resolved any previously-sent repairs no longer in HA's list.
         import sqlite3 as _sqlite3
