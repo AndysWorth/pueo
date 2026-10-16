@@ -672,6 +672,8 @@ class AgentLoop:
         self._llm_captures = []
         self._tool_call_records = []
         self._episode_id = str(uuid.uuid4())
+        if self._executor is not None:
+            self._executor.set_episode_id(self._episode_id)
         self._signature = signature or self._trigger
         self._subject_key = subject_key
         self._raw_initial_context = initial_context

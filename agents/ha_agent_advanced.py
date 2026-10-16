@@ -838,6 +838,61 @@ def resolve_session_outcome(
         pass
 
 
+def resolve_session_outcome_by_episode_id(
+    episode_id: str,
+    verification: str,
+    by: str,
+    correction: "Optional[str]" = None,
+) -> None:
+    """Mark a single pending session_outcomes row by episode_id and update runbook_usage.
+
+    Used from card action endpoints where episode_id is known but subject_key is not.
+    verification should be 'success' or 'failure'.  by should be 'system' or 'user'.
+    No-op when the row is already resolved or does not exist.
+    """
+    if not episode_id:
+        return
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT episode_id FROM session_outcomes"
+                " WHERE episode_id = ?"
+                "   AND (verification IS NULL OR verification = 'pending')",
+                (episode_id,),
+            ).fetchone()
+            if not row:
+                return
+
+            conn.execute(
+                "UPDATE session_outcomes"
+                " SET verification = ?, verified_at = ?, verified_by = ?, correction = ?"
+                " WHERE episode_id = ?",
+                (verification, now, by, correction, episode_id),
+            )
+
+            conn.execute(
+                "UPDATE runbook_usage SET verification = ?, verified_at = ?"
+                " WHERE episode_id = ?"
+                "   AND (verification IS NULL OR verification = '' OR verification = 'pending')",
+                [verification, now, episode_id],
+            )
+
+            conn.commit()
+
+            import config as _cfg
+
+            min_successes = _cfg.RUNBOOK_VALIDATE_MIN_SUCCESSES
+            strategy_rows = conn.execute(
+                "SELECT DISTINCT strategy_id FROM runbook_usage WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchall()
+            for (sid,) in strategy_rows:
+                _auto_validate_if_eligible_standalone(conn, sid, min_successes)
+    except Exception:  # nosec B110
+        pass
+
+
 def _auto_validate_if_eligible_standalone(
     conn: sqlite3.Connection, strategy_id: str, min_successes: int
 ) -> None:

@@ -898,6 +898,7 @@ async def _run_update_analysis(
                             "entity_id": update.entity_id,
                             "installed_version": update.installed_version,
                             "latest_version": update.latest_version,
+                            "episode_id": getattr(executor, "_episode_id", ""),
                         },
                     )
                 else:

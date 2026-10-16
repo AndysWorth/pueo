@@ -508,6 +508,18 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         <button class="btn" style="background:#6c757d;color:#fff;border:none;padding:0.35rem 0.9rem;border-radius:4px;cursor:pointer;font-size:0.875rem;" type="submit">Suppress (Known Issue)</button>
       </form>
       {% endif %}
+      {% if r.payload.get("episode_id") %}
+      <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:none;color:#999;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo got this wrong</button>
+      <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:0.5rem;">
+        <form method="POST" action="/wrong/{{ r.notification_id }}">
+          <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Optional correction (one line):</label>
+          <input type="text" name="correction" placeholder="What should Pueo have done instead?" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+          <br>
+          <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: Pueo was wrong</button>
+          <button type="button" onclick="window.toggleWrongForm('{{ r.notification_id }}')" style="background:none;color:#666;border:1px solid #ccc;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-left:0.3rem;">Cancel</button>
+        </form>
+      </div>
+      {% endif %}
       {% else %}
       <p style="font-size:0.78rem;color:#666;margin-top:0.6rem;">
         {% if ct == "host_health" and r.payload.get("informational") %}
@@ -524,6 +536,18 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
       <form method="POST" action="/approve/{{ r.notification_id }}">
         <button class="btn btn-approve" type="submit">Acknowledge</button>
       </form>
+      {% endif %}
+      {% if r.payload.get("episode_id") %}
+      <button onclick="window.toggleWrongForm('{{ r.notification_id }}')" type="button" style="background:none;color:#999;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo got this wrong</button>
+      <div id="wrong-form-{{ r.notification_id }}" style="display:none;margin-top:0.4rem;background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:0.5rem;">
+        <form method="POST" action="/wrong/{{ r.notification_id }}">
+          <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Optional correction (one line):</label>
+          <input type="text" name="correction" placeholder="What should Pueo have done instead?" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+          <br>
+          <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: Pueo was wrong</button>
+          <button type="button" onclick="window.toggleWrongForm('{{ r.notification_id }}')" style="background:none;color:#666;border:1px solid #ccc;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-left:0.3rem;">Cancel</button>
+        </form>
+      </div>
       {% endif %}
       {% endif %}
       {% endif %}
@@ -544,6 +568,11 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
   if (document.querySelector('.spinner')) {
     setTimeout(function () { location.reload(); }, 5000);
   }
+
+  window.toggleWrongForm = function(nid) {
+    var el = document.getElementById('wrong-form-' + nid);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  };
 
   function fmtDate(ts) {
     if (!ts) return '—';
