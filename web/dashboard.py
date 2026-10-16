@@ -499,6 +499,24 @@ def _hitl_write(fn: Any, *args: Any) -> None:
         fn(conn, *args)
 
 
+def _resolve_card_outcome(
+    episode_id: str,
+    verification: str,
+    correction: str = "",
+) -> None:
+    """Resolve the session outcome for a card action (sync; call via asyncio.to_thread)."""
+    if not episode_id:
+        return
+    from agents.ha_agent_advanced import resolve_session_outcome_by_episode_id
+
+    resolve_session_outcome_by_episode_id(
+        episode_id,
+        verification,
+        "user",
+        correction or None,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def overview(request: Request) -> HTMLResponse:
     from utils.disk.resource import get_resource_status
@@ -2139,6 +2157,9 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
             from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
             await asyncio.to_thread(_hitl_write, _mark_approved, suppression_key)
+        _episode_id = payload.get("episode_id", "")
+        if _episode_id:
+            await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2274,6 +2295,9 @@ async def apply_fixes(nid: str) -> RedirectResponse:
         asyncio.create_task(
             _execute_config_fixes(nid, fixes, data, json_path, watch_dir)
         )
+    _episode_id = payload.get("episode_id", "")
+    if _episode_id:
+        await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2402,6 +2426,36 @@ async def acknowledge(nid: str) -> RedirectResponse:
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         data = json.loads(json_path.read_text())
         payload = data.get("payload", {})
+        suppression_key = payload.get("suppression_key", "")
+        fingerprint = str(payload.get("fingerprint", ""))
+        if suppression_key:
+            await asyncio.to_thread(
+                _hitl_write, mark_card_acknowledged, suppression_key, fingerprint
+            )
+        _episode_id = payload.get("episode_id", "")
+        if _episode_id:
+            await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
+        (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+@app.post("/wrong/{nid}")
+async def wrong(nid: str, request: Request) -> RedirectResponse:
+    """Record that Pueo got this wrong — marks session outcome as failure and acknowledges the card."""
+    from utils.hitl.hitl_tracker import mark_card_acknowledged
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        payload = data.get("payload", {})
+        form = await request.form()
+        correction = str(form.get("correction", "")).strip()
+        _episode_id = payload.get("episode_id", "")
+        if _episode_id:
+            await asyncio.to_thread(
+                _resolve_card_outcome, _episode_id, "failure", correction
+            )
         suppression_key = payload.get("suppression_key", "")
         fingerprint = str(payload.get("fingerprint", ""))
         if suppression_key:

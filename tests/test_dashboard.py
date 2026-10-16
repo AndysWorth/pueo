@@ -8422,3 +8422,222 @@ class TestPrivateNetworkAccessMiddleware:
             resp.status_code != 200
             or resp.headers.get("access-control-allow-private-network") == "true"
         )
+
+
+class TestCardEpisodeIdVerification:
+    """Episode_id on card payloads wires approve/acknowledge/wrong to session_outcomes."""
+
+    SESSION_OUTCOMES_DDL = (
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+        " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+        " created_at TEXT, verification TEXT, verified_at TEXT,"
+        " verified_by TEXT, correction TEXT)"
+    )
+    RUNBOOK_USAGE_DDL = (
+        "CREATE TABLE IF NOT EXISTS runbook_usage ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_id TEXT, episode_id TEXT,"
+        " signature TEXT, outcome TEXT, created_at TEXT, verification TEXT, verified_at TEXT)"
+    )
+
+    def _setup_db(self, db_path: str) -> None:
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            conn.execute(self.SESSION_OUTCOMES_DDL)
+            conn.execute(self.RUNBOOK_USAGE_DDL)
+            conn.commit()
+
+    def _insert_pending(self, db_path: str, episode_id: str) -> None:
+        import sqlite3 as _sq
+        import time as _time
+
+        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with _sq.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, signature, session_type, subject_key, created_at, verification)"
+                " VALUES (?, 'sig', 'repair_issue', 'key/1', ?, 'pending')",
+                (episode_id, now),
+            )
+            conn.commit()
+
+    def _get_verification(self, db_path: str, episode_id: str) -> str | None:
+        import sqlite3 as _sq
+
+        with _sq.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT verification FROM session_outcomes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def _write_card(self, watch_dir: "Path", nid: str, payload: dict) -> None:
+        import json as _json
+        import time as _time
+
+        (watch_dir / f"{nid}.json").write_text(
+            _json.dumps(
+                {
+                    "notification_id": nid,
+                    "subject": "Test card",
+                    "body": "body",
+                    "timestamp": _time.time(),
+                    "payload": payload,
+                }
+            )
+        )
+
+    def test_approve_marks_session_outcome_success(self, tmp_path, monkeypatch):
+        from pathlib import Path as _Path
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-approve-1")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        self._write_card(watch_dir, "nid1", {"episode_id": "ep-approve-1"})
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post("/approve/nid1", follow_redirects=False)
+        assert resp.status_code == 303
+        assert self._get_verification(db_path, "ep-approve-1") == "success"
+
+    def test_acknowledge_marks_session_outcome_success(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-ack-1")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        self._write_card(
+            watch_dir, "nid2", {"episode_id": "ep-ack-1", "suppression_key": ""}
+        )
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/acknowledge/nid2", follow_redirects=False)
+        assert self._get_verification(db_path, "ep-ack-1") == "success"
+
+    def test_wrong_marks_session_outcome_failure_with_correction(
+        self, tmp_path, monkeypatch
+    ):
+        import sqlite3 as _sq
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-wrong-1")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        self._write_card(watch_dir, "nid3", {"episode_id": "ep-wrong-1"})
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        resp = client.post(
+            "/wrong/nid3",
+            data={"correction": "should have restarted"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert self._get_verification(db_path, "ep-wrong-1") == "failure"
+        with _sq.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT correction, verified_by FROM session_outcomes WHERE episode_id='ep-wrong-1'"
+            ).fetchone()
+        assert row[0] == "should have restarted"
+        assert row[1] == "user"
+
+    def test_wrong_acknowledges_card(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-wrong-2")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        self._write_card(watch_dir, "nid4", {"episode_id": "ep-wrong-2"})
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/wrong/nid4", data={}, follow_redirects=False)
+        assert (watch_dir / "nid4.approved").exists()
+
+    def test_approve_without_episode_id_leaves_session_outcomes_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+        import web.dashboard as dashboard
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        self._insert_pending(db_path, "ep-no-card")
+
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        # Card has no episode_id
+        self._write_card(watch_dir, "nid5", {"suppression_key": ""})
+
+        monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        monkeypatch.setattr(dashboard, "DB_PATH", db_path)
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+
+        client = TestClient(dashboard.app, raise_server_exceptions=True)
+        client.post("/approve/nid5", follow_redirects=False)
+        # Row for ep-no-card should remain pending
+        assert self._get_verification(db_path, "ep-no-card") == "pending"
+
+    def test_resolve_session_outcome_by_episode_id_no_op_when_already_resolved(
+        self, tmp_path
+    ):
+        import sqlite3 as _sq
+        import time as _time
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "db.sqlite")
+        self._setup_db(db_path)
+        now = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with _sq.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification)"
+                " VALUES ('ep-resolved', 'key/2', ?, 'success')",
+                (now,),
+            )
+            conn.commit()
+
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.resolve_session_outcome_by_episode_id("ep-resolved", "failure", "user")
+            assert self._get_verification(db_path, "ep-resolved") == "success"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]

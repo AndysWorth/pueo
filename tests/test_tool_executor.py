@@ -5054,3 +5054,166 @@ class TestRunbookAuthorityScores:
             )
             == "[VALIDATED RUNBOOK]"
         )
+
+
+class TestResolveSessionOutcomeByEpisodeId:
+    """resolve_session_outcome_by_episode_id resolves by episode_id, not subject_key."""
+
+    SESSION_OUTCOMES_DDL = (
+        "CREATE TABLE IF NOT EXISTS session_outcomes ("
+        "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
+        " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
+        " created_at TEXT, verification TEXT, verified_at TEXT,"
+        " verified_by TEXT, correction TEXT)"
+    )
+    RUNBOOK_USAGE_DDL = (
+        "CREATE TABLE IF NOT EXISTS runbook_usage ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_id TEXT, episode_id TEXT,"
+        " signature TEXT, outcome TEXT, created_at TEXT, verification TEXT, verified_at TEXT)"
+    )
+
+    def _make_db(self, tmp_path) -> str:
+        import sqlite3
+
+        db_path = str(tmp_path / "db.sqlite")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(self.SESSION_OUTCOMES_DDL)
+            conn.execute(self.RUNBOOK_USAGE_DDL)
+            conn.commit()
+        return db_path
+
+    def test_resolves_pending_row_to_success(self, tmp_path):
+        import sqlite3
+        import time
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_db(tmp_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification)"
+                " VALUES ('ep-a', 'subj/1', ?, 'pending')",
+                (now,),
+            )
+            conn.commit()
+
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.resolve_session_outcome_by_episode_id("ep-a", "success", "user")
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT verification, verified_by FROM session_outcomes"
+                    " WHERE episode_id='ep-a'"
+                ).fetchone()
+            assert row[0] == "success"
+            assert row[1] == "user"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_stores_correction_on_failure(self, tmp_path):
+        import sqlite3
+        import time
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_db(tmp_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification)"
+                " VALUES ('ep-b', 'subj/2', ?, 'pending')",
+                (now,),
+            )
+            conn.commit()
+
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.resolve_session_outcome_by_episode_id(
+                "ep-b", "failure", "user", "should have restarted"
+            )
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT verification, correction FROM session_outcomes"
+                    " WHERE episode_id='ep-b'"
+                ).fetchone()
+            assert row[0] == "failure"
+            assert row[1] == "should have restarted"
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_no_op_when_already_resolved(self, tmp_path):
+        import sqlite3
+        import time
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_db(tmp_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification)"
+                " VALUES ('ep-c', 'subj/3', ?, 'success')",
+                (now,),
+            )
+            conn.commit()
+
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.resolve_session_outcome_by_episode_id("ep-c", "failure", "user")
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT verification FROM session_outcomes WHERE episode_id='ep-c'"
+                ).fetchone()
+            assert row[0] == "success"  # unchanged
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_empty_episode_id_is_no_op(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            # Should not raise
+            adv.resolve_session_outcome_by_episode_id("", "success", "user")
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+
+class TestToolExecutorSetEpisodeId:
+    """set_episode_id propagates to card payloads via _episode_id."""
+
+    def test_set_episode_id_stored(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        assert ex._episode_id == ""
+        ex.set_episode_id("my-ep-123")
+        assert ex._episode_id == "my-ep-123"
+
+    def test_reset_clears_episode_id(self):
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+        )
+        ex.set_episode_id("some-id")
+        ex.reset()
+        assert ex._episode_id == ""

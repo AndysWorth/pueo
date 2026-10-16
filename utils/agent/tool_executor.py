@@ -359,6 +359,8 @@ class ToolExecutor:
         self._injected_strategy_ids: set[str] = set()
         # Declared by the model in a finish_* terminal tool call (strategy_id or "none")
         self._declared_runbook_id: Optional[str] = None
+        # Episode ID for the current AgentLoop run (set via set_episode_id before each run)
+        self._episode_id: str = ""
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -369,6 +371,7 @@ class ToolExecutor:
         self._query_knowledge_had_results = False
         self._injected_strategy_ids = set()
         self._declared_runbook_id = None
+        self._episode_id = ""
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -417,6 +420,10 @@ class ToolExecutor:
     def set_host_health_finding(self, finding: Any) -> None:
         """Store the HostHealthFinding so _finish_host_health can build the card."""
         self._host_health_finding = finding
+
+    def set_episode_id(self, episode_id: str) -> None:
+        """Set the current AgentLoop episode ID so finish_* cards can include it."""
+        self._episode_id = episode_id
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         args = tool_call.arguments
@@ -4390,6 +4397,7 @@ class ToolExecutor:
                 "suggested_actions": suggested_actions,
                 "chat_needed": chat_needed,
                 "initial_chat_message": initial_chat_message,
+                "episode_id": self._episode_id,
             }
             with sqlite3.connect(self._db_path) as conn:
                 mark_card_sent(conn, card_key, CARD_TYPE_HA_CONFIG_ISSUE, description)
@@ -4580,6 +4588,7 @@ class ToolExecutor:
             "body": body,
             "breaks_in_ha_version": getattr(issue, "breaks_in_ha_version", None),
             "translation_key": getattr(issue, "translation_key", None),
+            "episode_id": self._episode_id,
         }
         mark_repair_hitl_sent(issue.issue_key)
         await self._notifier.send(subject=title, body=body, payload=payload)
@@ -4669,6 +4678,7 @@ class ToolExecutor:
             "original_message": message,
             "original_title": notif.get("title"),
             "ha_created_at": ha_created_at,
+            "episode_id": self._episode_id,
         }
         await self._notifier.send(subject=subject, body=body, payload=payload)
         from agents.ha_notification_manager import mark_notification_hitl_sent
@@ -5193,6 +5203,7 @@ class ToolExecutor:
             "deprecations": deprecations or [],
             "new_features": new_features or [],
             "risk_score": risk_score or "",
+            "episode_id": self._episode_id,
         }
         await asyncio.to_thread(
             _update_mark_card_sent,
@@ -5311,6 +5322,7 @@ class ToolExecutor:
             "outcome": outcome,
             "recommended_actions": recommended_actions,
             "evidence": finding.evidence,
+            "episode_id": self._episode_id,
         }
         if outcome in ("informational", "monitoring") and not recommended_actions:
             _payload["informational"] = True

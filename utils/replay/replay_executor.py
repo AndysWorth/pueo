@@ -51,6 +51,11 @@ class ReplayToolExecutor:
         # Suppress gap-runbook auto-save during replay (not a real investigation).
         self._query_knowledge_had_results: bool = True
         self._save_runbook_called: bool = True
+        self._episode_id: str = ""
+
+    def set_episode_id(self, episode_id: str) -> None:
+        """Accept episode_id from AgentLoop — no-op in replay context."""
+        self._episode_id = episode_id
 
     def get_ha_profile_summary(self) -> str:
         """Stub — profile injection is suppressed during replay."""
