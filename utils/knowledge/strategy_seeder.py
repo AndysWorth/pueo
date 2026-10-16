@@ -9,6 +9,7 @@ Called once per RAG refresh cycle.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -16,6 +17,25 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from interfaces import KnowledgeStoreClientProtocol
     from utils.ha.ha_environment import HAEnvironmentProfile
+
+
+_FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_SIG_LINE_RE = re.compile(r"^signature:\s*(.+)$", re.MULTILINE)
+
+
+def _parse_front_matter_signature(content: str) -> Optional[str]:
+    """Return the ``signature:`` value from YAML front-matter, or None."""
+    m = _FRONT_MATTER_RE.match(content)
+    if not m:
+        return None
+    sm = _SIG_LINE_RE.search(m.group(1))
+    return sm.group(1).strip() if sm else None
+
+
+def _strip_front_matter(content: str) -> str:
+    """Remove YAML front-matter block from content if present."""
+    return _FRONT_MATTER_RE.sub("", content, count=1)
+
 
 # Prompt files that used to be seeded but are other agents' system prompts, not
 # runbooks. seed_strategies() purges their ids from Chroma and agent_strategies so
@@ -33,6 +53,8 @@ _RETIRED_SEED_PROMPTS: frozenset[str] = frozenset(
 
 # Prompt files to seed as runbook documents.
 # Each entry is (prompt_filename, title, trigger_pattern).
+# Files with a YAML front-matter ``signature:`` line have their signature written into
+# agent_strategies.signature so _fetch_signature_chunks can match them exactly.
 _SEED_PROMPTS: list[tuple[str, str, str]] = [
     (
         "seed_integration_error.md",
@@ -71,18 +93,53 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
     ),
     (
         "seed_repair_issue.md",
-        "HA repair issue investigation",
-        "HA repair panel issue, config_entry_reauth, reboot_required, restart_required, integration disabled, breaking change deprecation",
+        "HA repair issue investigation — method",
+        "HA repair panel issue, unknown repair type, novel translation_key",
+    ),
+    (
+        "seed_repair_restart_required.md",
+        "restart_required repair — component restart needed",
+        "restart_required repair issue, HACS restart_required, HA Core restart needed after update",
+    ),
+    (
+        "seed_repair_reauth.md",
+        "config_entry_reauth repair — integration re-authentication",
+        "config_entry_reauth repair issue, OAuth token expired, API key revoked",
+    ),
+    (
+        "seed_repair_reboot_required.md",
+        "reboot_required repair — OS/Supervisor reboot needed",
+        "reboot_required repair issue, OS update reboot, Supervisor reboot",
+    ),
+    (
+        "seed_repair_integration_disabled.md",
+        "integration_disabled repair — integration failed to load",
+        "integration_disabled repair, setup_error repair, integration load failure",
+    ),
+    (
+        "seed_repair_breaking_change.md",
+        "breaking_change repair — deprecated configuration key",
+        "breaking_change repair, deprecated config key, YAML migration required",
     ),
     (
         "seed_notification_analysis.md",
-        "HA notification investigation",
-        "HA persistent notification, http_login, ip-ban, invalid_config, integration disabled, failed login, unknown device",
+        "HA notification investigation — method",
+        "HA persistent notification, invalid_config, integration disabled, failed login, unknown device",
+    ),
+    (
+        "seed_notification_http_login.md",
+        "http_login notification — failed login attempt",
+        "http_login notification, ip-ban notification, failed login, suspicious login, unknown device login",
     ),
     (
         "seed_update_analysis.md",
-        "HA update breaking-change analysis",
-        "HA update available, breaking changes, deprecated config key, OS update, CLI change, HACS incompatibility, release notes unavailable",
+        "HA update breaking-change analysis — method",
+        "HA update available, breaking changes, deprecated config key, OS update, CLI change, release notes unavailable",
+    ),
+    (
+        "seed_update_hacs.md",
+        "HACS integration update analysis",
+        "HACS update available, HACS integration update, custom integration update",
     ),
     (
         "seed_supervisor_cli.md",
@@ -106,8 +163,18 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
     ),
     (
         "seed_host_health.md",
-        "Host health investigation",
+        "Host health investigation — method",
         "swap pressure, memory low, eMMC disk wear, unexpected reboot, supervisor unhealthy, supervisor unsupported, resolution issue",
+    ),
+    (
+        "seed_host_rpi_firmware.md",
+        "rpi_firmware_update_blocked — CM4 EEPROM read-only",
+        "rpi_firmware_update_blocked, CM4 EEPROM update blocked, eeprom_update_unavailable",
+    ),
+    (
+        "seed_host_no_backup.md",
+        "no_current_backup — Supervisor requires full backup",
+        "no_current_backup resolution issue, Supervisor backup requirement, full backup missing",
     ),
 ]
 
@@ -152,7 +219,9 @@ def seed_strategies(
         if not path.exists():
             continue
         content = path.read_text("utf-8")
-        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\n{content}"
+        signature = _parse_front_matter_signature(content)
+        body = _strip_front_matter(content)
+        text = f"# {title}\n\nTrigger: {trigger_pattern}\n\n{body}"
         doc_id = f"seed:{filename}"
         if only_changed and stored.get(doc_id) == content:
             continue
@@ -167,6 +236,7 @@ def seed_strategies(
                         "filename": filename,
                         "title": title,
                         "trigger_pattern": trigger_pattern,
+                        **({"signature": signature} if signature else {}),
                     }
                 ],
             )
@@ -178,13 +248,15 @@ def seed_strategies(
                 with sqlite3.connect(db_path) as conn:
                     conn.execute(
                         "INSERT INTO agent_strategies"
-                        " (id, title, trigger_pattern, approach, runbook_state, created_at)"
-                        " VALUES (?, ?, ?, ?, 'seed', datetime('now'))"
+                        " (id, title, trigger_pattern, approach, runbook_state,"
+                        "  signature, created_at)"
+                        " VALUES (?, ?, ?, ?, 'seed', ?, datetime('now'))"
                         " ON CONFLICT(id) DO UPDATE SET"
                         "  approach=excluded.approach,"
                         "  title=excluded.title,"
-                        "  trigger_pattern=excluded.trigger_pattern",
-                        (doc_id, title, trigger_pattern, content),
+                        "  trigger_pattern=excluded.trigger_pattern,"
+                        "  signature=excluded.signature",
+                        (doc_id, title, trigger_pattern, content, signature),
                     )
                     conn.commit()
             except Exception:  # nosec B110

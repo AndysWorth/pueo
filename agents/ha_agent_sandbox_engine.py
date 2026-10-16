@@ -538,6 +538,10 @@ def _migrate_v39(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _migrate_v40(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("ALTER TABLE agent_memory ADD COLUMN signature TEXT")
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -578,6 +582,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (37, _migrate_v37),
     (38, _migrate_v38),
     (39, _migrate_v39),
+    (40, _migrate_v40),
 ]
 
 

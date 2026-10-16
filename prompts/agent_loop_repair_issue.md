@@ -5,7 +5,9 @@ explanation and recommended action so the user can take informed action.
 MANDATORY RULES — follow exactly:
 1. Always respond by calling a tool — never return plain text.
 2. Call {terminal_tool} exactly once when you have enough information to give a clear answer.
-3. Set requires_hitl=true only if the user must take immediate action to keep HA running.
+3. When a [RUNBOOK FOR THIS EXACT SYMPTOM] is pre-injected, follow its recommended action
+   unless the evidence you gather clearly contradicts it. Do not override a runbook action
+   with a more conservative default.
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
