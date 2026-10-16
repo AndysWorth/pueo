@@ -205,6 +205,16 @@ _EDITABLE_PARAMS: dict[str, dict] = {
         "restart_required": False,
         "min_val": 1,
     },
+    # ── Host ──────────────────────────────────────────────────────────────────
+    "prevent_idle_sleep": {
+        "yaml_section": "agent",
+        "yaml_key": "prevent_idle_sleep",
+        "config_attr": "PREVENT_IDLE_SLEEP",
+        "val_type": "bool",
+        "description": "Hold a caffeinate -i assertion so macOS never idle-sleeps while Pueo runs (macOS only; no-op on Docker/Linux)",
+        "group": "Host",
+        "restart_required": False,
+    },
     # ── Dashboard ─────────────────────────────────────────────────────────────
     "timeline_page_size": {
         "yaml_section": "agent",
@@ -3106,6 +3116,16 @@ async def settings_tab(request: Request) -> HTMLResponse:
         svc["self_pid"] = _os.getpid()
     recommended = recommend_model(profile, available)
 
+    from utils.system.sleep_guard import get_sleep_guard
+
+    _sg = get_sleep_guard()
+    if not _sg.supported():
+        sleep_guard_status = "unsupported"
+    elif _sg.is_active():
+        sleep_guard_status = "active"
+    else:
+        sleep_guard_status = "inactive"
+
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -3115,6 +3135,7 @@ async def settings_tab(request: Request) -> HTMLResponse:
             "profile_available": ha_env_profile is not None,
             "service": svc,
             "api_key_set": bool(_config.ANTHROPIC_API_KEY),
+            "sleep_guard_status": sleep_guard_status,
             "model_info": {
                 "current": _config.OLLAMA_MODEL,
                 "chip": profile.chip,
@@ -3189,6 +3210,12 @@ async def update_config(req: ConfigUpdateRequest) -> JSONResponse:
         _debug_level_enabled = int(_config.DEBUG_LEVEL)
         set_log_level("DEBUG" if _debug_level_enabled >= 1 else "INFO")
         templates.env.globals["debug_level_enabled"] = _debug_level_enabled >= 1
+
+    # Apply or release the sleep guard immediately when toggled via Settings
+    if req.key == "prevent_idle_sleep":
+        from utils.system.sleep_guard import apply_sleep_policy
+
+        await asyncio.to_thread(apply_sleep_policy, bool(value))
 
     # Emit SSE event so the browser can flash a confirmation
     try:
