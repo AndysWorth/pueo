@@ -253,6 +253,25 @@ def _version_score_multiplier(
     return 1.0
 
 
+def _update_card_is_pending(suppression_key: str, db_path: str) -> bool:
+    """Return True when a HITL update card for *suppression_key* is awaiting a decision.
+
+    A card is pending when: send_count > 0 AND last_action IS NULL AND resolved_at IS NULL.
+    This is used to block auto-apply when the user has already been presented with a card
+    and hasn't responded yet.
+    """
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT send_count, last_action, resolved_at"
+                " FROM hitl_suppression WHERE card_key = ?",
+                (suppression_key,),
+            ).fetchone()
+        return row is not None and row[0] > 0 and row[1] is None and row[2] is None
+    except sqlite3.OperationalError:
+        return False
+
+
 def _suppression_is_approved(key: str, analyzed_key: str, db_path: str) -> bool:
     """Return True only when THIS version's approval is still active.
 
@@ -4787,6 +4806,24 @@ class ToolExecutor:
                     _release_url = self._pending_update_status.release_url
                     _entity_id = self._pending_update_status.entity_id
                     _bare_version = _pv
+                elif _pv:
+                    # Version mismatch: the model requested notes for a different
+                    # component.  Return an error so the wrong component's notes
+                    # never satisfy the _release_notes_obtained check and enable
+                    # an accidental auto-apply (e.g. HA Core notes for a HACS
+                    # integration update).
+                    return ToolResult(
+                        tool_name="get_update_release_notes",
+                        success=False,
+                        output="",
+                        error=(
+                            f"Version mismatch: the pending update is "
+                            f"{self._pending_update_status.entity_id} "
+                            f"version {_pv!r}, but you requested {target_version!r}. "
+                            f"Call get_update_release_notes({_pv!r}) to fetch "
+                            "release notes for the pending update."
+                        ),
+                    )
 
             _ws_fetcher = None
             if self._ws_client is not None:
@@ -4949,8 +4986,34 @@ class ToolExecutor:
                 and self._pending_update_status is not None
                 and not _is_blocked
             ):
-                self._pending_auto_apply = True
+                # Pending-card guard: if a human has already been presented with an
+                # approval card for this entity and hasn't responded yet, do NOT
+                # auto-apply over that pending decision.
                 _u = self._pending_update_status
+                _suppkey = f"update:{_u.entity_id}"
+                _db = self._db_path or ""
+                _card_pending = False
+                if _db:
+                    _card_pending = await asyncio.to_thread(
+                        _update_card_is_pending, _suppkey, _db
+                    )
+                if _card_pending:
+                    log.info(
+                        "update_auto_apply_skipped_pending_card",
+                        component=_u.component,
+                        version=_u.latest_version,
+                        suppression_key=_suppkey,
+                    )
+                    return ToolResult(
+                        tool_name="finish_update_analysis",
+                        success=True,
+                        output=(
+                            f"Update {_u.component} {_u.latest_version}: "
+                            "a human approval card is already pending — "
+                            "auto-apply skipped to preserve that decision."
+                        ),
+                    )
+                self._pending_auto_apply = True
                 try:
                     from utils.core.timeline import write_timeline_event
 

@@ -1019,3 +1019,62 @@ class TestHacsUnloadedDomains:
         )
         summary = format_profile_summary(profile)
         assert "downloaded but not set up" not in summary
+
+
+# ---------------------------------------------------------------------------
+# Spook contradiction fix: hacs_unloaded means "not absent" in Recommended list
+# ---------------------------------------------------------------------------
+
+
+class TestFormatProfileSummarySpookContradiction:
+    """Spook in hacs_unloaded_domains must not appear in Recommended (not installed)."""
+
+    def _make_profile(self) -> "HAEnvironmentProfile":
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+        )
+
+    def test_spook_not_in_recommended_when_unloaded(self):
+        """hacs_unloaded_domains=['spook'] → no 'Spook (entity registry health)' entry."""
+        from utils.ha.ha_environment import format_profile_summary
+
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = ["spook"]
+        profile.spook_installed = False
+
+        summary = format_profile_summary(profile)
+        # Must not appear in the "Recommended (not installed)" line
+        assert (
+            "Recommended" not in summary
+            or "Spook" not in summary.split("Recommended")[-1]
+        )
+
+    def test_spook_in_recommended_when_truly_absent(self):
+        """No spook anywhere → appears in Recommended (not installed)."""
+        from utils.ha.ha_environment import format_profile_summary
+
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = []
+        profile.spook_installed = False
+
+        summary = format_profile_summary(profile)
+        assert "Recommended" in summary
+        assert "Spook" in summary
+
+    def test_spook_not_recommended_when_installed(self):
+        """spook_installed=True → not in Recommended."""
+        from utils.ha.ha_environment import format_profile_summary
+
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = []
+        profile.spook_installed = True
+
+        summary = format_profile_summary(profile)
+        # Installed Spook shows a dedicated "Spook: installed" line; must not
+        # appear in the Recommended absent list.
+        if "Recommended" in summary:
+            assert "Spook" not in summary.split("Recommended")[-1]
