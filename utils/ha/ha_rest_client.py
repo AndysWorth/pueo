@@ -230,6 +230,50 @@ class HARestClient:  # pragma: no cover
             )
             resp.raise_for_status()
 
+    async def start_config_flow(self, handler: str) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/config_entries/flow",
+                headers=self._headers,
+                json={"handler": handler},
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def submit_config_flow(self, flow_id: str, data: dict) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/config_entries/flow/{flow_id}",
+                headers=self._headers,
+                json=data,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def start_options_flow(self, entry_id: str) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/config_entries/options/flow",
+                headers=self._headers,
+                json={"handler": entry_id},
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
+    async def submit_options_flow(self, flow_id: str, data: dict) -> dict:
+        base = self._base_url.removesuffix("/api")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{base}/api/config/config_entries/options/flow/{flow_id}",
+                headers=self._headers,
+                json=data,
+            )
+            resp.raise_for_status()
+            return resp.json()  # type: ignore[no-any-return]
+
 
 @dataclass
 class HARepairIssue:
@@ -295,6 +339,7 @@ class FakeHARestClient:
         template_responses: dict[str, str] | None = None,
         services: list[dict] | None = None,
         diagnostics_responses: dict[str, dict] | None = None,
+        flow_responses: dict[str, dict] | None = None,
     ) -> None:
         self._states: list[dict] = states or []
         self._raw: dict[str, dict] = raw_responses or {}
@@ -304,6 +349,9 @@ class FakeHARestClient:
         self._templates: dict[str, str] = template_responses or {}
         self._services: list[dict] = services or []
         self._diagnostics: dict[str, dict] = diagnostics_responses or {}
+        # flow_responses: keyed "start:<handler>", "submit:<flow_id>",
+        # "options_start:<entry_id>", "options_submit:<flow_id>"
+        self._flow_responses: dict[str, dict] = flow_responses or {}
         self.service_calls: list[tuple[str, str, dict]] = []
         self.deleted: list[str] = []
         self.posted: list[tuple[str, dict]] = []
@@ -366,3 +414,31 @@ class FakeHARestClient:
 
     async def delete_automation(self, unique_id: str) -> None:
         self.deleted.append(f"/api/config/automation/config/{unique_id}")
+
+    async def start_config_flow(self, handler: str) -> dict:
+        self.posted.append(("/api/config/config_entries/flow", {"handler": handler}))
+        return self._flow_responses.get(
+            f"start:{handler}", {"flow_id": f"flow-{handler}", "type": "form"}
+        )
+
+    async def submit_config_flow(self, flow_id: str, data: dict) -> dict:
+        self.posted.append((f"/api/config/config_entries/flow/{flow_id}", data))
+        return self._flow_responses.get(
+            f"submit:{flow_id}",
+            {"type": "create_entry", "result": {"entry_id": f"entry-{flow_id}"}},
+        )
+
+    async def start_options_flow(self, entry_id: str) -> dict:
+        self.posted.append(
+            ("/api/config/config_entries/options/flow", {"handler": entry_id})
+        )
+        return self._flow_responses.get(
+            f"options_start:{entry_id}",
+            {"flow_id": f"options-flow-{entry_id}", "type": "form"},
+        )
+
+    async def submit_options_flow(self, flow_id: str, data: dict) -> dict:
+        self.posted.append((f"/api/config/config_entries/options/flow/{flow_id}", data))
+        return self._flow_responses.get(
+            f"options_submit:{flow_id}", {"type": "create_entry"}
+        )

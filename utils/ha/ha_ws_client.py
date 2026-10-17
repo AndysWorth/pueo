@@ -295,6 +295,112 @@ class HAWebSocketClient:  # pragma: no cover
         finally:
             await ws.close()
 
+    async def list_conversation_agents(self) -> list[dict]:
+        """List available HA conversation agents, excluding the built-in one.
+
+        Returns a list of dicts with at least id and name fields.
+        """
+        result = await self._call("conversation/agent/list")
+        agents = result if isinstance(result, list) else result.get("agents", [])
+        return [a for a in agents if a.get("id") != "conversation.home_assistant"]
+
+    async def hacs_list_repositories(self) -> list[dict]:
+        """List HACS repositories via hacs/repositories/list.
+
+        Uses the sync websockets client wrapped in asyncio.to_thread so it is
+        safe to call from async context without a nested event loop (ADR 036 pattern).
+        """
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(self._hacs_list_sync)
+
+    def _hacs_list_sync(self) -> list[dict]:  # pragma: no cover
+        from websockets.sync.client import connect as ws_connect
+
+        uri = f"ws://{self._host}:{self._port}/api/websocket"
+        with ws_connect(uri, max_size=None) as ws:
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_required":
+                return []
+            ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_ok":
+                return []
+            ws.send(json.dumps({"id": 1, "type": "hacs/repositories/list"}))
+            msg = json.loads(ws.recv())
+            if not msg.get("success"):
+                return []
+            return msg.get("result", [])
+
+    async def hacs_add_repository(self, repository: str) -> None:
+        """Add a custom HACS repository via hacs/repositories/add.
+
+        repository is the GitHub full_name, e.g. "frenck/spook".
+        """
+        import asyncio as _asyncio
+
+        await _asyncio.to_thread(self._hacs_add_sync, repository)
+
+    def _hacs_add_sync(self, repository: str) -> None:  # pragma: no cover
+        from websockets.sync.client import connect as ws_connect
+
+        uri = f"ws://{self._host}:{self._port}/api/websocket"
+        with ws_connect(uri, max_size=None) as ws:
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_required":
+                raise RuntimeError("Expected auth_required")
+            ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_ok":
+                raise RuntimeError("HACS WS authentication failed")
+            ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "hacs/repositories/add",
+                        "repository": repository,
+                        "category": "integration",
+                    }
+                )
+            )
+            msg = json.loads(ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"hacs/repositories/add failed: {msg}")
+
+    async def hacs_download(self, repository_id: str) -> None:
+        """Download (install) a HACS repository by numeric repo id.
+
+        repository_id is the HACS numeric id returned by hacs_list_repositories.
+        """
+        import asyncio as _asyncio
+
+        await _asyncio.to_thread(self._hacs_download_sync, repository_id)
+
+    def _hacs_download_sync(self, repository_id: str) -> None:  # pragma: no cover
+        from websockets.sync.client import connect as ws_connect
+
+        uri = f"ws://{self._host}:{self._port}/api/websocket"
+        with ws_connect(uri, max_size=None) as ws:
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_required":
+                raise RuntimeError("Expected auth_required")
+            ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+            msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_ok":
+                raise RuntimeError("HACS WS authentication failed")
+            ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "hacs/repository/download",
+                        "repository": repository_id,
+                    }
+                )
+            )
+            msg = json.loads(ws.recv())
+            if not msg.get("success"):
+                raise RuntimeError(f"hacs/repository/download failed: {msg}")
+
     async def get_lovelace_dashboards(self) -> list[dict]:
         """List all named dashboards via lovelace/dashboards/list."""
         ws = await self._connect_and_auth()
@@ -353,6 +459,8 @@ class FakeHAWebSocketClient:
         traces: list[dict] | None = None,
         trace_detail: dict | None = None,
         update_release_notes: dict[str, str | None] | None = None,
+        conversation_agents: list[dict] | None = None,
+        hacs_repositories: list[dict] | None = None,
     ) -> None:
         self._devices: list[dict] = devices or []
         self._notifications: list[dict] = notifications or []
@@ -383,6 +491,11 @@ class FakeHAWebSocketClient:
         # validate_automation_config: pre-loaded validation result per call index
         self._validate_automation_result: dict = {}
         self.validate_automation_calls: list[dict] = []
+        # companion provisioning test doubles
+        self._conversation_agents: list[dict] = conversation_agents or []
+        self._hacs_repositories: list[dict] = hacs_repositories or []
+        self.hacs_add_calls: list[str] = []
+        self.hacs_download_calls: list[str] = []
 
     async def get_device_registry(self) -> list[dict]:
         self.calls.append("get_device_registry")
@@ -497,3 +610,19 @@ class FakeHAWebSocketClient:
     def set_validate_automation_result(self, result: dict) -> None:
         """Pre-load the validation result for tests."""
         self._validate_automation_result = result
+
+    async def list_conversation_agents(self) -> list[dict]:
+        self.calls.append("list_conversation_agents")
+        return list(self._conversation_agents)
+
+    async def hacs_list_repositories(self) -> list[dict]:
+        self.calls.append("hacs_list_repositories")
+        return list(self._hacs_repositories)
+
+    async def hacs_add_repository(self, repository: str) -> None:
+        self.calls.append(f"hacs_add_repository:{repository}")
+        self.hacs_add_calls.append(repository)
+
+    async def hacs_download(self, repository_id: str) -> None:
+        self.calls.append(f"hacs_download:{repository_id}")
+        self.hacs_download_calls.append(repository_id)
