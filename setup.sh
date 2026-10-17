@@ -833,6 +833,16 @@ if $WRITE_CONFIG; then
         fi
     }
 
+    # Fall back to manual browser instructions when auto-setup is unavailable.
+    _companion_browser_fallback() {
+        local label="$1" url="$2"
+        warn "  Could not run companion-setup automatically."
+        info "  To install manually:"
+        info "    1. Open: $url"
+        info "    2. Click Download in HACS, then restart Home Assistant."
+        info "    3. Go to Settings → Devices & Services → Add Integration and search for $label."
+    }
+
     echo
     echo "  ── Optional: frenck/spook ─────────────────────────────────────────"
     echo "  Spook is a HACS custom integration that adds richer entity registry"
@@ -840,11 +850,19 @@ if $WRITE_CONFIG; then
     echo "  Pueo uses it automatically when detected; it is not required."
     echo "  Docs: https://spook.boo"
     echo
-    ask "  Open browser to install Spook via HACS now? [y/N]" "N" _spook_open
-    if [[ "${_spook_open:-N}" =~ ^[Yy] ]]; then
-        _open_url "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration"
+    read -rp "  Install and set up Spook now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _spook_setup_ans
+    if [[ "${_spook_setup_ans:-N}" =~ ^[Yy] ]]; then
+        if [[ "$DEPLOY_MODE" == "docker" ]]; then
+            info "Docker mode — run the following after 'docker compose up -d' to install Spook:"
+            echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion spook"
+        else
+            ok "Installing Spook (this takes a backup and restarts HA Core)…"
+            .venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --companion spook \
+                || _companion_browser_fallback "Spook" "https://my.home-assistant.io/redirect/hacs_repository/?owner=frenck&repository=spook&category=integration"
+        fi
     else
         info "Skipping — Pueo will use Spook automatically if you install it later."
+        info "  Run later: python main.py --mode companion-setup --companion spook"
     fi
 
     echo
@@ -853,11 +871,41 @@ if $WRITE_CONFIG; then
     echo "  for breaking changes before you apply them.  Pueo reads its report"
     echo "  as a second opinion during update analysis; it is not required."
     echo
-    ask "  Open browser to install ha-upgrade-advisor via HACS now? [y/N]" "N" _advisor_open
-    if [[ "${_advisor_open:-N}" =~ ^[Yy] ]]; then
-        _open_url "https://my.home-assistant.io/redirect/hacs_repository/?owner=brianegge&repository=ha-upgrade-advisor&category=integration"
+    read -rp "  Install and set up ha-upgrade-advisor now? Pueo downloads it via HACS, takes a backup, and restarts HA [y/N]: " _advisor_setup_ans
+    if [[ "${_advisor_setup_ans:-N}" =~ ^[Yy] ]]; then
+        _ADVISOR_AGENT_ID=""
+        if [[ "$DEPLOY_MODE" != "docker" ]]; then
+            ok "Listing available HA conversation agents…"
+            _AGENT_LIST=$(.venv/bin/python main.py --config "$PRIMARY_CONFIG" --mode companion-setup --list-agents 2>&1) || true
+            echo "$_AGENT_LIST"
+            echo
+            if echo "$_AGENT_LIST" | grep -q "^  "; then
+                read -rp "  Enter the agent id to use with ha-upgrade-advisor (or press Enter to skip): " _ADVISOR_AGENT_ID
+            else
+                warn "  No conversation agents found. Install an LLM conversation integration first"
+                warn "  (e.g. the HA Ollama integration pointed at Pueo's Ollama endpoint)."
+                warn "  Then re-run: python main.py --mode companion-setup --companion upgrade_advisor --agent-id <id>"
+                _advisor_setup_ans="N"
+            fi
+        fi
+
+        if [[ "${_advisor_setup_ans:-N}" =~ ^[Yy] ]]; then
+            if [[ "$DEPLOY_MODE" == "docker" ]]; then
+                info "Docker mode — run the following after 'docker compose up -d' to install ha-upgrade-advisor:"
+                echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --companion upgrade_advisor [--agent-id <agent-id>]"
+                info "  List available agents first:"
+                echo "    docker exec pueo-agent python main.py --config /config/config.yaml --mode companion-setup --list-agents"
+            else
+                _advisor_cmd=".venv/bin/python main.py --config \"$PRIMARY_CONFIG\" --mode companion-setup --companion upgrade_advisor"
+                [[ -n "$_ADVISOR_AGENT_ID" ]] && _advisor_cmd="$_advisor_cmd --agent-id \"$_ADVISOR_AGENT_ID\""
+                ok "Installing ha-upgrade-advisor (this takes a backup and restarts HA Core)…"
+                eval "$_advisor_cmd" \
+                    || _companion_browser_fallback "ha-upgrade-advisor" "https://my.home-assistant.io/redirect/hacs_repository/?owner=brianegge&repository=ha-upgrade-advisor&category=integration"
+            fi
+        fi
     else
         info "Skipping — Pueo will use ha-upgrade-advisor automatically if you install it later."
+        info "  Run later: python main.py --mode companion-setup --companion upgrade_advisor"
     fi
 
     # ── Write config ─────────────────────────────────────────────────────────────
