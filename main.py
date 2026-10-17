@@ -1683,6 +1683,7 @@ def main() -> None:
             "  audit               self-diagnostics: gap report saved to audits/ (deprecated)\n"
             "  export-episodes     export anonymized repair episodes as YAML (use --since DATE)\n"
             "  ha-sidebar          add Pueo owl iconset + Webpage dashboard to HA sidebar\n"
+            "  companion-setup     install and configure a HACS companion integration (Spook, upgrade_advisor)\n"
         ),
     )
     parser.add_argument(
@@ -1719,6 +1720,7 @@ def main() -> None:
             "export-episodes",
             "replay-episode",
             "ha-sidebar",
+            "companion-setup",
         ],
         default="supervisor",
         help="agent mode (default: supervisor)",
@@ -1747,6 +1749,30 @@ def main() -> None:
         metavar="URL",
         help="ha-sidebar: Pueo dashboard URL as seen from HA (default: http://<LAN-IP>:<DASHBOARD_PORT>)",
     )
+    parser.add_argument(
+        "--companion",
+        default=None,
+        metavar="DOMAIN",
+        help="companion-setup: integration domain to provision (spook or upgrade_advisor)",
+    )
+    parser.add_argument(
+        "--agent-id",
+        default=None,
+        metavar="AGENT_ID",
+        help="companion-setup: HA conversation agent id for upgrade_advisor",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="companion-setup: print planned steps without writing anything",
+    )
+    parser.add_argument(
+        "--list-agents",
+        action="store_true",
+        default=False,
+        help="companion-setup: list available HA conversation agents and exit",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -1771,6 +1797,7 @@ def main() -> None:
                 "netalertx-switch",
                 "netalertx-diagnose",
                 "ha-sidebar",
+                "companion-setup",
             )
         )
     )
@@ -1948,6 +1975,11 @@ def main() -> None:
 
         ha_agent_advanced.init_local_database()
         asyncio.run(_run_ha_sidebar(args))
+    elif args.mode == "companion-setup":
+        from agents import ha_agent_advanced
+
+        ha_agent_advanced.init_local_database()
+        asyncio.run(_run_companion_setup(args))
 
 
 async def _run_replay(args: Any) -> None:
@@ -2104,6 +2136,74 @@ async def _run_ha_sidebar(args: Any) -> None:
     )
 
     await install_ha_sidebar(ssh, url, notifier=notifier)
+
+
+async def _run_companion_setup(args: Any) -> None:
+    """One-shot: install and configure a HACS companion integration."""
+    import config as _config
+    import sys
+
+    from utils.ha.companion_setup import COMPANION_DOMAINS, run_companion_setup
+    from utils.ha.ha_ws_client import HAWebSocketClient
+    from utils.ha.ha_rest_client import HARestClient
+    from utils.ha.ssh_client import AsyncSSHClient
+    from utils.hitl.notify import get_notifier
+
+    ws = HAWebSocketClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+
+    if args.list_agents:
+        agents = await ws.list_conversation_agents()
+        if not agents:
+            print(
+                "No conversation agents found (excluding the built-in one).\n"
+                "Install an LLM conversation integration first, e.g. the HA Ollama integration\n"
+                "pointed at Pueo's Ollama endpoint."
+            )
+        else:
+            print("Available conversation agents:")
+            for a in agents:
+                print(f"  {a.get('id')}  —  {a.get('name', '')}")
+        return
+
+    domain = args.companion
+    if not domain:
+        sys.stderr.write(
+            "✘  --companion is required. Choose one of: "
+            + ", ".join(sorted(COMPANION_DOMAINS))
+            + "\n"
+        )
+        sys.exit(1)
+
+    if domain not in COMPANION_DOMAINS:
+        sys.stderr.write(
+            f"✘  Unknown companion domain: {domain!r}. "
+            f"Choose one of: {', '.join(sorted(COMPANION_DOMAINS))}\n"
+        )
+        sys.exit(1)
+
+    rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+    ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+    notifier = get_notifier(
+        _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+    )
+
+    result = await run_companion_setup(
+        domain,
+        choice=args.agent_id,
+        rest=rest,
+        ws=ws,
+        ssh=ssh,
+        dry_run=args.dry_run,
+        notifier=notifier,
+    )
+
+    if result.error:
+        sys.stderr.write(f"✘  {domain} setup failed: {result.error}\n")
+        sys.exit(1)
+    elif not args.dry_run:
+        print(
+            f"✓  {domain} provisioned successfully. Steps done: {[s.name for s in result.steps_done]}"
+        )
 
 
 if __name__ == "__main__":

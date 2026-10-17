@@ -61,7 +61,7 @@ bandit -r . -x ./tests,./.venv
 
 ### Primary runtime architecture
 
-- **`main.py`** — single entry point with 25 `--mode` values. Default: `supervisor`. All agent module imports are deferred inside mode branches (not top-level) so `PUEO_CONFIG` is set before any module imports `config.py`.
+- **`main.py`** — single entry point with 26 `--mode` values. Default: `supervisor`. All agent module imports are deferred inside mode branches (not top-level) so `PUEO_CONFIG` is set before any module imports `config.py`.
 - **`LoopSupervisor`** (`utils/agent/supervisor.py`) — manages all background tasks with exception catching and exponential-backoff restart (2s → 5-min cap). The dashboard ASGI app runs alongside all supervisor tasks.
 - **`AgentLoop`** (`utils/agent/agent_loop.py`) — the universal reasoning engine. Used by all 7 agent pipelines and by the Chat endpoint. All significant Pueo decisions go through an `AgentLoop` session.
 
