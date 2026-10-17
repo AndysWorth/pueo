@@ -36,11 +36,13 @@ from utils.core.logging import get_logger, set_log_level
 from utils.hitl.card_types import (
     CARD_TYPE_CLOUD_ESCALATION,
     CARD_TYPE_CODE_PROPOSAL,
+    CARD_TYPE_COMPANION_SETUP,
     CARD_TYPE_CONFIG_ENTRY_RELOAD,
     CARD_TYPE_DASHBOARD_ENTITY,
     CARD_TYPE_DISK_RECOVERY,
     CARD_TYPE_HA_COMMAND,
     CARD_TYPE_HA_REPAIR,
+    CARD_TYPE_HOST_HEALTH,
     CARD_TYPE_NETALERTX_HEAL,
     CARD_TYPE_NETALERTX_MIGRATE,
     CARD_TYPE_NETALERTX_SWITCH,
@@ -1295,6 +1297,91 @@ async def _execute_config_entry_reload(
         (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
 
 
+async def _execute_companion_setup(
+    nid: str,
+    data: dict,
+    json_path: Path,
+    watch_dir: Path,
+) -> None:
+    """Run the companion provisioning chain for an approved setup card."""
+    import config as _config
+    from utils.ha.companion_setup import run_companion_setup
+    from utils.ha.ha_rest_client import HARestClient
+    from utils.ha.ha_ws_client import HAWebSocketClient
+    from utils.ha.ssh_client import AsyncSSHClient
+
+    (watch_dir / f"{nid}.in_progress").touch()
+    try:
+        payload = data.get("payload", {})
+        domain = payload.get("domain", "")
+        agent_id = payload.get("agent_id") or None
+
+        ssh = AsyncSSHClient(_config.HA_HOST, _config.HA_USER, _config.SSH_KEY_PATH)
+        rest = HARestClient(_config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN)
+        ws = HAWebSocketClient(
+            _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+        )
+
+        result = await run_companion_setup(
+            domain,
+            choice=agent_id,
+            rest=rest,
+            ws=ws,
+            ssh=ssh,
+        )
+
+        if result.success:
+            data["fix_applied"] = True
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.approved").touch()
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "INFO",
+                    "companion_setup",
+                    f"Companion {domain} provisioned",
+                    {"domain": domain, "steps": [s.name for s in result.steps_done]},
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
+        else:
+            data["fix_error"] = result.error or "companion setup failed"
+            json_path.write_text(json.dumps(data, indent=2))
+            (watch_dir / f"{nid}.rejected").touch()
+            try:
+                from utils.core.timeline import write_timeline_event
+
+                await asyncio.to_thread(
+                    write_timeline_event,
+                    "ERROR",
+                    "companion_setup",
+                    f"Companion {domain} setup failed: {result.error}",
+                    {"domain": domain},
+                )
+            except Exception:  # nosec B110  # pragma: no cover
+                pass
+    except Exception as exc:
+        data["fix_error"] = str(exc)
+        json_path.write_text(json.dumps(data, indent=2))
+        (watch_dir / f"{nid}.rejected").touch()
+        try:
+            from utils.core.timeline import write_timeline_event
+
+            await asyncio.to_thread(
+                write_timeline_event,
+                "ERROR",
+                "companion_setup",
+                f"Companion setup error for {data.get('payload', {}).get('domain', '')}: {exc}",
+                {},
+            )
+        except Exception:  # nosec B110  # pragma: no cover
+            pass
+    finally:
+        (watch_dir / f"{nid}.in_progress").unlink(missing_ok=True)
+
+
 async def _execute_ha_command(
     nid: str,
     data: dict,
@@ -2068,6 +2155,7 @@ _CARD_DISPATCH: dict[
     CARD_TYPE_OPEN_PR: _execute_open_pr,
     CARD_TYPE_DASHBOARD_ENTITY: _execute_dashboard_entity_fix,
     CARD_TYPE_UNREGISTERED_ENTITY: _execute_unregistered_entity,
+    CARD_TYPE_COMPANION_SETUP: _execute_companion_setup,
     CARD_TYPE_CONFIG_ENTRY_RELOAD: _execute_config_entry_reload,
     CARD_TYPE_HA_COMMAND: _execute_ha_command,
     CARD_TYPE_SERVICE_CALL: _execute_service_call,
@@ -2141,6 +2229,13 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
             override = str(form.get("unique_id_override", "")).strip()
             if override:
                 data["payload"]["unique_id_override"] = override
+                json_path.write_text(json.dumps(data, indent=2))
+
+        if card_type == CARD_TYPE_COMPANION_SETUP and request is not None:
+            form = await request.form()
+            agent_id = str(form.get("agent_id", "")).strip()
+            if agent_id:
+                data["payload"]["agent_id"] = agent_id
                 json_path.write_text(json.dumps(data, indent=2))
 
         # Write update_analyzed key before dispatching so poll_for_updates cannot
@@ -3001,29 +3096,48 @@ async def timeline_detail(request: Request, event_id: int) -> HTMLResponse:
 
 def _build_companion_status(profile: Any, cfg: Any) -> list[Any]:
     """Return a list of companion dicts for the Settings UI companion card."""
-    unknown = profile is None
+    from utils.ha.companion_setup import COMPANION_DOMAINS
 
-    def _flag(attr: str) -> str:
+    unknown = profile is None
+    unloaded: set[str] = set(getattr(profile, "hacs_unloaded_domains", None) or [])
+
+    def _flag(attr: str, domain: str = "") -> str:
         if unknown:
             return "unknown"
-        return "active" if getattr(profile, attr, False) else "not_installed"
+        if getattr(profile, attr, False):
+            return "active"
+        if domain and domain in unloaded:
+            return "downloaded_not_setup"
+        return "not_installed"
 
+    def _setup_url(domain: str, status: str) -> str | None:
+        if domain in COMPANION_DOMAINS and status in (
+            "not_installed",
+            "downloaded_not_setup",
+        ):
+            return f"/companions/{domain}/setup"
+        return None
+
+    _spook_status = _flag("spook_installed", "spook")
+    _advisor_status = _flag("upgrade_advisor_installed", "upgrade_advisor")
     companions = [
         {
             "name": "Spook",
             "slug": "spook",
-            "status": _flag("spook_installed"),
+            "status": _spook_status,
             "description": "Entity registry health — dead entity detection and automation health checks",
             "install_url": "https://spook.boo",
             "install_hint": "Install via HACS",
+            "setup_url": _setup_url("spook", _spook_status),
         },
         {
             "name": "ha-upgrade-advisor",
             "slug": "upgrade_advisor",
-            "status": _flag("upgrade_advisor_installed"),
+            "status": _advisor_status,
             "description": "Breaking-change analysis before HA Core updates",
             "install_url": "https://github.com/brianegge/ha-upgrade-advisor",
             "install_hint": "Install via HACS",
+            "setup_url": _setup_url("upgrade_advisor", _advisor_status),
         },
         {
             "name": "ai_agent_ha",
@@ -3148,6 +3262,62 @@ async def settings_tab(request: Request) -> HTMLResponse:
             },
         },
     )
+
+
+@app.post("/companions/{domain}/setup")
+async def companion_setup_card(domain: str, request: Request) -> RedirectResponse:
+    """Create a CARD_TYPE_COMPANION_SETUP card for the given companion domain."""
+    import config as _config
+    from utils.ha.companion_setup import COMPANION_DOMAINS
+    from utils.hitl.hitl_tracker import mark_card_sent, should_send_card
+    from utils.hitl.notify import get_notifier
+
+    if domain not in COMPANION_DOMAINS:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown companion domain: {domain!r}"
+        )
+
+    # Fetch conversation agents for upgrade_advisor if a WS client is available.
+    conversation_agents: list[dict] = []
+    if domain == "upgrade_advisor":
+        try:
+            from utils.ha.ha_ws_client import HAWebSocketClient
+
+            _ws = HAWebSocketClient(
+                _config.HA_HOST, _config.HA_API_PORT, _config.HA_API_TOKEN
+            )
+            conversation_agents = await _ws.list_conversation_agents()
+        except Exception:  # nosec B110
+            pass
+
+    card_key = f"hacs_unloaded:{domain}"
+    notifier = get_notifier(
+        _config.NOTIFIER, _config.NOTIFY_URL, _config.NOTIFY_WATCH_DIR
+    )
+    await notifier.send(
+        subject=f"Set up companion integration: {domain}",
+        body=(
+            f"Approve to install and configure the {domain} companion via HACS — "
+            "Pueo will take a backup first."
+        ),
+        payload={
+            "card_type": CARD_TYPE_COMPANION_SETUP,
+            "suppression_key": card_key,
+            "fingerprint": domain,
+            "domain": domain,
+            "conversation_agents": conversation_agents,
+        },
+    )
+
+    def _mark(k: str = card_key) -> None:
+        import sqlite3 as _sqlite3
+
+        with _sqlite3.connect(_config.DB_PATH) as conn:
+            if should_send_card(conn, k):
+                mark_card_sent(conn, k, CARD_TYPE_COMPANION_SETUP, f"hacs_unloaded:{k}")
+
+    await asyncio.to_thread(_mark)
+    return RedirectResponse(url="/queue", status_code=303)
 
 
 @app.post("/config")

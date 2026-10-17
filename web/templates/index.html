@@ -148,7 +148,7 @@
       {% else %}
       {% set ct = r.payload.get("card_type", "") %}
       {% set has_fix = r.payload.get("pending_fix_yaml") %}
-      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create") or (ct == "host_health" and not r.payload.get("informational")) or has_fix %}
+      {% set is_actionable = ct in ("repair", "update", "netalertx_heal", "netalertx_setup", "netalertx_uninstall", "netalertx_migrate", "netalertx_switch", "resource_action", "disk_recovery", "code_proposal", "open_pr", "ha_repair", "cloud_escalation", "dashboard_entity", "unregistered_entity", "config_entry_reload", "ha_command", "service_call", "automation_create", "companion_setup") or (ct == "host_health" and not r.payload.get("informational")) or has_fix %}
       {% if ct == "repair" and r.payload.get("enrichment") %}
       {% set enr = r.payload.enrichment %}
       <div style="margin:0.75rem 0;">
@@ -219,6 +219,18 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
 {% if r.payload.get("condition") %}condition: {{ r.payload.get("condition", []) | tojson(indent=2) }}
 {% endif %}action: {{ r.payload.get("action", []) | tojson(indent=2) }}</pre>
         </details>
+      </div>
+      {% endif %}
+      {% if ct == "companion_setup" %}
+      <div style="margin:0.75rem 0;">
+        <p style="margin:0 0 0.4rem;"><strong>Integration:</strong> <code>{{ r.payload.get("domain", "") }}</code></p>
+        {% set agents = r.payload.get("conversation_agents", []) %}
+        {% if agents %}
+        <p style="margin:0 0 0.4rem;font-size:0.88rem;">
+          ha-upgrade-advisor needs a conversation agent (LLM) to analyse updates.
+          Cloud agents cost money per update; small local models may not follow the structured output it requires.
+        </p>
+        {% endif %}
       </div>
       {% endif %}
       {% if ct == "unregistered_entity" %}
@@ -459,6 +471,9 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
         {% elif ct == "automation_create" %}
           {% set hint_approve = "Create HA backup → write automation to HA storage → automation.reload → verify entity exists" %}
           {% set hint_reject = "Discard; no automation written and no reload triggered" %}
+        {% elif ct == "companion_setup" %}
+          {% set hint_approve = "Create HA backup → download via HACS → restart HA → configure the integration" %}
+          {% set hint_reject = "Skip; the companion stays downloaded but unconfigured" %}
         {% elif ct == "host_health" %}
           {% set hint_approve = "Acknowledge this host-health finding and dismiss the card" %}
           {% set hint_reject = "Dismiss; no further action taken" %}
@@ -484,6 +499,21 @@ trigger: {{ r.payload.get("trigger", []) | tojson(indent=2) }}
                style="font-family:monospace;font-size:0.88rem;padding:0.25rem 0.4rem;
                       border:1px solid #aaa;border-radius:4px;width:22rem;max-width:100%;
                       margin-bottom:0.4rem;">
+        <br>
+        <button class="btn btn-approve" type="submit">Approve</button>
+      </form>
+      {% elif ct == "companion_setup" and r.payload.get("conversation_agents") %}
+      <form method="POST" action="/approve/{{ r.notification_id }}">
+        <label style="font-size:0.82rem;display:block;margin-bottom:0.3rem;">
+          Conversation agent for ha-upgrade-advisor:
+        </label>
+        <select name="agent_id"
+                style="font-size:0.88rem;padding:0.25rem 0.4rem;border:1px solid #aaa;
+                       border-radius:4px;margin-bottom:0.4rem;max-width:100%;">
+          {% for agent in r.payload.conversation_agents %}
+          <option value="{{ agent.get('id', '') }}">{{ agent.get('name', agent.get('id', '')) }}</option>
+          {% endfor %}
+        </select>
         <br>
         <button class="btn btn-approve" type="submit">Approve</button>
       </form>

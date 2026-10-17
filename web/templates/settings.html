@@ -179,11 +179,13 @@
   .companion-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; margin-top:0.35rem; }
   .companion-dot-active { background:#28a745; }
   .companion-dot-not_installed { background:#adb5bd; }
+  .companion-dot-downloaded_not_setup { background:#f59e0b; }
   .companion-dot-disabled { background:#fd7e14; }
   .companion-dot-unknown { background:#adb5bd; }
   .companion-badge { display:inline-block; padding:0.1rem 0.45rem; border-radius:4px; font-size:0.75rem; font-weight:700; white-space:nowrap; }
   .companion-badge-active { background:#d1fae5; color:#065f46; }
   .companion-badge-not_installed { background:#f3f4f6; color:#6b7280; }
+  .companion-badge-downloaded_not_setup { background:#fef3c7; color:#92400e; }
   .companion-badge-disabled { background:#fef3c7; color:#92400e; }
   .companion-badge-unknown { background:#f3f4f6; color:#6b7280; }
 </style>
@@ -200,9 +202,15 @@
       <div style="flex:1;min-width:0;">
         <span style="font-size:0.88rem;font-weight:600;color:#222;">{{ c.name }}</span>
         <span class="companion-badge companion-badge-{{ c.status }}" style="margin-left:0.4rem;">
-          {% if c.status == "active" %}Active{% elif c.status == "not_installed" %}Not installed{% elif c.status == "disabled" %}Disabled{% else %}Unknown{% endif %}
+          {% if c.status == "active" %}Active{% elif c.status == "not_installed" %}Not installed{% elif c.status == "downloaded_not_setup" %}Downloaded, not set up{% elif c.status == "disabled" %}Disabled{% else %}Unknown{% endif %}
         </span>
-        {% if c.status != "active" and c.install_url %}
+        {% if c.get("setup_url") %}
+        <form method="POST" action="{{ c.setup_url }}" style="display:inline;margin-left:0.4rem;">
+          <button type="submit"
+                  style="background:#6366f1;color:#fff;border:none;border-radius:4px;
+                         padding:0.1rem 0.55rem;font-size:0.78rem;cursor:pointer;">Set up</button>
+        </form>
+        {% elif c.status != "active" and c.install_url %}
         <a href="{{ c.install_url }}" target="_blank" rel="noopener" style="margin-left:0.4rem;font-size:0.78rem;color:#6366f1;">{{ c.install_hint }}</a>
         {% elif c.status == "not_installed" and not c.install_url %}
         <span style="margin-left:0.4rem;font-size:0.78rem;color:#888;">{{ c.install_hint }}</span>
