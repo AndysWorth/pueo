@@ -1080,3 +1080,64 @@ class TestFormatProfileSummarySpookContradiction:
         # appear in the Recommended absent list.
         if "Recommended" in summary:
             assert "Spook" not in summary.split("Recommended")[-1]
+
+
+# ---------------------------------------------------------------------------
+# format_profile_summary — advisor unloaded generalisation
+# ---------------------------------------------------------------------------
+
+
+class TestFormatProfileSummaryAdvisorUnloaded:
+    """upgrade_advisor in hacs_unloaded_domains should suppress 'not installed' nudge."""
+
+    def _make_profile(self):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        return HAEnvironmentProfile(
+            ha_version="2026.8.2",
+            os_version="13.2",
+            supervisor_version="2026.08.0",
+        )
+
+    def test_advisor_not_in_recommended_when_unloaded(self):
+        """hacs_unloaded_domains=['upgrade_advisor'] → no 'ha-upgrade-advisor' in Recommended."""
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = ["upgrade_advisor"]
+        profile.upgrade_advisor_installed = False
+
+        summary = format_profile_summary(profile)
+        if "Recommended" in summary:
+            assert "ha-upgrade-advisor" not in summary.split("Recommended")[-1]
+
+    def test_advisor_in_recommended_when_truly_absent(self):
+        """Neither installed nor in hacs_unloaded → appears in Recommended (not installed)."""
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = []
+        profile.upgrade_advisor_installed = False
+
+        summary = format_profile_summary(profile)
+        assert "Recommended" in summary
+        assert "ha-upgrade-advisor" in summary
+
+    def test_advisor_not_in_recommended_when_installed(self):
+        """upgrade_advisor_installed=True → not in Recommended."""
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = []
+        profile.upgrade_advisor_installed = True
+
+        summary = format_profile_summary(profile)
+        if "Recommended" in summary:
+            assert "ha-upgrade-advisor" not in summary.split("Recommended")[-1]
+
+    def test_both_companions_unloaded_suppresses_both(self):
+        """Both spook and upgrade_advisor unloaded → neither appears in Recommended."""
+        profile = self._make_profile()
+        profile.hacs_unloaded_domains = ["spook", "upgrade_advisor"]
+        profile.spook_installed = False
+        profile.upgrade_advisor_installed = False
+
+        summary = format_profile_summary(profile)
+        if "Recommended" in summary:
+            tail = summary.split("Recommended")[-1]
+            assert "Spook" not in tail
+            assert "ha-upgrade-advisor" not in tail

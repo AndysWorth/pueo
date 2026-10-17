@@ -8726,3 +8726,179 @@ class TestCardEpisodeIdVerification:
             assert self._get_verification(db_path, "ep-resolved") == "success"
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
+
+
+# ── TestBuildCompanionStatus ──────────────────────────────────────────────────
+
+
+class TestBuildCompanionStatus:
+    """Tests for _build_companion_status — downloaded_not_setup status and Set up URL."""
+
+    def _make_profile(
+        self, *, spook_installed=False, advisor_installed=False, unloaded=None
+    ):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        p = HAEnvironmentProfile()
+        p.spook_installed = spook_installed
+        p.upgrade_advisor_installed = advisor_installed
+        p.ai_agent_ha_installed = False
+        p.mqtt_configured = False
+        p.sentinel_installed = False
+        p.battery_notes_installed = False
+        p.hacs_unloaded_domains = list(unloaded or [])
+        return p
+
+    def test_spook_active_when_installed(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(
+            self._make_profile(spook_installed=True), _cfg
+        )
+        spook = next(c for c in companions if c["slug"] == "spook")
+        assert spook["status"] == "active"
+        assert spook["setup_url"] is None
+
+    def test_spook_downloaded_not_setup_when_unloaded(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(
+            self._make_profile(unloaded=["spook"]), _cfg
+        )
+        spook = next(c for c in companions if c["slug"] == "spook")
+        assert spook["status"] == "downloaded_not_setup"
+        assert spook["setup_url"] == "/companions/spook/setup"
+
+    def test_spook_not_installed_without_unloaded(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(self._make_profile(), _cfg)
+        spook = next(c for c in companions if c["slug"] == "spook")
+        assert spook["status"] == "not_installed"
+        assert spook["setup_url"] == "/companions/spook/setup"
+
+    def test_advisor_downloaded_not_setup_when_unloaded(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(
+            self._make_profile(unloaded=["upgrade_advisor"]), _cfg
+        )
+        advisor = next(c for c in companions if c["slug"] == "upgrade_advisor")
+        assert advisor["status"] == "downloaded_not_setup"
+        assert advisor["setup_url"] == "/companions/upgrade_advisor/setup"
+
+    def test_setup_url_none_when_active(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(
+            self._make_profile(spook_installed=True, advisor_installed=True), _cfg
+        )
+        for slug in ("spook", "upgrade_advisor"):
+            c = next(x for x in companions if x["slug"] == slug)
+            assert c["setup_url"] is None
+
+    def test_unknown_profile_returns_unknown_status(self):
+        import web.dashboard as dashboard
+        import config as _cfg
+
+        companions = dashboard._build_companion_status(None, _cfg)
+        for slug in ("spook", "upgrade_advisor"):
+            c = next(x for x in companions if x["slug"] == slug)
+            assert c["status"] == "unknown"
+
+
+# ── TestExecuteCompanionSetup ─────────────────────────────────────────────────
+
+
+class TestExecuteCompanionSetup:
+    """Tests for _execute_companion_setup executor."""
+
+    def _run(
+        self, tmp_path, monkeypatch, *, domain="spook", agent_id=None, success=True
+    ):
+        import asyncio
+        import json as _json
+
+        import web.dashboard as dashboard
+        from utils.ha.companion_setup import CompanionSetupResult, Step
+
+        async def _fake_run_companion_setup(*args, **kwargs):
+            if success:
+                return CompanionSetupResult(domain=domain, steps_done=[Step.VERIFY])
+            else:
+                return CompanionSetupResult(domain=domain, error="setup failed")
+
+        monkeypatch.setattr(
+            "web.dashboard._execute_companion_setup.__module__",
+            "web.dashboard",
+            raising=False,
+        )
+        import utils.ha.companion_setup as cs_mod
+
+        monkeypatch.setattr(cs_mod, "run_companion_setup", _fake_run_companion_setup)
+        import utils.ha.ha_rest_client as rest_mod
+        import utils.ha.ha_ws_client as ws_mod
+        import utils.ha.ssh_client as ssh_mod
+        from utils.ha.ha_rest_client import FakeHARestClient
+        from utils.ha.ha_ws_client import FakeHAWebSocketClient
+        from utils.ha.ssh_client import FakeSSHClient
+
+        monkeypatch.setattr(
+            rest_mod, "HARestClient", lambda *a, **kw: FakeHARestClient()
+        )
+        monkeypatch.setattr(
+            ws_mod, "HAWebSocketClient", lambda *a, **kw: FakeHAWebSocketClient()
+        )
+        monkeypatch.setattr(ssh_mod, "AsyncSSHClient", lambda *a, **kw: FakeSSHClient())
+
+        import config as _cfg
+
+        monkeypatch.setattr(_cfg, "HA_HOST", "ha")
+        monkeypatch.setattr(_cfg, "HA_API_PORT", 8123)
+        monkeypatch.setattr(_cfg, "HA_API_TOKEN", "tok")
+        monkeypatch.setattr(_cfg, "HA_USER", "root")
+        monkeypatch.setattr(_cfg, "SSH_KEY_PATH", "/key")
+
+        nid = "companion-1"
+        json_path = tmp_path / f"{nid}.json"
+        payload = {"card_type": "companion_setup", "domain": domain}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        data: dict = {"payload": payload}
+        json_path.write_text(_json.dumps(data))
+
+        asyncio.run(dashboard._execute_companion_setup(nid, data, json_path, tmp_path))
+        return nid, json_path
+
+    def test_success_writes_approved(self, tmp_path, monkeypatch):
+        nid, json_path = self._run(tmp_path, monkeypatch)
+        assert (tmp_path / f"{nid}.approved").exists()
+        assert not (tmp_path / f"{nid}.rejected").exists()
+
+    def test_failure_writes_rejected(self, tmp_path, monkeypatch):
+        nid, json_path = self._run(tmp_path, monkeypatch, success=False)
+        assert (tmp_path / f"{nid}.rejected").exists()
+        assert not (tmp_path / f"{nid}.approved").exists()
+
+    def test_in_progress_removed_on_success(self, tmp_path, monkeypatch):
+        nid, _ = self._run(tmp_path, monkeypatch)
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+
+    def test_in_progress_removed_on_failure(self, tmp_path, monkeypatch):
+        nid, _ = self._run(tmp_path, monkeypatch, success=False)
+        assert not (tmp_path / f"{nid}.in_progress").exists()
+
+    def test_companion_setup_in_dispatch_table(self):
+        from utils.hitl.card_types import CARD_TYPE_COMPANION_SETUP
+        import web.dashboard as dashboard
+
+        assert CARD_TYPE_COMPANION_SETUP in dashboard._CARD_DISPATCH
+        assert (
+            dashboard._CARD_DISPATCH[CARD_TYPE_COMPANION_SETUP]
+            is dashboard._execute_companion_setup
+        )

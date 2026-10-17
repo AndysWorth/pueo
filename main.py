@@ -1101,8 +1101,16 @@ async def supervisor_main(config_path: Path) -> None:
         _shared_executor.set_rest_client(_profile_rest)
 
         async def _notify_hacs_unloaded(p) -> None:
-            """Send one-time info cards for HACS integrations downloaded but not set up."""
-            from utils.hitl.card_types import CARD_TYPE_HOST_HEALTH
+            """Send one-time cards for HACS integrations downloaded but not set up.
+
+            Companions in COMPANION_DOMAINS get an actionable CARD_TYPE_COMPANION_SETUP
+            card.  Unknown HACS domains keep the existing informational host_health card.
+            """
+            from utils.ha.companion_setup import COMPANION_DOMAINS
+            from utils.hitl.card_types import (
+                CARD_TYPE_COMPANION_SETUP,
+                CARD_TYPE_HOST_HEALTH,
+            )
             from utils.hitl.hitl_tracker import (
                 mark_card_resolved,
                 mark_card_sent,
@@ -1122,8 +1130,8 @@ async def supervisor_main(config_path: Path) -> None:
                             " WHERE card_key LIKE 'hacs_unloaded:%'"
                         ).fetchall()
                         for (card_key,) in rows:
-                            domain = card_key[len("hacs_unloaded:") :]
-                            if domain and domain not in unloaded_set:
+                            _d = card_key[len("hacs_unloaded:") :]
+                            if _d and _d not in unloaded_set:
                                 mark_card_resolved(conn, card_key)
                         for domain in sorted(unloaded_set):
                             if should_send_card(conn, f"hacs_unloaded:{domain}"):
@@ -1133,29 +1141,54 @@ async def supervisor_main(config_path: Path) -> None:
                 to_send_domains = await asyncio.to_thread(_db_work)
                 for domain in to_send_domains:
                     card_key = f"hacs_unloaded:{domain}"
-                    await notifier.send(
-                        subject=f"HACS integration downloaded but not set up: {domain}",
-                        body=(
+                    is_companion = domain in COMPANION_DOMAINS
+
+                    if is_companion:
+                        # Fetch conversation agents for upgrade_advisor so the card
+                        # can populate the agent dropdown.
+                        conversation_agents: list[dict] = []
+                        if domain == "upgrade_advisor":
+                            try:
+                                conversation_agents = (
+                                    await _profile_ws.list_conversation_agents()
+                                )
+                            except Exception:  # nosec B110
+                                pass
+                        ct = CARD_TYPE_COMPANION_SETUP
+                        body = (
+                            f"The {domain} companion is downloaded via HACS but has no "
+                            "config entry. Approve to install and configure it now — "
+                            "Pueo will take a backup first."
+                        )
+                        extra_payload: dict = {
+                            "conversation_agents": conversation_agents,
+                        }
+                    else:
+                        ct = CARD_TYPE_HOST_HEALTH
+                        body = (
                             f"The {domain} integration is installed via HACS but has "
                             "no config entry — it has no effect on your HA instance "
                             "until set up. No action required; this is informational."
-                        ),
+                        )
+                        extra_payload = {"informational": True}
+
+                    await notifier.send(
+                        subject=f"HACS integration downloaded but not set up: {domain}",
+                        body=body,
                         payload={
-                            "card_type": CARD_TYPE_HOST_HEALTH,
-                            "informational": True,
+                            "card_type": ct,
                             "suppression_key": card_key,
                             "fingerprint": domain,
                             "domain": domain,
+                            **extra_payload,
                         },
                     )
 
-                    def _mark_sent(k: str = card_key) -> None:
+                    def _mark_sent(k: str = card_key, _ct: str = ct) -> None:
                         import sqlite3 as _sqlite3
 
                         with _sqlite3.connect(cfg.DB_PATH) as conn:
-                            mark_card_sent(
-                                conn, k, CARD_TYPE_HOST_HEALTH, f"hacs_unloaded:{k}"
-                            )
+                            mark_card_sent(conn, k, _ct, f"hacs_unloaded:{k}")
 
                     await asyncio.to_thread(_mark_sent)
             except Exception as exc:  # pragma: no cover  # nosec B110

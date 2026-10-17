@@ -199,19 +199,17 @@ def format_profile_summary(profile: Optional[HAEnvironmentProfile]) -> str:
     if profile.battery_notes_installed:
         lines.append("  Battery Notes: installed")
 
-    # Spook is considered "present" when it is installed OR when it is downloaded
-    # via HACS but not yet set up.  Don't list it as "not installed" when it is
-    # sitting in hacs_unloaded_domains — that's a separate note already shown above.
-    _spook_present = profile.spook_installed or "spook" in (
-        profile.hacs_unloaded_domains or []
+    # A companion is "present" when installed OR downloaded via HACS but not yet set up.
+    # Don't list it as "not installed" when it's in hacs_unloaded_domains — that note
+    # is already shown in the integrations line above.
+    _unloaded = set(profile.hacs_unloaded_domains or [])
+    _spook_present = profile.spook_installed or "spook" in _unloaded
+    _advisor_present = (
+        profile.upgrade_advisor_installed or "upgrade_advisor" in _unloaded
     )
     _RECOMMENDED = [
         (_spook_present, "Spook", "entity registry health"),
-        (
-            profile.upgrade_advisor_installed,
-            "ha-upgrade-advisor",
-            "breaking-change analysis",
-        ),
+        (_advisor_present, "ha-upgrade-advisor", "breaking-change analysis"),
         (profile.sentinel_installed, "HA Sentinel", "integration health monitoring"),
     ]
     absent = [
