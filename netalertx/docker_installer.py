@@ -793,6 +793,7 @@ async def main(
         NOTIFY_URL,
         NOTIFY_WATCH_DIR,
     )
+    import asyncssh
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
@@ -813,11 +814,31 @@ async def main(
     _gate = gate or AutonomyGate(level=AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
-    final_state = await run_docker_installer(
-        _docker_ssh,
-        _ha_ssh,
-        _gate,
-        _notifier,
-        db_path=db_path,
-    )
+    try:
+        final_state = await run_docker_installer(
+            _docker_ssh,
+            _ha_ssh,
+            _gate,
+            _notifier,
+            db_path=db_path,
+        )
+    except (asyncssh.Error, OSError) as exc:
+        log.error(
+            "installer_connection_failed",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        await _notifier.send(
+            subject="NetAlertX setup paused: connection error",
+            body=(
+                f"Pueo could not connect to the Docker host for NetAlertX setup.\n\n"
+                f"Error: {type(exc).__name__}: {exc}\n\n"
+                "Check netalertx.docker_host and netalertx.ssh_key_path in config.yaml."
+            ),
+            payload={
+                "card_type": "netalertx_setup",
+                "notification_id": "netalertx_docker_setup_connection_failed",
+            },
+        )
+        return
     log.info("netalertx_docker_setup_done", state=final_state)

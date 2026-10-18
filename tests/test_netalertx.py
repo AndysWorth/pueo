@@ -10116,3 +10116,74 @@ class TestNetalertxDiagnosisQueueWiring:
 
         assert result is not None
         assert result.category == "networking"
+
+
+# ── Installer connection-error tests ─────────────────────────────────────────
+
+
+class TestInstallerConnectionError:
+    """main() and docker main() catch SSH/OS errors and return cleanly."""
+
+    def _make_raising_ssh(self, exc: Exception):
+        from utils.ha.ssh_client import FakeSSHClient
+
+        class _RaisingSSHClient(FakeSSHClient):
+            async def run(self, command: str, check: bool = False):
+                raise exc
+
+        return _RaisingSSHClient()
+
+    def test_main_ssh_failure_returns_not_raises(self, tmp_path, monkeypatch):
+        import asyncio
+        import asyncssh
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.autonomy import FakeAutonomyGate
+
+        db = _make_installer_db(tmp_path, monkeypatch)
+        notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=True)
+        ssh = self._make_raising_ssh(asyncssh.DisconnectError(14, "No such file"))
+
+        import netalertx.installer as inst
+
+        # Should return without raising — supervisor sees a clean return → break
+        asyncio.run(
+            inst.main(
+                ssh_client=ssh,
+                gate=gate,
+                notifier=notifier,
+                db_path=db,
+            )
+        )
+
+        assert any(
+            "connection error" in (m.get("subject") or "") for m in notifier.sent
+        ), f"expected a 'connection error' card; got: {notifier.sent}"
+
+    def test_docker_main_os_error_returns_not_raises(self, tmp_path, monkeypatch):
+        import asyncio
+        from utils.hitl.notify import FakeNotifier
+        from utils.agent.autonomy import FakeAutonomyGate
+        import netalertx.docker_installer as di
+
+        monkeypatch.setattr(di, "NETALERTX_DOCKER_HOST", "docker.local")
+
+        async def _raising_run_docker_installer(*args, **kwargs):
+            raise OSError("No such file")
+
+        monkeypatch.setattr(di, "run_docker_installer", _raising_run_docker_installer)
+
+        notifier = FakeNotifier(approve=True)
+        gate = FakeAutonomyGate(auto_execute_result=True)
+
+        asyncio.run(
+            di.main(
+                gate=gate,
+                notifier=notifier,
+                db_path=str(tmp_path / "test.db"),
+            )
+        )
+
+        assert any(
+            "connection error" in (m.get("subject") or "") for m in notifier.sent
+        ), f"expected a 'connection error' card; got: {notifier.sent}"
