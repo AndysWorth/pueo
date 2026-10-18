@@ -687,7 +687,7 @@ if $WRITE_CONFIG; then
         echo "  The sleep assertion is released automatically when Pueo stops."
         echo
         ask "Keep this Mac awake while Pueo runs? (y/n)"  "y"  _PREVENT_SLEEP_RAW
-        if [[ "${_PREVENT_SLEEP_RAW,,}" =~ ^y ]]; then
+        if [[ "$(echo "${_PREVENT_SLEEP_RAW}" | tr '[:upper:]' '[:lower:]')" =~ ^y ]]; then
             PREVENT_IDLE_SLEEP="true"
         else
             PREVENT_IDLE_SLEEP="false"
