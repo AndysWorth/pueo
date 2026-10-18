@@ -3139,7 +3139,7 @@ class TestRunInstaller:
 
         _slug = "netalertx_fa"
         _data = "/data/netalertx"
-        _conf = f"{_data}/app.conf"
+        _conf = f"{_data}/config/app.conf"
 
         from agents import ha_agent_advanced
         import netalertx.installer as inst
