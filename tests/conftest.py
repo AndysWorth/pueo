@@ -163,6 +163,16 @@ def _isolate_agent_db(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _reset_backup_rate_deque():
+    """Clear _recent_backup_times before and after each test for isolation."""
+    if "agents.ha_agent_advanced" in sys.modules:
+        sys.modules["agents.ha_agent_advanced"]._reset_recent_backup_times()
+    yield
+    if "agents.ha_agent_advanced" in sys.modules:
+        sys.modules["agents.ha_agent_advanced"]._reset_recent_backup_times()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_log_file(monkeypatch, tmp_path):
     """Redirect LOG_FILE and PUEO_LOG_DIR to tmp_path so tests never write to pueo.log.
 

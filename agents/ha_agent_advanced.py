@@ -2,6 +2,7 @@
 """Layer 2 — diagnose + SQLite state memory + pre-repair backup triggering."""
 
 import asyncio
+import collections
 import hashlib
 import json
 import re
@@ -1242,12 +1243,63 @@ def _extract_backup_slug(output: str) -> Optional[str]:
     return None
 
 
+class BackupRateLimitError(RuntimeError):
+    """Raised when execute_remote_backup would exceed BACKUP_MAX_PER_HOUR."""
+
+
+# Tracks creation timestamps of backups made by this process, for the rate check.
+# Complements the DB check which only sees synced rows.
+_recent_backup_times: collections.deque = collections.deque()
+
+
+def _reset_recent_backup_times() -> None:
+    """Clear the in-process backup time deque (test helper)."""
+    _recent_backup_times.clear()
+
+
+def _count_recent_db_backups(cutoff: float) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM backup_registry"
+            " WHERE name LIKE 'Pueo_%' AND ha_created_at > ?",
+            (cutoff,),
+        ).fetchone()
+    return row[0] if row else 0
+
+
 @async_retry(**SSH_RETRY_KWARGS)
 async def execute_remote_backup(
     ssh_client: Optional[SSHClientProtocol] = None,
 ) -> str:
     """Triggers Home Assistant's native backup CLI engine over SSH. Returns backup identifier slug."""
     check_disk_not_critical(HA_DISK_CRITICAL_GB)
+
+    now = time.time()
+    cutoff = now - 3600.0
+    db_count = await asyncio.to_thread(_count_recent_db_backups, cutoff)
+    while _recent_backup_times and _recent_backup_times[0] < cutoff:
+        _recent_backup_times.popleft()
+    total = max(db_count, len(_recent_backup_times))
+    if total >= _config.BACKUP_MAX_PER_HOUR:
+        from utils.core.timeline import write_timeline_event
+
+        write_timeline_event(
+            "ERROR",
+            "backup",
+            f"Backup rate limit reached: {total} backups in last hour"
+            f" (limit {_config.BACKUP_MAX_PER_HOUR})",
+        )
+        log.error(
+            "backup_rate_limited",
+            db_count=db_count,
+            inprocess_count=len(_recent_backup_times),
+            limit=_config.BACKUP_MAX_PER_HOUR,
+        )
+        raise BackupRateLimitError(
+            f"backup rate limit: {total} Pueo backups in last hour"
+            f" (cap {_config.BACKUP_MAX_PER_HOUR})"
+        )
+
     log.info("backup_trigger_start")
     client = ssh_client or AsyncSSHClient(HA_HOST, HA_USER, SSH_KEY_PATH)
     try:
@@ -1261,6 +1313,7 @@ async def execute_remote_backup(
                 f"ha backup new succeeded (exit 0) but output contained no slug line. "
                 f"stdout={stdout!r}"
             )
+        _recent_backup_times.append(time.time())
         log.info("backup_created", slug=slug)
         return slug
     except Exception as e:

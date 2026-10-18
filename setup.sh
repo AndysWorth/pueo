@@ -1016,6 +1016,7 @@ agent:
   # backup_local_dir: ""     # default: data_dir/backups
   # backup_retain_on_ha: 2
   # backup_retain_local_days: 30
+  # backup_max_per_hour: 6
   # disk_recovery_auto_enabled: true
   # disk_recovery_recorder_keep_days: 30
   # disk_recovery_journal_max_mb: 200
