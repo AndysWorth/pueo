@@ -84,16 +84,20 @@ async def _fetch_log_snapshot(
     return lines[-_LOG_SNAPSHOT_LINES:]
 
 
-async def _fetch_app_conf(ha_ssh_client: "SSHClientProtocol", slug: str) -> str | None:
-    """Read app.conf from the HA add-on config directory via SFTP.
+async def _fetch_app_conf(
+    ha_ssh_client: "SSHClientProtocol", slug: str, root: str = ""
+) -> str | None:
+    """Read app.conf from the HA app-config directory via SFTP.
 
-    On HA OS, add-on config files live at /addon_configs/<slug>/config/app.conf
-    on the host filesystem — directly readable via SFTP without docker exec.
+    On HA OS, add-on config files live at /app_configs/<slug>/config/app.conf
+    (renamed from /addon_configs in HA 2026.x). Pass a resolved root from
+    resolve_app_config_root() for accuracy; falls back to /app_configs.
     Returns None if the slug is unknown or the file does not exist.
     """
     if not slug:
         return None
-    conf_path = f"/addon_configs/{slug}/config/app.conf"
+    effective_root = root or "/app_configs"
+    conf_path = f"{effective_root}/{slug}/config/app.conf"
     try:
         return await ha_ssh_client.read_file(conf_path)
     except (FileNotFoundError, OSError):
@@ -227,8 +231,11 @@ async def run_diagnose(
             log_lines, llm_client=llm_client
         )
 
-    # 4. Config validation — read via SFTP from the host addon config directory.
-    # On HA OS, add-on config files are at /addon_configs/<slug>/config/app.conf.
+    # 4. Config validation — read via SFTP from the host app config directory.
+    # HA renamed /addon_configs → /app_configs in HA 2026.x (Add-ons → Apps).
+    from utils.ha.app_configs import resolve_app_config_root
+
+    _app_config_root = await resolve_app_config_root(_ha_ssh)
     if not _slug:
         # Attempt slug auto-discovery before flagging as an error.
         # This recovers existing installs where setup completed without writing the slug.
@@ -252,9 +259,10 @@ async def run_diagnose(
             )
         ]
     else:
-        conf_text = await _fetch_app_conf(_ha_ssh, _slug)
+        conf_text = await _fetch_app_conf(_ha_ssh, _slug, root=_app_config_root)
         if conf_text is None:
-            conf_host_path = f"/addon_configs/{_slug}/config/app.conf"
+            _root = _app_config_root or "/app_configs"
+            conf_host_path = f"{_root}/{_slug}/config/app.conf"
             config_issues = [
                 ConfigIssue(
                     field="app.conf",

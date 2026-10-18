@@ -6784,11 +6784,12 @@ class TestNetAlertXOneShotDiagnose:
 
         return FakeSSHClient(
             file_contents={
-                "/addon_configs/test_slug/config/app.conf": (
+                "/app_configs/test_slug/config/app.conf": (
                     self._valid_app_conf() if app_conf is None else app_conf
                 )
             },
             command_results={
+                "[ -d /app_configs ]": (0, "app_configs", ""),
                 "ha apps info core_mosquitto": (0, f"state: {mosquitto_state}\n", ""),
                 "ha apps logs": (0, log_output, ""),
             },
@@ -7052,6 +7053,7 @@ class TestNetAlertXOneShotDiagnose:
         # → _fetch_app_conf returns None → ConfigIssue generated
         ha_ssh = FakeSSHClient(
             command_results={
+                "[ -d /app_configs ]": (0, "app_configs", ""),
                 "ha apps info core_mosquitto": (0, "state: started\n", ""),
                 "ha apps logs": (0, "", ""),
             }
@@ -7150,10 +7152,24 @@ class TestNetAlertXOneShotDiagnose:
         from netalertx.one_shot_diagnose import _fetch_app_conf
 
         ha_ssh = FakeSSHClient(
-            file_contents={"/addon_configs/s/config/app.conf": "KEY=value\n"}
+            file_contents={"/app_configs/s/config/app.conf": "KEY=value\n"}
         )
-        result = asyncio.run(_fetch_app_conf(ha_ssh, "s"))
+        result = asyncio.run(_fetch_app_conf(ha_ssh, "s", root="/app_configs"))
         assert result == "KEY=value\n"
+
+    def test_fetch_app_conf_legacy_addon_configs_root(self):
+        """Explicit legacy root reads from /addon_configs/."""
+        import asyncio
+
+        from utils.ha.ssh_client import FakeSSHClient
+
+        from netalertx.one_shot_diagnose import _fetch_app_conf
+
+        ha_ssh = FakeSSHClient(
+            file_contents={"/addon_configs/s/config/app.conf": "KEY=legacy\n"}
+        )
+        result = asyncio.run(_fetch_app_conf(ha_ssh, "s", root="/addon_configs"))
+        assert result == "KEY=legacy\n"
 
     def test_fetch_app_conf_missing_file_returns_none(self):
         import asyncio
@@ -7807,7 +7823,7 @@ class TestOneShotDiagnoseSlugAutoRecovery:
         )
         ha_ssh = FakeSSHClient(
             file_contents={
-                "/addon_configs/netalertx_fa/config/app.conf": (
+                "/app_configs/netalertx_fa/config/app.conf": (
                     "MQTT_BROKER='localhost'\nMQTT_PORT=1883\n"
                     "HA_URL='http://homeassistant.local:8123'\n"
                     "HA_BEARER_TOKEN='tok'\n"
@@ -7816,6 +7832,7 @@ class TestOneShotDiagnoseSlugAutoRecovery:
                 )
             },
             command_results={
+                "[ -d /app_configs ]": (0, "app_configs", ""),
                 "ha apps info core_mosquitto": (0, "state: started\n", ""),
                 "ha store addons": (0, store_output, ""),
             },

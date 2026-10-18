@@ -3912,7 +3912,7 @@ class TestExecuteDiskRecovery:
                 "slug": "db21ed7f_netalertx",
                 "paths": [
                     "/mnt/data/supervisor/addons/db21ed7f_netalertx",
-                    "/addon_configs/db21ed7f_netalertx",
+                    "/app_configs/db21ed7f_netalertx",
                 ],
                 "size_display": "60M",
             }
@@ -3942,7 +3942,7 @@ class TestExecuteDiskRecovery:
 
         assert (tmp_path / "dr-orphan-1.approved").exists()
         assert "/mnt/data/supervisor/addons/db21ed7f_netalertx" in deleted_paths
-        assert "/addon_configs/db21ed7f_netalertx" in deleted_paths
+        assert "/app_configs/db21ed7f_netalertx" in deleted_paths
 
     def test_cleanup_orphaned_addon_dirs_skips_installed_slugs_not_in_list(
         self, tmp_path, monkeypatch
@@ -3969,7 +3969,7 @@ class TestExecuteDiskRecovery:
         orphaned_slugs = [
             {
                 "slug": "db21ed7f_netalertx",
-                "paths": ["/addon_configs/db21ed7f_netalertx"],
+                "paths": ["/app_configs/db21ed7f_netalertx"],
                 "size_display": "10M",
             }
         ]
@@ -3993,7 +3993,7 @@ class TestExecuteDiskRecovery:
             dashboard._execute_disk_recovery("dr-orphan-2", data, json_path, tmp_path)
         )
 
-        assert "/addon_configs/db21ed7f_netalertx" in deleted_paths
+        assert "/app_configs/db21ed7f_netalertx" in deleted_paths
         assert not any("netalertx_fa" in p for p in deleted_paths)
 
 
