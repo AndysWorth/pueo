@@ -48,6 +48,7 @@ from config import (
 )
 from netalertx.disk_check import DiskSpaceTooLowError, check_target_disk_space
 from utils.agent.autonomy import RiskLevel
+from utils.ha.app_configs import resolve_app_config_root
 from netalertx.installer_diagnostics import (
     diagnose_installer_failure,
     format_diagnostic_for_hitl,
@@ -633,17 +634,21 @@ async def _poll_api_ready(
     return False
 
 
-def _parse_data_path(info_output: str, slug: str = "") -> str:
+def _parse_data_path(
+    info_output: str, slug: str = "", root: str = "/addon_configs"
+) -> str:
     """Parse the add-on data directory from `ha apps info` output.
 
-    Falls back to /addon_configs/{slug} when the `data:` field is absent —
+    Falls back to {root}/{slug} when the `data:` field is absent —
     HA Supervisor omits it for some add-ons but the path is conventional.
+    Pass the result of resolve_app_config_root() as `root` to pick up the
+    live mount point (HA 2026.x renamed /addon_configs → /app_configs).
     """
     m = re.search(r"^\s*data:\s*(.+)$", info_output, re.MULTILINE | re.IGNORECASE)
     if m:
         return m.group(1).strip()
     if slug:
-        return f"/addon_configs/{slug}"
+        return f"{root}/{slug}"
     return ""
 
 
@@ -896,9 +901,13 @@ async def _step6_configure_app_conf(
 
     slug = NETALERTX_ADDON_SLUG or details.get("addon_slug", "")
 
-    # Locate the add-on data directory
+    # Locate the add-on data directory — probe the live mount point first so
+    # the correct root (/app_configs or /addon_configs) is used.  If the probe
+    # returns empty, fall back to /addon_configs (older HA or unexpected layout);
+    # the read_file precondition below will still catch a missing path.
+    app_conf_root = await resolve_app_config_root(ssh_client)
     _, info_out, _ = await ssh_client.run(f"ha apps info {slug}")
-    data_path = _parse_data_path(info_out, slug)
+    data_path = _parse_data_path(info_out, slug, root=app_conf_root or "/addon_configs")
     if not data_path:
         log.error("step6_no_data_path", slug=slug, correlation_id=cid)
         await gate.require_approval(
@@ -915,10 +924,29 @@ async def _step6_configure_app_conf(
 
     conf_path = f"{data_path}/config/app.conf"
 
+    # Precondition: verify we can read app.conf before taking a backup.
+    # A missing file means the path is still wrong — abort without backup.
     try:
         original_conf = await ssh_client.read_file(conf_path)
-    except Exception:
-        original_conf = ""
+    except Exception as exc:
+        log.error(
+            "step6_app_conf_missing",
+            path=conf_path,
+            exc_type=type(exc).__name__,
+            correlation_id=cid,
+        )
+        await gate.require_approval(
+            subject=f"NetAlertX installer: cannot read app.conf at {conf_path}",
+            body=(
+                f"Cannot read {conf_path}: {exc}. "
+                "Aborting — no backup will be taken. "
+                "Verify the add-on data path and re-run setup."
+            ),
+            payload={"notification_id": f"{cid}_step6_conf_missing", "step": 6},
+            notifier=notifier,
+            risk=RiskLevel.CRITICAL,
+        )
+        return False
 
     # Detect subnet for the scan interface
     interface = details.get("scan_interface", "")
