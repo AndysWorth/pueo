@@ -365,15 +365,26 @@ class LoopSupervisor:
                 status.status = "error"
                 status.next_run = time.time() + delay
                 self._emit(name)
-                log.error("loop_crashed", loop=name, error=str(exc), restart_in=delay)
+                log.error(
+                    "loop_crashed",
+                    loop=name,
+                    exc_type=type(exc).__name__,
+                    error=str(exc),
+                    restart_in=delay,
+                )
                 try:
                     from utils.core.timeline import write_timeline_event
 
                     write_timeline_event(
                         "ERROR",
                         "loop_crash",
-                        f"Loop '{name}' crashed — restarting in {delay:.0f}s: {exc}",
-                        {"loop": name, "error": str(exc), "restart_in": delay},
+                        f"Loop '{name}' crashed — restarting in {delay:.0f}s: {type(exc).__name__}: {exc}",
+                        {
+                            "loop": name,
+                            "exc_type": type(exc).__name__,
+                            "error": str(exc),
+                            "restart_in": delay,
+                        },
                     )
                 except Exception:  # nosec B110
                     pass

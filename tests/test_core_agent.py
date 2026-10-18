@@ -12809,6 +12809,36 @@ class TestLoopCrashTimeline:
         assert detail["loop"] == "test_loop"
         assert "boom" in detail["error"]
 
+    def test_crash_timeline_message_includes_exc_type(self, tmp_path):
+        import sqlite3 as _sq
+        import utils.core.timeline
+        from utils.agent.supervisor import LoopSupervisor
+
+        call_count = 0
+
+        async def _crashing_factory():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("boom")
+            return
+
+        async def _run():
+            sv = LoopSupervisor(backoff_start=0.0, backoff_cap=0.0)
+            sv.start("test_exc_type", _crashing_factory)
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        rows = (
+            _sq.connect(utils.core.timeline.DB_PATH)
+            .execute("SELECT message FROM timeline_events WHERE source = 'loop_crash'")
+            .fetchall()
+        )
+        assert rows, "expected a loop_crash timeline event"
+        assert "ValueError: boom" in rows[0][0], f"exc_type missing from: {rows[0][0]}"
+
 
 # ── Phase 12.5 — HA Repairs + Update Ordering ─────────────────────────────────
 

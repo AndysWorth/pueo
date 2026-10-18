@@ -1453,6 +1453,7 @@ async def main(
         NOTIFY_WATCH_DIR,
     )
     from config import NETALERTX_SSH_HOST, NETALERTX_SSH_KEY_PATH, NETALERTX_SSH_USER
+    import asyncssh
     from utils.agent.autonomy import AutonomyGate
     from utils.hitl.notify import get_notifier
     from utils.ha.ssh_client import AsyncSSHClient
@@ -1463,15 +1464,35 @@ async def main(
     _gate = gate or AutonomyGate(level=AUTONOMY_LEVEL)
     _notifier = notifier or get_notifier(NOTIFIER, NOTIFY_URL, NOTIFY_WATCH_DIR)
 
-    async with httpx.AsyncClient() as _http:
-        final_state = await run_installer(
-            _ssh,
-            _gate,
-            _notifier,
-            db_path=db_path,
-            http_client=_http,
-            llm_client=llm_client,
+    try:
+        async with httpx.AsyncClient() as _http:
+            final_state = await run_installer(
+                _ssh,
+                _gate,
+                _notifier,
+                db_path=db_path,
+                http_client=_http,
+                llm_client=llm_client,
+            )
+    except (asyncssh.Error, OSError) as exc:
+        log.error(
+            "installer_connection_failed",
+            exc_type=type(exc).__name__,
+            error=str(exc),
         )
+        await _notifier.send(
+            subject="NetAlertX setup paused: connection error",
+            body=(
+                f"Pueo could not connect to the NetAlertX host.\n\n"
+                f"Error: {type(exc).__name__}: {exc}\n\n"
+                "Check netalertx.ssh_host and netalertx.ssh_key_path in config.yaml."
+            ),
+            payload={
+                "card_type": "netalertx_setup",
+                "notification_id": "netalertx_setup_connection_failed",
+            },
+        )
+        return
     log.info("netalertx_setup_done", state=final_state)
 
     if final_state == "FULLY_OPERATIONAL":
