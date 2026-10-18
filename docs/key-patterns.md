@@ -6,7 +6,7 @@ Authoritative patterns for all code changes. Read this before modifying any agen
 All Ollama calls use `format=PydanticModel.model_json_schema()` and `temperature=0.0` to force deterministic, parseable JSON. Always wrap in `asyncio.to_thread()` since `ollama.chat` is synchronous.
 
 ## Safety invariant
-No write operation proceeds without a confirmed HA backup slug. Ordering is always `execute_remote_backup()` → `record_backup_slug()` → remediation. Never bypass this chain.
+No write operation proceeds without a confirmed HA backup slug. Ordering is always `execute_remote_backup()` → `record_backup_slug()` → remediation. Never bypass this chain. Fallible preconditions must run before the backup call, never after it. Backups are capped at `BACKUP_MAX_PER_HOUR` (default 6) per rolling hour via `BackupRateLimitError`.
 
 ## Long-lived clients, bounded FDs
 LLM and embedding clients are created once and injected; never construct one per call or per log line (each opens an HTTP pool). `main.py::_raise_fd_limit()` lifts the soft `RLIMIT_NOFILE` to 4096 at startup (the launchd plist sets `NumberOfFiles` too), both uvicorn servers set `limit_concurrency`, and `resource_poll` logs `open_fds`/`fd_limit` plus `fd_warn` above 80% — checked before SSH so it still reports when FD exhaustion is why SSH fails (#769).

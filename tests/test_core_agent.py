@@ -2092,6 +2092,114 @@ class TestExecuteRemoteBackupSlugError:
             asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
 
 
+class TestBackupRateLimit:
+    @pytest.fixture(autouse=True)
+    def setup_db(self, monkeypatch, tmp_path):
+        import time
+
+        from agents import ha_agent_advanced
+        import utils.core.timeline as _tl
+
+        path = str(tmp_path / "rate.db")
+        monkeypatch.setattr(ha_agent_advanced, "DB_PATH", path)
+        monkeypatch.setattr(_tl, "DB_PATH", path)
+        ha_agent_advanced.init_local_database()
+        ha_agent_advanced._reset_recent_backup_times()
+        monkeypatch.setattr(
+            ha_agent_advanced, "check_disk_not_critical", lambda _: None
+        )
+        self._db_path = path
+        self._now = time.time()
+
+    def _insert_registry_rows(self, n, age_seconds=60, prefix="Pueo_"):
+        with sqlite3.connect(self._db_path) as conn:
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO backup_registry (name, ha_created_at, backup_slug, status)"
+                    " VALUES (?, ?, ?, ?)",
+                    (f"{prefix}{i}", self._now - age_seconds, f"slug{i:04d}", "ok"),
+                )
+
+    def test_raises_at_limit_no_ssh_call(self, monkeypatch):
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        self._insert_registry_rows(6)
+        ssh = FakeSSHClient()
+        ssh_called = []
+        real_run = ssh.run
+
+        async def spy(*a, **kw):
+            ssh_called.append(a)
+            return await real_run(*a, **kw)
+
+        ssh.run = spy
+        with pytest.raises(ha_agent_advanced.BackupRateLimitError):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert ssh_called == []
+
+    def test_proceeds_below_limit(self, monkeypatch):
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        self._insert_registry_rows(5)
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, 'slug: "abc123"\n', "")}
+        )
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "abc123"
+
+    def test_old_rows_not_counted(self, monkeypatch):
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        self._insert_registry_rows(6, age_seconds=4000)
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, 'slug: "fresh01"\n', "")}
+        )
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "fresh01"
+
+    def test_non_pueo_rows_not_counted(self, monkeypatch):
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        self._insert_registry_rows(6, prefix="Manual_")
+        ssh = FakeSSHClient(
+            command_results={"ha backup new": (0, 'slug: "fresh02"\n', "")}
+        )
+        monkeypatch.setattr(ha_agent_advanced, "BACKUP_OFFLOAD_ENABLED", False)
+        slug = asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+        assert slug == "fresh02"
+
+    def test_inprocess_deque_raises_when_db_lags(self, monkeypatch):
+        """Deque alone (no DB rows) triggers the cap when DB sync hasn't run yet."""
+        import asyncio
+
+        from agents import ha_agent_advanced
+        from utils.ha.ssh_client import FakeSSHClient
+
+        import time as _time
+
+        now = _time.time()
+        for _ in range(6):
+            ha_agent_advanced._recent_backup_times.append(now - 10)
+
+        ssh = FakeSSHClient()
+        with pytest.raises(ha_agent_advanced.BackupRateLimitError):
+            asyncio.run(ha_agent_advanced.execute_remote_backup(ssh_client=ssh))
+
+
 class TestRecordBackupSlugGuard:
     @pytest.fixture
     def db_path(self, monkeypatch, tmp_path):

@@ -83,6 +83,7 @@ BACKUP_OFFLOAD_ENABLED: bool = bool(_agent.get("backup_offload_enabled", True))
 BACKUP_LOCAL_DIR: str = _agent.get("backup_local_dir", str(_dirs.data_dir / "backups"))
 BACKUP_RETAIN_ON_HA: int = int(_agent.get("backup_retain_on_ha", 2))
 BACKUP_RETAIN_LOCAL_DAYS: int = int(_agent.get("backup_retain_local_days", 30))
+BACKUP_MAX_PER_HOUR: int = int(_agent.get("backup_max_per_hour", 6))
 
 # Host-health detection and LLM investigation
 HOST_SWAP_WARN_PCT: float = float(_agent.get("host_swap_warn_pct", 80.0))

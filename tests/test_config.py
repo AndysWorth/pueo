@@ -681,6 +681,19 @@ class TestResourceSensingConfig:
         assert config.BACKUP_RETAIN_ON_HA == 5
         assert config.BACKUP_RETAIN_LOCAL_DAYS == 14
 
+    def test_backup_max_per_hour_default(self, isolated_config):
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_MAX_PER_HOUR == 6
+
+    def test_backup_max_per_hour_loaded_from_yaml(self, isolated_config):
+        isolated_config.write_text(yaml.dump({"agent": {"backup_max_per_hour": 3}}))
+        importlib.reload(sys.modules["config"])
+        import config
+
+        assert config.BACKUP_MAX_PER_HOUR == 3
+
 
 class TestHAUpdateManagerConfig:
     def test_ha_api_port_default(self, isolated_config):
