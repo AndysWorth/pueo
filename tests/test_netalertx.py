@@ -1300,6 +1300,17 @@ class TestInstallerHelpers5to8:
             == "/addon_configs/db21ed7f_netalertx_fa"
         )
 
+    def test_parse_data_path_uses_custom_root(self):
+        # When HA has renamed /addon_configs → /app_configs, the caller passes
+        # the probed root and the fallback uses the new path.
+        from netalertx.installer import _parse_data_path
+
+        info = "name: NetAlertX\nstate: running\n"
+        assert (
+            _parse_data_path(info, "db21ed7f_netalertx_fa", root="/app_configs")
+            == "/app_configs/db21ed7f_netalertx_fa"
+        )
+
     def test_parse_data_path_prefers_data_field_over_fallback(self):
         from netalertx.installer import _parse_data_path
 
@@ -1497,6 +1508,46 @@ def _make_mock_http(routes):
             )
 
     return httpx.AsyncClient(transport=_T(routes))
+
+
+class TestAppConfigsResolver:
+    """Tests for utils.ha.app_configs.resolve_app_config_root."""
+
+    def test_returns_app_configs_when_present(self):
+        import asyncio
+        from utils.ha.app_configs import resolve_app_config_root
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(
+            command_results={
+                "[ -d /app_configs ]": (0, "app_configs", ""),
+            }
+        )
+        result = asyncio.run(resolve_app_config_root(ssh))
+        assert result == "/app_configs"
+
+    def test_falls_back_to_addon_configs(self):
+        import asyncio
+        from utils.ha.app_configs import resolve_app_config_root
+        from utils.ha.ssh_client import FakeSSHClient
+
+        # No /app_configs dir; FakeSSHClient returns the second branch output
+        ssh = FakeSSHClient(
+            command_results={
+                "[ -d /app_configs ]": (0, "addon_configs", ""),
+            }
+        )
+        result = asyncio.run(resolve_app_config_root(ssh))
+        assert result == "/addon_configs"
+
+    def test_returns_empty_when_neither_exists(self):
+        import asyncio
+        from utils.ha.app_configs import resolve_app_config_root
+        from utils.ha.ssh_client import FakeSSHClient
+
+        ssh = FakeSSHClient(command_results={})  # no matching command → (0, "", "")
+        result = asyncio.run(resolve_app_config_root(ssh))
+        assert result == ""
 
 
 class TestNetAlertXInstallerSteps5to8:
@@ -2412,7 +2463,9 @@ class TestNetAlertXInstallerSteps5to8:
         assert "MQTT" in ssh.written_files.get(fallback_conf, "")
         assert state == "FULLY_OPERATIONAL"
 
-    def test_step6_app_conf_missing_uses_empty_original(self, tmp_path, monkeypatch):
+    def test_step6_app_conf_missing_aborts_without_backup(self, tmp_path, monkeypatch):
+        # When app.conf cannot be read, step 6 must abort and must NOT take a
+        # backup — the path is wrong so a backup before write is meaningless.
         import asyncio
 
         from netalertx.installer import run_steps_5_to_8
@@ -2424,10 +2477,12 @@ class TestNetAlertXInstallerSteps5to8:
         monkeypatch.setattr("netalertx.installer._poll_addon_state", poll_true)
         monkeypatch.setattr("netalertx.installer.NETALERTX_ADDON_SLUG", "")
 
+        gate = self._gate_auto()
         ssh = FakeSSHClient(
             file_contents={
                 "/config/configuration.yaml": _HA_CONF,
                 _AUTOMATIONS_PATH: "",
+                # _CONF_PATH intentionally absent — simulates wrong/stale path
             },
             command_results={
                 f"ha apps info {_SLUG}": (
@@ -2435,7 +2490,6 @@ class TestNetAlertXInstallerSteps5to8:
                     f"state: running\ndata: {_DATA_PATH}\n",
                     "",
                 ),
-                "ha backup new": (0, "Slug: bk-slug\n", ""),
                 f"ha apps restart {_SLUG}": (0, "", ""),
                 "ha core check": (0, "", ""),
                 "automation/reload": (0, "", ""),
@@ -2451,14 +2505,24 @@ class TestNetAlertXInstallerSteps5to8:
         state = asyncio.run(
             run_steps_5_to_8(
                 ssh,
-                self._gate_auto(),
+                gate,
                 self._notifier(),
                 db_path=db,
                 http_client=self._http_with_mqtt(),
             )
         )
-        assert state == "FULLY_OPERATIONAL"
-        assert _CONF_PATH in ssh.written_files
+        # Step 6 aborts; state stays at ADDON_RUNNING
+        assert state == "ADDON_RUNNING"
+        # The app.conf path must not have been written
+        assert _CONF_PATH not in ssh.written_files
+        # No backup should have been taken
+        assert not any("ha backup new" in cmd for cmd in ssh.commands_run)
+        # A CRITICAL approval card must have been queued
+        assert any(
+            "step6" in (m.get("subject") or "").lower()
+            or "app.conf" in (m.get("subject") or "").lower()
+            for m in gate.require_approval_calls
+        ), f"expected a step6/app.conf card; got: {gate.require_approval_calls}"
 
     def test_step6_no_scan_interface_uses_empty_subnets(self, tmp_path, monkeypatch):
         import asyncio
@@ -3075,7 +3139,7 @@ class TestRunInstaller:
 
         _slug = "netalertx_fa"
         _data = "/data/netalertx"
-        _conf = f"{_data}/app.conf"
+        _conf = f"{_data}/config/app.conf"
 
         from agents import ha_agent_advanced
         import netalertx.installer as inst
