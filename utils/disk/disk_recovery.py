@@ -294,12 +294,19 @@ async def scan_orphaned_addon_dirs(
             log.error("addon_list_parse_failed", error=str(exc))
             installed_slugs = set()
 
+        from utils.ha.app_configs import resolve_app_config_root
+
+        app_config_root = await resolve_app_config_root(ssh_client)
+
         _, addons_ls, _ = await ssh_client.run(
             "ls /mnt/data/supervisor/addons/ 2>/dev/null || true", check=False
         )
-        _, configs_ls, _ = await ssh_client.run(
-            "ls /addon_configs/ 2>/dev/null || true", check=False
-        )
+        if app_config_root:
+            _, configs_ls, _ = await ssh_client.run(
+                f"ls {app_config_root}/ 2>/dev/null || true", check=False
+            )
+        else:
+            configs_ls = ""
 
         addons_on_disk = {s for s in addons_ls.split() if s.strip()}
         configs_on_disk = {s for s in configs_ls.split() if s.strip()}
@@ -311,7 +318,7 @@ async def scan_orphaned_addon_dirs(
             if slug in addons_on_disk:
                 paths.append(f"/mnt/data/supervisor/addons/{slug}")
             if slug in configs_on_disk:
-                paths.append(f"/addon_configs/{slug}")
+                paths.append(f"{app_config_root}/{slug}")
 
             paths_arg = " ".join(paths)
             _, du_out, _ = await ssh_client.run(

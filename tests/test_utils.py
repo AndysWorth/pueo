@@ -5397,12 +5397,19 @@ _DU_OUTPUT = (
     "368.0K\t/homeassistant/zigbee.db\n"
     "58.7M\t/backup/abc123.tar\n"
     "58.4M\t/backup/def456.tar\n"
-    "15.2M\t/addon_configs/db21ed7f_netalertx_fa\n"
-    "5.4M\t/addon_configs/db21ed7f_netalertx\n"
-    "4.0K\t/addon_configs/another_addon\n"
+    "15.2M\t/app_configs/db21ed7f_netalertx_fa\n"
+    "5.4M\t/app_configs/db21ed7f_netalertx\n"
+    "4.0K\t/app_configs/another_addon\n"
     "4.0K\t/share\n"
     "4.0K\t/media\n"
     "4.0K\t/ssl\n"
+)
+
+_DU_OUTPUT_LEGACY = (
+    "94.5M\t/homeassistant/home-assistant_v2.db\n"
+    "58.7M\t/backup/abc123.tar\n"
+    "15.2M\t/addon_configs/db21ed7f_netalertx_fa\n"
+    "4.0K\t/share\n"
 )
 
 _ADDON_JSON = (
@@ -5465,7 +5472,9 @@ def _make_disk_ssh(
     return FakeSSHClient(
         command_results={
             "ha host info": (0, host_info, ""),
-            # custom_components key must precede "du -sh" — FakeSSHClient matches first hit
+            # Resolver probe must precede "du -sh" — FakeSSHClient matches first hit
+            "[ -d /app_configs ]": (0, "app_configs", ""),
+            # custom_components key must precede "du -sh"
             "custom_components": (0, cc_du_output, ""),
             "du -sh": (0, du_output, ""),
             "ha apps list --raw-json": (0, addon_json, ""),
@@ -5664,6 +5673,26 @@ class TestFetchDiskBreakdown:
         bd = asyncio.run(fetch_disk_breakdown(ssh))
         assert all(s.is_empty for s in bd.sections)
 
+    def test_legacy_addon_configs_paths_classified_as_addon_data(self):
+        """Pre-HA-2026 hosts return /addon_configs/ paths; section still shows them."""
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.disk.disk_usage import fetch_disk_breakdown
+
+        ssh = FakeSSHClient(
+            command_results={
+                "ha host info": (0, _HOST_INFO, ""),
+                # resolver returns empty — pre-HA-2026 host
+                "[ -d /app_configs ]": (0, "", ""),
+                "custom_components": (0, _CC_DU_OUTPUT, ""),
+                "du -sh": (0, _DU_OUTPUT_LEGACY, ""),
+                "ha apps list --raw-json": (0, _ADDON_JSON, ""),
+            }
+        )
+        bd = asyncio.run(fetch_disk_breakdown(ssh))
+        addon_section = next(s for s in bd.sections if s.title == "Addon Data")
+        paths = [item.path for item in addon_section.items]
+        assert any("/addon_configs/" in p for p in paths)
+
     def test_sqlite3_unavailable_gives_none_db_tables(self):
         ssh = _make_disk_ssh(db_download_error=FileNotFoundError("no db"))
         from utils.disk.disk_usage import fetch_disk_breakdown
@@ -5843,8 +5872,9 @@ class TestScanOrphanedAddonDirs:
         return FakeSSHClient(
             command_results={
                 "ha apps list --raw-json": (0, installed_json, ""),
+                "[ -d /app_configs ]": (0, "app_configs", ""),
                 "ls /mnt/data/supervisor/addons/": (0, addons_ls, ""),
-                "ls /addon_configs/": (0, configs_ls, ""),
+                "ls /app_configs/": (0, configs_ls, ""),
                 "du -sh": (0, du_display, ""),
             }
         )
@@ -5891,12 +5921,12 @@ class TestScanOrphanedAddonDirs:
             installed_json=installed,
             addons_ls="db21ed7f_netalertx_fa\n",
             configs_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
-            du_display="10M\t/addon_configs/db21ed7f_netalertx\n",
+            du_display="10M\t/app_configs/db21ed7f_netalertx\n",
         )
         result = asyncio.run(scan_orphaned_addon_dirs(ssh))
         assert len(result) == 1
         assert result[0].slug == "db21ed7f_netalertx"
-        assert "/addon_configs/db21ed7f_netalertx" in result[0].paths
+        assert "/app_configs/db21ed7f_netalertx" in result[0].paths
 
     def test_detects_orphan_in_both_dirs(self):
         from utils.disk.disk_recovery import scan_orphaned_addon_dirs
@@ -5910,7 +5940,7 @@ class TestScanOrphanedAddonDirs:
             configs_ls="db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
             du_display=(
                 "50M\t/mnt/data/supervisor/addons/db21ed7f_netalertx\n"
-                "10M\t/addon_configs/db21ed7f_netalertx\n"
+                "10M\t/app_configs/db21ed7f_netalertx\n"
             ),
         )
         result = asyncio.run(scan_orphaned_addon_dirs(ssh))
@@ -5960,6 +5990,36 @@ class TestScanOrphanedAddonDirs:
         result = asyncio.run(scan_orphaned_addon_dirs(ssh))
         assert len(result) == 1
         assert result[0].size_bytes == 50 * 1024**2
+
+    def test_legacy_addon_configs_fallback(self):
+        """Resolver returns /addon_configs on pre-HA-2026 hosts."""
+        from utils.disk.disk_recovery import scan_orphaned_addon_dirs
+        from utils.ha.ssh_client import FakeSSHClient
+
+        installed = (
+            '{"result":"ok","data":{"addons":[{"slug":"db21ed7f_netalertx_fa"}]}}'
+        )
+        ssh = FakeSSHClient(
+            command_results={
+                "ha apps list --raw-json": (0, installed, ""),
+                # resolver probe: /app_configs absent, /addon_configs present
+                "[ -d /app_configs ]": (0, "addon_configs", ""),
+                "ls /mnt/data/supervisor/addons/": (0, "db21ed7f_netalertx_fa\n", ""),
+                "ls /addon_configs/": (
+                    0,
+                    "db21ed7f_netalertx_fa\ndb21ed7f_netalertx\n",
+                    "",
+                ),
+                "du -sh": (
+                    0,
+                    "10M\t/addon_configs/db21ed7f_netalertx\n",
+                    "",
+                ),
+            }
+        )
+        result = asyncio.run(scan_orphaned_addon_dirs(ssh))
+        assert len(result) == 1
+        assert "/addon_configs/db21ed7f_netalertx" in result[0].paths
 
 
 # ── ha_agent_core pipeline ────────────────────────────────────────────────────────

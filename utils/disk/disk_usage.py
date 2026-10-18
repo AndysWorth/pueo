@@ -175,7 +175,9 @@ def _build_section(
     items = []
     for path, size_bytes in sorted_paths:
         basename = path.rstrip("/").rsplit("/", 1)[-1]
-        if addon_names is not None and path.startswith("/addon_configs/"):
+        if addon_names is not None and (
+            path.startswith("/app_configs/") or path.startswith("/addon_configs/")
+        ):
             display_name = addon_names.get(basename, basename)
         else:
             display_name = basename
@@ -216,10 +218,14 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
     disk_used_pct = round(100.0 * disk_used / disk_total, 1) if disk_total else 0.0
 
     # 2. Per-path sizes — single SSH round-trip
+    from utils.ha.app_configs import resolve_app_config_root
+
+    app_config_root = await resolve_app_config_root(ssh_client)
+    app_config_glob = f"{app_config_root}/*" if app_config_root else ""
     du_cmd = (
-        "du -sh /homeassistant/* /backup/* /addon_configs/*"
+        f"du -sh /homeassistant/* /backup/* {app_config_glob}"
         " /share /media /ssl 2>/dev/null"
-    )
+    ).strip()
     _, du_out, _ = await ssh_client.run(du_cmd, check=False)
     path_sizes = _parse_du_output(du_out)
 
@@ -249,7 +255,11 @@ async def fetch_disk_breakdown(ssh_client: SSHClientProtocol) -> DiskBreakdown:
         ),
         _build_section(
             "Addon Data",
-            {p: s for p, s in path_sizes.items() if p.startswith("/addon_configs/")},
+            {
+                p: s
+                for p, s in path_sizes.items()
+                if p.startswith("/app_configs/") or p.startswith("/addon_configs/")
+            },
             addon_names=addon_names,
         ),
         _build_section(

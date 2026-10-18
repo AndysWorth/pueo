@@ -201,7 +201,7 @@ else:
 ```bash
 # SCP database to macOS
 scp -i $SSH_KEY -o StrictHostKeyChecking=no \
-  root@$HA_HOST:/addon_configs/db21ed7f_netalertx_fa/db/app.db /tmp/netalertx_app.db
+  root@$HA_HOST:/app_configs/db21ed7f_netalertx_fa/db/app.db /tmp/netalertx_app.db
 
 python3 -c "
 import sqlite3
@@ -237,9 +237,9 @@ ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST "ha apps stop db21ed7f
 
 # 3. Upload fixed DB, delete WAL/SHM
 scp -i $SSH_KEY -o StrictHostKeyChecking=no \
-  /tmp/netalertx_app.db root@$HA_HOST:/addon_configs/db21ed7f_netalertx_fa/db/app.db
+  /tmp/netalertx_app.db root@$HA_HOST:/app_configs/db21ed7f_netalertx_fa/db/app.db
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST \
-  "rm -f /addon_configs/db21ed7f_netalertx_fa/db/app.db-wal /addon_configs/db21ed7f_netalertx_fa/db/app.db-shm"
+  "rm -f /app_configs/db21ed7f_netalertx_fa/db/app.db-wal /app_configs/db21ed7f_netalertx_fa/db/app.db-shm"
 
 # 4. Restart addon
 ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$HA_HOST "ha apps start db21ed7f_netalertx_fa"
@@ -255,7 +255,7 @@ curl -s "http://$HA_HOST:20211/php/server/query_json.php?file=table_devices.json
 - `SSE /server/sse/state → "Access Restricted"` — nginx on port 20211 blocks access to the FastAPI `/server/` prefix. SSE manager falls back to polling `app_state.json` after 3 attempts (15s delay). Cosmetic.
 
 **Database location and tool availability:**
-- DB path on HA host: `/addon_configs/db21ed7f_netalertx_fa/db/app.db`
+- DB path on HA host: `/app_configs/db21ed7f_netalertx_fa/db/app.db`
 - `sqlite3` CLI: **not available** on the HA SSH host
 - `python3`: **not available** on the HA SSH host  
 - Fix requires SCP to macOS where Python sqlite3 is available

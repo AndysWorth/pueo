@@ -495,7 +495,7 @@ class ResourcePoller:
                                 "description": (
                                     f"Delete leftover data directories for uninstalled apps: "
                                     f"{slugs}. These exist in /mnt/data/supervisor/addons/ "
-                                    f"and/or /addon_configs/ but are no longer installed."
+                                    f"and/or /app_configs/ but are no longer installed."
                                 ),
                                 "estimated_savings": f"~{total_bytes // (1024 * 1024)} MB",
                                 "risk": "LOW",
