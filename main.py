@@ -1355,9 +1355,32 @@ async def supervisor_main(config_path: Path) -> None:
                 _log.warning("episode_rotation_failed", error=str(_re))
 
             # Sweep runbook_usage rows still pending after 48 h → unverified.
+            # First, enqueue distillation for any sessions that have a stashed payload
+            # so we don't lose that data when the sweep clears it.
             try:
-                from agents.ha_agent_advanced import sweep_stale_pending_usage as _spu
+                from agents.ha_agent_advanced import (
+                    get_sweep_candidates as _gsc,
+                    sweep_stale_pending_usage as _spu,
+                )
+                from utils.knowledge.runbook_distiller import (
+                    enqueue_distillation_after_verification as _edav,
+                )
 
+                _sweep_candidates = await asyncio.to_thread(_gsc)
+                if _sweep_candidates and knowledge_store is not None:
+                    for _sc_ep in _sweep_candidates:
+                        try:
+                            await _edav(
+                                episode_id=_sc_ep,
+                                verification="success",
+                                correction=None,
+                                db_path=cfg.DB_PATH,
+                                knowledge_store=knowledge_store,
+                                model=cfg.OLLAMA_MODEL,
+                                llm_client=None,
+                            )
+                        except Exception:  # nosec B110
+                            pass
                 await asyncio.to_thread(_spu)
             except Exception as _spe:  # nosec B110
                 _log.warning("runbook_usage_sweep_failed", error=str(_spe))
@@ -1634,6 +1657,38 @@ async def supervisor_main(config_path: Path) -> None:
 
     # Start the serialized work queue (must be called inside the running event loop).
     work_queue.start()
+
+    # Recovery sweep: re-enqueue distillation for sessions that were verified but
+    # whose WorkItem was lost when Pueo last restarted.  Rows with verified_at set
+    # and distill_payload_json still present have been confirmed but never distilled.
+    if knowledge_store is not None:
+        try:
+            from agents.ha_agent_advanced import (
+                get_pending_distillation_recoveries as _gpdr,
+            )
+            from utils.knowledge.runbook_distiller import (
+                enqueue_distillation_after_verification as _edav_startup,
+            )
+
+            async def _recover_pending_distillations() -> None:
+                _rows = await asyncio.to_thread(_gpdr)
+                for _r_ep, _r_verif in _rows:
+                    try:
+                        await _edav_startup(
+                            episode_id=_r_ep,
+                            verification=_r_verif,
+                            correction=None,
+                            db_path=cfg.DB_PATH,
+                            knowledge_store=knowledge_store,
+                            model=cfg.OLLAMA_MODEL,
+                            llm_client=None,
+                        )
+                    except Exception:  # nosec B110
+                        pass
+
+            asyncio.ensure_future(_recover_pending_distillations())
+        except Exception:  # nosec B110
+            pass
 
     # Start the MCP server if enabled (separate port, reachable from HA over LAN).
     _mcp_server_obj = None

@@ -363,6 +363,9 @@ class ToolExecutor:
         self._episode_id: str = ""
         # Session signature (set via set_signature before each run; stamped on memory rows)
         self._session_signature: str = ""
+        # Set to True when a terminal tool sends an actionable HITL card (not informational).
+        # AgentLoop._enqueue_distillation checks this to decide whether to auto-verify.
+        self._hitl_card_queued: bool = False
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -375,6 +378,7 @@ class ToolExecutor:
         self._declared_runbook_id = None
         self._episode_id = ""
         self._session_signature = ""
+        self._hitl_card_queued = False
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -4692,6 +4696,7 @@ class ToolExecutor:
             "episode_id": self._episode_id,
         }
         await self._notifier.send(subject=subject, body=body, payload=payload)
+        self._hitl_card_queued = True
         from agents.ha_notification_manager import mark_notification_hitl_sent
 
         mark_notification_hitl_sent(ha_nid, db_path)
@@ -5223,6 +5228,7 @@ class ToolExecutor:
             subject,
         )
         await self._notifier.send(subject=subject, body=body, payload=payload)
+        self._hitl_card_queued = True
         log.info(
             "update_hitl_card_sent",
             component=update.component,
@@ -5345,6 +5351,8 @@ class ToolExecutor:
             body=summary,
             payload=_payload,
         )
+        if not _payload.get("informational"):
+            self._hitl_card_queued = True
         try:
             from utils.core.timeline import write_timeline_event
 

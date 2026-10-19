@@ -4961,6 +4961,92 @@ class TestRunbookUsageTracking:
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
+    def test_get_sweep_candidates_returns_stale_with_payload(self, tmp_path):
+        """get_sweep_candidates returns episode_ids with payloads past the 48-hour mark."""
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            stale_iso = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 50 * 3600)
+            )
+            fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with sqlite3.connect(db_path) as conn:
+                # Stale with payload → should be returned
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
+                    " VALUES ('stale_with_payload', 'k', ?, 'pending', 'payload')",
+                    (stale_iso,),
+                )
+                # Stale without payload → should NOT be returned
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification)"
+                    " VALUES ('stale_no_payload', 'k2', ?, 'pending')",
+                    (stale_iso,),
+                )
+                # Fresh with payload → should NOT be returned (not old enough)
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
+                    " VALUES ('fresh_with_payload', 'k3', ?, 'pending', 'payload')",
+                    (fresh_iso,),
+                )
+                conn.commit()
+            result = adv.get_sweep_candidates()
+            assert result == ["stale_with_payload"]
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_get_pending_distillation_recoveries_returns_verified_with_payload(
+        self, tmp_path
+    ):
+        """get_pending_distillation_recoveries returns verified sessions with payloads."""
+        import sqlite3
+        import time
+
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with sqlite3.connect(db_path) as conn:
+                # Verified success with payload → should be returned
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification,"
+                    "  verified_at, distill_payload_json)"
+                    " VALUES ('verified_ep', 'k', ?, 'success', ?, 'payload')",
+                    (now, now),
+                )
+                # Verified but no payload (already distilled) → should NOT be returned
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, verified_at)"
+                    " VALUES ('verified_no_payload', 'k2', ?, 'success', ?)",
+                    (now, now),
+                )
+                # Pending (not yet verified) with payload → should NOT be returned
+                conn.execute(
+                    "INSERT INTO session_outcomes"
+                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
+                    " VALUES ('pending_ep', 'k3', ?, 'pending', 'payload')",
+                    (now,),
+                )
+                conn.commit()
+            result = adv.get_pending_distillation_recoveries()
+            assert result == [("verified_ep", "success")]
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
 
 class TestRunbookAuthorityScores:
     """Tests for updated authority scores in knowledge_store._authority_score."""
@@ -5299,3 +5385,146 @@ class TestToolExecutorSetSignature:
             ).fetchone()
         assert row is not None
         assert row[0] is None
+
+
+class TestHitlCardQueuedFlag:
+    """_hitl_card_queued tracks whether an actionable HITL card was sent this session."""
+
+    def _make_executor(self, db_path=None):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        return ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(),
+            notifier=FakeNotifier(),
+            db_path=db_path,
+        )
+
+    def _make_db(self, tmp_path):
+        """Create a full DB so mark_card_sent doesn't fail."""
+        import agents.ha_agent_advanced as adv
+
+        db_path = str(tmp_path / "test.db")
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.init_local_database()
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+        return db_path
+
+    def test_flag_starts_false(self, tmp_path):
+        ex = self._make_executor(self._make_db(tmp_path))
+        assert ex._hitl_card_queued is False
+
+    def test_reset_clears_flag(self, tmp_path):
+        ex = self._make_executor(self._make_db(tmp_path))
+        ex._hitl_card_queued = True
+        ex.reset()
+        assert ex._hitl_card_queued is False
+
+    def test_finish_host_health_informational_does_not_set_flag(self, tmp_path):
+        """Informational host-health cards must NOT set _hitl_card_queued."""
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+
+        ex = self._make_executor(self._make_db(tmp_path))
+        finding = HostHealthFinding(
+            key="rpi_firmware_update_blocked",
+            kind="rpi_firmware_update_blocked",
+            severity="INFO",
+            informational=True,
+        )
+        ex.set_host_health_finding(finding)
+        asyncio.run(
+            ex._finish_host_health(
+                summary="Firmware update blocked (hardware limit)",
+                root_cause="CM4 EEPROM update unavailable",
+                outcome="informational",
+                recommended_actions=[],
+            )
+        )
+        assert ex._hitl_card_queued is False
+
+    def test_finish_host_health_needs_action_sets_flag(self, tmp_path):
+        """Actionable host-health cards must set _hitl_card_queued."""
+        import asyncio
+
+        from utils.disk.host_health import HostHealthFinding
+
+        ex = self._make_executor(self._make_db(tmp_path))
+        finding = HostHealthFinding(
+            key="swap_pressure",
+            kind="swap_pressure",
+            severity="HIGH",
+        )
+        ex.set_host_health_finding(finding)
+        asyncio.run(
+            ex._finish_host_health(
+                summary="Swap pressure detected",
+                root_cause="High memory usage",
+                outcome="needs_action",
+                recommended_actions=["Restart heavy apps"],
+            )
+        )
+        assert ex._hitl_card_queued is True
+
+    def test_finish_notification_requires_hitl_sets_flag(self, tmp_path, monkeypatch):
+        """finish_notification_investigation with requires_hitl=True sets _hitl_card_queued."""
+        import asyncio
+
+        monkeypatch.setattr(
+            "agents.ha_notification_manager.mark_notification_hitl_sent",
+            lambda *a, **kw: None,
+        )
+        ex = self._make_executor(self._make_db(tmp_path))
+        ex._pending_notification = {
+            "ha_nid": "http-login",
+            "title": "Login attempt",
+            "message": "Unknown IP",
+            "category": "security",
+            "severity": "CRITICAL",
+            "db_path": ":memory:",
+        }
+        asyncio.run(
+            ex._finish_notification_investigation(
+                human_explanation="Unrecognised source IP",
+                recommended_action="Block IP",
+                requires_hitl=True,
+                severity_override=None,
+                dismiss_now=False,
+            )
+        )
+        assert ex._hitl_card_queued is True
+
+    def test_finish_notification_no_hitl_does_not_set_flag(self, tmp_path, monkeypatch):
+        """finish_notification_investigation with requires_hitl=False must NOT set flag."""
+        import asyncio
+
+        monkeypatch.setattr(
+            "agents.ha_notification_manager.mark_notification_hitl_sent",
+            lambda *a, **kw: None,
+        )
+        ex = self._make_executor(self._make_db(tmp_path))
+        ex._pending_notification = {
+            "ha_nid": "update_installed",
+            "title": "Update installed",
+            "message": "Core updated",
+            "category": "other",
+            "severity": "LOW",
+            "db_path": ":memory:",
+        }
+        asyncio.run(
+            ex._finish_notification_investigation(
+                human_explanation="Auto-installed minor update",
+                recommended_action="",
+                requires_hitl=False,
+                severity_override=None,
+                dismiss_now=False,
+            )
+        )
+        assert ex._hitl_card_queued is False
