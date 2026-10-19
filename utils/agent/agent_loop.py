@@ -1105,11 +1105,53 @@ class AgentLoop:
                     submitted=submitted,
                 )
             else:
-                log.debug(
-                    "distillation_deferred_pending_verification",
-                    signature=sig,
-                    episode_id=_ep,
-                )
+                # Success session: auto-verify immediately when no actionable HITL card
+                # was queued during this session (informational sessions, benign repairs).
+                # Sessions that produced a card (update approvals, CRITICAL notifications)
+                # still defer — verification fires when the user acts on the card.
+                _hitl_queued = getattr(self._executor, "_hitl_card_queued", False)
+                if not _hitl_queued and _ep and _db and _store:
+                    try:
+                        from agents.ha_agent_advanced import (
+                            resolve_session_outcome_by_episode_id,
+                        )
+                        from utils.knowledge.runbook_distiller import (
+                            enqueue_distillation_after_verification,
+                        )
+
+                        await asyncio.to_thread(
+                            resolve_session_outcome_by_episode_id,
+                            _ep,
+                            "success",
+                            "system",
+                            None,
+                        )
+                        submitted = await enqueue_distillation_after_verification(
+                            episode_id=_ep,
+                            verification="success",
+                            correction=None,
+                            db_path=_db,
+                            knowledge_store=_store,
+                            model=_model,
+                            llm_client=_llm,
+                        )
+                        log.info(
+                            "distillation_auto_verified",
+                            signature=sig,
+                            episode_id=_ep,
+                            submitted=submitted,
+                        )
+                    except Exception as _ae:  # nosec B110
+                        log.warning(
+                            "distillation_auto_verify_failed",
+                            error=str(_ae),
+                        )
+                else:
+                    log.debug(
+                        "distillation_deferred_pending_verification",
+                        signature=sig,
+                        episode_id=_ep,
+                    )
         else:
             # Standalone / test mode: write gap for non-success sessions only.
             # Success distillation requires verification (no queue = skip).

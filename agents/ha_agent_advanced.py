@@ -951,6 +951,51 @@ def _auto_validate_if_eligible_standalone(
         )
 
 
+def get_pending_distillation_recoveries() -> list:
+    """Return (episode_id, verification) for sessions verified but not yet distilled.
+
+    Called on supervisor startup to re-enqueue distillation WorkItems lost when
+    Pueo restarted.  Only returns rows where verified_at IS NOT NULL (confirmed by
+    user or system), distill_payload_json IS NOT NULL (payload present, distillation
+    not yet complete), and verification is 'success' or 'failure'.
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT episode_id, verification FROM session_outcomes"
+                " WHERE verified_at IS NOT NULL"
+                "   AND distill_payload_json IS NOT NULL"
+                "   AND verification IN ('success', 'failure')",
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+    except Exception:  # nosec B110
+        return []
+
+
+def get_sweep_candidates() -> list:
+    """Return episode_ids for session_outcomes with payloads past the 48-hour threshold.
+
+    Called by main.py before sweep_stale_pending_usage() so the caller can enqueue
+    distillation for those sessions before the payload is cleared.
+    Returns a list of (episode_id,) strings.
+    """
+    threshold_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600)
+    )
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT episode_id FROM session_outcomes"
+                " WHERE (verification IS NULL OR verification = 'pending')"
+                "   AND distill_payload_json IS NOT NULL"
+                "   AND created_at < ?",
+                (threshold_iso,),
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:  # nosec B110
+        return []
+
+
 def sweep_stale_pending_usage() -> None:
     """Mark runbook_usage and session_outcomes rows still pending after 48 h as 'unverified'.
 
