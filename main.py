@@ -1354,33 +1354,14 @@ async def supervisor_main(config_path: Path) -> None:
             except Exception as _re:  # nosec B110
                 _log.warning("episode_rotation_failed", error=str(_re))
 
-            # Sweep runbook_usage rows still pending after 48 h → unverified.
-            # First, enqueue distillation for any sessions that have a stashed payload
-            # so we don't lose that data when the sweep clears it.
+            # Sweep sessions still pending after 48 h → unverified (payload dropped).
+            # Sessions whose HITL card is still open are held for up to 14 days.
+            # Unverified sessions are never distilled (ADR 044).
             try:
                 from agents.ha_agent_advanced import (
-                    get_sweep_candidates as _gsc,
                     sweep_stale_pending_usage as _spu,
                 )
-                from utils.knowledge.runbook_distiller import (
-                    enqueue_distillation_after_verification as _edav,
-                )
 
-                _sweep_candidates = await asyncio.to_thread(_gsc)
-                if _sweep_candidates and knowledge_store is not None:
-                    for _sc_ep in _sweep_candidates:
-                        try:
-                            await _edav(
-                                episode_id=_sc_ep,
-                                verification="success",
-                                correction=None,
-                                db_path=cfg.DB_PATH,
-                                knowledge_store=knowledge_store,
-                                model=cfg.OLLAMA_MODEL,
-                                llm_client=None,
-                            )
-                        except Exception:  # nosec B110
-                            pass
                 await asyncio.to_thread(_spu)
             except Exception as _spe:  # nosec B110
                 _log.warning("runbook_usage_sweep_failed", error=str(_spe))

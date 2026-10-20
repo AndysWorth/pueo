@@ -518,6 +518,19 @@ def _migrate_v40(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE agent_memory ADD COLUMN signature TEXT")
 
 
+def _migrate_v41(cursor: sqlite3.Cursor) -> None:
+    # distilled_at: set once distillation reaches a terminal state (no re-distill).
+    # card_id: nid of the HITL card the session queued; the sweep holds open cards.
+    cursor.execute("ALTER TABLE session_outcomes ADD COLUMN distilled_at TEXT")
+    cursor.execute("ALTER TABLE session_outcomes ADD COLUMN card_id TEXT")
+    # Pre-V41 code enqueued distillation at verification time, so verified rows
+    # were already distilled; without this, startup recovery would redo them once.
+    cursor.execute(
+        "UPDATE session_outcomes SET distilled_at = verified_at"
+        " WHERE verification IN ('success', 'failure') AND verified_at IS NOT NULL"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -559,6 +572,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (38, _migrate_v38),
     (39, _migrate_v39),
     (40, _migrate_v40),
+    (41, _migrate_v41),
 ]
 
 
@@ -745,12 +759,14 @@ def write_session_outcome(
     subject_key: str,
     conclusion_json: str,
     distill_payload_json: str,
+    card_id: Optional[str] = None,
 ) -> None:
     """Persist a session_outcomes row with verification='pending'.
 
     Called synchronously from asyncio.to_thread at the end of every AgentLoop session.
     Subject_key is the domain-specific identifier used by system verifiers (e.g. the
-    issue_key for repairs, the entity_id for updates).
+    issue_key for repairs, the entity_id for updates).  card_id is the nid of the
+    HITL card the session sent, if any; the sweep holds the row while it is open.
     """
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
@@ -758,8 +774,9 @@ def write_session_outcome(
             conn.execute(
                 "INSERT OR IGNORE INTO session_outcomes"
                 " (episode_id, signature, session_type, subject_key,"
-                "  conclusion_json, distill_payload_json, created_at, verification)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                "  conclusion_json, distill_payload_json, created_at, verification,"
+                "  card_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
                 (
                     episode_id,
                     signature,
@@ -768,6 +785,7 @@ def write_session_outcome(
                     conclusion_json,
                     distill_payload_json,
                     now,
+                    card_id,
                 ),
             )
             conn.commit()
@@ -820,10 +838,11 @@ def resolve_session_outcome(
             # Update runbook_usage rows that share these episode_ids.
             placeholders = ",".join("?" * len(episode_ids))
             conn.execute(
-                f"UPDATE runbook_usage SET verification = ?, verified_at = ?"  # nosec B608
+                f"UPDATE runbook_usage"  # nosec B608
+                f" SET verification = ?, outcome = ?, verified_at = ?"
                 f" WHERE episode_id IN ({placeholders})"
                 f"   AND (verification IS NULL OR verification = '' OR verification = 'pending')",
-                [verification, now] + episode_ids,
+                [verification, verification, now] + episode_ids,
             )
 
             conn.commit()
@@ -879,10 +898,11 @@ def resolve_session_outcome_by_episode_id(
             )
 
             conn.execute(
-                "UPDATE runbook_usage SET verification = ?, verified_at = ?"
+                "UPDATE runbook_usage"
+                " SET verification = ?, outcome = ?, verified_at = ?"
                 " WHERE episode_id = ?"
                 "   AND (verification IS NULL OR verification = '' OR verification = 'pending')",
-                [verification, now, episode_id],
+                [verification, verification, now, episode_id],
             )
 
             conn.commit()
@@ -968,8 +988,9 @@ def get_pending_distillation_recoveries() -> list:
 
     Called on supervisor startup to re-enqueue distillation WorkItems lost when
     Pueo restarted.  Only returns rows where verified_at IS NOT NULL (confirmed by
-    user or system), distill_payload_json IS NOT NULL (payload present, distillation
-    not yet complete), and verification is 'success' or 'failure'.
+    user or system), distill_payload_json IS NOT NULL (payload present),
+    distilled_at IS NULL (distillation never reached a terminal state), and
+    verification is 'success' or 'failure'.
     """
     try:
         with sqlite3.connect(DB_PATH) as conn:
@@ -977,6 +998,7 @@ def get_pending_distillation_recoveries() -> list:
                 "SELECT episode_id, verification FROM session_outcomes"
                 " WHERE verified_at IS NOT NULL"
                 "   AND distill_payload_json IS NOT NULL"
+                "   AND distilled_at IS NULL"
                 "   AND verification IN ('success', 'failure')",
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
@@ -984,55 +1006,106 @@ def get_pending_distillation_recoveries() -> list:
         return []
 
 
-def get_sweep_candidates() -> list:
-    """Return episode_ids for session_outcomes with payloads past the 48-hour threshold.
+# Pending sessions older than this become 'unverified' unless their card is still open.
+_SWEEP_PENDING_HOURS: float = 48.0
+# Hard cap: sessions held by an open card are swept after this many days regardless.
+_SWEEP_OPEN_CARD_MAX_DAYS: float = 14.0
 
-    Called by main.py before sweep_stale_pending_usage() so the caller can enqueue
-    distillation for those sessions before the payload is cleared.
-    Returns a list of (episode_id,) strings.
+
+def open_card_refs(watch_dir: Optional[str]) -> tuple[set[str], set[str]]:
+    """Return (nids, episode_ids) of HITL cards still awaiting user action.
+
+    A card is open while ``<nid>.json`` exists and no ``.approved``, ``.rejected``
+    or ``.resolved`` sibling has been written (deferred cards stay open).
     """
+    from pathlib import Path as _Path
+
+    nids: set[str] = set()
+    episode_ids: set[str] = set()
+    if not watch_dir:
+        return nids, episode_ids
+    d = _Path(watch_dir)
+    if not d.is_dir():
+        return nids, episode_ids
+    for json_file in d.glob("*.json"):
+        try:
+            data = json.loads(json_file.read_text())
+        except Exception:  # nosec B112
+            continue
+        nid = str(data.get("notification_id") or json_file.stem)
+        if any(
+            (d / f"{nid}{suffix}").exists()
+            for suffix in (".approved", ".rejected", ".resolved")
+        ):
+            continue
+        nids.add(nid)
+        ep = (data.get("payload") or {}).get("episode_id")
+        if ep:
+            episode_ids.add(str(ep))
+    return nids, episode_ids
+
+
+def sweep_stale_pending_usage(watch_dir: Optional[str] = None) -> None:
+    """Mark runbook_usage and session_outcomes rows still pending after 48 h as 'unverified'.
+
+    Sessions whose HITL card is still open are held (payload kept) so a later card
+    action can still verify and distill them; the hold expires after 14 days.  Swept
+    rows have distill_payload_json cleared and are never distilled — an unverified
+    session is not evidence of anything (ADR 044).
+
+    watch_dir defaults to config.NOTIFY_WATCH_DIR.
+    """
+    if watch_dir is None:
+        watch_dir = _config.NOTIFY_WATCH_DIR
+    now_ts = time.time()
     threshold_iso = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600)
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts - _SWEEP_PENDING_HOURS * 3600)
     )
+    cap_iso = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(now_ts - _SWEEP_OPEN_CARD_MAX_DAYS * 86400),
+    )
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts))
+    open_nids, open_eps = open_card_refs(watch_dir)
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            rows = conn.execute(
-                "SELECT episode_id FROM session_outcomes"
+            stale = conn.execute(
+                "SELECT episode_id, card_id, created_at FROM session_outcomes"
                 " WHERE (verification IS NULL OR verification = 'pending')"
-                "   AND distill_payload_json IS NOT NULL"
                 "   AND created_at < ?",
                 (threshold_iso,),
             ).fetchall()
-        return [r[0] for r in rows]
-    except Exception:  # nosec B110
-        return []
-
-
-def sweep_stale_pending_usage() -> None:
-    """Mark runbook_usage and session_outcomes rows still pending after 48 h as 'unverified'.
-
-    For session_outcomes, the distill_payload_json is also cleared to free space.
-    Called periodically so old pending rows don't linger and skew auto-validation counts.
-    """
-    threshold_iso = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 48 * 3600)
-    )
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                "UPDATE runbook_usage SET verification = 'unverified', verified_at = ?"
-                " WHERE (verification IS NULL OR verification = '')"
+            held = {
+                ep
+                for ep, card_id, created_at in stale
+                if created_at >= cap_iso and (card_id in open_nids or ep in open_eps)
+            }
+            to_sweep = [ep for ep, _, _ in stale if ep not in held]
+            for ep in to_sweep:
+                conn.execute(
+                    "UPDATE session_outcomes"
+                    " SET verification = 'unverified', verified_at = ?,"
+                    "     distill_payload_json = NULL"
+                    " WHERE episode_id = ?",
+                    (now, ep),
+                )
+            usage_rows = conn.execute(
+                "SELECT id, episode_id FROM runbook_usage"
+                " WHERE (verification IS NULL OR verification = ''"
+                "        OR verification = 'pending')"
                 "   AND created_at < ?",
-                (now, threshold_iso),
-            )
-            conn.execute(
-                "UPDATE session_outcomes"
-                " SET verification = 'unverified', verified_at = ?, distill_payload_json = NULL"
-                " WHERE (verification IS NULL OR verification = 'pending')"
-                "   AND created_at < ?",
-                (now, threshold_iso),
-            )
+                (threshold_iso,),
+            ).fetchall()
+            for row_id, ep in usage_rows:
+                if ep in held:
+                    continue
+                conn.execute(
+                    "UPDATE runbook_usage"
+                    " SET verification = 'unverified', outcome = 'unverified',"
+                    "     verified_at = ?"
+                    " WHERE id = ?",
+                    (now, row_id),
+                )
             conn.commit()
     except Exception:  # nosec B110
         pass

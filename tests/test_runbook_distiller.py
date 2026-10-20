@@ -11,10 +11,16 @@ from pydantic import ValidationError
 
 from utils.knowledge.runbook_distiller import (
     DistilledRunbook,
+    InstanceFact,
     _build_prompt,
     _distillation_timeout_seconds,
+    _fact_is_grounded,
+    _format_step_trace,
     _get_existing_by_signature,
+    _grounded_facts,
+    _mark_distilled,
     _read_distillation_payload,
+    _write_instance_facts,
     distill_and_persist,
     enqueue_distillation_after_verification,
     resolve_gap,
@@ -82,11 +88,44 @@ def _make_db(tmp_path):
             "verification TEXT, "
             "verified_at TEXT, "
             "verified_by TEXT, "
-            "correction TEXT"
+            "correction TEXT, "
+            "distilled_at TEXT, "
+            "card_id TEXT"
             ")"
+        )
+        conn.execute(
+            "CREATE TABLE agent_memory ("
+            "id INTEGER PRIMARY KEY, key TEXT NOT NULL, content TEXT NOT NULL, "
+            "source TEXT NOT NULL, ts REAL NOT NULL, signature TEXT)"
         )
         conn.commit()
     return db_path
+
+
+def _insert_session(db_path, episode_id, signature="repair:zha:device_offline"):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO session_outcomes"
+            " (episode_id, signature, distill_payload_json, created_at, verification)"
+            " VALUES (?, ?, '{\"steps\": []}', datetime('now'), 'success')",
+            (episode_id, signature),
+        )
+        conn.commit()
+
+
+def _distilled_at(db_path, episode_id):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT distilled_at FROM session_outcomes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()[0]
+
+
+def _memory_rows(db_path):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT key, content, source, signature FROM agent_memory ORDER BY id"
+        ).fetchall()
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +953,304 @@ class TestEnqueueDistillationAfterVerification:
             )
         )
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# InstanceFact schema
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceFactSchema:
+    def test_valid_construction(self):
+        f = InstanceFact(fact="Board is a CM4 Yellow", evidence_step=2)
+        assert f.evidence_step == 2
+
+    def test_missing_evidence_step_rejected(self):
+        with pytest.raises(ValidationError):
+            InstanceFact(fact="Board is a CM4 Yellow")  # type: ignore[call-arg]
+
+    def test_json_round_trip(self):
+        rb = DistilledRunbook(
+            title="T",
+            when_to_use="W",
+            recommended_tools=[],
+            hypotheses=[],
+            fix_summary="",
+            instance_facts=[InstanceFact(fact="EEPROM 2021-12-02", evidence_step=1)],
+        )
+        restored = DistilledRunbook.model_validate_json(rb.model_dump_json())
+        assert restored.instance_facts[0].fact == "EEPROM 2021-12-02"
+        assert restored.instance_facts[0].evidence_step == 1
+
+
+# ---------------------------------------------------------------------------
+# Grounding check
+# ---------------------------------------------------------------------------
+
+
+class TestFactGrounding:
+    def test_grounded_distinctive_tokens(self):
+        evidence = "board: yellow\nbootloader eeprom current: 2021-12-02 (CM4)"
+        assert _fact_is_grounded("CM4 bootloader EEPROM dated 2021-12-02", evidence)
+
+    def test_invented_proper_noun_rejected(self):
+        """The 9a05e6c4 case: an owner name that appears in no tool output."""
+        evidence = (
+            "Login attempt from 10.0.0.168, user agent Home Assistant/2026.10 iOS"
+        )
+        assert not _fact_is_grounded("Device at 10.0.0.168 is Robbie's phone", evidence)
+
+    def test_matching_version_with_invented_claim_rejected(self):
+        evidence = "mosquitto broker version 7.1.2 running"
+        assert not _fact_is_grounded("Mosquitto 7.1.2 crashes nightly", evidence)
+        assert _fact_is_grounded("Mosquitto broker 7.1.2 running", evidence)
+
+    def test_missing_version_rejected(self):
+        assert not _fact_is_grounded(
+            "Mosquitto runs 7.1.2", "mosquitto broker version 7.1.1 running"
+        )
+
+    def test_content_words_need_majority(self):
+        evidence = "the integration is downloaded but not set up"
+        assert _fact_is_grounded("integration downloaded but not set up", evidence)
+        assert not _fact_is_grounded(
+            "integration crashes nightly during backups", evidence
+        )
+
+    def test_empty_fact_or_evidence(self):
+        assert not _fact_is_grounded("", "anything")
+        assert not _fact_is_grounded("something real", "   ")
+        assert not _fact_is_grounded("the of a", "the of a")
+
+    def test_grounded_facts_filters_by_step(self):
+        failed = _make_step("read_logs", 2, success=False)
+        failed.tool_result.error = "SSH connection refused by host"
+        steps = [
+            _make_step("run_ha_command", 1, output="board: yellow, CM4"),
+            failed,
+        ]
+        facts = [
+            InstanceFact(fact="Board is CM4", evidence_step=1),
+            InstanceFact(fact="Board is CM4", evidence_step=9),  # no such step
+            InstanceFact(fact="Owner is Robbie", evidence_step=1),  # ungrounded
+            InstanceFact(fact="SSH connection refused", evidence_step=2),  # error text
+        ]
+        kept = _grounded_facts(facts, steps)
+        assert [(f.fact, f.evidence_step) for f in kept] == [
+            ("Board is CM4", 1),
+            ("SSH connection refused", 2),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Instance-fact persistence, distilled_at, trace, prompt variants
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceFactPersistence:
+    def test_write_upserts_by_signature_and_text(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        f = InstanceFact(fact="Board is CM4", evidence_step=1)
+        assert _write_instance_facts(db_path, "host:x:y", "ep1", [f]) == 1
+        # Same fact, different spacing/case, later episode → replaces, not duplicates.
+        g = InstanceFact(fact="board  is CM4", evidence_step=3)
+        _write_instance_facts(db_path, "host:x:y", "ep2", [g])
+        rows = _memory_rows(db_path)
+        assert len(rows) == 1
+        assert rows[0][1] == "board  is CM4"
+        assert rows[0][2] == "distilled:ep2"
+        assert rows[0][3] == "host:x:y"
+        assert rows[0][0].startswith("fact_")
+
+    def test_write_noop_without_facts_or_signature(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        assert _write_instance_facts(db_path, "host:x:y", "ep1", []) == 0
+        f = InstanceFact(fact="Board is CM4", evidence_step=1)
+        assert _write_instance_facts(db_path, "", "ep1", [f]) == 0
+        assert _memory_rows(db_path) == []
+
+
+class TestMarkDistilled:
+    def test_sets_timestamp(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep1")
+        _mark_distilled(db_path, "ep1")
+        assert _distilled_at(db_path, "ep1")
+
+    def test_noop_without_ids(self, tmp_path):
+        _mark_distilled("", "ep1")
+        _mark_distilled(str(tmp_path / "x.db"), "")
+
+    def test_db_error_is_logged_not_raised(self, tmp_path):
+        # Directory path → sqlite cannot open it.
+        _mark_distilled(str(tmp_path), "ep1")
+
+    def test_read_payload_skips_distilled_rows(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep1")
+        assert _read_distillation_payload(db_path, "ep1") is not None
+        _mark_distilled(db_path, "ep1")
+        assert _read_distillation_payload(db_path, "ep1") is None
+
+
+class _FactsLLM:
+    """Returns no_new_knowledge with one grounded and one invented fact."""
+
+    def __init__(self, no_new_knowledge=True):
+        self.prompts: list[str] = []
+        self._nnk = no_new_knowledge
+
+    async def chat(self, model, messages, options, format, think=None):  # noqa: A002
+        self.prompts.append(messages[0]["content"])
+        rb = DistilledRunbook(
+            title="Firmware update blocked",
+            when_to_use="W",
+            recommended_tools=["run_ha_command"],
+            hypotheses=[],
+            fix_summary="",
+            instance_facts=[
+                InstanceFact(fact="CM4 EEPROM dated 2021-12-02", evidence_step=1),
+                InstanceFact(fact="Robbie owns this board", evidence_step=1),
+            ],
+            no_new_knowledge=self._nnk,
+        )
+        return {"message": {"content": rb.model_dump_json()}}
+
+    async def chat_with_tools(self, *a, **kw):  # pragma: no cover
+        raise NotImplementedError
+
+
+class TestDistillFactsAndDistilledAt:
+    SIG = "host:resolution_issue:rpi_firmware_update_blocked"
+
+    def _run(self, db_path, llm, episode_id="ep_rpi", verification="success"):
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        steps = [
+            _make_step(
+                "run_ha_command",
+                1,
+                output="blocked_reason: eeprom_update_unavailable\n"
+                "current: 2021-12-02 (CM4 eeprom)",
+            )
+        ]
+        asyncio.run(
+            distill_and_persist(
+                trigger=self.SIG,
+                signature=self.SIG,
+                steps=steps,
+                outcome="success",
+                episode_id=episode_id,
+                db_path=db_path,
+                knowledge_store=FakeKnowledgeStore(),
+                model="qwen2.5:7b",
+                llm_client=llm,
+                verification=verification,
+            )
+        )
+
+    def test_no_new_knowledge_still_saves_grounded_facts(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_rpi", self.SIG)
+        self._run(db_path, _FactsLLM(no_new_knowledge=True))
+        rows = _memory_rows(db_path)
+        assert [r[1] for r in rows] == ["CM4 EEPROM dated 2021-12-02"]
+        assert rows[0][3] == self.SIG
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 0
+        assert _distilled_at(db_path, "ep_rpi")
+
+    def test_candidate_approach_lists_only_grounded_facts(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_rpi", self.SIG)
+        self._run(db_path, _FactsLLM(no_new_knowledge=False))
+        with sqlite3.connect(db_path) as conn:
+            approach = conn.execute("SELECT approach FROM agent_strategies").fetchone()[
+                0
+            ]
+        assert "CM4 EEPROM dated 2021-12-02" in approach
+        assert "Robbie" not in approach
+        assert _distilled_at(db_path, "ep_rpi")
+
+    def test_fact_write_failure_does_not_block(self, tmp_path, monkeypatch):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_rpi", self.SIG)
+
+        def _boom(*a, **kw):
+            raise sqlite3.OperationalError("locked")
+
+        monkeypatch.setattr(
+            "utils.knowledge.runbook_distiller._write_instance_facts", _boom
+        )
+        self._run(db_path, _FactsLLM(no_new_knowledge=False))
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM agent_strategies").fetchone()[0]
+        assert count == 1
+        assert _distilled_at(db_path, "ep_rpi")
+
+    def test_llm_failure_marks_distilled(self, tmp_path):
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_rpi", self.SIG)
+
+        class _BrokenLLM:
+            async def chat(self, **kw):
+                raise RuntimeError("Ollama down")
+
+        self._run(db_path, _BrokenLLM())
+        assert _distilled_at(db_path, "ep_rpi")
+
+    def test_gating_skip_does_not_mark_distilled(self, tmp_path):
+        """Failure without correction never reaches the LLM and stays undistilled."""
+        db_path = _make_db(tmp_path)
+        _insert_session(db_path, "ep_rpi", self.SIG)
+        self._run(db_path, _FactsLLM(), verification="failure")
+        assert _distilled_at(db_path, "ep_rpi") is None
+
+
+class TestTraceAndPromptVariants:
+    def test_trace_keeps_long_output_within_budget(self):
+        long_out = "HEAD " + "x" * 50_000 + " TAIL"
+        trace = _format_step_trace([_make_step("read_logs", 1, output=long_out)])
+        assert "HEAD" in trace and "TAIL" in trace
+        assert len(trace) < 20_000
+
+    def test_trace_splits_budget_across_steps(self):
+        steps = [_make_step("read_logs", i, output="y" * 10_000) for i in range(1, 5)]
+        trace = _format_step_trace(steps)
+        assert len(trace) < 4 * 10_000
+
+    def test_trace_failed_and_empty_markers(self):
+        trace = _format_step_trace(
+            [
+                _make_step("read_logs", 1, success=False),
+                _make_step("read_config", 2, output="  "),
+            ]
+        )
+        assert "[FAILED] err" in trace
+        assert "[EMPTY]" in trace
+
+    def _prompt(self, seed_text=""):
+        return _build_prompt(
+            signature="update:addon:x",
+            trigger="t",
+            outcome="success",
+            initial_context="ctx",
+            episode_stub=None,
+            existing_approach="",
+            step_trace="trace",
+            seed_text=seed_text,
+        )
+
+    def test_no_seed_prompt_asks_for_signature_level_runbook(self):
+        prompt = self._prompt()
+        assert "No seed runbook exists" in prompt
+        assert "not\nfor one specific version" not in prompt
+        assert "delta from the seed" not in prompt
+        assert "evidence_step" in prompt
+
+    def test_seed_prompt_asks_for_delta(self):
+        prompt = self._prompt(seed_text="# Seed\nDo X")
+        assert "delta from the seed" in prompt
+        assert "No seed runbook exists" not in prompt
+        assert "evidence_step" in prompt
