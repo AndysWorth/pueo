@@ -39,6 +39,9 @@ Tests verify logic that can be exercised without external services. SSH connecti
 
 Class-scoped fixtures (defined as `@pytest.fixture` methods inside a test class) stay with their class — do not move them to `conftest.py` unless they are used across multiple test files.
 
+## Live-DB guard (#947)
+At import time, `conftest.py` points `PUEO_CONFIG` and every `PUEO_*_DIR` at a session temp directory. This happens before any test imports `config`, so `config.DB_PATH`, `NOTIFY_WATCH_DIR`, `CHROMADB_PATH` etc. never resolve to `~/Library/Application Support/Pueo/`. It also wraps `sqlite3.connect`: opening any SQLite file under the real platform state/data dirs fails the test with "Test opened the live Pueo database". The session DB has no tables. When code under test reads `config.DB_PATH` directly (e.g. the `ha_log_monitor` update dedup helpers, dashboard `approve()`), monkeypatch `config.DB_PATH` to a `tmp_path` DB with the tables it needs.
+
 ## Config isolation
 `config.py` loads at import time using the `PUEO_CONFIG` env var. Tests that exercise config loading use the `isolated_config` fixture from `conftest.py`, which:
 1. Points `PUEO_CONFIG` at a temp file

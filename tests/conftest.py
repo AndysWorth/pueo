@@ -1,16 +1,83 @@
 """Shared pytest fixtures for Pueo test suite."""
 
+import atexit
 import importlib
+import os
+import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
+import platformdirs
 import pytest
 import yaml
 
 # Ensure the project root (pueo/) is on sys.path so agent modules are importable
 # when pytest is invoked from any working directory.
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Point every PUEO_* directory and PUEO_CONFIG at a session temp dir BEFORE any
+# test module imports config.py.  config.py resolves DB_PATH, NOTIFY_WATCH_DIR,
+# CHROMADB_PATH etc. at import time, and modules that do `from config import
+# DB_PATH` bind that value at first import, so per-test monkeypatching alone
+# cannot isolate them.  Values are forced (not setdefault) because a developer
+# shell may export PUEO_CONFIG pointing at the live config.  (#947)
+_SESSION_ROOT = Path(tempfile.mkdtemp(prefix="pueo-tests-"))
+atexit.register(shutil.rmtree, _SESSION_ROOT, ignore_errors=True)
+for _var, _sub in (
+    ("PUEO_CONFIG_DIR", "config"),
+    ("PUEO_DATA_DIR", "data"),
+    ("PUEO_STATE_DIR", "state"),
+    ("PUEO_CACHE_DIR", "cache"),
+    ("PUEO_LOG_DIR", "logs"),
+    ("PUEO_RUNTIME_DIR", "run"),
+):
+    (_SESSION_ROOT / _sub).mkdir(parents=True, exist_ok=True)
+    os.environ[_var] = str(_SESSION_ROOT / _sub)
+os.environ["PUEO_CONFIG"] = str(_SESSION_ROOT / "config" / "config.yaml")
+
+# The real platform directories (ignoring PUEO_* overrides).  No test may open
+# a SQLite file under them.
+_pd = platformdirs.PlatformDirs("Pueo", "Pueo", ensure_exists=False)
+_PRODUCTION_STATE_ROOTS = tuple(
+    {os.path.realpath(_pd.user_state_dir), os.path.realpath(_pd.user_data_dir)}
+)
+
+
+def _sqlite_target(database) -> str:
+    """Return the filesystem path a sqlite3.connect() *database* argument opens."""
+    target = os.fsdecode(database)
+    if target.startswith("file:"):
+        target = target[len("file:") :].split("?", 1)[0]
+    return target
+
+
+def _is_production_db(database) -> bool:
+    target = _sqlite_target(database)
+    if not target or target == ":memory:":
+        return False
+    real = os.path.realpath(target)
+    return any(
+        real == r or real.startswith(r + os.sep) for r in _PRODUCTION_STATE_ROOTS
+    )
+
+
+_real_sqlite_connect = sqlite3.connect
+
+
+def _guarded_sqlite_connect(database, *args, **kwargs):
+    if _is_production_db(database):
+        # pytest.fail raises a BaseException, so production code's
+        # `except Exception` handlers cannot swallow it.
+        pytest.fail(
+            f"Test opened the live Pueo database: {database}. "
+            "Patch the module's DB_PATH to a tmp_path file.  (#947)"
+        )
+    return _real_sqlite_connect(database, *args, **kwargs)
+
+
+sqlite3.connect = _guarded_sqlite_connect
 
 _DEFAULT_CONFIG_YAML = "homeassistant:\n  name: Home\n\nhttp:\n  server_port: 8123\n"
 
@@ -149,12 +216,10 @@ def _isolate_agent_db(monkeypatch, tmp_path):
     """Patch tool_executor.DB_PATH to a per-test temp file.
 
     ToolExecutor resolves its default db_path from the module-level DB_PATH at
-    __init__ time.  Patching only tool_executor.DB_PATH (not config.DB_PATH)
-    prevents any test that creates ToolExecutor or AgentLoop without an explicit
-    db_path from writing gap runbooks or repair episodes to the production DB,
-    while leaving config.DB_PATH untouched so lazily-imported modules like
-    ha_notification_manager pick up the real production path rather than a
-    tableless temp file.  (#818)
+    __init__ time.  This prevents any test that creates ToolExecutor or
+    AgentLoop without an explicit db_path from writing gap runbooks or repair
+    episodes to a shared DB.  (#818)  config.DB_PATH itself resolves under the
+    session temp dir set at the top of this file.  (#947)
     """
     import utils.agent.tool_executor as _te_mod
 
