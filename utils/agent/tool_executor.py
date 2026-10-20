@@ -1177,7 +1177,9 @@ class ToolExecutor:
         ]
         if strategy_sids and self._db_path:
             try:
-                rates = self._get_strategy_success_rates(strategy_sids)
+                rates = await asyncio.to_thread(
+                    self._get_strategy_success_rates, strategy_sids
+                )
                 for chunk in chunks:
                     if chunk.collection == "strategies":
                         sid = chunk.metadata.get("strategy_id") or chunk.chunk_id
