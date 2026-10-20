@@ -7,6 +7,8 @@ MANDATORY RULES — follow exactly:
 2. Investigate all entities in the list before calling {terminal_tool}.
 3. Call {terminal_tool} exactly once, with a "findings" list. If every entity is benign
    (sub-platform, not-loaded config entry, etc.), pass an empty findings list.
+4. Never state a fact (integration, config entry, version) that does not appear in a tool
+   output.
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 

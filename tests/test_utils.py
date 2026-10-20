@@ -7411,6 +7411,201 @@ class TestPromptCommandAllowlist:
         assert offenders == []
 
 
+class TestSeedRegistry:
+    """Every seed file is registered or retired, and every seed signature is reachable (#945)."""
+
+    # seed_home_profile.md is a template rendered by seed_home_profile(), not a runbook.
+    _NOT_RUNBOOKS = {"seed_home_profile.md"}
+
+    def _prompts_dir(self):
+        from pathlib import Path
+
+        return Path(__file__).parent.parent / "prompts"
+
+    def _canonical_signatures(self) -> list[str]:
+        """Signatures the sig_* functions produce for real-world triggers."""
+        from agents.ha_update_manager import classify_update_type
+        from utils.ha.ha_environment import HAEnvironmentProfile
+        from utils.knowledge.runbook_signature import (
+            sig_host_health,
+            sig_notification,
+            sig_repair,
+            sig_update,
+        )
+
+        profile = HAEnvironmentProfile(hacs_integrations=["noaa_it_all"])
+        hacs_type = classify_update_type(
+            "noaa_it_all", "update.noaa_it_all_update", profile
+        )
+        return [
+            sig_repair("hacs", "restart_required"),
+            sig_repair("hue", "config_entry_reauth"),
+            sig_repair("homeassistant", "reboot_required"),
+            sig_repair("zha", "integration_disabled"),
+            sig_repair("homeassistant", "breaking_change"),
+            sig_repair("spook", "dead_entity"),
+            sig_notification("http-login"),
+            sig_notification("ip-ban"),
+            sig_update(hacs_type, "noaa_it_all"),
+            sig_host_health("resolution_issue", "rpi_firmware_update_blocked"),
+            sig_host_health("resolution_issue", "no_current_backup"),
+        ]
+
+    def test_every_seed_file_registered_or_retired(self):
+        from utils.knowledge.strategy_seeder import _RETIRED_SEED_PROMPTS, _SEED_PROMPTS
+
+        known = {f for f, _, _ in _SEED_PROMPTS} | _RETIRED_SEED_PROMPTS
+        files = {p.name for p in self._prompts_dir().glob("seed_*.md")}
+        assert files - known - self._NOT_RUNBOOKS == set()
+
+    def test_every_registered_seed_file_exists(self):
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS
+
+        missing = [
+            f for f, _, _ in _SEED_PROMPTS if not (self._prompts_dir() / f).exists()
+        ]
+        assert missing == []
+
+    def test_spook_seed_registered(self):
+        from utils.knowledge.strategy_seeder import _SEED_PROMPTS
+
+        assert "seed_spook.md" in {f for f, _, _ in _SEED_PROMPTS}
+
+    def test_security_notification_seed_retired(self):
+        from utils.knowledge.strategy_seeder import _RETIRED_SEED_PROMPTS
+
+        assert "seed_security_notification.md" in _RETIRED_SEED_PROMPTS
+        assert not (self._prompts_dir() / "seed_security_notification.md").exists()
+
+    def test_every_seed_signature_is_reachable(self):
+        """A seed whose signature no sig_* output matches can never attach."""
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.strategy_seeder import (
+            _SEED_PROMPTS,
+            _parse_front_matter_signature,
+        )
+
+        canonical = self._canonical_signatures()
+        dead = []
+        for filename, _, _ in _SEED_PROMPTS:
+            text = (self._prompts_dir() / filename).read_text("utf-8")
+            seed_sig = _parse_front_matter_signature(text)
+            if seed_sig is None:
+                continue
+            if not any(_sig_specificity(seed_sig, s)[0] for s in canonical):
+                dead.append((filename, seed_sig))
+        assert dead == []
+
+    def test_reachability_check_catches_dead_signature(self):
+        """Guard against _sig_specificity matching everything."""
+        from utils.knowledge.runbook_distiller import _sig_specificity
+
+        assert not any(
+            _sig_specificity("notification:httplogin", s)[0]
+            for s in self._canonical_signatures()
+        )
+
+
+class TestPromptNoVerdictRules:
+    """agent_loop_*.md keep method and safety rules; seeds own per-type verdicts (#945)."""
+
+    _VERDICT_PATTERNS = (
+        r"(?i)(?:→|->|escalate to)\s*(?:severity(?:_override)?\s*=\s*)?[\"']?critical",
+        r"Set outcome=",
+        r"(?i)unknown device login",
+    )
+
+    def _loop_prompts(self):
+        from pathlib import Path
+
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        return sorted(prompts_dir.glob("agent_loop_*.md"))
+
+    def test_finds_loop_prompts(self):
+        assert len(self._loop_prompts()) >= 5
+
+    def test_no_per_type_verdicts(self):
+        import re
+
+        offenders = [
+            (p.name, pat)
+            for p in self._loop_prompts()
+            for pat in self._VERDICT_PATTERNS
+            if re.search(pat, p.read_text("utf-8"))
+        ]
+        assert offenders == []
+
+    def test_guard_matches_old_verdict_text(self):
+        import re
+
+        old = "Unknown device → escalate to CRITICAL.\n- Unknown device login → severity=CRITICAL"
+        assert all(
+            re.search(p, old)
+            for p in (self._VERDICT_PATTERNS[0], self._VERDICT_PATTERNS[2])
+        )
+
+    def test_every_loop_prompt_has_grounding_rule(self):
+        missing = [
+            p.name
+            for p in self._loop_prompts()
+            if "Never state a fact" not in p.read_text("utf-8")
+        ]
+        assert missing == []
+
+    def test_http_login_seed_owns_inventory_verdict(self):
+        from pathlib import Path
+
+        text = (
+            Path(__file__).parent.parent / "prompts" / "seed_notification_http_login.md"
+        ).read_text("utf-8")
+        assert "search_log" in text
+        assert "inventory_available=false" in text
+        assert "Never escalate to CRITICAL" in text
+
+
+class TestNormalizeLegacySignatures:
+    """normalize_legacy_signatures rewrites pre-#945 hyphen-collapsed signatures."""
+
+    def _db(self, tmp_path, tables=("runbook_usage", "session_outcomes")):
+        import sqlite3
+
+        db = str(tmp_path / "sig.db")
+        with sqlite3.connect(db) as conn:
+            for t in tables:
+                conn.execute(
+                    f"CREATE TABLE {t} (id INTEGER PRIMARY KEY, signature TEXT)"
+                )
+                conn.execute(
+                    f"INSERT INTO {t} (signature) VALUES ('notification:httplogin')"
+                )
+                conn.execute(f"INSERT INTO {t} (signature) VALUES ('update:core:core')")
+            conn.execute("CREATE TABLE agent_memory (id INTEGER PRIMARY KEY, key TEXT)")
+        return db
+
+    def test_rewrites_and_is_idempotent(self, tmp_path):
+        import sqlite3
+
+        from utils.knowledge.strategy_seeder import normalize_legacy_signatures
+
+        db = self._db(tmp_path)
+        assert normalize_legacy_signatures(db) == 2
+        assert normalize_legacy_signatures(db) == 0
+        with sqlite3.connect(db) as conn:
+            for t in ("runbook_usage", "session_outcomes"):
+                sigs = {r[0] for r in conn.execute(f"SELECT signature FROM {t}")}
+                assert sigs == {"notification:http_login", "update:core:core"}
+
+    def test_missing_db_path_is_noop(self):
+        from utils.knowledge.strategy_seeder import normalize_legacy_signatures
+
+        assert normalize_legacy_signatures("") == 0
+
+    def test_unopenable_db_is_swallowed(self, tmp_path):
+        from utils.knowledge.strategy_seeder import normalize_legacy_signatures
+
+        assert normalize_legacy_signatures(str(tmp_path / "no" / "such" / "x.db")) == 0
+
+
 class TestDiscardTriggerKeyedCandidates:
     """discard_trigger_keyed_candidates marks candidates with no-colon signature."""
 

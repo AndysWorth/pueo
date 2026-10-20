@@ -321,6 +321,25 @@ class TestNetAlertXAPIClient:
         c = NetAlertXAPIClient(base_url="http://nax.local:20212", api_token="tok")
         asyncio.run(c.trigger_scan())
 
+    def test_has_token(self):
+        from netalertx.api_client import NetAlertXAPIClient
+
+        assert NetAlertXAPIClient("http://nax.local", "tok").has_token is True
+        assert NetAlertXAPIClient("http://nax.local", "").has_token is False
+
+    def test_empty_token_raises_before_request(self, monkeypatch):
+        """No request is sent with the illegal header 'Bearer ' (#945)."""
+        import netalertx.api_client as ac_mod
+        from netalertx.api_client import NetAlertXAPIClient
+
+        def _no_client(**kwargs):
+            raise AssertionError("no HTTP client should be created")
+
+        monkeypatch.setattr(ac_mod.httpx, "AsyncClient", _no_client)
+        c = NetAlertXAPIClient(base_url="http://nax.local:20212", api_token="")
+        with pytest.raises(RuntimeError, match="token is not configured"):
+            asyncio.run(c.get_devices())
+
     def test_sanitize_json_replaces_bare_infinity(self):
         from netalertx.api_client import _sanitize_json
         import json

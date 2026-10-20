@@ -370,6 +370,9 @@ class ToolExecutor:
         # nid of the last HITL card sent this session (actionable or informational).
         # Stored on session_outcomes.card_id so the sweep holds the row while it is open.
         self._hitl_card_id: Optional[str] = None
+        # Successful fetch_url bodies this session, keyed by URL; a repeat is answered
+        # from here instead of re-fetching (#945).
+        self._fetched_urls: dict[str, str] = {}
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -384,6 +387,7 @@ class ToolExecutor:
         self._session_signature = ""
         self._hitl_card_queued = False
         self._hitl_card_id = None
+        self._fetched_urls = {}
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def _mark_card_queued(self, nid: str) -> None:
@@ -2448,6 +2452,17 @@ class ToolExecutor:
                 error=f"Blocked: {hostname!r} resolves to a private/loopback address.",
             )
 
+        if url in self._fetched_urls:
+            return ToolResult(
+                tool_name="fetch_url",
+                success=True,
+                output=(
+                    "[Already fetched this URL in this session — same content as before."
+                    " Do not fetch it again; use what you have.]\n"
+                    + self._fetched_urls[url]
+                ),
+            )
+
         timeout = int(getattr(_config_mod, "DIAGNOSTIC_WAN_TIMEOUT_SECONDS", 60))
         req = urllib.request.Request(url, headers={"User-Agent": "pueo-diagnostic/1.0"})
         try:
@@ -2484,6 +2499,7 @@ class ToolExecutor:
             except Exception:  # nosec B110
                 pass
         text = text[:_MAX_FETCH_URL_CHARS]
+        self._fetched_urls[url] = text
         return ToolResult(tool_name="fetch_url", success=True, output=text)
 
     async def _search_ha_docs(self, query: str) -> ToolResult:

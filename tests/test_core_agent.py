@@ -8567,6 +8567,44 @@ class TestEnrichHttpLogin:
             enrich_http_login("192.168.1.1", netalertx_client=ExplodingNAX())
         )
         assert ctx["netalertx_name"] is None
+        assert ctx["inventory_available"] is False
+        assert ctx["netalertx_status"] == "error"
+
+    def test_inventory_available_when_device_list_read(self):
+        from agents.ha_notification_manager import enrich_http_login
+
+        class FakeNAX:
+            async def get_devices(self):
+                return []
+
+        ctx = asyncio.run(enrich_http_login("192.168.1.9", netalertx_client=FakeNAX()))
+        assert ctx["inventory_available"] is True
+        assert ctx["netalertx_status"] == "ok"
+
+    def test_no_netalertx_client_is_not_configured(self):
+        from agents.ha_notification_manager import enrich_http_login
+
+        ctx = asyncio.run(enrich_http_login("192.168.1.9"))
+        assert ctx["inventory_available"] is False
+        assert ctx["netalertx_status"] == "not_configured"
+
+    def test_empty_token_skips_request(self):
+        """An unset token reports no_token and sends no request (#945)."""
+        from agents.ha_notification_manager import enrich_http_login
+        from netalertx.api_client import NetAlertXAPIClient
+
+        client = NetAlertXAPIClient(base_url="http://nax.local:20212", api_token="")
+        called = []
+
+        async def _get_devices():
+            called.append(True)
+            return []
+
+        client.get_devices = _get_devices  # type: ignore[method-assign]
+        ctx = asyncio.run(enrich_http_login("192.168.1.9", netalertx_client=client))
+        assert called == []
+        assert ctx["inventory_available"] is False
+        assert ctx["netalertx_status"] == "no_token"
 
     def test_ws_failure_continues(self):
         from agents.ha_notification_manager import enrich_http_login

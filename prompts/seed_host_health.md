@@ -12,6 +12,8 @@ supervisor_unhealthy, supervisor_unsupported, resolution_issue.
   A symptom-specific runbook may be returned — follow it if so.
 - For resolution_issue: `ha resolution info --raw-json` → read issue type and suggestions.
 - For memory: `ha apps stats <slug>`, `ha core stats`, `read_logs` for OOM.
-- For disk_wear: `ha host info --raw-json` → `disk_life_time`.
+- For disk_wear: `ha host info --raw-json` → `disk_life_time`. There is no automated
+  fix: `outcome="needs_action"`; recommend a fresh backup off the host and planning a
+  storage replacement.
 - For unexpected_reboot: `read_logs(log_source="ha_host")` for OOM kill lines.
 - For supervisor_unhealthy/unsupported: `ha os info`, `ha resolution info --raw-json`.

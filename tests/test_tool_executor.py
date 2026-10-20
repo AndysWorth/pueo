@@ -304,6 +304,65 @@ class TestFetchUrl:
 
         assert len(result.output) <= _MAX_FETCH_URL_CHARS
 
+    def _run_many(self, urls: list[str], urlopen, *, reset_after: int = -1):
+        results = []
+        with (
+            patch("utils.agent.tool_executor._config_mod.ALLOW_DIAGNOSTIC_WAN", True),
+            patch(
+                "utils.agent.tool_executor._config_mod.DIAGNOSTIC_WAN_TIMEOUT_SECONDS",
+                10,
+            ),
+            patch("urllib.request.urlopen", urlopen),
+        ):
+            executor = _make_executor()
+            for i, url in enumerate(urls):
+                results.append(asyncio.run(executor._fetch_url(url)))
+                if i == reset_after:
+                    executor.reset()
+        return results
+
+    def test_repeat_url_served_from_session_cache(self):
+        """A second fetch of the same URL makes no request and says so (#945)."""
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(return_value=_FakeSyncResp(b"CHANGELOG body"))
+        url = "https://raw.githubusercontent.com/o/r/main/CHANGELOG.md"
+        first, second = self._run_many([url, url], urlopen)
+        assert urlopen.call_count == 1
+        assert first.output == "CHANGELOG body"
+        assert second.success is True
+        assert "Already fetched this URL" in second.output
+        assert second.output.endswith("CHANGELOG body")
+
+    def test_different_urls_both_fetched(self):
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(return_value=_FakeSyncResp(b"body"))
+        a, b = self._run_many(
+            ["https://example.com/a", "https://example.com/b"], urlopen
+        )
+        assert urlopen.call_count == 2
+        assert "Already fetched" not in b.output
+
+    def test_failed_fetch_not_cached(self):
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(side_effect=[OSError("boom"), _FakeSyncResp(b"ok")])
+        url = "https://example.com/flaky"
+        first, second = self._run_many([url, url], urlopen)
+        assert first.success is False
+        assert second.output == "ok"
+        assert urlopen.call_count == 2
+
+    def test_reset_clears_session_cache(self):
+        from unittest.mock import MagicMock
+
+        urlopen = MagicMock(return_value=_FakeSyncResp(b"body"))
+        url = "https://example.com/a"
+        _, second = self._run_many([url, url], urlopen, reset_after=0)
+        assert urlopen.call_count == 2
+        assert second.output == "body"
+
 
 class TestSearchHaDocs:
     """Tests for ToolExecutor._search_ha_docs."""

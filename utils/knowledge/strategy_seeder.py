@@ -48,6 +48,9 @@ _RETIRED_SEED_PROMPTS: frozenset[str] = frozenset(
         "triage_repair_issue.md",
         "investigation.md",
         "diagnose_config.md",
+        # Folded into seed_notification_http_login.md (#945): two seeds prescribed
+        # different procedures for the same symptom.
+        "seed_security_notification.md",
     }
 )
 
@@ -60,11 +63,6 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "seed_integration_error.md",
         "Integration or entity error investigation",
         "integration failing, sensor unavailable, entity error, connection error, API outage",
-    ),
-    (
-        "seed_security_notification.md",
-        "Security notification investigation",
-        "failed login notification, suspicious device, unknown IP, http_login alert",
     ),
     (
         "seed_disk_space.md",
@@ -176,7 +174,49 @@ _SEED_PROMPTS: list[tuple[str, str, str]] = [
         "no_current_backup — Supervisor requires full backup",
         "no_current_backup resolution issue, Supervisor backup requirement, full backup missing",
     ),
+    (
+        "seed_spook.md",
+        "Spook repair digest — method",
+        "Spook repair issues, dead_entity, missing_entity, Spook first load, many repairs at once",
+    ),
 ]
+
+# Tables whose ``signature`` column may hold a legacy signature.  Fixed list — the
+# names are interpolated into SQL.
+_SIGNATURE_TABLES: tuple[str, ...] = (
+    "agent_strategies",
+    "agent_memory",
+    "runbook_usage",
+    "session_outcomes",
+)
+
+
+def normalize_legacy_signatures(db_path: str) -> int:
+    """Rewrite signatures listed in LEGACY_SIGNATURE_RENAMES to their current form.
+
+    Idempotent; tables or columns that don't exist are skipped.  Returns rows changed.
+    """
+    from utils.knowledge.runbook_signature import LEGACY_SIGNATURE_RENAMES
+
+    if not db_path:
+        return 0
+    changed = 0
+    try:
+        with sqlite3.connect(db_path) as conn:
+            for table in _SIGNATURE_TABLES:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if "signature" not in cols:
+                    continue
+                for old, new in LEGACY_SIGNATURE_RENAMES.items():
+                    cur = conn.execute(
+                        f"UPDATE {table} SET signature=? WHERE signature=?",  # nosec B608
+                        (new, old),
+                    )
+                    changed += cur.rowcount
+            conn.commit()
+    except Exception:  # nosec B110 — best-effort startup data fix
+        pass
+    return changed
 
 
 def _stored_seed_approaches(db_path: str) -> dict[str, str]:

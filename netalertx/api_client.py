@@ -49,24 +49,34 @@ class NetAlertXAPIClient:
         self._token = api_token
         self._client = http_client  # None → fresh client per request group
 
+    @property
+    def has_token(self) -> bool:
+        """False when no API token is configured; every request would be rejected."""
+        return bool(self._token)
+
     # ── internal helpers ────────────────────────────────────────────────────────
 
     def _auth(self) -> dict[str, str]:
+        if not self._token:
+            # An empty token yields the illegal header "Bearer " (#945).
+            raise RuntimeError("NetAlertX API token is not configured")
         return {"Authorization": f"Bearer {self._token}"}
 
     async def _get(self, path: str) -> httpx.Response:
+        headers = self._auth()
         if self._client is not None:
-            return await self._client.get(f"{self._base}{path}", headers=self._auth())
+            return await self._client.get(f"{self._base}{path}", headers=headers)
         async with httpx.AsyncClient(timeout=30) as c:
-            return await c.get(f"{self._base}{path}", headers=self._auth())
+            return await c.get(f"{self._base}{path}", headers=headers)
 
     async def _post(self, path: str, **kwargs) -> httpx.Response:
+        headers = self._auth()
         if self._client is not None:
             return await self._client.post(
-                f"{self._base}{path}", headers=self._auth(), **kwargs
+                f"{self._base}{path}", headers=headers, **kwargs
             )
         async with httpx.AsyncClient(timeout=30) as c:
-            return await c.post(f"{self._base}{path}", headers=self._auth(), **kwargs)
+            return await c.post(f"{self._base}{path}", headers=headers, **kwargs)
 
     # ── public API ──────────────────────────────────────────────────────────────
 

@@ -221,11 +221,16 @@ async def enrich_http_login(
     """Enrich an http_login notification with device context for the given source IP.
 
     Tries three sources in order: reverse DNS, NetAlertX device list, HA device registry.
-    All are best-effort; failure in any source is silently skipped.
+    All are best-effort; failure in any source is skipped.  ``inventory_available`` is
+    True only when the NetAlertX device list was actually read, so a null
+    ``netalertx_name`` is not mistaken for "not in inventory" (#945).
+    ``netalertx_status`` is one of ok / not_configured / no_token / error.
     """
     context: dict = {
         "source_ip": ip,
         "hostname": None,
+        "inventory_available": False,
+        "netalertx_status": "not_configured",
         "netalertx_name": None,
         "ha_device_name": None,
         "is_known_device": False,
@@ -251,15 +256,22 @@ async def enrich_http_login(
     except Exception:  # nosec B110
         pass
 
-    if netalertx_client is not None:
+    if netalertx_client is not None and not getattr(
+        netalertx_client, "has_token", True
+    ):
+        context["netalertx_status"] = "no_token"
+    elif netalertx_client is not None:
         try:
             devices = await netalertx_client.get_devices()
+            context["inventory_available"] = True
+            context["netalertx_status"] = "ok"
             for device in devices:
                 if device.get("devLastIP") == ip:
                     context["netalertx_name"] = device.get("devName")
                     context["is_known_device"] = True
                     break
         except Exception as exc:  # nosec B110
+            context["netalertx_status"] = "error"
             log.warning("netalertx_enrichment_failed", ip=ip, error=str(exc))
 
     if ws_client is not None:

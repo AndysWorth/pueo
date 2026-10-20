@@ -3268,6 +3268,67 @@ class TestUpdateTypeClassification:
         assert self._run_type("core", "update.home_assistant_core_update") == "core"
 
 
+class TestClassifyUpdateType:
+    """classify_update_type signs HACS repositories as hacs_integration (#945)."""
+
+    def _profile(self, **kw):
+        from utils.ha.ha_environment import HAEnvironmentProfile
+
+        return HAEnvironmentProfile(**kw)
+
+    def _classify(self, component, entity_id=None, profile=None):
+        from agents.ha_update_manager import classify_update_type
+
+        return classify_update_type(
+            component, entity_id or f"update.{component}_update", profile
+        )
+
+    def test_system_components(self):
+        for c in ("core", "os", "supervisor"):
+            assert self._classify(c) == c
+
+    def test_hacs_itself(self):
+        assert self._classify("hacs", "update.hacs") == "hacs"
+
+    def test_firmware_is_device(self):
+        assert self._classify("shelly", "update.shelly_firmware_update") == "device"
+
+    def test_hacs_slug_is_hacs_integration(self):
+        p = self._profile(hacs_integrations=["noaa_it_all"])
+        assert self._classify("noaa_it_all", profile=p) == "hacs_integration"
+
+    def test_hacs_slug_hyphen_matches_underscore_component(self):
+        p = self._profile(hacs_integrations=["ha-upgrade-advisor"])
+        assert self._classify("ha_upgrade_advisor", profile=p) == "hacs_integration"
+
+    def test_unloaded_domain_is_hacs_integration(self):
+        p = self._profile(hacs_unloaded_domains=["spook"])
+        assert self._classify("spook", profile=p) == "hacs_integration"
+
+    def test_repo_map_domain_is_hacs_integration(self):
+        # JSON round-trip turns the tuple into a list; both shapes work.
+        p = self._profile(
+            hacs_repo_map={"123": ["o/battery_notes", "battery_notes", True]}
+        )
+        assert self._classify("battery_notes", profile=p) == "hacs_integration"
+
+    def test_non_hacs_component_with_profile_is_addon(self):
+        p = self._profile(hacs_integrations=["noaa_it_all"])
+        assert self._classify("mosquitto_broker", profile=p) == "addon"
+
+    def test_no_profile_is_addon(self):
+        assert self._classify("noaa_it_all") == "addon"
+
+    def test_signature_reaches_hacs_seed(self):
+        from utils.knowledge.runbook_distiller import _sig_specificity
+        from utils.knowledge.runbook_signature import sig_update
+
+        p = self._profile(hacs_integrations=["noaa_it_all"])
+        sig = sig_update(self._classify("noaa_it_all", profile=p), "noaa_it_all")
+        assert sig == "update:hacs_integration:noaa_it_all"
+        assert _sig_specificity("update:hacs_integration:*", sig)[0]
+
+
 # ---------------------------------------------------------------------------
 # S3 Item 7a — loop exception writes backoff
 # ---------------------------------------------------------------------------
