@@ -27,6 +27,7 @@ from config import (
     AGENT_PER_CALL_MIN_TIMEOUT_SECONDS,
     AGENT_PER_CALL_TIMEOUT_FACTOR,
     LLM_PROVIDER,
+    RAG_MIN_SCORE,
 )
 from utils.ha.context_sanitizer import sanitize_update_context
 from utils.llm.model_options import ModelCallOptions, derive_call_options
@@ -594,7 +595,7 @@ class AgentLoop:
                 self._knowledge_store.query,  # type: ignore[union-attr]
                 query_text=effective_query,
                 top_k=3,
-                min_score=0.45,
+                min_score=RAG_MIN_SCORE,
             )
         except Exception as exc:
             log.warning("knowledge_injection_failed", error=str(exc))

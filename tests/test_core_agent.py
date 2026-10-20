@@ -354,6 +354,25 @@ class TestAgentLoopPreInject:
         # No exact match block even if a db exists; no crash either.
         assert "[RUNBOOK FOR THIS EXACT SYMPTOM]" not in result
 
+    def test_pre_inject_respects_rag_min_score_config(self, monkeypatch):
+        """pre_inject min_score comes from RAG_MIN_SCORE config, not a hardcoded literal."""
+        import asyncio as _asyncio
+        import utils.agent.agent_loop as _al
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        store = FakeKnowledgeStore()
+        store.upsert(
+            "strategies",
+            ids=["s1"],
+            documents=["ZHA error: fix by restarting the integration"],
+            metadatas=[{"source": "s1"}],
+        )
+        loop = self._make_loop(knowledge_store=store)
+        # FakeKnowledgeStore assigns score=1.0; raising the floor above that filters all chunks.
+        monkeypatch.setattr(_al, "RAG_MIN_SCORE", 1.5)
+        result = _asyncio.run(loop._pre_inject_knowledge("ZHA error"))
+        assert result == "ZHA error"
+
 
 class TestFormatKnowledgeBlock:
     """_format_knowledge_block renders chunks in rank order with per-chunk budgets."""
@@ -11183,6 +11202,51 @@ class TestToolExecutor:
         )
         assert result.success
         assert "No relevant knowledge" in result.output
+
+    def test_get_strategy_success_rates_via_asyncio_to_thread(self, tmp_path):
+        """_get_strategy_success_rates is now called via asyncio.to_thread; verify it returns correct rates."""
+        import sqlite3
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.hitl.notify import FakeNotifier
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.agent.tool_executor import ToolExecutor
+
+        db_path = tmp_path / "test.db"
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE runbook_usage (strategy_id TEXT, outcome TEXT,"
+                " verified_at TEXT, verification TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO runbook_usage VALUES (?, ?, NULL, NULL)",
+                ("rb_abc123", "success"),
+            )
+            conn.execute(
+                "INSERT INTO runbook_usage VALUES (?, ?, NULL, NULL)",
+                ("rb_abc123", "success"),
+            )
+            conn.execute(
+                "INSERT INTO runbook_usage VALUES (?, ?, NULL, NULL)",
+                ("rb_def456", "failure"),
+            )
+            conn.commit()
+
+        executor = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=True, approval_result=True),
+            notifier=FakeNotifier(approve=True),
+        )
+        executor._db_path = str(db_path)
+
+        rates = asyncio.run(
+            asyncio.to_thread(
+                executor._get_strategy_success_rates,
+                ["rb_abc123", "rb_def456", "rb_missing"],
+            )
+        )
+        assert rates["rb_abc123"] == 1.0  # 2 successes / 2 total
+        assert rates["rb_def456"] == 0.0  # 0 successes / 1 total
+        assert "rb_missing" not in rates  # no rows → omitted
 
 
 # ── AgentLoop — item 44 ─────────────────────────────────────────────────────────

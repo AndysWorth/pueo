@@ -87,7 +87,12 @@ STOPPING CONDITION: Do not give up because you have hit an arbitrary call count.
   calling {terminal_tool} with outcome=failed, call request_escalation(reason) so the
   user can route to a stronger model.
 
-Phase 6 — REPORT: Call {terminal_tool} with a complete, data-driven answer.
+Phase 6 — REPORT: Before calling {terminal_tool}, check whether any non-obvious
+  instance-specific fact was confirmed during this session (device quirk, known-wrong
+  entity state, unexpected integration behaviour, user preference) that was NOT already
+  stored via remember() in Phase 4. If so, call remember() now — one call per fact —
+  before the terminal call. Skip for facts that are generic or widely documented.
+  Then call {terminal_tool} with a complete, data-driven answer.
   If you followed a runbook from Phase 1, pass its id (shown as [id=…] in the knowledge
   block) as the runbook_followed field. If no runbook was relevant, pass "none".
 
