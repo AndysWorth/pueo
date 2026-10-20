@@ -3122,6 +3122,56 @@ class TestDiscoverHacsIntegrationsEntityFallback:
 
         assert discover_hacs_integrations("http://ha:8123", "") == []
 
+    def test_fallback_extracts_domain_from_brands_url(self, monkeypatch):
+        """Fallback path must use the brands-URL domain, not the GitHub slug."""
+        import urllib.request
+
+        from utils.knowledge.hacs_scraper import discover_hacs_integrations
+
+        # ha-upgrade-advisor: slug has a hyphen, brands URL gives the real domain
+        states = [
+            {
+                "entity_id": "update.ha_upgrade_advisor_update",
+                "attributes": {
+                    "entity_picture": (
+                        "https://brands.home-assistant.io/_/upgrade_advisor/icon.png"
+                    ),
+                    "release_url": (
+                        "https://github.com/brianegge/ha-upgrade-advisor/releases/tag/v1.0"
+                    ),
+                },
+            },
+        ]
+        self._mock_ws_failed(monkeypatch)
+        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen_states(states))
+        result = discover_hacs_integrations("http://ha:8123", "tok")
+        assert len(result) == 1
+        slug, repo, domain, repo_id = result[0]
+        assert slug == "ha-upgrade-advisor"
+        assert domain == "upgrade_advisor"
+
+    def test_fallback_uses_slug_when_no_brands_match(self, monkeypatch):
+        """Fallback uses slug as proxy when brands URL lacks the domain segment."""
+        import urllib.request
+
+        from utils.knowledge.hacs_scraper import discover_hacs_integrations
+
+        states = [
+            {
+                "entity_id": "update.pycync",
+                "attributes": {
+                    "entity_picture": "https://brands.home-assistant.io/_/pycync/icon@2x.png",
+                    "release_url": "https://github.com/dmamontov/hass-pycync/releases/tag/v1.0.0",
+                },
+            },
+        ]
+        self._mock_ws_failed(monkeypatch)
+        monkeypatch.setattr(urllib.request, "urlopen", self._urlopen_states(states))
+        result = discover_hacs_integrations("http://ha:8123", "tok")
+        assert len(result) == 1
+        slug, repo, domain, _ = result[0]
+        assert domain == "pycync"
+
 
 # ── discover_installed_integrations ──────────────────────────────────────────────
 

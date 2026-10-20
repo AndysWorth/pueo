@@ -7235,6 +7235,40 @@ class TestClassifyNotification:
         assert category == "other"
         assert severity == "MEDIUM"
 
+    def test_ios_ha_companion_rfc1918_lowers_to_medium(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = (
+            "Login attempt or request with invalid authentication from "
+            "192.168.1.42 (io.robbie.HomeAssistant). See the log for details."
+        )
+        category, severity = classify_notification("http-login", msg)
+        assert category == "security"
+        assert severity == "MEDIUM"
+
+    def test_ios_ha_companion_public_ip_stays_high(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = (
+            "Login attempt or request with invalid authentication from "
+            "203.0.113.5 (io.robbie.HomeAssistant). See the log for details."
+        )
+        category, severity = classify_notification("http-login", msg)
+        assert severity == "HIGH"
+
+    def test_unknown_ua_rfc1918_stays_high(self):
+        from agents.ha_notification_manager import classify_notification
+
+        msg = "Login attempt from 192.168.1.42 (SomeOtherApp). See the log."
+        category, severity = classify_notification("http-login", msg)
+        assert severity == "HIGH"
+
+    def test_no_message_stays_high(self):
+        from agents.ha_notification_manager import classify_notification
+
+        category, severity = classify_notification("http-login")
+        assert severity == "HIGH"
+
 
 # ── ha_notification_manager — record_notification_seen ───────────────────────────
 

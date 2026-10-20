@@ -1383,7 +1383,11 @@ class TestUpdateAnalyzedSuppression:
     """Tests for the no-card-needed suppression path in _finish_update_analysis."""
 
     def test_no_card_writes_analyzed_suppression(self, tmp_path):
-        """_finish_update_analysis(create_hitl_card=False) writes update_analyzed row."""
+        """_finish_update_analysis(create_hitl_card=False) writes update_analyzed row.
+
+        Uses a non-critical component (noaa_it_all); core/os/supervisor always force
+        a card so they never write the analyzed suppression row.
+        """
         from utils.ha.ha_rest_client import UpdateStatus
         from unittest import mock
 
@@ -1391,10 +1395,10 @@ class TestUpdateAnalyzedSuppression:
         executor = _make_minimal_executor(db_path)
 
         update = UpdateStatus(
-            component="core",
-            entity_id="update.home_assistant_core_update",
-            installed_version="2026.9.1",
-            latest_version="2026.9.2",
+            component="noaa_it_all",
+            entity_id="update.noaa_it_all",
+            installed_version="0.10.0",
+            latest_version="0.11.0",
             update_available=True,
             release_url=None,
             release_summary=None,
@@ -1406,22 +1410,24 @@ class TestUpdateAnalyzedSuppression:
         executor._release_notes_obtained = True
 
         # _update_mark_card_sent reads DB_PATH from ha_log_monitor._config.
+        # safe_to_update=False ensures we skip the auto-apply branch and reach
+        # the update_analyzed suppression write (the path under test).
         with mock.patch("agents.ha_log_monitor._config") as mc:
             mc.DB_PATH = db_path
             asyncio.run(
                 executor._finish_update_analysis(
-                    safe_to_update=True,
-                    breaking_changes=[],
+                    safe_to_update=False,
+                    breaking_changes=["some breaking change"],
                     affected_config_keys=[],
                     pueo_command_risks=[],
-                    recommendation="No breaking changes affect your install.",
-                    instance_impact="none",
+                    recommendation="Breaking changes detected — human review required.",
+                    instance_impact="medium",
                     proposed_config_fixes=[],
                     create_hitl_card=False,
                 )
             )
 
-        analyzed_key = "update_analyzed:update.home_assistant_core_update:2026.9.2"
+        analyzed_key = "update_analyzed:update.noaa_it_all:0.11.0"
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT card_type, resolved_at FROM hitl_suppression WHERE card_key = ?",

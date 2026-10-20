@@ -526,6 +526,7 @@ def _resolve_card_outcome(
         verification,
         "user",
         correction or None,
+        _get_strategy_store(),
     )
 
 

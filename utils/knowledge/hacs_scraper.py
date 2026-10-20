@@ -199,9 +199,9 @@ def discover_hacs_integrations(  # pragma: no cover
         if repo == "hacs/integration":
             continue
         slug = repo.split("/")[-1]
-        triples.append(
-            (slug, repo, slug, "")
-        )  # fallback: slug as domain proxy, no repo_id
+        _dm = re.search(r"brands\.home-assistant\.io/_/([^/]+)/", entity_picture)
+        _domain = _dm.group(1) if _dm else slug
+        triples.append((slug, repo, _domain, ""))
     return triples
 
 
