@@ -14586,6 +14586,9 @@ class TestFinishRepairIssueAutoReboot:
         assert notifier.sent[0]["payload"]["action"] == "reboot"
         # Flag must still be False
         assert _um.is_reboot_pending_after_update() is False
+        # ADR 046: the session waits for the card's verdict or the reconcile loop.
+        assert executor._hitl_card_queued is True
+        assert executor._hitl_card_id == notifier.sent[0]["payload"]["notification_id"]
 
 
 # ── _finish_repair_issue auto-restart ────────────────────────────────────────────

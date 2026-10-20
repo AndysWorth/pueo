@@ -515,6 +515,7 @@ def _resolve_card_outcome(
     episode_id: str,
     verification: str,
     correction: str = "",
+    by: str = "user",
 ) -> None:
     """Resolve the session outcome for a card action (sync; call via asyncio.to_thread)."""
     if not episode_id:
@@ -524,7 +525,7 @@ def _resolve_card_outcome(
     resolve_session_outcome_by_episode_id(
         episode_id,
         verification,
-        "user",
+        by,
         correction or None,
         _get_strategy_store(),
     )
@@ -558,6 +559,27 @@ async def _trigger_post_verify_distillation(
         knowledge_store=ks,
         model=_cfg.OLLAMA_MODEL,
     )
+
+
+async def _verify_card_execution(payload: dict, verification: str = "success") -> None:
+    """System verifier: resolve the card's session from the executor's result (ADR 046).
+
+    Used by card executors whose action has no other system verifier. Approving a
+    card verifies nothing; the action completing (or an update failing to install)
+    does.
+    """
+    episode_id = payload.get("episode_id", "")
+    if not episode_id:
+        return
+    try:
+        await asyncio.to_thread(
+            _resolve_card_outcome, episode_id, verification, "", "system"
+        )
+        await _trigger_post_verify_distillation(episode_id, verification)
+    except Exception as exc:  # nosec B110
+        log.warning(
+            "card_execution_verify_failed", episode_id=episode_id, error=str(exc)
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -796,6 +818,7 @@ async def _execute_queued_update(
         success = await execute_update(
             update, ssh, notifier, gate, ha_rest_client=ha_rest
         )
+        await _verify_card_execution(payload, "success" if success else "failure")
         if success:
             data["fix_applied"] = True
             json_path.write_text(json.dumps(data, indent=2))
@@ -1278,6 +1301,7 @@ async def _execute_config_entry_reload(
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        await _verify_card_execution(payload)
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -1415,6 +1439,7 @@ async def _execute_ha_command(
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        await _verify_card_execution(payload)
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -1474,6 +1499,7 @@ async def _execute_service_call(
         data["fix_applied"] = True
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        await _verify_card_execution(payload)
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -1561,6 +1587,7 @@ async def _execute_automation_create(
         data["fix_backup_slug"] = slug
         json_path.write_text(json.dumps(data, indent=2))
         (watch_dir / f"{nid}.approved").touch()
+        await _verify_card_execution(payload)
         try:
             from utils.core.timeline import write_timeline_event
 
@@ -2293,10 +2320,8 @@ async def approve(nid: str, request: Request = None) -> RedirectResponse:  # typ
             from utils.hitl.hitl_tracker import mark_card_approved as _mark_approved
 
             await asyncio.to_thread(_hitl_write, _mark_approved, suppression_key)
-        _episode_id = payload.get("episode_id", "")
-        if _episode_id:
-            await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
-            await _trigger_post_verify_distillation(_episode_id, "success")
+        # Approving verifies nothing (ADR 046): the executor or a system verifier
+        # resolves the session once the action has actually run.
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2343,6 +2368,7 @@ async def _execute_queued_fix(
             data["fix_backup_slug"] = slug
             json_path.write_text(json.dumps(data, indent=2))
             (watch_dir / f"{nid}.approved").touch()
+            await _verify_card_execution(data.get("payload", {}))
 
         except Exception as exc:
             data["fix_error"] = str(exc)
@@ -2432,10 +2458,7 @@ async def apply_fixes(nid: str) -> RedirectResponse:
         asyncio.create_task(
             _execute_config_fixes(nid, fixes, data, json_path, watch_dir)
         )
-    _episode_id = payload.get("episode_id", "")
-    if _episode_id:
-        await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
-        await _trigger_post_verify_distillation(_episode_id, "success")
+    # Verification waits for the update install result (ADR 046).
     return RedirectResponse(url="/queue", status_code=303)
 
 
@@ -2570,12 +2593,54 @@ async def acknowledge(nid: str) -> RedirectResponse:
             await asyncio.to_thread(
                 _hitl_write, mark_card_acknowledged, suppression_key, fingerprint
             )
+        # Acknowledging means "seen", not "correct" (ADR 046); the session stays
+        # pending until "Pueo was right"/"Pueo got this wrong" or the sweep.
+        (watch_dir / f"{nid}.approved").touch()
+    return RedirectResponse(url="/queue", status_code=303)
+
+
+_VERDICT_RETURN_URLS = frozenset({"/queue", "/notifications"})
+
+
+def _verdict_return_url(form: Any) -> str:
+    """Redirect target for a verdict form; only known dashboard pages are allowed."""
+    url = str(form.get("return_to", "/queue"))
+    return url if url in _VERDICT_RETURN_URLS else "/queue"
+
+
+@app.post("/right/{nid}")
+async def right(nid: str, request: Request) -> RedirectResponse:
+    """Record that Pueo was right — explicit user verification (ADR 046).
+
+    Marks the session outcome success and enqueues distillation. With
+    ``acknowledge=1`` (informational cards) the card is also acknowledged;
+    otherwise an actionable card stays pending for Approve/Reject.
+    """
+    from utils.hitl.hitl_tracker import mark_card_acknowledged
+
+    watch_dir = Path(NOTIFY_WATCH_DIR)
+    json_path = watch_dir / f"{nid}.json"
+    form = await request.form()
+    if json_path.exists() and _status(nid, watch_dir) == "PENDING":
+        data = json.loads(json_path.read_text())
+        payload = data.get("payload", {})
         _episode_id = payload.get("episode_id", "")
         if _episode_id:
             await asyncio.to_thread(_resolve_card_outcome, _episode_id, "success")
             await _trigger_post_verify_distillation(_episode_id, "success")
-        (watch_dir / f"{nid}.approved").touch()
-    return RedirectResponse(url="/queue", status_code=303)
+        if str(form.get("acknowledge", "")) == "1":
+            suppression_key = payload.get("suppression_key", "")
+            fingerprint = str(payload.get("fingerprint", ""))
+            if suppression_key:
+                await asyncio.to_thread(
+                    _hitl_write, mark_card_acknowledged, suppression_key, fingerprint
+                )
+            (watch_dir / f"{nid}.approved").touch()
+        else:
+            payload["user_verdict"] = "right"
+            data["payload"] = payload
+            json_path.write_text(json.dumps(data, indent=2))
+    return RedirectResponse(url=_verdict_return_url(form), status_code=303)
 
 
 @app.post("/wrong/{nid}")
@@ -2585,10 +2650,10 @@ async def wrong(nid: str, request: Request) -> RedirectResponse:
 
     watch_dir = Path(NOTIFY_WATCH_DIR)
     json_path = watch_dir / f"{nid}.json"
+    form = await request.form()
     if json_path.exists() and _status(nid, watch_dir) == "PENDING":
         data = json.loads(json_path.read_text())
         payload = data.get("payload", {})
-        form = await request.form()
         correction = str(form.get("correction", "")).strip()
         _episode_id = payload.get("episode_id", "")
         if _episode_id:
@@ -2603,7 +2668,7 @@ async def wrong(nid: str, request: Request) -> RedirectResponse:
                 _hitl_write, mark_card_acknowledged, suppression_key, fingerprint
             )
         (watch_dir / f"{nid}.approved").touch()
-    return RedirectResponse(url="/queue", status_code=303)
+    return RedirectResponse(url=_verdict_return_url(form), status_code=303)
 
 
 @app.get("/known-issues")
@@ -3000,6 +3065,8 @@ def _load_notification_dashboard_data(
                 )
                 record.setdefault("original_title", payload.get("original_title", ""))
                 record.setdefault("ha_created_at", payload.get("ha_created_at"))
+                record["episode_id"] = payload.get("episode_id", "")
+                record["user_verdict"] = payload.get("user_verdict", "")
             except Exception:  # nosec B110 — skip malformed card JSON
                 pass
         records.append(record)

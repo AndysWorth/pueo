@@ -1068,7 +1068,8 @@ class AgentLoop:
         if queue is not None:
             # Supervisor mode: only queue gap writing for non-success (no LLM).
             # Success sessions are deferred until S5 wires distillation to verification.
-            if outcome != "success":
+            # awaiting_approval is not a failure: its card's executor verifies it.
+            if outcome not in ("success", "awaiting_approval"):
                 _steps_snap = list(steps)
                 _outcome = outcome
                 _stub = dict(episode_stub) if episode_stub else None
@@ -1107,10 +1108,10 @@ class AgentLoop:
                     submitted=submitted,
                 )
             else:
-                # Success session: auto-verify immediately when no actionable HITL card
-                # was queued during this session (informational sessions, benign repairs).
-                # Sessions that produced a card (update approvals, CRITICAL notifications)
-                # still defer — verification fires when the user acts on the card.
+                # Success session: auto-verify immediately when no HITL card was sent
+                # during this session. Sessions that sent a card (or are awaiting an
+                # approval or auto-apply) defer — "Pueo was right"/"got this wrong" or
+                # the action's executor verifies them (ADR 046).
                 _hitl_queued = getattr(self._executor, "_hitl_card_queued", False)
                 if not _hitl_queued and _ep and _db and _store:
                     try:
@@ -1158,7 +1159,7 @@ class AgentLoop:
         else:
             # Standalone / test mode: write gap for non-success sessions only.
             # Success distillation requires verification (no queue = skip).
-            if outcome != "success":
+            if outcome not in ("success", "awaiting_approval"):
                 try:
                     await asyncio.to_thread(
                         write_gap,

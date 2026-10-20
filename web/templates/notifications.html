@@ -75,6 +75,25 @@
         <button class="btn btn-reject" type="submit">Keep</button>
       </form>
     </div>
+    {% if n.get("episode_id") and n.get("user_verdict") == "right" %}
+    <p style="font-size:0.78rem;color:#2e7d32;margin:0.35rem 0 0;">✓ You marked Pueo's analysis as right</p>
+    {% elif n.get("episode_id") %}
+    <form method="POST" action="/right/{{ n.card_id }}" style="display:inline;">
+      <input type="hidden" name="return_to" value="/notifications">
+      <button type="submit" title="Confirm Pueo's analysis was correct; Pueo learns from verified sessions" style="background:none;color:#2e7d32;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo was right</button>
+    </form>
+    <button onclick="window.toggleWrongForm('{{ n.card_id }}')" type="button" style="background:none;color:#999;border:none;padding:0.35rem 0;cursor:pointer;font-size:0.78rem;text-decoration:underline;display:block;margin-top:0.25rem;">Pueo got this wrong</button>
+    <div id="wrong-form-{{ n.card_id }}" style="display:none;margin-top:0.4rem;background:#fff8f8;border:1px solid #fcc;border-radius:4px;padding:0.5rem;">
+      <form method="POST" action="/wrong/{{ n.card_id }}">
+        <input type="hidden" name="return_to" value="/notifications">
+        <label style="font-size:0.8rem;display:block;margin-bottom:0.25rem;">Optional correction (one line):</label>
+        <input type="text" name="correction" placeholder="What should Pueo have concluded instead?" style="font-size:0.82rem;padding:0.25rem 0.4rem;border:1px solid #faa;border-radius:4px;width:100%;max-width:28rem;margin-bottom:0.3rem;">
+        <br>
+        <button type="submit" style="background:#dc3545;color:#fff;border:none;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;">Confirm: Pueo was wrong</button>
+        <button type="button" onclick="window.toggleWrongForm('{{ n.card_id }}')" style="background:none;color:#666;border:1px solid #ccc;padding:0.3rem 0.75rem;border-radius:4px;cursor:pointer;font-size:0.82rem;margin-left:0.3rem;">Cancel</button>
+      </form>
+    </div>
+    {% endif %}
     {% endif %}
   </div>
   {% endfor %}
@@ -127,4 +146,10 @@
     {% endfor %}
   </div>
 {% endif %}
+<script>
+window.toggleWrongForm = function (nid) {
+  var el = document.getElementById('wrong-form-' + nid);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+};
+</script>
 {% endblock %}

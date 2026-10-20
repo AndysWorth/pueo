@@ -1245,6 +1245,8 @@ class TestBenignSuppression:
                 "SELECT card_key FROM hitl_suppression WHERE card_type = 'lovelace_benign'"
             ).fetchone()
         assert row is None
+        # ADR 046: a sent card defers the session's verification.
+        assert executor._hitl_card_queued is True
 
     def test_poll_skips_benign_suppressed_entity(self, tmp_path):
         """An entity with an active lovelace_benign record is not passed to _run_lovelace_investigation."""

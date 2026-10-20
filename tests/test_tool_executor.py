@@ -5736,8 +5736,8 @@ class TestHitlCardQueuedFlag:
         assert ex._hitl_card_queued is False
         assert ex._hitl_card_id is None
 
-    def test_finish_host_health_informational_does_not_set_flag(self, tmp_path):
-        """Informational host-health cards must NOT set _hitl_card_queued."""
+    def test_finish_host_health_informational_sets_flag(self, tmp_path):
+        """ADR 046: informational cards defer too — only "Pueo was right" verifies them."""
         import asyncio
 
         from utils.disk.host_health import HostHealthFinding
@@ -5758,8 +5758,8 @@ class TestHitlCardQueuedFlag:
                 recommended_actions=[],
             )
         )
-        assert ex._hitl_card_queued is False
-        # Informational cards still record their nid so the sweep can hold the session.
+        assert ex._hitl_card_queued is True
+        # Informational cards record their nid so the sweep holds the session.
         from utils.hitl.hitl_tracker import stable_nid
 
         assert ex._hitl_card_id == stable_nid("host_health:rpi_firmware_update_blocked")
@@ -5843,6 +5843,126 @@ class TestHitlCardQueuedFlag:
             )
         )
         assert ex._hitl_card_queued is False
+
+
+class TestGateQueuedCardsCarryEpisode:
+    """ADR 046: gate-queued cards carry episode_id and defer the session."""
+
+    def _executor(self):
+        from utils.agent.autonomy import FakeAutonomyGate
+        from utils.agent.tool_executor import ToolExecutor
+        from utils.ha.ssh_client import FakeSSHClient
+        from utils.hitl.notify import FakeNotifier
+
+        notifier = FakeNotifier()
+        ex = ToolExecutor(
+            ha_ssh_client=FakeSSHClient(),
+            gate=FakeAutonomyGate(auto_execute_result=False),
+            notifier=notifier,
+        )
+        ex.set_episode_id("ep-gate")
+        return ex, notifier
+
+    def test_run_ha_command_queued_card(self):
+        import asyncio
+
+        ex, notifier = self._executor()
+        result = asyncio.run(ex._run_ha_command("ha core restart", "reload config"))
+        assert result.awaiting_approval is True
+        payload = notifier.sent[0]["payload"]
+        assert payload["episode_id"] == "ep-gate"
+        assert ex._hitl_card_queued is True
+        assert ex._hitl_card_id == payload["notification_id"]
+
+    def test_call_service_queued_card(self):
+        import asyncio
+
+        from utils.ha.ha_rest_client import FakeHARestClient
+
+        ex, notifier = self._executor()
+        ex.set_rest_client(FakeHARestClient())
+        result = asyncio.run(
+            ex._call_service("light", "turn_on", {}, {"entity_id": "light.x"}, "r")
+        )
+        assert result.awaiting_approval is True
+        assert notifier.sent[0]["payload"]["episode_id"] == "ep-gate"
+        assert ex._hitl_card_queued is True
+
+    def test_auto_executed_command_does_not_defer(self):
+        import asyncio
+
+        from utils.agent.autonomy import FakeAutonomyGate
+
+        ex, _ = self._executor()
+        ex._gate = FakeAutonomyGate(auto_execute_result=True)
+        asyncio.run(ex._run_ha_command("ha core restart", ""))
+        assert ex._hitl_card_queued is False
+
+
+class TestAwaitingApprovalWritesNoGap:
+    """ADR 046: awaiting_approval is not a failure — no knowledge gap is written."""
+
+    def _loop(self, tmp_path, monkeypatch, queue):
+        from types import SimpleNamespace
+
+        import agents.ha_agent_advanced as adv
+        from utils.agent.agent_loop import AgentLoop
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "state.db")
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.init_local_database()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none", lambda: queue
+        )
+        gaps: list = []
+        monkeypatch.setattr(
+            "utils.knowledge.runbook_distiller.write_gap",
+            lambda *a, **kw: gaps.append(a),
+        )
+        executor = SimpleNamespace(_hitl_card_id="nid_cmd", _hitl_card_queued=True)
+        loop = AgentLoop(
+            llm_client=None,  # type: ignore[arg-type]
+            tool_executor=executor,  # type: ignore[arg-type]
+            tool_registry=None,  # type: ignore[arg-type]
+            model="m",
+            system_prompt="s",
+            activity_type="repair_issue",
+            db_path=db_path,
+            knowledge_store=FakeKnowledgeStore(),
+        )
+        loop._episode_id = "ep_wait"
+        loop._signature = "repair:core:restart_required"
+        return loop, gaps, db_path
+
+    def test_standalone_awaiting_approval_writes_no_gap(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+
+        loop, gaps, db_path = self._loop(tmp_path, monkeypatch, None)
+        asyncio.run(loop._enqueue_distillation("awaiting_approval", [], None))
+        assert gaps == []
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_id, verification FROM session_outcomes"
+                " WHERE episode_id = 'ep_wait'"
+            ).fetchone()
+        assert row == ("nid_cmd", "pending")
+
+    def test_supervisor_awaiting_approval_defers(self, tmp_path, monkeypatch):
+        import asyncio
+
+        submitted: list = []
+
+        class _Queue:
+            async def submit(self, item):
+                submitted.append(item)
+                return True
+
+        loop, gaps, _ = self._loop(tmp_path, monkeypatch, _Queue())
+        asyncio.run(loop._enqueue_distillation("awaiting_approval", [], None))
+        assert submitted == []
+        assert gaps == []
 
 
 class TestSessionOutcomeCardId:

@@ -453,6 +453,8 @@ class TestFinishUpdateAnalysisGate:
         assert (
             executor._pending_auto_apply
         ), "_pending_auto_apply must be set for gate-approved auto-apply"
+        # ADR 046: the install result verifies the session, so it must defer.
+        assert executor._hitl_card_queued is True
         # No card should be sent
         assert not notifier.send.called
 
