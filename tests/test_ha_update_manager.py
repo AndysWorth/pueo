@@ -34,6 +34,18 @@ def _make_db(tmp_path: Path) -> str:
     return db_path
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config_db(monkeypatch, tmp_path):
+    """Update dedup helpers in ha_log_monitor read config.DB_PATH directly.
+
+    Point it at the same per-test DB that _make_db() returns, so card
+    suppression rows land where the test can see them.  (#947)
+    """
+    import config
+
+    monkeypatch.setattr(config, "DB_PATH", _make_db(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Stuck-loop backoff — _run_update_analysis
 # ---------------------------------------------------------------------------

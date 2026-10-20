@@ -6423,6 +6423,11 @@ class TestUpdateOrderingGuard:
         watch_dir = tmp_path / "hitl"
         watch_dir.mkdir()
         monkeypatch.setattr(dashboard, "NOTIFY_WATCH_DIR", str(watch_dir))
+        # approve() marks the card in hitl_suppression via config.DB_PATH (#947)
+        db_path = str(tmp_path / "state.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(TestSuppressAndKnownIssues._HITL_DDL)
+        monkeypatch.setattr("config.DB_PATH", db_path)
 
         os_nid = "os-card-1111"
         self._write_update_card(watch_dir, os_nid, "os")
