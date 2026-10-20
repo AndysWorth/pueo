@@ -56,6 +56,10 @@ System verifiers set `verification='success'` or `'failure'`:
 
 A 48 h sweep marks unresolved rows `unverified` and clears `distill_payload_json`.
 
+> **Amended (#941, V41):** the sweep holds rows whose HITL card is still open (max 14 days), and it never distills.
+> An unverified session is not evidence. `distilled_at` prevents re-distillation on restart.
+> Grounded `instance_facts` are written to `agent_memory` even when `no_new_knowledge=true`.
+
 ### 3. Card actions as verification (S3, PR #903)
 
 `/approve`, `/acknowledge`, `/apply-fixes` → `verification='success'` (by=user).  

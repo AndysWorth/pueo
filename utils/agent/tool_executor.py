@@ -366,6 +366,9 @@ class ToolExecutor:
         # Set to True when a terminal tool sends an actionable HITL card (not informational).
         # AgentLoop._enqueue_distillation checks this to decide whether to auto-verify.
         self._hitl_card_queued: bool = False
+        # nid of the last HITL card sent this session (actionable or informational).
+        # Stored on session_outcomes.card_id so the sweep holds the row while it is open.
+        self._hitl_card_id: Optional[str] = None
 
     def reset(self) -> None:
         """Reset per-loop state. Called by AgentLoop before each run()."""
@@ -379,6 +382,7 @@ class ToolExecutor:
         self._episode_id = ""
         self._session_signature = ""
         self._hitl_card_queued = False
+        self._hitl_card_id = None
         # _dynamic_tools intentionally not reset — registered tools persist across loops
 
     def register_dynamic_tool(self, name: str, fn: "Callable[..., Any]") -> None:
@@ -3432,26 +3436,27 @@ class ToolExecutor:
         if not self._db_path:
             return
 
-        # Determine which ids to write.
-        # declared_runbook_id is the model's explicit declaration ("none" means no runbook).
-        # Fall back to all seen ids only when the model gave no declaration at all
-        # (old behaviour, for sessions that don't yet supply the field).
-        if declared_runbook_id and declared_runbook_id.lower() != "none":
-            ids_to_write = {declared_runbook_id}
-        elif declared_runbook_id == "none":
-            ids_to_write = set()
-        else:
-            # No declaration — fall back to all seen ids for backwards compatibility.
-            ids_to_write = strategy_ids
-
-        if not ids_to_write:
-            return
-
         import config as _cfg
 
         min_successes = _cfg.RUNBOOK_VALIDATE_MIN_SUCCESSES
         try:
             with sqlite3.connect(self._db_path) as conn:
+                # Determine which ids to write.
+                # declared_runbook_id is the model's explicit declaration ("none" means
+                # no runbook).  Fall back to all seen ids only when the model gave no
+                # declaration at all (sessions that don't yet supply the field).
+                if declared_runbook_id and declared_runbook_id.lower() != "none":
+                    resolved = self._normalize_declared_runbook(
+                        conn, declared_runbook_id, strategy_ids, signature
+                    )
+                    ids_to_write = {resolved} if resolved else set()
+                elif declared_runbook_id == "none":
+                    ids_to_write = set()
+                else:
+                    ids_to_write = set(strategy_ids)
+
+                if not ids_to_write:
+                    return
                 for sid in ids_to_write:
                     conn.execute(
                         "INSERT INTO runbook_usage"
@@ -3464,6 +3469,56 @@ class ToolExecutor:
                     self._auto_validate_if_eligible(conn, sid, min_successes)
         except Exception as exc:  # nosec B110
             log.warning("record_runbook_usage_failed", error=str(exc))
+
+    @staticmethod
+    def _normalize_declared_runbook(
+        conn: "sqlite3.Connection",
+        declared: str,
+        strategy_ids: set[str],
+        signature: str,
+    ) -> Optional[str]:
+        """Map the model's runbook_followed value to a real agent_strategies id.
+
+        Models often drop the ``seed:`` prefix (``seed_foo.md`` instead of
+        ``seed:seed_foo.md``), which would otherwise orphan the usage row.  Tries the
+        value as given and with the prefix, first among ids seen this session, then
+        in agent_strategies.  Falls back to the seen runbook whose signature best
+        matches the session signature; returns None when nothing matches.
+        """
+        from utils.knowledge.runbook_distiller import _sig_specificity
+
+        candidates = [declared]
+        if not declared.startswith("seed:"):
+            candidates.append(f"seed:{declared}")
+        for cand in candidates:
+            if cand in strategy_ids:
+                return cand
+        for cand in candidates:
+            if conn.execute(
+                "SELECT 1 FROM agent_strategies WHERE id = ?", (cand,)
+            ).fetchone():
+                return cand
+
+        fallback: Optional[str] = None
+        if strategy_ids and signature:
+            placeholders = ",".join("?" * len(strategy_ids))
+            rows = conn.execute(
+                f"SELECT id, signature FROM agent_strategies"  # nosec B608
+                f" WHERE id IN ({placeholders}) AND signature IS NOT NULL",
+                sorted(strategy_ids),
+            ).fetchall()
+            best = -1
+            for sid, stored_sig in rows:
+                matches, spec = _sig_specificity(stored_sig, signature)
+                if matches and spec > best:
+                    best, fallback = spec, sid
+        log.warning(
+            "declared_runbook_unknown",
+            declared=declared,
+            fallback=fallback,
+            signature=signature,
+        )
+        return fallback
 
     def _auto_validate_if_eligible(
         self, conn: "sqlite3.Connection", strategy_id: str, min_successes: int
@@ -4419,6 +4474,7 @@ class ToolExecutor:
             with sqlite3.connect(self._db_path) as conn:
                 mark_card_sent(conn, card_key, CARD_TYPE_HA_CONFIG_ISSUE, description)
             await self._notifier.send(subject=title, body=body, payload=payload)
+            self._hitl_card_id = payload["notification_id"]
             log.info(
                 "lovelace_config_issue_card_sent",
                 entity_ids=entity_ids,
@@ -4609,6 +4665,7 @@ class ToolExecutor:
         }
         mark_repair_hitl_sent(issue.issue_key)
         await self._notifier.send(subject=title, body=body, payload=payload)
+        self._hitl_card_id = payload["notification_id"]
         log.info(
             "repair_hitl_card_sent",
             issue_key=issue.issue_key,
@@ -4699,6 +4756,7 @@ class ToolExecutor:
         }
         await self._notifier.send(subject=subject, body=body, payload=payload)
         self._hitl_card_queued = True
+        self._hitl_card_id = card_id
         from agents.ha_notification_manager import mark_notification_hitl_sent
 
         mark_notification_hitl_sent(ha_nid, db_path)
@@ -5253,6 +5311,7 @@ class ToolExecutor:
         )
         await self._notifier.send(subject=subject, body=body, payload=payload)
         self._hitl_card_queued = True
+        self._hitl_card_id = payload["notification_id"]
         log.info(
             "update_hitl_card_sent",
             component=update.component,
@@ -5375,6 +5434,7 @@ class ToolExecutor:
             body=summary,
             payload=_payload,
         )
+        self._hitl_card_id = _payload["notification_id"]
         if not _payload.get("informational"):
             self._hitl_card_queued = True
         try:

@@ -4623,6 +4623,91 @@ class TestRunbookUsageTracking:
             count = conn.execute("SELECT COUNT(*) FROM runbook_usage").fetchone()[0]
         assert count == 0
 
+    def _usage_ids(self, db_path):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            return [
+                r[0]
+                for r in conn.execute(
+                    "SELECT strategy_id FROM runbook_usage ORDER BY strategy_id"
+                ).fetchall()
+            ]
+
+    def _add_signatures(self, db_path, sigs):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("ALTER TABLE agent_strategies ADD COLUMN signature TEXT")
+            for sid, sig in sigs.items():
+                conn.execute(
+                    "UPDATE agent_strategies SET signature = ? WHERE id = ?", (sig, sid)
+                )
+            conn.commit()
+
+    def test_declared_bare_seed_name_gets_seed_prefix(self, tmp_path):
+        """runbook_followed='seed_x.md' resolves to the seen id 'seed:seed_x.md'."""
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "seed:seed_x.md", state="seed")
+        executor.record_runbook_usage(
+            {"seed:seed_x.md"},
+            "success",
+            "ep1",
+            "notification:http_login",
+            declared_runbook_id="seed_x.md",
+        )
+        assert self._usage_ids(db_path) == ["seed:seed_x.md"]
+
+    def test_declared_id_not_seen_but_in_db(self, tmp_path):
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "seed:seed_y.md", state="seed")
+        executor.record_runbook_usage(
+            set(), "success", "ep1", "sig:a", declared_runbook_id="seed_y.md"
+        )
+        assert self._usage_ids(db_path) == ["seed:seed_y.md"]
+
+    def test_declared_unknown_falls_back_to_signature_match(self, tmp_path):
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "seed:wild.md", state="seed")
+        self._insert_strategy(db_path, "seed:exact.md", state="seed")
+        self._insert_strategy(db_path, "seed:other.md", state="seed")
+        self._add_signatures(
+            db_path,
+            {
+                "seed:wild.md": "notification:*",
+                "seed:exact.md": "notification:http_login",
+                "seed:other.md": "update:core:*",
+            },
+        )
+        executor.record_runbook_usage(
+            {"seed:wild.md", "seed:exact.md", "seed:other.md"},
+            "success",
+            "ep1",
+            "notification:http_login",
+            declared_runbook_id="made_up_runbook.md",
+        )
+        assert self._usage_ids(db_path) == ["seed:exact.md"]
+
+    def test_declared_unknown_without_match_writes_nothing(self, tmp_path):
+        executor, _, db_path = self._make_executor(tmp_path)
+        self._insert_strategy(db_path, "seed:other.md", state="seed")
+        self._add_signatures(db_path, {"seed:other.md": "update:core:*"})
+        executor.record_runbook_usage(
+            {"seed:other.md"},
+            "success",
+            "ep1",
+            "notification:http_login",
+            declared_runbook_id="made_up_runbook.md",
+        )
+        assert self._usage_ids(db_path) == []
+
+    def test_declared_unknown_with_no_seen_ids_writes_nothing(self, tmp_path):
+        executor, _, db_path = self._make_executor(tmp_path)
+        executor.record_runbook_usage(
+            set(), "success", "ep1", "sig:a", declared_runbook_id="seed:ghost.md"
+        )
+        assert self._usage_ids(db_path) == []
+
     def test_record_runbook_usage_no_rows_on_empty_ids(self, tmp_path):
         import sqlite3
 
@@ -4872,7 +4957,7 @@ class TestRunbookUsageTracking:
                 "episode_id TEXT PRIMARY KEY, signature TEXT, session_type TEXT,"
                 " subject_key TEXT, conclusion_json TEXT, distill_payload_json TEXT,"
                 " created_at TEXT, verification TEXT, verified_at TEXT,"
-                " verified_by TEXT, correction TEXT)"
+                " verified_by TEXT, correction TEXT, distilled_at TEXT, card_id TEXT)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_key"
@@ -4897,16 +4982,18 @@ class TestRunbookUsageTracking:
                 "hacs/restart_required_123/v1.0",
                 '{"summary": "restart needed"}',
                 '{"steps": []}',
+                "nid_abc",
             )
             with sqlite3.connect(db_path) as conn:
                 row = conn.execute(
-                    "SELECT signature, session_type, subject_key, verification"
+                    "SELECT signature, session_type, subject_key, verification, card_id"
                     " FROM session_outcomes WHERE episode_id='ep1'"
                 ).fetchone()
             assert row[0] == "repair:hacs:restart_required"
             assert row[1] == "repair_issue"
             assert row[2] == "hacs/restart_required_123/v1.0"
             assert row[3] == "pending"
+            assert row[4] == "nid_abc"
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
@@ -4943,11 +5030,11 @@ class TestRunbookUsageTracking:
                     "SELECT verification, verified_by FROM session_outcomes WHERE episode_id='ep1'"
                 ).fetchone()
                 ru_row = conn.execute(
-                    "SELECT verification FROM runbook_usage WHERE episode_id='ep1'"
+                    "SELECT verification, outcome FROM runbook_usage WHERE episode_id='ep1'"
                 ).fetchone()
             assert so_row[0] == "success"
             assert so_row[1] == "system"
-            assert ru_row[0] == "success"
+            assert ru_row == ("success", "success")
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
@@ -5041,46 +5128,178 @@ class TestRunbookUsageTracking:
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
-    def test_get_sweep_candidates_returns_stale_with_payload(self, tmp_path):
-        """get_sweep_candidates returns episode_ids with payloads past the 48-hour mark."""
+    def _seed_stale_session(self, db_path, episode_id, *, hours_ago=50.0, card_id=None):
+        import sqlite3
+        import time
+
+        created = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours_ago * 3600)
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification,"
+                "  distill_payload_json, card_id)"
+                " VALUES (?, 'k', ?, 'pending', 'payload', ?)",
+                (episode_id, created, card_id),
+            )
+            conn.execute(
+                "INSERT INTO runbook_usage"
+                " (strategy_id, episode_id, signature, outcome, created_at)"
+                " VALUES ('s1', ?, 'sig', 'pending', ?)",
+                (episode_id, created),
+            )
+            conn.commit()
+
+    @staticmethod
+    def _write_card(watch_dir, nid, episode_id="", suffix=None):
+        import json
+
+        watch_dir.mkdir(parents=True, exist_ok=True)
+        (watch_dir / f"{nid}.json").write_text(
+            json.dumps({"notification_id": nid, "payload": {"episode_id": episode_id}})
+        )
+        if suffix:
+            (watch_dir / f"{nid}{suffix}").touch()
+
+    def _session_row(self, db_path, episode_id):
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            so = conn.execute(
+                "SELECT verification, distill_payload_json FROM session_outcomes"
+                " WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            ru = conn.execute(
+                "SELECT verification, outcome FROM runbook_usage WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        return so, ru
+
+    def test_sweep_holds_session_with_open_card_by_card_id(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "hitl"
+        self._write_card(watch, "nid_open")
+        self._seed_stale_session(db_path, "ep_open", card_id="nid_open")
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.sweep_stale_pending_usage(str(watch))
+            so, ru = self._session_row(db_path, "ep_open")
+            assert so == ("pending", "payload")
+            assert ru == (None, "pending")
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_sweep_holds_session_with_open_card_by_payload_episode(self, tmp_path):
+        """Rows written before V41 have no card_id; the card payload's episode_id holds them."""
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "hitl"
+        self._write_card(watch, "nid_x", episode_id="ep_legacy")
+        self._seed_stale_session(db_path, "ep_legacy", card_id=None)
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.sweep_stale_pending_usage(str(watch))
+            so, _ = self._session_row(db_path, "ep_legacy")
+            assert so == ("pending", "payload")
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_sweep_clears_session_whose_card_was_resolved(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "hitl"
+        self._write_card(watch, "nid_done", suffix=".approved")
+        self._seed_stale_session(db_path, "ep_done", card_id="nid_done")
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.sweep_stale_pending_usage(str(watch))
+            so, ru = self._session_row(db_path, "ep_done")
+            assert so == ("unverified", None)
+            assert ru == ("unverified", "unverified")
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_sweep_clears_open_card_session_past_hard_cap(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "hitl"
+        self._write_card(watch, "nid_old")
+        self._seed_stale_session(
+            db_path, "ep_old", hours_ago=15 * 24, card_id="nid_old"
+        )
+        original = adv.DB_PATH
+        adv.DB_PATH = db_path  # type: ignore[assignment]
+        try:
+            adv.sweep_stale_pending_usage(str(watch))
+            so, _ = self._session_row(db_path, "ep_old")
+            assert so == ("unverified", None)
+        finally:
+            adv.DB_PATH = original  # type: ignore[assignment]
+
+    def test_sweep_defaults_watch_dir_to_config(self, tmp_path, monkeypatch):
+        import agents.ha_agent_advanced as adv
+
+        db_path = self._make_adv_db(tmp_path)
+        watch = tmp_path / "cfg_hitl"
+        self._write_card(watch, "nid_cfg")
+        self._seed_stale_session(db_path, "ep_cfg", card_id="nid_cfg")
+        monkeypatch.setattr(adv._config, "NOTIFY_WATCH_DIR", str(watch))
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.sweep_stale_pending_usage()
+        so, _ = self._session_row(db_path, "ep_cfg")
+        assert so == ("pending", "payload")
+
+    def test_open_card_refs(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        watch = tmp_path / "hitl"
+        self._write_card(watch, "open1", episode_id="ep1")
+        self._write_card(watch, "deferred1", episode_id="ep2", suffix=".deferred")
+        self._write_card(watch, "rejected1", episode_id="ep3", suffix=".rejected")
+        self._write_card(watch, "resolved1", suffix=".resolved")
+        self._write_card(watch, "no_ep")
+        (watch / "corrupt.json").write_text("{not json")
+        nids, eps = adv.open_card_refs(str(watch))
+        assert nids == {"open1", "deferred1", "no_ep"}
+        assert eps == {"ep1", "ep2"}
+
+    def test_open_card_refs_missing_dir(self, tmp_path):
+        import agents.ha_agent_advanced as adv
+
+        assert adv.open_card_refs(str(tmp_path / "nope")) == (set(), set())
+        assert adv.open_card_refs("") == (set(), set())
+
+    def test_get_pending_distillation_recoveries_skips_distilled(self, tmp_path):
         import sqlite3
         import time
 
         import agents.ha_agent_advanced as adv
 
         db_path = self._make_adv_db(tmp_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO session_outcomes"
+                " (episode_id, subject_key, created_at, verification,"
+                "  verified_at, distill_payload_json, distilled_at)"
+                " VALUES ('done_ep', 'k', ?, 'success', ?, 'payload', ?)",
+                (now, now, now),
+            )
+            conn.commit()
         original = adv.DB_PATH
         adv.DB_PATH = db_path  # type: ignore[assignment]
         try:
-            stale_iso = time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 50 * 3600)
-            )
-            fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            with sqlite3.connect(db_path) as conn:
-                # Stale with payload → should be returned
-                conn.execute(
-                    "INSERT INTO session_outcomes"
-                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
-                    " VALUES ('stale_with_payload', 'k', ?, 'pending', 'payload')",
-                    (stale_iso,),
-                )
-                # Stale without payload → should NOT be returned
-                conn.execute(
-                    "INSERT INTO session_outcomes"
-                    " (episode_id, subject_key, created_at, verification)"
-                    " VALUES ('stale_no_payload', 'k2', ?, 'pending')",
-                    (stale_iso,),
-                )
-                # Fresh with payload → should NOT be returned (not old enough)
-                conn.execute(
-                    "INSERT INTO session_outcomes"
-                    " (episode_id, subject_key, created_at, verification, distill_payload_json)"
-                    " VALUES ('fresh_with_payload', 'k3', ?, 'pending', 'payload')",
-                    (fresh_iso,),
-                )
-                conn.commit()
-            result = adv.get_sweep_candidates()
-            assert result == ["stale_with_payload"]
+            assert adv.get_pending_distillation_recoveries() == []
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
@@ -5262,6 +5481,10 @@ class TestResolveSessionOutcomeByEpisodeId:
                 " VALUES ('ep-a', 'subj/1', ?, 'pending')",
                 (now,),
             )
+            conn.execute(
+                "INSERT INTO runbook_usage (strategy_id, episode_id, signature, outcome)"
+                " VALUES ('s1', 'ep-a', 'sig', 'pending')"
+            )
             conn.commit()
 
         original = adv.DB_PATH
@@ -5273,8 +5496,13 @@ class TestResolveSessionOutcomeByEpisodeId:
                     "SELECT verification, verified_by FROM session_outcomes"
                     " WHERE episode_id='ep-a'"
                 ).fetchone()
+                ru = conn.execute(
+                    "SELECT verification, outcome FROM runbook_usage"
+                    " WHERE episode_id='ep-a'"
+                ).fetchone()
             assert row[0] == "success"
             assert row[1] == "user"
+            assert ru == ("success", "success")
         finally:
             adv.DB_PATH = original  # type: ignore[assignment]
 
@@ -5503,8 +5731,10 @@ class TestHitlCardQueuedFlag:
     def test_reset_clears_flag(self, tmp_path):
         ex = self._make_executor(self._make_db(tmp_path))
         ex._hitl_card_queued = True
+        ex._hitl_card_id = "nid"
         ex.reset()
         assert ex._hitl_card_queued is False
+        assert ex._hitl_card_id is None
 
     def test_finish_host_health_informational_does_not_set_flag(self, tmp_path):
         """Informational host-health cards must NOT set _hitl_card_queued."""
@@ -5529,6 +5759,10 @@ class TestHitlCardQueuedFlag:
             )
         )
         assert ex._hitl_card_queued is False
+        # Informational cards still record their nid so the sweep can hold the session.
+        from utils.hitl.hitl_tracker import stable_nid
+
+        assert ex._hitl_card_id == stable_nid("host_health:rpi_firmware_update_blocked")
 
     def test_finish_host_health_needs_action_sets_flag(self, tmp_path):
         """Actionable host-health cards must set _hitl_card_queued."""
@@ -5580,6 +5814,7 @@ class TestHitlCardQueuedFlag:
             )
         )
         assert ex._hitl_card_queued is True
+        assert ex._hitl_card_id == "notif_http-login"
 
     def test_finish_notification_no_hitl_does_not_set_flag(self, tmp_path, monkeypatch):
         """finish_notification_investigation with requires_hitl=False must NOT set flag."""
@@ -5608,3 +5843,45 @@ class TestHitlCardQueuedFlag:
             )
         )
         assert ex._hitl_card_queued is False
+
+
+class TestSessionOutcomeCardId:
+    """AgentLoop stores the executor's last HITL card nid on session_outcomes.card_id."""
+
+    def test_card_id_written_to_session_outcome(self, tmp_path, monkeypatch):
+        import asyncio
+        import sqlite3
+        from types import SimpleNamespace
+
+        import agents.ha_agent_advanced as adv
+        from utils.agent.agent_loop import AgentLoop
+        from utils.knowledge.knowledge_store import FakeKnowledgeStore
+
+        db_path = str(tmp_path / "state.db")
+        monkeypatch.setattr(adv, "DB_PATH", db_path)
+        adv.init_local_database()
+        monkeypatch.setattr(
+            "utils.agent.work_queue.get_work_queue_or_none", lambda: None
+        )
+
+        executor = SimpleNamespace(_hitl_card_id="nid_update_1")
+        loop = AgentLoop(
+            llm_client=None,  # type: ignore[arg-type]
+            tool_executor=executor,  # type: ignore[arg-type]
+            tool_registry=None,  # type: ignore[arg-type]
+            model="m",
+            system_prompt="s",
+            activity_type="update_analysis",
+            db_path=db_path,
+            knowledge_store=FakeKnowledgeStore(),
+        )
+        loop._episode_id = "ep_card"
+        loop._signature = "update:core:core"
+        asyncio.run(loop._enqueue_distillation("success", [], {"summary": "ok"}))
+
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT card_id, verification FROM session_outcomes"
+                " WHERE episode_id = 'ep_card'"
+            ).fetchone()
+        assert row == ("nid_update_1", "pending")

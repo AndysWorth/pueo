@@ -9,8 +9,11 @@ immediately after the session ends.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 import sqlite3
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
@@ -36,8 +39,10 @@ log = get_logger(__name__)
 # Per-call initial-context budget for the distillation prompt.
 _INITIAL_CONTEXT_TOKENS: int = 400
 
-# Per-step tool output budget in the trace (characters, not tokens).
-_STEP_OUTPUT_MAX_CHARS: int = 800
+# Total token budget for tool outputs in the trace, split evenly across steps.
+_TRACE_OUTPUT_TOKENS: int = 4000
+# Floor per step so long sessions still show something from every step.
+_STEP_OUTPUT_MIN_TOKENS: int = 100
 
 
 def _sig_specificity(pattern: str, query: str) -> tuple[bool, int]:
@@ -90,6 +95,15 @@ def _distillation_timeout_seconds(db_path: str, model: str) -> float:
     )
 
 
+class InstanceFact(BaseModel):
+    """One instance-specific fact, citing the trace step whose output shows it."""
+
+    fact: str = Field(description="The fact, stated using words from the tool output")
+    evidence_step: int = Field(
+        description="Step number in the tool trace whose output contains this fact"
+    )
+
+
 class DistilledRunbook(BaseModel):
     """Structured runbook produced by post-session distillation."""
 
@@ -110,11 +124,12 @@ class DistilledRunbook(BaseModel):
         default_factory=list,
         description="Pitfalls, surprises, or things that did not work",
     )
-    instance_facts: list[str] = Field(
+    instance_facts: list[InstanceFact] = Field(
         default_factory=list,
         description=(
             "Instance-specific facts not in the seed: device quirks, entity naming, "
-            "known-wrong states, user preferences relevant to this symptom"
+            "known-wrong states, hardware.  Each must cite the trace step whose "
+            "output shows it; facts not visible in a tool output are discarded."
         ),
     )
     decision_rule: str = Field(
@@ -127,14 +142,15 @@ class DistilledRunbook(BaseModel):
     no_new_knowledge: bool = Field(
         default=False,
         description=(
-            "True when the session adds nothing beyond the seed: "
-            "no instance facts, no novel decision rule, no pitfall not already listed. "
-            "Record usage only; do not write a runbook."
+            "True when the session adds no runbook knowledge beyond the seed: "
+            "no novel decision rule, no pitfall not already listed. "
+            "instance_facts are still saved when this is true."
         ),
     )
 
 
 def _format_step_trace(steps: list[AgentStep]) -> str:
+    per_step = max(_STEP_OUTPUT_MIN_TOKENS, _TRACE_OUTPUT_TOKENS // max(1, len(steps)))
     lines = []
     for s in steps:
         args_preview = json.dumps(s.tool_call.arguments)[:200]
@@ -143,11 +159,131 @@ def _format_step_trace(steps: list[AgentStep]) -> str:
         elif not s.tool_result.output.strip():
             out_preview = "[EMPTY]"
         else:
-            out_preview = s.tool_result.output[:_STEP_OUTPUT_MAX_CHARS]
+            out_preview = truncate_to_budget(
+                s.tool_result.output, per_step, strategy="smart"
+            )
         lines.append(
             f"  {s.step_number}. {s.tool_call.name}({args_preview}) → {out_preview}"
         )
     return "\n".join(lines) or "  (no steps)"
+
+
+_FACT_TOKEN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.:/-]*[A-Za-z0-9])?")
+_FACT_STOPWORDS = frozenset(
+    "the a an and or but of to in on at for with from by is are was were be been "
+    "this that these those it its as not no has have had which who when where "
+    "than then there their they them into onto via per".split()
+)
+
+
+def _fact_is_grounded(fact: str, evidence: str) -> bool:
+    """Cheap grounding check: does the cited step output support *fact*?
+
+    Every distinctive token (contains a digit or ``._:/-``, or is a capitalized
+    word after the first) must appear in the evidence.  Content words (4+ chars,
+    not stopwords) must also be at least half present, except that a single
+    content word is waived when distinctive tokens already matched.
+    Case-insensitive.  Rejects facts the model carried over from seed text or
+    invented outright.
+    """
+    ev = evidence.lower()
+    if not fact.strip() or not ev.strip():
+        return False
+    tokens = _FACT_TOKEN_RE.findall(fact)
+    distinctive: list[str] = []
+    content: list[str] = []
+    for i, tok in enumerate(tokens):
+        low = tok.lower()
+        if low in _FACT_STOPWORDS:
+            continue
+        if (
+            any(c.isdigit() for c in tok)
+            or any(c in "._:/-" for c in tok)
+            or (i > 0 and tok[0].isupper())
+        ):
+            distinctive.append(low)
+        elif len(tok) >= 4:
+            content.append(low)
+    if not distinctive and not content:
+        return False
+    if any(t not in ev for t in distinctive):
+        return False
+    if distinctive and len(content) < 2:
+        return True
+    hits = sum(1 for t in content if t in ev)
+    return hits * 2 >= len(content)
+
+
+def _grounded_facts(
+    facts: list[InstanceFact], steps: list[AgentStep]
+) -> list[InstanceFact]:
+    """Return facts whose cited step exists and whose text passes the grounding check."""
+    evidence_by_step: dict[int, str] = {}
+    for s in steps:
+        evidence_by_step[s.step_number] = (
+            f"{s.tool_result.output or ''}\n{s.tool_result.error or ''}"
+        )
+    kept: list[InstanceFact] = []
+    for f in facts:
+        evidence = evidence_by_step.get(f.evidence_step)
+        if evidence is not None and _fact_is_grounded(f.fact, evidence):
+            kept.append(f)
+        else:
+            log.info(
+                "distillation_fact_rejected",
+                fact=f.fact[:200],
+                evidence_step=f.evidence_step,
+                reason="no_such_step" if evidence is None else "ungrounded",
+            )
+    return kept
+
+
+def _write_instance_facts(
+    db_path: str, signature: str, episode_id: str, facts: list[InstanceFact]
+) -> int:
+    """Upsert grounded facts into agent_memory scoped to *signature*.
+
+    The key is derived from signature + normalised fact text, so a fact restated
+    by a later session replaces its earlier row instead of duplicating it.
+    Synchronous — call via asyncio.to_thread.  Returns the number of rows written.
+    """
+    if not facts or not signature:
+        return 0
+    now = time.time()
+    with sqlite3.connect(db_path) as conn:
+        for f in facts:
+            norm = " ".join(f.fact.lower().split())
+            key = (
+                "fact_"
+                + hashlib.sha256(f"{signature}|{norm}".encode()).hexdigest()[:12]
+            )
+            conn.execute(
+                "DELETE FROM agent_memory WHERE key = ? AND signature = ?",
+                (key, signature),
+            )
+            conn.execute(
+                "INSERT INTO agent_memory (key, content, source, ts, signature)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (key, f.fact, f"distilled:{episode_id}", now, signature),
+            )
+        conn.commit()
+    return len(facts)
+
+
+def _mark_distilled(db_path: str, episode_id: str) -> None:
+    """Stamp session_outcomes.distilled_at so the session is never re-distilled."""
+    if not db_path or not episode_id:
+        return
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE session_outcomes SET distilled_at = ? WHERE episode_id = ?",
+                (now, episode_id),
+            )
+            conn.commit()
+    except Exception as exc:  # nosec B110
+        log.warning("distillation_mark_failed", episode_id=episode_id, error=str(exc))
 
 
 def _get_existing_by_signature(
@@ -208,7 +344,8 @@ def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
     """Read the stashed distill_payload_json and signature from session_outcomes.
 
     Returns a dict with keys: steps, initial_context, episode_stub, signature.
-    Returns None when the row is missing, already cleared, or the DB is unavailable.
+    Returns None when the row is missing, already cleared, already distilled, or the
+    DB is unavailable.
     """
     if not db_path or not episode_id:
         return None
@@ -216,7 +353,7 @@ def _read_distillation_payload(db_path: str, episode_id: str) -> Optional[dict]:
         with sqlite3.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT distill_payload_json, signature FROM session_outcomes"
-                " WHERE episode_id = ?",
+                " WHERE episode_id = ? AND distilled_at IS NULL",
                 (episode_id,),
             ).fetchone()
         if row is None or not row[0]:
@@ -351,7 +488,7 @@ def _build_approach(runbook: DistilledRunbook) -> str:
     hypotheses_block = "\n".join(f"- {h}" for h in runbook.hypotheses) or "None noted."
     pitfalls_block = "\n".join(f"- {p}" for p in runbook.pitfalls) or "None noted."
     instance_facts_block = (
-        "\n".join(f"- {f}" for f in runbook.instance_facts) or "None noted."
+        "\n".join(f"- {f.fact}" for f in runbook.instance_facts) or "None noted."
     )
     decision_rule_block = runbook.decision_rule or "(none)"
     return (
@@ -441,16 +578,36 @@ def _build_prompt(
         parts_prompt += ["", seed_section]
     if existing_section:
         parts_prompt += ["", existing_section]
+    if seed_section:
+        task = (
+            "Write a runbook scoped to this exact symptom signature. "
+            "Focus on the delta from the seed: the decisive decision rule and any "
+            "pitfalls not already in the seed. "
+            "If the session adds no decision rule or pitfall beyond the seed, set "
+            "no_new_knowledge=true."
+        )
+    else:
+        task = (
+            "No seed runbook exists for this signature. Write a signature-level "
+            "runbook — the method and decision rule for this kind of symptom, not "
+            "for one specific version, release, or device — only if the decision "
+            "rule generalizes beyond this one session. Otherwise set "
+            "no_new_knowledge=true."
+        )
     parts_prompt += [
         "",
         "Tool trace (FAILED = tool error, EMPTY = no output returned):",
         step_trace,
         "",
-        "Write a runbook scoped to this exact symptom signature. "
-        "Focus on the delta from the seed: instance-specific facts (device quirks, "
-        "entity naming, known-wrong states), the decisive decision rule, and any pitfalls "
-        "not already in the seed. "
-        "If this session adds nothing beyond the seed, set no_new_knowledge=true.",
+        task,
+        "",
+        "Separately, list instance_facts: facts about this specific Home Assistant "
+        "instance (hardware, device quirks, entity naming, known-wrong states) that a "
+        "future session on this symptom should know. Every fact must be visible in "
+        "a tool output above; set evidence_step to that step's number and reuse the "
+        "output's own words. Never include facts that come only from the seed, the "
+        "initial context, or your own inference. instance_facts are saved even when "
+        "no_new_knowledge=true.",
     ]
     return "\n".join(parts_prompt)
 
@@ -477,7 +634,9 @@ async def distill_and_persist(
     - Non-success with no verification: write a gap (called immediately after session ends).
     - Success or failure-with-correction after verification: make a structured LLM call
       and merge or insert the candidate.  Set verification="success"/"failure" to trigger
-      the LLM path.  Unverified success sessions are skipped.
+      the LLM path.  Unverified success sessions are skipped.  Grounded
+      instance_facts go to agent_memory even when no_new_knowledge is set, and
+      session_outcomes.distilled_at is stamped on every terminal path.
     """
     if outcome != "success" and verification is None:
         # Immediate gap for non-success sessions (no verification needed).
@@ -526,6 +685,47 @@ async def distill_and_persist(
         )
         return
 
+    try:
+        await _distill_verified(
+            trigger=trigger,
+            signature=signature,
+            steps=steps,
+            outcome=outcome,
+            episode_id=episode_id,
+            db_path=db_path,
+            knowledge_store=knowledge_store,
+            model=model,
+            initial_context=initial_context,
+            episode_stub=episode_stub,
+            llm_client=llm_client,
+            verification=verification,
+            correction=correction,
+            seed_text=seed_text,
+        )
+    finally:
+        # Every terminal path — inserted, merged, no_new_knowledge, LLM or write
+        # failure — counts as distilled so startup recovery never repeats it.
+        await asyncio.to_thread(_mark_distilled, db_path, episode_id)
+
+
+async def _distill_verified(
+    *,
+    trigger: str,
+    signature: str,
+    steps: list[AgentStep],
+    outcome: str,
+    episode_id: str,
+    db_path: str,
+    knowledge_store: KnowledgeStoreClientProtocol,
+    model: str,
+    initial_context: str,
+    episode_stub: Optional[dict],
+    llm_client: Optional[LLMClientProtocol],
+    verification: Optional[str],
+    correction: Optional[str],
+    seed_text: str,
+) -> None:
+    """LLM distillation of a verified session: facts → agent_memory, runbook → strategies."""
     # Resolve any existing gap for this signature first.
     await asyncio.to_thread(resolve_gap, db_path, signature, episode_id)
 
@@ -581,6 +781,24 @@ async def distill_and_persist(
             timeout_secs=round(timeout_secs, 1),
         )
         return
+
+    facts = _grounded_facts(runbook.instance_facts, steps)
+    runbook.instance_facts = facts
+    if facts:
+        try:
+            written = await asyncio.to_thread(
+                _write_instance_facts, db_path, signature, episode_id, facts
+            )
+            log.info(
+                "distillation_facts_written",
+                signature=signature,
+                episode_id=episode_id,
+                count=written,
+            )
+        except Exception as exc:  # nosec B110
+            log.warning(
+                "distillation_facts_write_failed", signature=signature, error=str(exc)
+            )
 
     if runbook.no_new_knowledge:
         log.info(

@@ -902,7 +902,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 40
+        assert version == 41
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_advanced
@@ -912,7 +912,7 @@ class TestAdvancedDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 40
+        assert rows[0][0] == 41
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_advanced
@@ -941,7 +941,7 @@ class TestAdvancedDB:
         ha_agent_advanced.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 40
+        assert version == 41
 
     def test_migration_v2_adds_correlation_id_column(self, db_path):
         from agents import ha_agent_advanced
@@ -1905,7 +1905,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 40
+        assert version == 41
 
     def test_version_unchanged_on_second_init(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1915,7 +1915,7 @@ class TestSandboxDB:
         with sqlite3.connect(db_path) as conn:
             rows = conn.execute("SELECT version FROM schema_version").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == 40
+        assert rows[0][0] == 41
 
     def test_pre_migration_database_upgraded(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -1943,7 +1943,7 @@ class TestSandboxDB:
         ha_agent_sandbox_engine.init_local_database()
         with sqlite3.connect(db_path) as conn:
             version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 40
+        assert version == 41
 
     def test_migration_v24_creates_agent_strategies(self, db_path):
         from agents import ha_agent_sandbox_engine
@@ -18889,3 +18889,37 @@ class TestSpookDigestRouting:
         assert (
             row is not None and row[0] is not None
         ), "Stale Spook key must be reconciled"
+
+
+class TestMigrationV41Backfill:
+    """V41 adds distilled_at/card_id and backfills distilled_at for verified rows."""
+
+    @pytest.mark.parametrize(
+        "module", ["agents.ha_agent_advanced", "agents.ha_agent_sandbox_engine"]
+    )
+    def test_backfills_verified_rows_only(self, tmp_path, monkeypatch, module):
+        import importlib
+        import sqlite3
+
+        mod = importlib.import_module(module)
+        db_path = str(tmp_path / "v40.db")
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
+        mod.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("ALTER TABLE session_outcomes DROP COLUMN distilled_at")
+            conn.execute("ALTER TABLE session_outcomes DROP COLUMN card_id")
+            conn.execute("UPDATE schema_version SET version = 40")
+            conn.execute(
+                "INSERT INTO session_outcomes (episode_id, verification, verified_at)"
+                " VALUES ('done', 'success', '2026-10-19T09:30:00Z'),"
+                "        ('open', 'pending', NULL)"
+            )
+            conn.commit()
+        mod.init_local_database()
+        with sqlite3.connect(db_path) as conn:
+            rows = dict(
+                conn.execute(
+                    "SELECT episode_id, distilled_at FROM session_outcomes"
+                ).fetchall()
+            )
+        assert rows == {"done": "2026-10-19T09:30:00Z", "open": None}

@@ -542,6 +542,19 @@ def _migrate_v40(cursor: sqlite3.Cursor) -> None:
     cursor.execute("ALTER TABLE agent_memory ADD COLUMN signature TEXT")
 
 
+def _migrate_v41(cursor: sqlite3.Cursor) -> None:
+    # distilled_at: set once distillation reaches a terminal state (no re-distill).
+    # card_id: nid of the HITL card the session queued; the sweep holds open cards.
+    cursor.execute("ALTER TABLE session_outcomes ADD COLUMN distilled_at TEXT")
+    cursor.execute("ALTER TABLE session_outcomes ADD COLUMN card_id TEXT")
+    # Pre-V41 code enqueued distillation at verification time, so verified rows
+    # were already distilled; without this, startup recovery would redo them once.
+    cursor.execute(
+        "UPDATE session_outcomes SET distilled_at = verified_at"
+        " WHERE verification IN ('success', 'failure') AND verified_at IS NOT NULL"
+    )
+
+
 _MIGRATIONS: list[tuple[int, object]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -583,6 +596,7 @@ _MIGRATIONS: list[tuple[int, object]] = [
     (38, _migrate_v38),
     (39, _migrate_v39),
     (40, _migrate_v40),
+    (41, _migrate_v41),
 ]
 
 

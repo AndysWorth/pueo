@@ -1060,6 +1060,7 @@ class AgentLoop:
                     getattr(self, "_subject_key", ""),
                     _conclusion,
                     _payload,
+                    getattr(self._executor, "_hitl_card_id", None),
                 )
             except Exception as exc:  # nosec B110
                 log.warning("session_outcome_write_failed", error=str(exc))
