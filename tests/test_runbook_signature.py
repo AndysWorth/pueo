@@ -26,7 +26,7 @@ class TestPart:
         assert _part("homeassistant/components") == "homeassistant_components"
 
     def test_strips_special_characters(self):
-        assert _part("foo-bar!baz") == "foobarbaz"
+        assert _part("foo-bar!baz") == "foo_barbaz"
 
     def test_truncates_to_max_len(self):
         long = "a" * 100
@@ -118,7 +118,9 @@ class TestSigUpdate:
         assert sig_update("addon", "mosquitto") == "update:addon:mosquitto"
 
     def test_hacs(self):
-        assert sig_update("hacs", "lovelace-mushroom") == "update:hacs:lovelacemushroom"
+        assert (
+            sig_update("hacs", "lovelace-mushroom") == "update:hacs:lovelace_mushroom"
+        )
 
     def test_empty_slug(self):
         assert sig_update("core", "") == "update:core:unknown"
@@ -181,6 +183,23 @@ class TestSigNotification:
 
     def test_uppercase_prefix(self):
         assert sig_notification("Config.some_key") == "notification:config"
+
+    def test_http_login_hyphen_matches_seed(self):
+        """HA's id is "http-login"; the seed signature is notification:http_login (#945)."""
+        assert sig_notification("http-login") == "notification:http_login"
+
+    def test_ip_ban_hyphen(self):
+        assert sig_notification("ip-ban") == "notification:ip_ban"
+
+    def test_legacy_renames_target_current_form(self):
+        from utils.knowledge.runbook_signature import LEGACY_SIGNATURE_RENAMES
+
+        assert LEGACY_SIGNATURE_RENAMES["notification:httplogin"] == sig_notification(
+            "http-login"
+        )
+        assert LEGACY_SIGNATURE_RENAMES["notification:ipban"] == sig_notification(
+            "ip-ban"
+        )
 
 
 class TestSigHostHealth:

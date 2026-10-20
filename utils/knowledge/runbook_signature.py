@@ -19,7 +19,8 @@ def _part(s: Optional[str]) -> str:
     """Sanitize one signature component (no colons).
 
     - Lowercase
-    - Spaces and slashes → underscore
+    - Spaces, slashes, dots and hyphens → underscore (``http-login`` → ``http_login``,
+      matching the seed signature)
     - Strip everything except [a-z0-9_]
     - Truncate to _MAX_PART_LEN
     - Empty / None → "unknown"
@@ -27,10 +28,10 @@ def _part(s: Optional[str]) -> str:
     if not s:
         return "unknown"
     s = s.lower()
-    s = s.replace(" ", "_").replace("/", "_").replace(".", "_")
+    s = s.replace(" ", "_").replace("/", "_").replace(".", "_").replace("-", "_")
     s = re.sub(r"[^a-z0-9_]", "", s)
     s = s[:_MAX_PART_LEN]
-    return s or "unknown"
+    return s if s.strip("_") else "unknown"
 
 
 def _sanitize(s: Optional[str]) -> str:
@@ -52,7 +53,7 @@ def sig_repair(domain: str, translation_key: str) -> str:
 
 
 def sig_update(update_type: str, slug: str) -> str:
-    """update:<core|os|addon|hacs>:<slug>"""
+    """update:<core|os|supervisor|addon|hacs|hacs_integration|device>:<slug>"""
     return f"update:{_part(update_type)}:{_part(slug)}"
 
 
@@ -84,3 +85,11 @@ def sig_chat(top_sig: Optional[str]) -> str:
 def sig_host_health(kind: str, issue_type: str) -> str:
     """host:<kind>:<issue_type>"""
     return f"host:{_part(kind)}:{_part(issue_type)}"
+
+
+# Signatures written before ``_part`` mapped "-" to "_" (#945).  Rewritten in place
+# at startup by strategy_seeder.normalize_legacy_signatures().
+LEGACY_SIGNATURE_RENAMES: dict[str, str] = {
+    "notification:httplogin": "notification:http_login",
+    "notification:ipban": "notification:ip_ban",
+}

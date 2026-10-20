@@ -798,6 +798,37 @@ async def run_update_check(
     return updates
 
 
+def classify_update_type(
+    component: str,
+    entity_id: str,
+    profile: Optional["HAEnvironmentProfile"] = None,
+) -> str:
+    """Return the update type used in the session signature ``update:<type>:<slug>``.
+
+    A component that matches a HACS repository slug or integration domain in the
+    profile is ``hacs_integration`` so ``seed_update_hacs.md`` attaches (#945).
+    """
+    if component in ("core", "os", "supervisor"):
+        return component
+    if component.lower() == "hacs":
+        return "hacs"
+    if "firmware" in entity_id.lower():
+        return "device"
+    if profile is not None:
+        hacs_names = {
+            n.lower().replace("-", "_")
+            for n in [
+                *(profile.hacs_integrations or []),
+                *(profile.hacs_unloaded_domains or []),
+                *(v[1] for v in (profile.hacs_repo_map or {}).values() if v),
+            ]
+            if n
+        }
+        if component.lower().replace("-", "_") in hacs_names:
+            return "hacs_integration"
+    return "addon"
+
+
 async def _run_update_analysis(
     update: UpdateStatus,
     ssh_client: Optional[SSHClientProtocol] = None,
@@ -963,15 +994,9 @@ async def _run_update_analysis(
         )
         from utils.knowledge.runbook_signature import sig_update
 
-        _SYSTEM_COMPONENTS = frozenset({"core", "os", "supervisor"})
-        if update.component in _SYSTEM_COMPONENTS:
-            _update_type = update.component
-        elif update.component.lower() == "hacs":
-            _update_type = "hacs"
-        elif "firmware" in update.entity_id.lower():
-            _update_type = "device"
-        else:
-            _update_type = "addon"
+        _update_type = classify_update_type(
+            update.component, update.entity_id, _profile
+        )
         _result: "AgentLoopResult | None" = None
         increment_active_agent()
         try:

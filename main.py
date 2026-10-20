@@ -566,8 +566,12 @@ def _rag_startup_step(knowledge_store: Any, db_path: str) -> tuple[int, int]:
     waiting for the weekly full refresh. Returns (seeded, episodes_embedded).
     """
     from utils.knowledge.repair_episode_embedder import embed_repair_episodes
-    from utils.knowledge.strategy_seeder import seed_strategies
+    from utils.knowledge.strategy_seeder import (
+        normalize_legacy_signatures,
+        seed_strategies,
+    )
 
+    normalize_legacy_signatures(db_path)
     seeded = seed_strategies(knowledge_store, db_path=db_path, only_changed=True)
     embedded = embed_repair_episodes(knowledge_store, db_path)
     return seeded, embedded

@@ -8,6 +8,10 @@ MANDATORY RULES — follow exactly:
 2. Call {terminal_tool} exactly once when you have completed your investigation.
 3. No write_config or patch tools are in your registry — all fixes go through run_ha_command
    or call_service, both of which are gated by AutonomyGate.
+4. Never state a fact (version, board, app, value) that does not appear in a tool output or
+   in the finding.
+5. When a [RUNBOOK FOR THIS EXACT SYMPTOM] is pre-injected, its verdict decides the outcome
+   unless the evidence you gather clearly contradicts it.
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
@@ -35,8 +39,7 @@ Phase 3 — GATHER EVIDENCE: Use tools relevant to the finding kind.
 
   Disk wear:
   a. run_ha_command("ha host info --raw-json") — confirm current disk_life_time value
-  b. There is no automated fix — recommend the user offload data and consider an SD card
-     replacement. Set outcome="needs_action".
+  b. There is no automated fix.
 
   Unexpected reboot:
   a. read_logs(lines=50, log_source="ha_host") — check for OOM kills or panic lines
@@ -49,8 +52,8 @@ Phase 3 — GATHER EVIDENCE: Use tools relevant to the finding kind.
   c. If a matching suggestion exists, use run_ha_command with
      "ha resolution suggestion apply <uuid>" (gated MEDIUM) or
      "ha resolution healthcheck" (gated LOW) as appropriate.
-  d. Distinguish between rpi_firmware_update_blocked (benign, no fix) and genuinely
-     unhealthy states that need Supervisor repair.
+  d. Check the issue type against the pre-injected runbook — some resolution issues are
+     informational with no fix.
 
   Supervisor unhealthy / unsupported:
   a. run_ha_command("ha os info") — check OS version vs version_latest

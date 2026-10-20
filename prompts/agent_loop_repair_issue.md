@@ -8,6 +8,8 @@ MANDATORY RULES — follow exactly:
 3. When a [RUNBOOK FOR THIS EXACT SYMPTOM] is pre-injected, follow its recommended action
    unless the evidence you gather clearly contradicts it. Do not override a runbook action
    with a more conservative default.
+4. Never state a fact (version, entity, device, owner) that does not appear in a tool output
+   or in the issue text.
 
 MANDATORY 6-PHASE INVESTIGATION CYCLE:
 
